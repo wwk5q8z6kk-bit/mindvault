@@ -6,7 +6,7 @@ import { prioritizeTasks } from '$lib/api/ai';
 import { quickAddTaskOptimistic } from '$lib/stores/tasks';
 import { taskFilter } from '$lib/stores/tasks';
 import { focusPlannerState } from '$lib/stores/ui';
-import { listSavedSearches, runSavedSearch, type SavedSearch } from '$lib/api/search';
+import { createSavedSearch, deleteSavedSearch, listSavedSearches, runSavedSearch, type SavedSearch } from '$lib/api/search';
 
 let cachedSavedSearches: SavedSearch[] = [];
 let savedSearchesLoaded = false;
@@ -38,6 +38,17 @@ const STATUS_MAP: Record<string, string> = {
 	review: 'review',
 	done: 'done'
 };
+
+type QuickCaptureMode = 'task' | 'note' | 'link' | 'voice';
+type QuickCaptureTarget = 'default' | 'inbox' | 'daily';
+
+function dispatchQuickCaptureEvent(
+	mode: QuickCaptureMode = 'task',
+	target: QuickCaptureTarget = 'default'
+) {
+	if (typeof window === 'undefined') return;
+	window.dispatchEvent(new CustomEvent('mindvault:quick-capture', { detail: { mode, target } }));
+}
 
 export function registerBuiltInActions() {
 	const actions: CommandAction[] = [
@@ -93,6 +104,13 @@ export function registerBuiltInActions() {
 			subtitle: 'Notes workspace',
 			keywords: ['notes', 'note list'],
 			handler: (ctx) => ctx.navigate('/notes')
+		},
+		{
+			id: 'open-media',
+			title: 'Open Media Library',
+			subtitle: 'Browse attachments across notes and tasks',
+			keywords: ['media', 'attachments', 'files'],
+			handler: (ctx) => ctx.navigate('/media')
 		},
 		{
 			id: 'open-inbox',
@@ -250,9 +268,25 @@ export function registerBuiltInActions() {
 			subtitle: 'Capture a thought instantly (Cmd+Shift+N)',
 			keywords: ['capture', 'quick', 'jot', 'thought'],
 			handler: () => {
-				window.dispatchEvent(
-					new KeyboardEvent('keydown', { key: 'n', metaKey: true, shiftKey: true })
-				);
+				dispatchQuickCaptureEvent('task', 'default');
+			}
+		},
+		{
+			id: 'quick-capture-inbox',
+			title: 'Quick Capture to Inbox',
+			subtitle: 'Capture task and auto-tag inbox (Cmd+Shift+I)',
+			keywords: ['capture', 'inbox', 'quick', 'triage'],
+			handler: () => {
+				dispatchQuickCaptureEvent('task', 'inbox');
+			}
+		},
+		{
+			id: 'quick-capture-daily',
+			title: 'Quick Capture to Daily Note',
+			subtitle: "Capture note linked to today's daily note (Cmd+Shift+D)",
+			keywords: ['capture', 'daily', 'journal', 'quick'],
+			handler: () => {
+				dispatchQuickCaptureEvent('note', 'daily');
 			}
 		},
 		{
@@ -309,6 +343,20 @@ export function registerBuiltInActions() {
 			title: 'Open Search Page',
 			subtitle: 'Full search with saved searches',
 			keywords: ['search', 'find', 'saved searches'],
+			handler: (ctx) => ctx.navigate('/search')
+		},
+		{
+			id: 'manage-saved-searches',
+			title: 'Manage Saved Searches',
+			subtitle: 'View, edit, and delete saved searches',
+			keywords: ['saved', 'searches', 'manage', 'edit', 'delete'],
+			handler: (ctx) => ctx.navigate('/search/saved')
+		},
+		{
+			id: 'new-saved-search',
+			title: 'New Saved Search',
+			subtitle: 'Create a new saved search (opens search page)',
+			keywords: ['saved', 'search', 'new', 'create'],
 			handler: (ctx) => ctx.navigate('/search')
 		},
 		{
@@ -437,6 +485,88 @@ export function buildDynamicActions(query: string, ctx: CommandContext): Command
 				await innerCtx.navigate(`/search?q=${encodeURIComponent(searchTerm)}`);
 			}
 		});
+	}
+
+	// "save search <name>" - create a saved search from palette
+	if (trimmed.startsWith('save search ')) {
+		const searchName = raw.replace(/^save search\s+/i, '').trim();
+		if (searchName.length >= 2) {
+			actions.push({
+				id: `create-saved-search-${searchName}`,
+				title: `Save search: "${searchName}"`,
+				subtitle: 'Create new saved search with this name',
+				group: 'Saved Searches',
+				keywords: ['save', 'search', 'create'],
+				closeOnRun: false,
+				handler: async (innerCtx) => {
+					// Prompt user to enter query
+					innerCtx.setQuery(`save search ${searchName} query:`);
+					innerCtx.toast('Enter your search query after "query:"', 'info');
+				}
+			});
+		}
+	}
+
+	// "save search <name> query:<query>" - complete saved search creation
+	const saveSearchMatch = raw.match(/^save search (.+?) query:\s*(.+)$/i);
+	if (saveSearchMatch) {
+		const [, searchName, searchQuery] = saveSearchMatch;
+		if (searchName.trim() && searchQuery.trim()) {
+			actions.push({
+				id: 'create-saved-search-confirm',
+				title: `Create saved search "${searchName.trim()}"`,
+				subtitle: `Query: "${searchQuery.trim()}"`,
+				group: 'Saved Searches',
+				keywords: ['save', 'search', 'create', 'confirm'],
+				handler: async (innerCtx) => {
+					try {
+						await createSavedSearch({
+							name: searchName.trim(),
+							query: searchQuery.trim(),
+							search_type: 'fulltext',
+							limit: 50
+						});
+						invalidateSavedSearchesCache();
+						innerCtx.toast(`Saved search "${searchName.trim()}" created`, 'success');
+					} catch {
+						innerCtx.toast('Failed to create saved search', 'danger');
+					}
+				}
+			});
+		}
+	}
+
+	// "delete saved <name>" - delete a saved search
+	if (trimmed.startsWith('delete saved ') || trimmed.startsWith('remove saved ')) {
+		const searchTerm = trimmed.replace(/^delete saved\s+|^remove saved\s+/, '').trim();
+		if (searchTerm.length >= 2) {
+			void ensureSavedSearchesLoaded().then((searches) => {
+				const matches = searches.filter(s =>
+					s.name.toLowerCase().includes(searchTerm) ||
+					s.query.toLowerCase().includes(searchTerm)
+				);
+				for (const search of matches.slice(0, 5)) {
+					if (!actions.some(a => a.id === `delete-saved-${search.id}`)) {
+						actions.push({
+							id: `delete-saved-${search.id}`,
+							title: `Delete saved search: ${search.name}`,
+							subtitle: `"${search.query}"`,
+							group: 'Delete Saved Search',
+							keywords: ['delete', 'remove', 'saved', search.name],
+							handler: async (innerCtx) => {
+								try {
+									await deleteSavedSearch(search.id);
+									invalidateSavedSearchesCache();
+									innerCtx.toast(`Deleted "${search.name}"`, 'success');
+								} catch {
+									innerCtx.toast('Failed to delete saved search', 'danger');
+								}
+							}
+						});
+					}
+				}
+			});
+		}
 	}
 
 	// Saved searches - show when query matches or starts with "saved" or "run"

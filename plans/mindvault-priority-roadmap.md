@@ -1,6 +1,6 @@
 # MindVault Priority Roadmap
 
-Last updated: 2026-02-06
+Last updated: 2026-02-07
 
 ## Current Status
 
@@ -52,7 +52,7 @@ Last updated: 2026-02-06
 | Focus | Calm mode (workload pressure signal + reduced-notification view) | Medium | Planned |
 | Extensibility | Command palette macros + plugin hooks (Wasm/Lua) | Medium | Planned |
 | Planner | Dependency-aware timeline planner (critical-path + slack hints) | High | Planned |
-| Capture | Global quick-capture with system hotkeys + notification actions | High | Planned |
+| Capture | Global quick-capture with system hotkeys + notification actions | High | In Progress |
 | Interop | JSON Canvas round-trip + board-to-note sync | High | In Progress |
 | Retrieval | Qdrant payload-facet search presets (saved filter packs) | Medium | Planned |
 | Resilience | Snapshot/restore pipeline for vectors + metadata indexes | Medium | Planned |
@@ -193,6 +193,9 @@ Last updated: 2026-02-06
   - Searchable chunk extraction metadata (`attachment_text_chunks`) with attachment preview surfaced in API/web list views. (Done)
   - Attachment chunk inspector endpoint (`GET /api/v1/files/{node_id}/{attachment_id}/chunks`) + web “View Text” viewer. (Done)
   - Attachment extraction retry endpoint (`POST /api/v1/files/{node_id}/{attachment_id}/reindex`) + web “Reindex” action. (Done)
+  - Attachment triage endpoint (`GET /api/v1/files/{node_id}/paged`) with server-side filters/sort/pagination/status facets + web controls. (Done)
+  - Failed-only batch reindex endpoint (`POST /api/v1/files/{node_id}/reindex-failed`) + web batch action. (Done)
+  - Guarded bulk-delete endpoint (`POST /api/v1/files/{node_id}/delete-filtered`) with dry-run + explicit confirmation count. (Done)
   - Audio transcription for attachments via local Whisper with inline previews. (Done)
   - Remaining: first-class OCR pipeline (native/embedded models).
 - ROI: High (critical for real-world knowledge capture)
@@ -319,8 +322,12 @@ Last updated: 2026-02-06
 
 ### MV-021: Quick capture and global shortcuts
 - Priority: Medium
+- Status: In Progress
 - Scope:
-  - Desktop quick-capture entry point and global hotkeys.
+  - Desktop quick-capture entry point and global hotkeys. (Done: Tauri global `Cmd/Ctrl+Shift+N` opens task capture; `Cmd/Ctrl+Shift+M/L/V` open note/link/voice capture; `Cmd/Ctrl+Shift+I/D` route capture directly to Inbox/Daily note; shortcuts restore and focus app window.)
+  - Capture target routing in quick capture (`Default`, `Inbox`, `Daily note`) with auto-tag and daily-link behavior. (Done)
+  - Command palette quick-capture actions dispatch mode+target events for parity with desktop shortcut routing. (Done)
+  - Remaining: notification action shortcuts and richer system-level capture targets.
 
 ### MV-022: Voice notes and transcription
 - Priority: High

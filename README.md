@@ -186,6 +186,18 @@ MindVault provides retrieval-assisted completion and linking assistance for note
 - Transform UI can either append an AI section or replace selected Markdown text
 - Notes workspace rich editor also renders grounding/source chips and semantic link chips for one-click `[[...]]` insertion
 
+## Quick Capture (Desktop + Web)
+
+MindVault supports fast capture flows from anywhere in the app, with desktop-global hotkey support in Tauri builds:
+
+- Shortcut: `Cmd/Ctrl + Shift + N`
+- Mode shortcuts (desktop Tauri app): `Cmd/Ctrl+Shift+M` (note), `Cmd/Ctrl+Shift+L` (link), `Cmd/Ctrl+Shift+V` (voice)
+- Target shortcuts (desktop Tauri app): `Cmd/Ctrl+Shift+I` (task -> Inbox), `Cmd/Ctrl+Shift+D` (note -> Daily note)
+- Desktop (Tauri): works as a global system hotkey, restores/focuses the app window, and opens quick capture.
+- Browser/web: works while the app tab is focused.
+- Capture modes: task, note, link, and voice (when enabled).
+- Capture target routing in modal: `Default`, `Inbox` (auto-tag), `Daily note` (auto-link to today's daily note).
+
 ## Web Editor
 
 The admin web editor now uses TipTap (ProseMirror) with Markdown as the canonical storage format:
@@ -204,6 +216,7 @@ MindVault supports file attachments with inline previews and local-first extract
 - OCR/PDF text extraction with optional local tools (`pdftotext`, `tesseract`) and graceful fallbacks.
 - Audio transcription via local Whisper with per-attachment chunk viewer and search preview.
 - Embed attachments into notes (image Markdown, audio/video HTML with link fallback).
+- Main app includes an attachments panel in Notes and Tasks, plus a global Media Library at `/media` for vault-wide browsing.
 
 Optional environment variables:
 
@@ -482,6 +495,9 @@ File upload API:
   - persists attachment-level text chunks (`metadata.attachment_text_chunks`) for search preview and future retrieval flows
   - updates node-level `attachment_search_text` metadata used by full-text indexing
 - `GET /api/v1/files/{node_id}` lists attachment metadata and download URLs for a node (including extraction status/chars and optional chunk preview metadata when available)
+- `GET /api/v1/files/{node_id}/paged` returns filtered/sorted paginated attachment results with status facets (`q`, `status`, `failed_only`, `sort`, `limit`, `offset`)
+- `POST /api/v1/files/{node_id}/reindex-failed` batch reindexes failed attachments and returns per-item outcomes
+- `POST /api/v1/files/{node_id}/delete-filtered` performs guarded bulk delete for current filters (`dry_run` preview + `confirmed_count` execution)
 - `GET /api/v1/files/{node_id}/{attachment_id}/chunks` returns paginated indexed text chunks for an attachment (`limit`, `offset`)
 - `POST /api/v1/files/{node_id}/{attachment_id}/reindex` re-runs extraction/OCR against the stored attachment and refreshes attachment search metadata
 - `GET /api/v1/files/{node_id}/{attachment_id}` downloads attachment content (namespace-scoped auth enforced)

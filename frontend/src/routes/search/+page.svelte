@@ -22,7 +22,8 @@
 
 	let query = '';
 	let searchType: SearchType = 'fulltext';
-	let kindFilter: string = 'all';
+	let selectedKinds: Set<string> = new Set();
+	let showKindDropdown = false;
 	let tagFilter: string = '';
 	let sortBy: SortOption = 'relevance';
 	let results: SearchResultDto[] = [];
@@ -84,6 +85,12 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
+		// Close dropdown on Escape
+		if (event.key === 'Escape' && showKindDropdown) {
+			showKindDropdown = false;
+			return;
+		}
+
 		if (sortedResults.length === 0) return;
 
 		if (event.key === 'ArrowDown') {
@@ -97,6 +104,15 @@
 		} else if (event.key === 'Enter' && selectedIndex >= 0) {
 			event.preventDefault();
 			navigateToResult(sortedResults[selectedIndex]);
+		}
+	}
+
+	function handleClickOutside(event: MouseEvent) {
+		if (showKindDropdown) {
+			const target = event.target as HTMLElement;
+			if (!target.closest('[data-kind-dropdown]')) {
+				showKindDropdown = false;
+			}
 		}
 	}
 
@@ -136,17 +152,35 @@
 	}
 
 	function parseKindsFilter(): string[] {
-		return kindFilter === 'all' ? [] : [kindFilter];
+		return selectedKinds.size === 0 ? [] : [...selectedKinds];
 	}
+
+	function toggleKind(kind: string) {
+		const newSet = new Set(selectedKinds);
+		if (newSet.has(kind)) {
+			newSet.delete(kind);
+		} else {
+			newSet.add(kind);
+		}
+		selectedKinds = newSet;
+		void doSearch();
+	}
+
+	function clearKindFilter() {
+		selectedKinds = new Set();
+		void doSearch();
+	}
+
+	$: kindFilterLabel = selectedKinds.size === 0
+		? 'All kinds'
+		: selectedKinds.size === 1
+			? kindLabel([...selectedKinds][0])
+			: `${selectedKinds.size} kinds`;
 
 	function applySavedSearch(search: SavedSearch) {
 		query = search.query;
 		searchType = search.search_type === 'hybrid' ? 'hybrid' : 'fulltext';
-		if (search.kinds.length === 1) {
-			kindFilter = search.kinds[0];
-		} else {
-			kindFilter = 'all';
-		}
+		selectedKinds = new Set(search.kinds);
 		selectedSavedSearchId = search.id;
 		savedSearchName = search.name;
 	}
@@ -249,8 +283,9 @@
 			} else {
 				raw = await searchFts(q, 50);
 			}
-			if (kindFilter !== 'all') {
-				raw = raw.filter((r) => r.node.kind === kindFilter);
+			// Filter by selected kinds if any are selected
+			if (selectedKinds.size > 0) {
+				raw = raw.filter((r) => selectedKinds.has(r.node.kind));
 			}
 			results = raw;
 			// Auto-select first result for keyboard nav
@@ -275,7 +310,7 @@
 	});
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
+<svelte:window on:keydown={handleKeydown} on:click={handleClickOutside} />
 
 <div class="grid gap-6 lg:grid-cols-12">
 	<section class="space-y-6 lg:col-span-8">
@@ -332,16 +367,62 @@
 					</button>
 				</div>
 
-				<select
-					class="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-white"
-					bind:value={kindFilter}
-					on:change={() => void doSearch()}
-					aria-label="Filter by kind"
-				>
-					{#each kindOptions as opt (opt.value)}
-						<option value={opt.value}>{opt.label}</option>
-					{/each}
-				</select>
+				<div class="relative" data-kind-dropdown>
+					<div class="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800 pr-1">
+						<button
+							class="flex items-center gap-1.5 px-2 py-1 text-xs text-white hover:bg-slate-700"
+							on:click={() => {
+								showKindDropdown = !showKindDropdown;
+							}}
+							aria-label="Filter by kind"
+							aria-expanded={showKindDropdown}
+						>
+							<span>{kindFilterLabel}</span>
+							<svg class="h-3 w-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+							</svg>
+						</button>
+						{#if selectedKinds.size > 0}
+							<button
+								class="rounded-full bg-slate-600 px-1 text-[9px] text-slate-200 hover:bg-slate-500"
+								on:click={clearKindFilter}
+								aria-label="Clear kind filter"
+							>
+								&times;
+							</button>
+						{/if}
+					</div>
+					{#if showKindDropdown}
+						<div
+							class="absolute left-0 top-full z-20 mt-1 max-h-64 w-48 overflow-y-auto rounded-lg border border-slate-700 bg-slate-800 p-2 shadow-xl"
+							role="listbox"
+						>
+							{#each ALL_NODE_KINDS as kind}
+								<label
+									class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-slate-300 hover:bg-slate-700"
+								>
+									<input
+										type="checkbox"
+										class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-700 text-sky-500 focus:ring-sky-500 focus:ring-offset-0"
+										checked={selectedKinds.has(kind)}
+										on:change={() => toggleKind(kind)}
+									/>
+									<span class={`rounded-full px-1.5 py-0.5 text-[9px] ${kindBadgeClass(kind)}`}>
+										{kindLabel(kind)}
+									</span>
+								</label>
+							{/each}
+							<div class="mt-2 border-t border-slate-700 pt-2">
+								<button
+									class="w-full rounded-lg px-2 py-1 text-[10px] text-slate-400 hover:bg-slate-700 hover:text-white"
+									on:click={() => { showKindDropdown = false; }}
+								>
+									Done
+								</button>
+							</div>
+						</div>
+					{/if}
+				</div>
 
 				<select
 					class="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-white"

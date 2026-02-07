@@ -14,15 +14,20 @@
 	};
 
 	const shortcutGroups: ShortcutGroup[] = [
-		{
-			name: 'Navigation',
-			shortcuts: [
-				{ keys: ['Cmd', 'K'], description: 'Open command palette' },
-				{ keys: ['Cmd', '/'], description: 'Quick search' },
-				{ keys: ['Cmd', 'Shift', 'N'], description: 'Quick capture' },
-				{ keys: ['Esc'], description: 'Close modal / Cancel' }
-			]
-		},
+			{
+				name: 'Navigation',
+				shortcuts: [
+					{ keys: ['Cmd', 'K'], description: 'Open command palette' },
+					{ keys: ['Cmd', '/'], description: 'Quick search' },
+					{ keys: ['Cmd', 'Shift', 'N'], description: 'Quick capture task (global in desktop app)' },
+					{ keys: ['Cmd', 'Shift', 'M'], description: 'Quick capture note (global in desktop app)' },
+					{ keys: ['Cmd', 'Shift', 'L'], description: 'Quick capture link (global in desktop app)' },
+					{ keys: ['Cmd', 'Shift', 'V'], description: 'Quick capture voice (global in desktop app)' },
+					{ keys: ['Cmd', 'Shift', 'I'], description: 'Quick capture task to Inbox (global in desktop app)' },
+					{ keys: ['Cmd', 'Shift', 'D'], description: 'Quick capture note to Daily Note (global in desktop app)' },
+					{ keys: ['Esc'], description: 'Close modal / Cancel' }
+				]
+			},
 		{
 			name: 'Undo / Redo',
 			shortcuts: [
@@ -34,9 +39,13 @@
 		{
 			name: 'Tasks',
 			shortcuts: [
-				{ keys: ['N'], description: 'New task (on tasks page)' },
-				{ keys: ['Enter'], description: 'Open selected task' },
-				{ keys: ['Cmd', 'Enter'], description: 'Save task' }
+				{ keys: ['J'], description: 'Select next task' },
+				{ keys: ['K'], description: 'Select previous task' },
+				{ keys: ['N'], description: 'New task' },
+				{ keys: ['Enter'], description: 'Edit selected task' },
+				{ keys: ['D'], description: 'Mark task done/reopen' },
+				{ keys: ['X'], description: 'Toggle task selection' },
+				{ keys: ['Cmd', 'Enter'], description: 'Save task form' }
 			]
 		},
 		{
@@ -124,10 +133,16 @@
 			aria-label="Keyboard shortcuts"
 			transition:scale={{ duration: 120, start: 0.97 }}
 		>
-			<div class="sticky top-0 flex items-center justify-between border-b border-slate-800 bg-slate-900/95 px-6 py-4 backdrop-blur-sm">
+			<div
+				class="sticky top-0 flex items-center justify-between border-b border-slate-800 bg-slate-900/95 px-6 py-4 backdrop-blur-sm"
+			>
 				<div>
 					<h2 class="text-lg font-semibold text-white">Keyboard Shortcuts</h2>
-					<p class="text-xs text-slate-500">Press <kbd class="rounded border border-slate-700 bg-slate-800 px-1 py-0.5 text-[10px]">?</kbd> anytime to see this</p>
+					<p class="text-xs text-slate-500">
+						Press <kbd class="rounded border border-slate-700 bg-slate-800 px-1 py-0.5 text-[10px]"
+							>?</kbd
+						> anytime to see this
+					</p>
 				</div>
 				<button
 					class="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white"
@@ -135,7 +150,12 @@
 					aria-label="Close"
 				>
 					<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M6 18L18 6M6 6l12 12"
+						/>
 					</svg>
 				</button>
 			</div>
@@ -148,14 +168,18 @@
 						</h3>
 						<div class="space-y-2">
 							{#each group.shortcuts as shortcut}
-								<div class="flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-800/30 px-3 py-2">
+								<div
+									class="flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-800/30 px-3 py-2"
+								>
 									<span class="text-xs text-slate-300">{shortcut.description}</span>
 									<div class="flex items-center gap-1">
 										{#each shortcut.keys as key, i}
 											{#if i > 0}
 												<span class="text-[10px] text-slate-600">+</span>
 											{/if}
-											<kbd class="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+											<kbd
+												class="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400"
+											>
 												{key}
 											</kbd>
 										{/each}

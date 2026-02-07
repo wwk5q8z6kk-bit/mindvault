@@ -2,55 +2,45 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import RichNoteEditor from '$lib/components/RichNoteEditor.svelte';
+	import AttachmentsPanel from '$lib/components/AttachmentsPanel.svelte';
 	import { recentItems } from '$lib/stores/recent';
 	import BacklinksPanel from '$lib/components/BacklinksPanel.svelte';
 	import SuggestedConnections from '$lib/components/SuggestedConnections.svelte';
 	import TemplatePicker from '$lib/components/TemplatePicker.svelte';
 	import { applyTemplate } from '$lib/api/templates';
 	import type { KnowledgeNode } from '$lib/api/types';
-	import {
-		badgeClass,
-		buildAttachmentEmbedMarkdown,
-		classifyAttachment,
-		extractionBadge,
-		filterAttachmentChunks,
-		formatExtractionStatus
-	} from '$lib/utils/attachments';
+	import { buildAttachmentEmbedMarkdown } from '$lib/utils/attachments';
 	import { createNote, listNotes, updateNote, deleteNote } from '$lib/api/notes';
+	import { listNodes } from '$lib/api/nodes';
+	import { kindLabel, kindBadgeClass } from '$lib/utils/kind-helpers';
+	import type { NodeKind } from '$lib/api/types';
 	import { assistAutoTag, assistTransform } from '$lib/api/assist';
 	import { createTaskOptimistic } from '$lib/stores/tasks';
 	import { buildTaskPayloadsFromActionItems, parseActionItems } from '$lib/tasks/action-items';
-	import {
-		attachmentDownloadUrl,
-		attachmentInlineUrl,
-		deleteNodeAttachment,
-		formatFileSize,
-		getAttachmentChunks,
-		listNodeAttachments,
-		uploadNodeAttachment,
-		type AttachmentChunkListResponse,
-		type NodeAttachment
-	} from '$lib/api/files';
+	import type { NodeAttachment } from '$lib/api/files';
 	import type { Note } from '$lib/api/notes';
+
+	// Extended Note with kind for filtering
+	interface NoteWithKind extends Note {
+		kind: NodeKind;
+	}
 	import { pushToast } from '$lib/stores/toast';
 	import VersionHistory from '$lib/components/VersionHistory.svelte';
 
-	let notes: Note[] = [];
-	let selectedNote: Note | null = null;
+	let notes: NoteWithKind[] = [];
+	let selectedNote: NoteWithKind | null = null;
 	let title = '';
 	let markdown = '';
 	let loading = false;
 	let saving = false;
 	let showVersionHistory = false;
-	let attachments: NodeAttachment[] = [];
-	let attachmentsLoading = false;
-	let attachmentUploadPending = false;
-	let attachmentUploadProgress = 0;
-	let attachmentFileInput: HTMLInputElement | null = null;
-	let attachmentMarker: string | null = null;
 	let searchQuery = '';
 	let tagFilter = '';
+	let kindFilter: NodeKind | 'all' = 'all';
 	let autoTagging = false;
+
+	// Note-like kinds that should appear in the notes view
+	const NOTE_LIKE_KINDS: NodeKind[] = ['fact', 'decision', 'procedure', 'observation', 'preference', 'concept'];
 	let extractingActionItems = false;
 	let suggestedTags: string[] = [];
 
@@ -60,34 +50,81 @@
 	let bulkTagInput = '';
 	let bulkProcessing = false;
 
+	// Keyboard navigation state
+	let focusedIndex = 0;
+	let listContainer: HTMLDivElement | null = null;
+
 	$: selectedCount = selectedNoteIds.size;
 	$: allDisplayedSelected = displayedNotes.length > 0 && displayedNotes.every((n) => selectedNoteIds.has(n.id));
 
-	const ATTACHMENT_CHUNK_PAGE_SIZE = 6;
-	const ATTACHMENT_CHUNK_MAX_PAGES = 12;
-
-	type AttachmentChunkState = {
-		open: boolean;
-		loading: boolean;
-		error?: string;
-		data?: AttachmentChunkListResponse;
-		page: number;
-		query: string;
-	};
-
-	let attachmentChunkState: Record<string, AttachmentChunkState> = {};
-
 	$: allTags = [...new Set(notes.flatMap((n) => n.tags ?? []))].sort();
 	$: displayedNotes = notes.filter((n) => {
+		// Kind filter
+		if (kindFilter !== 'all' && n.kind !== kindFilter) return false;
+		// Search filter
 		if (searchQuery.trim()) {
 			const q = searchQuery.toLowerCase();
 			const matchTitle = (n.title ?? '').toLowerCase().includes(q);
 			const matchContent = (n.markdown ?? '').toLowerCase().includes(q);
 			if (!matchTitle && !matchContent) return false;
 		}
+		// Tag filter
 		if (tagFilter && !(n.tags ?? []).includes(tagFilter)) return false;
 		return true;
 	});
+	// Get unique kinds from loaded notes for the filter dropdown
+	$: availableKinds = [...new Set(notes.map((n) => n.kind))].sort();
+
+	// Reset focused index when displayed notes change
+	$: if (displayedNotes.length > 0 && focusedIndex >= displayedNotes.length) {
+		focusedIndex = Math.max(0, displayedNotes.length - 1);
+	}
+
+	function handleKeydown(event: KeyboardEvent) {
+		// Skip if user is typing in an input
+		const target = event.target as HTMLElement;
+		if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+			return;
+		}
+
+		if (displayedNotes.length === 0) return;
+
+		switch (event.key) {
+			case 'j':
+				event.preventDefault();
+				focusedIndex = Math.min(focusedIndex + 1, displayedNotes.length - 1);
+				scrollToFocused();
+				break;
+			case 'k':
+				event.preventDefault();
+				focusedIndex = Math.max(focusedIndex - 1, 0);
+				scrollToFocused();
+				break;
+			case 'Enter':
+				event.preventDefault();
+				if (displayedNotes[focusedIndex]) {
+					selectNote(displayedNotes[focusedIndex]);
+				}
+				break;
+			case 'x':
+				event.preventDefault();
+				if (displayedNotes[focusedIndex]) {
+					toggleNoteSelection(displayedNotes[focusedIndex].id);
+					if (!bulkMode) {
+						bulkMode = true;
+					}
+				}
+				break;
+		}
+	}
+
+	function scrollToFocused() {
+		if (!listContainer) return;
+		const items = listContainer.querySelectorAll('[data-note-item]');
+		if (items[focusedIndex]) {
+			items[focusedIndex].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+		}
+	}
 
 	$: noteIdFromUrl = $page.url.searchParams.get('note');
 	$: if (noteIdFromUrl && noteIdFromUrl !== selectedNote?.id) {
@@ -96,16 +133,6 @@
 			selectNote(target);
 		}
 	}
-	$: if (selectedNote?.id && selectedNote.id !== attachmentMarker) {
-		attachmentMarker = selectedNote.id;
-		void refreshAttachments(selectedNote.id);
-	}
-	$: if (!selectedNote) {
-		attachmentMarker = null;
-		attachments = [];
-		attachmentChunkState = {};
-	}
-
 	onMount(() => {
 		void loadNotes();
 	});
@@ -113,7 +140,36 @@
 	async function loadNotes() {
 		loading = true;
 		try {
-			notes = await listNotes(100);
+			// Load notes from all note-like kinds
+			const allNotes: NoteWithKind[] = [];
+			for (const kind of NOTE_LIKE_KINDS) {
+				try {
+					const nodes = await listNodes({ kind, limit: 100 });
+					for (const node of nodes) {
+						// Skip daily notes (tagged with day:)
+						if (node.tags.some((t) => t.startsWith('day:'))) continue;
+						allNotes.push({
+							id: node.id,
+							title: node.title,
+							markdown: node.content ?? '',
+							namespace: node.namespace,
+							tags: node.tags,
+							backlinks: [],
+							pinned: Boolean(node.metadata?.pinned),
+							created_at: node.temporal.created_at,
+							updated_at: node.temporal.updated_at,
+							metadata: node.metadata,
+							kind: node.kind as NodeKind
+						});
+					}
+				} catch {
+					// Some kinds may not have any nodes, continue
+				}
+			}
+			// Sort by updated_at descending
+			allNotes.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+			notes = allNotes;
+
 			const routeNoteId = noteIdFromUrl;
 			if (routeNoteId) {
 				const routeNote = notes.find((item) => item.id === routeNoteId);
@@ -132,7 +188,7 @@
 		}
 	}
 
-	function selectNote(note: Note) {
+	function selectNote(note: NoteWithKind) {
 		selectedNote = note;
 		title = note.title ?? '';
 		markdown = note.markdown ?? '';
@@ -306,121 +362,12 @@
 			.map(([tag]) => tag);
 	})();
 
-	async function refreshAttachments(noteId: string) {
-		attachmentsLoading = true;
-		try {
-			attachments = await listNodeAttachments(noteId);
-		} catch {
-			attachments = [];
-			pushToast('Failed to load attachments', 'warning');
-		} finally {
-			attachmentsLoading = false;
-		}
-	}
-
-	function ensureChunkState(attachmentId: string): AttachmentChunkState {
-		const existing = attachmentChunkState[attachmentId];
-		if (existing) return existing;
-		const next: AttachmentChunkState = {
-			open: false,
-			loading: false,
-			page: 0,
-			query: ''
-		};
-		attachmentChunkState = { ...attachmentChunkState, [attachmentId]: next };
-		return next;
-	}
-
-	function updateChunkState(attachmentId: string, updates: Partial<AttachmentChunkState>) {
-		const current = ensureChunkState(attachmentId);
-		attachmentChunkState = {
-			...attachmentChunkState,
-			[attachmentId]: { ...current, ...updates }
-		};
-	}
-
-	async function loadAttachmentChunks(attachmentId: string, page = 0) {
+	function handleAttachmentEmbed(payload: { attachment: NodeAttachment; inlineUrl: string }) {
 		if (!selectedNote) return;
-		updateChunkState(attachmentId, { loading: true, error: undefined, page });
-		try {
-			const offset = page * ATTACHMENT_CHUNK_PAGE_SIZE;
-			const data = await getAttachmentChunks(selectedNote.id, attachmentId, {
-				limit: ATTACHMENT_CHUNK_PAGE_SIZE,
-				offset
-			});
-			updateChunkState(attachmentId, { loading: false, data });
-		} catch (err) {
-			console.error('Failed to load attachment chunks', err);
-			updateChunkState(attachmentId, {
-				loading: false,
-				error: 'Unable to load attachment text.'
-			});
-		}
-	}
-
-	async function toggleAttachmentChunks(attachmentId: string) {
-		const current = ensureChunkState(attachmentId);
-		if (current.open) {
-			updateChunkState(attachmentId, { open: false });
-			return;
-		}
-		updateChunkState(attachmentId, { open: true });
-		if (!current.data) {
-			await loadAttachmentChunks(attachmentId, current.page);
-		}
-	}
-
-	function insertAttachmentMarkdown(item: NodeAttachment) {
-		if (!selectedNote) return;
-		const inlineUrl = attachmentInlineUrl(selectedNote.id, item.attachment_id);
-		markdown = buildAttachmentEmbedMarkdown(markdown, item, inlineUrl);
+		markdown = buildAttachmentEmbedMarkdown(markdown, payload.attachment, payload.inlineUrl);
 		pushToast('Attachment embedded in note.', 'success');
 	}
 
-	function updateChunkQuery(attachmentId: string, value: string) {
-		updateChunkState(attachmentId, { query: value });
-	}
-
-	function copyChunk(text: string) {
-		if (!navigator.clipboard) return;
-		navigator.clipboard.writeText(text).catch(() => {
-			pushToast('Unable to copy text.', 'warning');
-		});
-	}
-
-	async function handleAttachmentUpload(event: Event) {
-		const input = event.currentTarget as HTMLInputElement;
-		const file = input.files?.[0];
-		if (!file || !selectedNote) return;
-		attachmentUploadPending = true;
-		attachmentUploadProgress = 0;
-		try {
-			await uploadNodeAttachment(selectedNote.id, file, (progress) => {
-				attachmentUploadProgress = progress.percentage;
-			});
-			pushToast('Attachment uploaded', 'success');
-			await refreshAttachments(selectedNote.id);
-		} catch {
-			pushToast('Attachment upload failed', 'danger');
-		} finally {
-			attachmentUploadPending = false;
-			attachmentUploadProgress = 0;
-			if (attachmentFileInput) {
-				attachmentFileInput.value = '';
-			}
-		}
-	}
-
-	async function removeAttachment(attachmentId: string) {
-		if (!selectedNote) return;
-		try {
-			await deleteNodeAttachment(selectedNote.id, attachmentId);
-			pushToast('Attachment removed', 'success');
-			await refreshAttachments(selectedNote.id);
-		} catch {
-			pushToast('Failed to remove attachment', 'danger');
-		}
-	}
 
 	async function togglePin() {
 		if (!selectedNote) return;
@@ -584,7 +531,11 @@
 			}
 			pushToast('Note saved.', 'success');
 			await loadNotes();
-			const refreshed = notes.find((note) => note.id === saved.id) ?? saved;
+			const fallback: NoteWithKind = {
+				...saved,
+				kind: selectedNote?.kind ?? 'fact'
+			};
+			const refreshed = notes.find((note) => note.id === saved.id) ?? fallback;
 			selectNote(refreshed);
 		} catch {
 			pushToast('Unable to save note.', 'danger');
@@ -593,6 +544,8 @@
 		}
 	}
 </script>
+
+<svelte:window on:keydown={handleKeydown} />
 
 <div class="grid gap-6 lg:grid-cols-12">
 	<section class="lg:col-span-4">
@@ -605,6 +558,11 @@
 					{:else}
 						{displayedNotes.length}{displayedNotes.length !== notes.length ? ` / ${notes.length}` : ''} notes
 					{/if}
+				</p>
+				<p class="mt-0.5 text-[10px] text-slate-600">
+					<kbd class="rounded border border-slate-700 bg-slate-800 px-1">j</kbd>/<kbd class="rounded border border-slate-700 bg-slate-800 px-1">k</kbd> navigate,
+					<kbd class="rounded border border-slate-700 bg-slate-800 px-1">Enter</kbd> open,
+					<kbd class="rounded border border-slate-700 bg-slate-800 px-1">x</kbd> select
 				</p>
 			</div>
 			<div class="flex gap-2">
@@ -628,13 +586,23 @@
 			</div>
 		</div>
 
-		<div class="mt-3 flex gap-2">
+		<div class="mt-3 flex flex-wrap gap-2">
 			<input
-				class="flex-1 rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs text-white placeholder-slate-500"
+				class="min-w-0 flex-1 rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs text-white placeholder-slate-500"
 				placeholder="Search notes..."
 				bind:value={searchQuery}
 				aria-label="Search notes"
 			/>
+			<select
+				class="rounded-lg border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs text-white"
+				bind:value={kindFilter}
+				aria-label="Filter by kind"
+			>
+				<option value="all">All kinds</option>
+				{#each availableKinds as kind}
+					<option value={kind}>{kindLabel(kind)}</option>
+				{/each}
+			</select>
 			{#if allTags.length > 0}
 				<select
 					class="rounded-lg border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs text-white"
@@ -705,7 +673,7 @@
 			</div>
 		{/if}
 
-		<div class="mt-3 flex flex-col gap-2">
+		<div class="mt-3 flex flex-col gap-2" bind:this={listContainer}>
 			{#if loading}
 				<div class="rounded-lg border border-slate-800 p-4 text-xs text-slate-400">
 					Loading notes...
@@ -734,9 +702,14 @@
 					No notes match your search.
 				</div>
 			{:else}
-				{#each displayedNotes as note (note.id)}
+				{#each displayedNotes as note, idx (note.id)}
 					<div
+						data-note-item
 						class={`flex items-start gap-2 rounded-lg border px-3 py-2 text-left text-xs transition ${
+							idx === focusedIndex
+								? 'ring-1 ring-sky-400/50'
+								: ''
+						} ${
 							selectedNoteIds.has(note.id)
 								? 'border-sky-500 bg-sky-500/10'
 								: note.id === selectedNote?.id
@@ -756,11 +729,17 @@
 						{/if}
 						<button
 							class="min-w-0 flex-1 text-left"
+							on:mouseenter={() => {
+								focusedIndex = idx;
+							}}
 							on:click={() => bulkMode ? toggleNoteSelection(note.id) : selectNote(note)}
 						>
-							<div class="flex items-center gap-1.5 font-semibold">
+							<div class="flex items-center gap-1.5">
+								<span class={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${kindBadgeClass(note.kind)}`}>
+									{kindLabel(note.kind)}
+								</span>
 								{#if note.pinned}<span class="text-amber-400" title="Pinned">*</span>{/if}
-								{note.title}
+								<span class="font-semibold truncate">{note.title}</span>
 							</div>
 							{#if note.tags && note.tags.length > 0}
 								<div class="mt-1 flex flex-wrap gap-1">
@@ -915,197 +894,14 @@
 				/>
 			</div>
 
-			<div class="mt-4 rounded-2xl border border-slate-900 bg-slate-900/40 p-4">
-				<div class="flex items-center justify-between gap-2">
-					<div>
-						<h3 class="text-sm font-semibold text-white">Attachments</h3>
-						<p class="text-[11px] text-slate-400">Files linked to this note.</p>
-					</div>
-					<label class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800">
-						Upload
-						<input
-							type="file"
-							class="hidden"
-							bind:this={attachmentFileInput}
-							on:change={handleAttachmentUpload}
-						/>
-					</label>
-				</div>
-
-				{#if attachmentUploadPending}
-					<div class="mt-3 rounded border border-slate-800 px-3 py-2 text-xs text-slate-300">
-						Uploading... {attachmentUploadProgress}%
-					</div>
-				{/if}
-
-				<div class="mt-3 space-y-2">
-					{#if attachmentsLoading}
-						<p class="text-xs text-slate-500">Loading attachments...</p>
-					{:else if attachments.length === 0}
-						<p class="text-xs text-slate-500">No attachments yet.</p>
-					{:else}
-						{#each attachments as item (item.attachment_id)}
-						{@const previewUrl = attachmentInlineUrl(selectedNote.id, item.attachment_id)}
-						{@const kind = classifyAttachment(item)}
-						{@const badge = extractionBadge(item.extraction_status)}
-						{@const chunkState = attachmentChunkState[item.attachment_id] ?? { open: false, loading: false, page: 0, query: '' }}
-						{@const maxPage = Math.min(
-							ATTACHMENT_CHUNK_MAX_PAGES - 1,
-							Math.max(0, Math.ceil((chunkState.data?.total_chunks ?? 0) / ATTACHMENT_CHUNK_PAGE_SIZE) - 1)
-						)}
-						<div class="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
-							<div class="flex flex-wrap items-center justify-between gap-2">
-								<div class="min-w-0">
-									<div class="truncate text-xs font-medium text-white">{item.file_name}</div>
-									<div class="mt-1 text-[10px] text-slate-500">
-										{formatFileSize(item.size_bytes)}
-										<span
-											class="ml-1 inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] {badgeClass(badge.tone)}"
-											title={formatExtractionStatus(item.extraction_status, item.extracted_chars)}
-										>
-											{badge.label}
-										</span>
-										{#if item.search_chunk_count}
-											<span class="ml-1 text-[10px] text-slate-400">· {item.search_chunk_count} chunks</span>
-										{/if}
-									</div>
-								</div>
-								<div class="flex items-center gap-2">
-									<button
-										class="rounded-lg border border-slate-700 px-2 py-1 text-[10px] text-slate-200 hover:bg-slate-800"
-										on:click={() => void toggleAttachmentChunks(item.attachment_id)}
-									>
-										{chunkState.open ? 'Hide text' : 'View text'}
-									</button>
-									<button
-										class="rounded-lg border border-slate-700 px-2 py-1 text-[10px] text-slate-200 hover:bg-slate-800"
-										on:click={() => insertAttachmentMarkdown(item)}
-									>
-										Embed
-									</button>
-									<a
-										class="rounded-lg border border-slate-700 px-2 py-1 text-[10px] text-slate-200 hover:bg-slate-800"
-										href={attachmentDownloadUrl(selectedNote.id, item.attachment_id)}
-										target="_blank"
-										rel="noreferrer"
-									>
-										Download
-									</a>
-									<button
-										class="rounded-lg border border-red-500/30 px-2 py-1 text-[10px] text-red-300 hover:bg-red-500/10"
-										on:click={() => void removeAttachment(item.attachment_id)}
-									>
-										Delete
-									</button>
-								</div>
-							</div>
-
-							{#if item.search_preview}
-								<p class="mt-2 text-[11px] text-slate-400">{item.search_preview}</p>
-							{/if}
-
-							<div class="mt-3 space-y-3">
-								{#if kind.isImage}
-									<img
-										class="h-40 w-full rounded-lg border border-slate-800 object-cover"
-										src={previewUrl}
-										alt={item.file_name}
-										loading="lazy"
-									/>
-								{:else if kind.isPdf}
-									<iframe
-										class="h-44 w-full rounded-lg border border-slate-800 bg-slate-950"
-										src={previewUrl}
-										title={`Preview ${item.file_name}`}
-										loading="lazy"
-									></iframe>
-								{:else if kind.isAudio}
-									<audio
-										class="w-full"
-										controls
-										src={previewUrl}
-										aria-label={`Audio preview for ${item.file_name}`}
-									></audio>
-								{:else if kind.isVideo}
-									<video
-										class="h-44 w-full rounded-lg border border-slate-800 bg-black"
-										controls
-										src={previewUrl}
-										aria-label={`Video preview for ${item.file_name}`}
-									>
-										<track kind="captions" />
-									</video>
-								{:else}
-									<div class="rounded-lg border border-dashed border-slate-700 px-3 py-4 text-xs text-slate-500">
-										No preview available.
-									</div>
-								{/if}
-							</div>
-
-							{#if chunkState.open}
-								<div class="mt-3 rounded-lg border border-slate-800 bg-slate-950/70 p-3">
-									<div class="flex flex-wrap items-center justify-between gap-2">
-										<div class="text-[11px] text-slate-400">
-											Indexed text chunks
-											{#if chunkState.data}
-												· {chunkState.data.returned_chunks}/{chunkState.data.total_chunks}
-											{/if}
-										</div>
-										<input
-											class="rounded border border-slate-800 bg-slate-900 px-2 py-1 text-[10px] text-slate-200"
-											placeholder="Search chunks"
-											value={chunkState.query}
-											on:input={(event) => updateChunkQuery(item.attachment_id, (event.target as HTMLInputElement).value)}
-											aria-label="Search attachment chunks"
-										/>
-										<div class="flex items-center gap-2">
-											<button
-												class="rounded border border-slate-700 px-2 py-1 text-[10px] text-slate-200 hover:bg-slate-800"
-												disabled={chunkState.page === 0}
-												on:click={() => loadAttachmentChunks(item.attachment_id, Math.max(0, chunkState.page - 1))}
-											>
-												Prev
-											</button>
-											<button
-												class="rounded border border-slate-700 px-2 py-1 text-[10px] text-slate-200 hover:bg-slate-800"
-												disabled={chunkState.page >= maxPage}
-												on:click={() => loadAttachmentChunks(item.attachment_id, Math.min(maxPage, chunkState.page + 1))}
-											>
-												Next
-											</button>
-										</div>
-									</div>
-
-									{#if chunkState.loading}
-										<p class="mt-2 text-[11px] text-slate-400">Loading chunks…</p>
-									{:else if chunkState.error}
-										<p class="mt-2 text-[11px] text-red-300">{chunkState.error}</p>
-									{:else if (chunkState.data?.chunks ?? []).length === 0}
-										<p class="mt-2 text-[11px] text-slate-400">No extracted text yet.</p>
-									{:else}
-										<div class="mt-2 space-y-2">
-											{#each filterAttachmentChunks(chunkState.data?.chunks ?? [], chunkState.query) as chunk}
-												<div class="rounded border border-slate-800 bg-slate-900/60 p-2">
-													<div class="flex items-center justify-between text-[10px] text-slate-400">
-														<span>Chunk {chunk.index + 1} · {chunk.char_count} chars</span>
-														<button
-															class="text-slate-300 hover:text-white"
-															on:click={() => copyChunk(chunk.text)}
-														>
-															Copy
-														</button>
-													</div>
-													<p class="mt-1 whitespace-pre-line text-[11px] text-slate-200">{chunk.text}</p>
-												</div>
-											{/each}
-										</div>
-									{/if}
-								</div>
-							{/if}
-						</div>
-					{/each}
-					{/if}
-				</div>
+			<div class="mt-4">
+				<AttachmentsPanel
+					nodeId={selectedNote.id}
+					allowEmbed
+					onEmbed={handleAttachmentEmbed}
+					title="Attachments"
+					description="Files linked to this note."
+				/>
 			</div>
 		{/if}
 	</section>
