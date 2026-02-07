@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:www.dsebastien.net)",
+      "WebFetch(domain:affine.pro)",
+      "WebFetch(domain:www.marktechpost.com)",
+      "WebFetch(domain:enterprise-knowledge.com)",
+      "WebFetch(domain:brlikhon.engineer)",
+      "WebFetch(domain:machinelearningmastery.com)",
+      "Bash(npx svelte-check:*)",
+      "Bash(python3:*)",
+      "Bash(ls:*)",
+      "Bash(npx vitest:*)",
+      "Bash(find:*)",
+      "Bash(npm install:*)",
+      "Bash(xxd:*)",
+      "Bash(pnpm add:*)",
+      "Bash(pnpm exec svelte-check:*)",
+      "Bash(pnpm svelte-check:*)",
+      "Bash(pnpm exec vitest:*)",
+      "Bash(grep:*)",
+      "Bash(xargs:*)",
+      "Bash(/tmp/check_exports.sh:*)",
+      "Bash(chmod:*)",
+      "Bash(/tmp/check_exports.sh)",
+      "Bash(wc:*)"
+    ]
+  }
+}

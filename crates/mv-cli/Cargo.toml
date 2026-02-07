@@ -1,0 +1,40 @@
+[package]
+name = "mv-cli"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+local-embeddings = ["mv-engine/local-embeddings", "mv-server/local-embeddings"]
+
+[[bin]]
+name = "mv"
+path = "src/main.rs"
+
+[dependencies]
+mv-core = { workspace = true }
+mv-engine = { workspace = true }
+mv-server = { workspace = true }
+mv-storage = { workspace = true }
+clap = { workspace = true }
+figment = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+rusqlite = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+tar = "0.4"
+flate2 = "1"
+walkdir = "2"
+
+[target.'cfg(unix)'.dependencies]
+termios = "0.3"

@@ -1,0 +1,25 @@
+@import 'tailwindcss';
+@import './lib/styles/tokens.css';
+
+@layer base {
+	:root {
+		color-scheme: light dark;
+	}
+
+	body {
+		background: rgb(var(--mv-bg));
+		color: rgb(var(--mv-text));
+		@apply antialiased;
+		font-family:
+			'Inter',
+			system-ui,
+			-apple-system,
+			BlinkMacSystemFont,
+			'Segoe UI',
+			sans-serif;
+	}
+
+	* {
+		border-color: rgb(var(--mv-border));
+	}
+}

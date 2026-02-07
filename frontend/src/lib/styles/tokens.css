@@ -1,0 +1,48 @@
+@layer base {
+	:root {
+		--mv-bg: 15 23 42;
+		--mv-panel: 17 25 40;
+		--mv-panel-strong: 15 23 42;
+		--mv-text: 226 232 240;
+		--mv-muted: 148 163 184;
+		--mv-border: 30 41 59;
+		--mv-accent: 56 189 248;
+		--mv-accent-strong: 14 116 144;
+		--mv-success: 34 197 94;
+		--mv-warning: 245 158 11;
+		--mv-danger: 239 68 68;
+		--mv-ring: 14 165 233;
+		--mv-radius: 14px;
+	}
+
+	@media (prefers-color-scheme: light) {
+		:root {
+			--mv-bg: 248 250 252;
+			--mv-panel: 255 255 255;
+			--mv-panel-strong: 241 245 249;
+			--mv-text: 15 23 42;
+			--mv-muted: 71 85 105;
+			--mv-border: 226 232 240;
+			--mv-accent: 14 116 144;
+			--mv-accent-strong: 14 116 144;
+		}
+	}
+
+	:root[data-theme='dark'] {
+		--mv-bg: 15 23 42;
+		--mv-panel: 17 25 40;
+		--mv-panel-strong: 15 23 42;
+		--mv-text: 226 232 240;
+		--mv-muted: 148 163 184;
+		--mv-border: 30 41 59;
+	}
+
+	:root[data-theme='light'] {
+		--mv-bg: 248 250 252;
+		--mv-panel: 255 255 255;
+		--mv-panel-strong: 241 245 249;
+		--mv-text: 15 23 42;
+		--mv-muted: 71 85 105;
+		--mv-border: 226 232 240;
+	}
+}

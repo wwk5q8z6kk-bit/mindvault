@@ -1,0 +1,117 @@
+/**
+ * Styles for the Math/LaTeX plugin.
+ * KaTeX styling overrides for dark theme.
+ */
+
+/* Math container styling */
+.mv-math-rendered {
+	user-select: none;
+}
+
+.mv-math-inline {
+	display: inline;
+	vertical-align: baseline;
+}
+
+.mv-math-block {
+	display: block;
+	text-align: center;
+	margin: 1rem 0;
+	padding: 1rem;
+	background: rgba(15, 23, 42, 0.5);
+	border-radius: 8px;
+	border: 1px solid rgb(30, 41, 59);
+	overflow-x: auto;
+}
+
+.mv-math-editable {
+	cursor: pointer;
+	transition: border-color 0.15s, background-color 0.15s;
+}
+
+.mv-math-editable:hover {
+	border-color: rgb(56, 189, 248);
+	background: rgba(56, 189, 248, 0.05);
+}
+
+.mv-math-error {
+	color: #f87171;
+	font-size: 0.875rem;
+	font-style: italic;
+}
+
+/* KaTeX dark theme overrides */
+.mv-editor-content .katex {
+	color: white;
+	font-size: 1.1em;
+}
+
+.mv-editor-content .katex-display {
+	color: white;
+	margin: 0;
+}
+
+.mv-editor-content .katex .mord,
+.mv-editor-content .katex .mop,
+.mv-editor-content .katex .mbin,
+.mv-editor-content .katex .mrel,
+.mv-editor-content .katex .mopen,
+.mv-editor-content .katex .mclose,
+.mv-editor-content .katex .mpunct,
+.mv-editor-content .katex .minner {
+	color: white;
+}
+
+/* Operators and symbols */
+.mv-editor-content .katex .mop {
+	color: rgb(147, 197, 253); /* blue-300 */
+}
+
+/* Fractions */
+.mv-editor-content .katex .mfrac .frac-line {
+	background: currentColor;
+}
+
+/* Square root */
+.mv-editor-content .katex .sqrt > .root {
+	color: rgb(167, 139, 250); /* violet-400 */
+}
+
+/* Delimiters */
+.mv-editor-content .katex .delimsizing,
+.mv-editor-content .katex .delimsizinginner {
+	color: rgb(148, 163, 184); /* slate-400 */
+}
+
+/* Accent */
+.mv-editor-content .katex .accent {
+	color: rgb(253, 186, 116); /* amber-300 */
+}
+
+/* Subscripts and superscripts - slightly smaller */
+.mv-editor-content .katex .msupsub {
+	font-size: 0.7em;
+}
+
+/* Error styling */
+.mv-editor-content .katex-error {
+	color: #f87171;
+	background: rgba(248, 113, 113, 0.1);
+	padding: 0.125rem 0.25rem;
+	border-radius: 2px;
+}
+
+/* Inline math in paragraphs */
+.mv-editor-content p .mv-math-inline {
+	margin: 0 0.125rem;
+}
+
+/* Math source display (for editing) */
+.mv-math-source {
+	font-family: 'SF Mono', 'Fira Code', monospace;
+	font-size: 0.85em;
+	color: rgb(167, 139, 250);
+	background: rgba(167, 139, 250, 0.1);
+	padding: 0.125rem 0.25rem;
+	border-radius: 2px;
+}

@@ -1,0 +1,58 @@
+/**
+ * Styles for the AI Assistance plugin.
+ * Ghost completion styling.
+ */
+
+/* Ghost completion text */
+.mv-ai-ghost {
+	color: rgb(100, 116, 139); /* slate-500 */
+	opacity: 0.7;
+	font-style: italic;
+	pointer-events: none;
+	user-select: none;
+}
+
+/* Subtle animation for ghost text */
+.mv-ai-ghost {
+	animation: ghost-fade-in 0.2s ease-out;
+}
+
+@keyframes ghost-fade-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 0.7;
+	}
+}
+
+/* Loading indicator for completion */
+.mv-ai-loading {
+	display: inline-block;
+	width: 12px;
+	height: 12px;
+	border: 2px solid rgb(51, 65, 85); /* slate-700 */
+	border-top-color: rgb(56, 189, 248); /* sky-400 */
+	border-radius: 50%;
+	animation: spin 0.8s linear infinite;
+	margin-left: 4px;
+	vertical-align: middle;
+}
+
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+/* Transform menu hover state on selection */
+.mv-editor-content::selection {
+	background: rgba(56, 189, 248, 0.3);
+}
+
+/* Hint for Tab to accept */
+.mv-ai-ghost::after {
+	content: ' [Tab]';
+	font-size: 0.75em;
+	opacity: 0.5;
+}

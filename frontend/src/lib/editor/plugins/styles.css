@@ -1,0 +1,199 @@
+/**
+ * Consolidated styles for all editor plugins.
+ * Import this file in the main editor component.
+ */
+
+/* ============================================================================
+   Code Highlight Plugin
+   ============================================================================ */
+
+.mv-code-block {
+	position: relative;
+}
+
+.mv-code-block .mv-code-lang {
+	position: absolute;
+	top: 0.5rem;
+	right: 0.5rem;
+	font-size: 0.65rem;
+	color: rgb(100, 116, 139);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+/* ============================================================================
+   Math Plugin
+   ============================================================================ */
+
+.mv-math-rendered {
+	user-select: none;
+}
+
+.mv-math-inline {
+	display: inline;
+	vertical-align: baseline;
+}
+
+.mv-math-block {
+	display: block;
+	text-align: center;
+	margin: 1rem 0;
+	padding: 1rem;
+	background: rgba(15, 23, 42, 0.5);
+	border-radius: 8px;
+	border: 1px solid rgb(30, 41, 59);
+	overflow-x: auto;
+}
+
+.mv-math-editable {
+	cursor: pointer;
+	transition: border-color 0.15s, background-color 0.15s;
+}
+
+.mv-math-editable:hover {
+	border-color: rgb(56, 189, 248);
+	background: rgba(56, 189, 248, 0.05);
+}
+
+.mv-math-error {
+	color: #f87171;
+	font-size: 0.875rem;
+	font-style: italic;
+}
+
+/* KaTeX dark theme */
+.mv-editor-content .katex {
+	color: white;
+	font-size: 1.1em;
+}
+
+.mv-editor-content .katex-display {
+	color: white;
+	margin: 0;
+}
+
+/* ============================================================================
+   Search & Replace Plugin
+   ============================================================================ */
+
+.mv-search-highlight {
+	background-color: rgba(250, 204, 21, 0.3);
+	border-radius: 2px;
+}
+
+.mv-search-highlight-current {
+	background-color: rgba(250, 204, 21, 0.6);
+	outline: 2px solid rgb(250, 204, 21);
+	outline-offset: -1px;
+}
+
+/* ============================================================================
+   Block DnD Plugin
+   ============================================================================ */
+
+.mv-block-dragging {
+	opacity: 0.5;
+	outline: 2px dashed rgb(56, 189, 248);
+	outline-offset: 2px;
+}
+
+.mv-drop-indicator {
+	position: absolute;
+	left: 0;
+	right: 0;
+	height: 2px;
+	background: rgb(56, 189, 248);
+	pointer-events: none;
+}
+
+/* ============================================================================
+   AI Assist Plugin
+   ============================================================================ */
+
+.mv-ai-ghost {
+	color: rgb(100, 116, 139);
+	opacity: 0.7;
+	font-style: italic;
+	pointer-events: none;
+	user-select: none;
+	animation: ghost-fade-in 0.2s ease-out;
+}
+
+.mv-ai-ghost::after {
+	content: ' [Tab]';
+	font-size: 0.75em;
+	opacity: 0.5;
+}
+
+@keyframes ghost-fade-in {
+	from { opacity: 0; }
+	to { opacity: 0.7; }
+}
+
+/* ============================================================================
+   Wiki Links
+   ============================================================================ */
+
+.mv-wiki-link {
+	color: rgb(56, 189, 248);
+	text-decoration: none;
+	border-bottom: 1px dashed rgba(56, 189, 248, 0.5);
+	cursor: pointer;
+	transition: border-color 0.15s;
+}
+
+.mv-wiki-link:hover {
+	border-bottom-style: solid;
+	border-color: rgb(56, 189, 248);
+}
+
+.mv-wiki-link-missing {
+	color: rgb(248, 113, 113);
+	border-color: rgba(248, 113, 113, 0.5);
+}
+
+/* ============================================================================
+   Task Items
+   ============================================================================ */
+
+.mv-task-item {
+	list-style: none;
+	margin-left: -1.5rem;
+}
+
+.mv-task-item input[type="checkbox"] {
+	margin-right: 0.5rem;
+	accent-color: rgb(56, 189, 248);
+}
+
+/* ============================================================================
+   Remote Cursors (Collab)
+   ============================================================================ */
+
+.mv-remote-cursor {
+	position: absolute;
+	pointer-events: none;
+	z-index: 50;
+}
+
+.mv-remote-cursor-line {
+	width: 2px;
+	height: 1.2em;
+}
+
+.mv-remote-cursor-label {
+	position: absolute;
+	top: -1.25rem;
+	left: 0;
+	white-space: nowrap;
+	padding: 0.125rem 0.25rem;
+	border-radius: 2px;
+	font-size: 0.625rem;
+	color: white;
+}
+
+.mv-remote-selection {
+	position: absolute;
+	pointer-events: none;
+	opacity: 0.3;
+}

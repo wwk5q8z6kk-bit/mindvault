@@ -1,0 +1,16 @@
+[package]
+name = "mv-index"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mv-core = { workspace = true }
+tantivy = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

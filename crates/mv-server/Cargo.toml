@@ -1,0 +1,43 @@
+[package]
+name = "mv-server"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+local-embeddings = ["mv-engine/local-embeddings"]
+
+[dependencies]
+mv-core = { workspace = true }
+mv-engine = { workspace = true }
+axum = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+jsonwebtoken = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+reqwest = { workspace = true, features = ["multipart"] }
+async-stream = "0.3"
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"

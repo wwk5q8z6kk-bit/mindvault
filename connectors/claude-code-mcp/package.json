@@ -1,0 +1,17 @@
+{
+  "name": "@mindvault/claude-code-mcp",
+  "version": "0.1.0",
+  "description": "MindVault MCP server for Claude Code",
+  "type": "module",
+  "main": "index.ts",
+  "bin": {
+    "mindvault-mcp": "./index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  }
+}

@@ -1,0 +1,28 @@
+/target
+**/*.rs.bk
+*.swp
+.DS_Store
+
+# Runtime data
+~/.mindvault/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Node (for connectors)
+node_modules/
+connectors/*/dist/
+connectors/*/*.js
+!connectors/*/*.config.js
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/

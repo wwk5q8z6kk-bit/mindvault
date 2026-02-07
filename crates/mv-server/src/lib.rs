@@ -1,0 +1,437 @@
+pub mod audit;
+pub mod auth;
+pub mod grpc;
+pub mod limits;
+pub mod metrics;
+pub mod openapi;
+pub mod rest;
+pub mod state;
+pub mod validation;
+pub mod websocket;
+
+use std::sync::Arc;
+
+use chrono::{DateTime, Utc};
+use mv_engine::config::EngineConfig;
+use mv_engine::engine::MindVaultEngine;
+use state::AppState;
+
+pub struct ServerConfig {
+    pub bind_host: String,
+    pub rest_port: u16,
+    pub grpc_port: u16,
+    pub socket_path: Option<String>,
+    pub cors_allowed_origins: Vec<String>,
+    pub engine_config: EngineConfig,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            bind_host: "127.0.0.1".into(),
+            rest_port: 9470,
+            grpc_port: 50051,
+            socket_path: Some(shellexpand("~/.mindvault/mindvault.sock")),
+            cors_allowed_origins: Vec::new(),
+            engine_config: EngineConfig::default(),
+        }
+    }
+}
+
+/// Start the MindVault server with all transports.
+pub async fn start_server(
+    config: ServerConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,mv_server=debug,mv_engine=debug".parse().unwrap()),
+        )
+        .init();
+    rest::init_observability();
+
+    tracing::info!("initializing MindVault engine...");
+    let engine = MindVaultEngine::init(config.engine_config).await?;
+    let engine = Arc::new(engine);
+    ensure_today_daily_note_on_startup_best_effort(&engine).await;
+    spawn_daily_note_scheduler(Arc::clone(&engine));
+    let state = Arc::new(AppState::new(engine));
+    spawn_recurrence_and_reminder_scheduler(Arc::clone(&state));
+
+    // REST + WebSocket server
+    let rest_state = Arc::clone(&state);
+    let ws_state = Arc::clone(&state);
+    let bind_host = config.bind_host.clone();
+    let cors_allowed_origins = config.cors_allowed_origins.clone();
+    let rest_port = config.rest_port;
+    let rest_handle = tokio::spawn(async move {
+        let app = rest::create_router_with_cors(rest_state, &cors_allowed_origins)
+            .merge(websocket::ws_router(ws_state));
+        tracing::info!("REST API listening on {bind_host}:{rest_port}");
+        let listener = tokio::net::TcpListener::bind(format!("{bind_host}:{rest_port}"))
+            .await
+            .expect("failed to bind REST port");
+        axum::serve(listener, app).await.ok();
+    });
+
+    // gRPC server
+    let grpc_state = Arc::clone(&state);
+    let grpc_bind_host = config.bind_host.clone();
+    let grpc_port = config.grpc_port;
+    let grpc_handle = tokio::spawn(async move {
+        tracing::info!("gRPC API listening on {grpc_bind_host}:{grpc_port}");
+        let addr = format!("{grpc_bind_host}:{grpc_port}").parse().unwrap();
+        let service = grpc::MindVaultGrpc::new(grpc_state);
+        tonic::transport::Server::builder()
+            .add_service(
+                grpc::proto::mind_vault_service_server::MindVaultServiceServer::with_interceptor(
+                    service,
+                    grpc::auth_interceptor,
+                ),
+            )
+            .serve(addr)
+            .await
+            .ok();
+    });
+
+    // Unix Domain Socket (REST API over UDS)
+    if let Some(ref sock_path) = config.socket_path {
+        let uds_state = Arc::clone(&state);
+        let sock = sock_path.clone();
+        tokio::spawn(async move {
+            let _ = std::fs::remove_file(&sock);
+            if let Some(parent) = std::path::Path::new(&sock).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            tracing::info!("UDS listening on {sock}");
+            let uds_listener = match tokio::net::UnixListener::bind(&sock) {
+                Ok(l) => l,
+                Err(e) => {
+                    tracing::error!("failed to bind UDS at {sock}: {e}");
+                    return;
+                }
+            };
+
+            let app = rest::create_router(uds_state);
+            loop {
+                match uds_listener.accept().await {
+                    Ok((stream, _addr)) => {
+                        let app = app.clone();
+                        tokio::spawn(async move {
+                            let io = hyper_util::rt::TokioIo::new(stream);
+                            let service = hyper::service::service_fn(move |req| {
+                                let app = app.clone();
+                                async move {
+                                    let resp = tower::ServiceExt::oneshot(app, req).await;
+                                    resp
+                                }
+                            });
+                            if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                                hyper_util::rt::TokioExecutor::new(),
+                            )
+                            .serve_connection(io, service)
+                            .await
+                            {
+                                tracing::error!("UDS connection error: {e}");
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!("UDS accept error: {e}");
+                    }
+                }
+            }
+        });
+    }
+
+    tracing::info!("MindVault server started");
+
+    tokio::select! {
+        _ = rest_handle => {},
+        _ = grpc_handle => {},
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("shutting down...");
+        }
+    }
+
+    Ok(())
+}
+
+async fn ensure_today_daily_note_on_startup_best_effort(engine: &Arc<MindVaultEngine>) {
+    if !engine.config.daily_notes.enabled {
+        return;
+    }
+
+    let today = Utc::now().date_naive();
+    match engine.ensure_daily_note(today, None).await {
+        Ok((_node, created)) => {
+            tracing::info!(
+                date = %today,
+                created,
+                namespace = %engine.config.daily_notes.namespace,
+                "mindvault_daily_note_startup_ensure_complete"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                date = %today,
+                namespace = %engine.config.daily_notes.namespace,
+                error = %err,
+                "mindvault_daily_note_startup_ensure_failed"
+            );
+        }
+    }
+}
+
+fn spawn_daily_note_scheduler(engine: Arc<MindVaultEngine>) {
+    if !daily_note_scheduler_enabled(&engine.config) {
+        if engine.config.daily_notes.enabled
+            && !engine.config.daily_notes.midnight_scheduler_enabled
+        {
+            tracing::info!(
+                namespace = %engine.config.daily_notes.namespace,
+                "mindvault_daily_note_scheduler_disabled_by_config"
+            );
+        }
+        return;
+    }
+
+    tokio::spawn(async move {
+        loop {
+            let sleep_duration = duration_until_next_utc_midnight(Utc::now());
+            tracing::info!(
+                sleep_seconds = sleep_duration.as_secs(),
+                namespace = %engine.config.daily_notes.namespace,
+                "mindvault_daily_note_scheduler_sleep_until_next_utc_midnight"
+            );
+            tokio::time::sleep(sleep_duration).await;
+
+            let today = Utc::now().date_naive();
+            match engine.ensure_daily_note(today, None).await {
+                Ok((_node, created)) => {
+                    tracing::info!(
+                        date = %today,
+                        created,
+                        namespace = %engine.config.daily_notes.namespace,
+                        "mindvault_daily_note_scheduler_ensure_complete"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        date = %today,
+                        namespace = %engine.config.daily_notes.namespace,
+                        error = %err,
+                        "mindvault_daily_note_scheduler_ensure_failed"
+                    );
+                }
+            }
+        }
+    });
+}
+
+fn daily_note_scheduler_enabled(config: &EngineConfig) -> bool {
+    config.daily_notes.enabled && config.daily_notes.midnight_scheduler_enabled
+}
+
+fn spawn_recurrence_and_reminder_scheduler(state: Arc<AppState>) {
+    if !state.engine.config.recurrence.enabled {
+        return;
+    }
+
+    let interval_secs = state
+        .engine
+        .config
+        .recurrence
+        .scheduler_interval_secs
+        .max(30);
+    let max_instances_per_template = state
+        .engine
+        .config
+        .recurrence
+        .max_instances_per_template
+        .max(1);
+    tokio::spawn(async move {
+        loop {
+            let now = Utc::now();
+            match state
+                .engine
+                .rollforward_recurring_tasks(now, max_instances_per_template)
+                .await
+            {
+                Ok(stats) => {
+                    tracing::info!(
+                        scanned_tasks = stats.scanned_tasks,
+                        recurring_templates = stats.recurring_templates,
+                        generated_instances = stats.generated_instances,
+                        updated_templates = stats.updated_templates,
+                        errors = stats.errors,
+                        interval_secs,
+                        "mindvault_recurrence_rollforward_cycle_complete"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        interval_secs,
+                        "mindvault_recurrence_rollforward_cycle_failed"
+                    );
+                }
+            }
+
+            // Dispatch task reminders with WebSocket/webhook notifications
+            dispatch_task_reminders_with_notifications(&state, now, interval_secs).await;
+
+            tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+        }
+    });
+}
+
+async fn dispatch_task_reminders_with_notifications(
+    state: &Arc<AppState>,
+    now: DateTime<Utc>,
+    interval_secs: u64,
+) {
+    use mv_engine::recurrence::{
+        parse_optional_metadata_datetime, TASK_DUE_AT_METADATA_KEY,
+        TASK_REMINDER_SENT_AT_METADATA_KEY,
+    };
+
+    // First, get the list of due tasks before marking them
+    let due_tasks = match state.engine.list_due_tasks(now, None, 500, false).await {
+        Ok(tasks) => tasks,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                interval_secs,
+                "mindvault_task_reminder_list_due_failed"
+            );
+            return;
+        }
+    };
+
+    // Filter to those not yet notified
+    let mut tasks_to_notify = Vec::new();
+    for task in due_tasks {
+        let already_sent =
+            parse_optional_metadata_datetime(&task.metadata, TASK_REMINDER_SENT_AT_METADATA_KEY)
+                .map(|v| v.is_some())
+                .unwrap_or(false);
+
+        if !already_sent {
+            tasks_to_notify.push(task);
+        }
+    }
+
+    // Now dispatch reminders (marks them as sent)
+    match state.engine.dispatch_due_task_reminders(now, 500).await {
+        Ok(stats) => {
+            tracing::info!(
+                scanned_tasks = stats.scanned_tasks,
+                due_tasks = stats.due_tasks,
+                reminders_marked_sent = stats.reminders_marked_sent,
+                errors = stats.errors,
+                interval_secs,
+                "mindvault_task_reminder_dispatch_cycle_complete"
+            );
+
+            // Send WebSocket/webhook notifications for tasks we just marked
+            for task in tasks_to_notify {
+                let due_at =
+                    parse_optional_metadata_datetime(&task.metadata, TASK_DUE_AT_METADATA_KEY)
+                        .ok()
+                        .flatten();
+
+                let content_preview = task.content.chars().take(200).collect::<String>();
+
+                let notification = state::ReminderNotification {
+                    node_id: task.id.to_string(),
+                    title: task.title.clone(),
+                    content_preview,
+                    due_at,
+                    namespace: Some(task.namespace.clone()),
+                    timestamp: now,
+                    notification_type: "task_due".to_string(),
+                };
+
+                state.notify_reminder(notification);
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                interval_secs,
+                "mindvault_task_reminder_dispatch_cycle_failed"
+            );
+        }
+    }
+}
+
+fn duration_until_next_utc_midnight(now: DateTime<Utc>) -> std::time::Duration {
+    let tomorrow = now.date_naive().succ_opt().unwrap_or(now.date_naive());
+    let next_midnight_naive = tomorrow
+        .and_hms_opt(0, 0, 0)
+        .unwrap_or_else(|| now.naive_utc());
+    let next_midnight = DateTime::<Utc>::from_naive_utc_and_offset(next_midnight_naive, Utc);
+    let seconds = (next_midnight - now).num_seconds().max(1) as u64;
+    std::time::Duration::from_secs(seconds)
+}
+
+fn shellexpand(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{home}/{rest}");
+        }
+    }
+    s.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn daily_note_scheduler_respects_enabled_flags() {
+        let mut config = EngineConfig::default();
+        config.daily_notes.enabled = true;
+        config.daily_notes.midnight_scheduler_enabled = true;
+        assert!(daily_note_scheduler_enabled(&config));
+
+        config.daily_notes.midnight_scheduler_enabled = false;
+        assert!(!daily_note_scheduler_enabled(&config));
+
+        config.daily_notes.enabled = false;
+        config.daily_notes.midnight_scheduler_enabled = true;
+        assert!(!daily_note_scheduler_enabled(&config));
+    }
+
+    #[test]
+    fn duration_until_next_midnight_from_midday_is_half_day() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 2, 6, 12, 0, 0)
+            .single()
+            .expect("valid datetime");
+        let duration = duration_until_next_utc_midnight(now);
+        assert_eq!(duration.as_secs(), 12 * 60 * 60);
+    }
+
+    #[test]
+    fn duration_until_next_midnight_from_exact_midnight_is_full_day() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 2, 6, 0, 0, 0)
+            .single()
+            .expect("valid datetime");
+        let duration = duration_until_next_utc_midnight(now);
+        assert_eq!(duration.as_secs(), 24 * 60 * 60);
+    }
+
+    #[test]
+    fn duration_until_next_midnight_never_zero() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 2, 6, 23, 59, 59)
+            .single()
+            .expect("valid datetime");
+        let duration = duration_until_next_utc_midnight(now);
+        assert!(duration.as_secs() >= 1);
+    }
+}

@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MindVault Admin</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://unpkg.com/easymde/dist/easymde.min.css">
+    <script src="https://unpkg.com/easymde/dist/easymde.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>MindVault</h1>
+            <p>Knowledge Memory System</p>
+        </header>
+
+        <nav>
+            <button id="nodes-tab" class="tab active">Nodes</button>
+            <button id="daily-tab" class="tab">Daily Notes</button>
+            <button id="calendar-tab" class="tab">Calendar</button>
+            <button id="templates-tab" class="tab">Templates</button>
+            <button id="access-tab" class="tab">Access</button>
+            <button id="search-tab" class="tab">Search</button>
+            <button id="graph-tab" class="tab">Graph</button>
+            <button id="stats-tab" class="tab">Stats</button>
+        </nav>
+
+        <main>
+            <!-- Nodes Tab -->
+            <div id="nodes-panel" class="panel active">
+                <div class="panel-header">
+                    <h2>Knowledge Nodes</h2>
+                    <button id="add-node-btn" class="btn primary">Add Node</button>
+                </div>
+                <div class="filters">
+                    <select id="node-kind-filter">
+                        <option value="">All Kinds</option>
+                        <option value="fact">Fact</option>
+                        <option value="task">Task</option>
+                        <option value="event">Event</option>
+                        <option value="decision">Decision</option>
+                        <option value="preference">Preference</option>
+                        <option value="entity">Entity</option>
+                        <option value="code_snippet">Code Snippet</option>
+                    </select>
+                    <input type="text" id="node-namespace-filter" placeholder="Namespace">
+                    <button id="apply-filters-btn" class="btn">Apply Filters</button>
+                </div>
+                <div id="nodes-list" class="nodes-list">
+                    <!-- Nodes will be loaded here -->
+                </div>
+                <div class="pagination">
+                    <button id="prev-page-btn" class="btn" disabled>Previous</button>
+                    <span id="page-info">Page 1</span>
+                    <button id="next-page-btn" class="btn">Next</button>
+                </div>
+            </div>
+
+            <!-- Daily Notes Tab -->
+            <div id="daily-panel" class="panel">
+                <div class="panel-header">
+                    <h2>Daily Notes</h2>
+                    <button id="ensure-today-btn" class="btn primary">Ensure Today</button>
+                </div>
+                <div class="daily-controls">
+                    <label for="daily-date">Date</label>
+                    <input type="date" id="daily-date">
+                    <label for="daily-namespace">Namespace</label>
+                    <input type="text" id="daily-namespace" value="journal" maxlength="128">
+                    <button id="ensure-selected-day-btn" class="btn">Ensure Date</button>
+                    <button id="refresh-daily-btn" class="btn">Refresh</button>
+                </div>
+                <div id="daily-notes-list" class="daily-notes-list">
+                    <!-- Daily notes will be loaded here -->
+                </div>
+                <div class="daily-linked-panel">
+                    <h3>Linked Items</h3>
+                    <div id="daily-linked-items" class="daily-linked-items">
+                        <p>Select a daily note card to inspect linked tasks/events.</p>
+                    </div>
+                </div>
+                <div class="daily-tasks-panel">
+                    <div class="daily-tasks-header">
+                        <h3>Due Tasks</h3>
+                        <div class="daily-tasks-controls">
+                            <label for="due-before">Before</label>
+                            <input type="datetime-local" id="due-before">
+                            <label for="due-include-completed">Include Completed</label>
+                            <input type="checkbox" id="due-include-completed">
+                            <button id="refresh-due-tasks-btn" class="btn">Refresh Due Tasks</button>
+                        </div>
+                    </div>
+                    <div id="due-tasks-list" class="due-tasks-list">
+                        <p>Due tasks will appear here.</p>
+                    </div>
+                </div>
+                <div class="daily-focus-panel">
+                    <div class="daily-focus-header">
+                        <div>
+                            <h3>Focus Planner</h3>
+                            <p id="focus-generated-at" class="focus-generated-at">Not generated yet.</p>
+                        </div>
+                        <div class="daily-focus-controls">
+                            <label for="focus-limit">Limit</label>
+                            <input type="number" id="focus-limit" min="1" max="50" value="8">
+                            <label for="focus-include-completed">Include Completed</label>
+                            <input type="checkbox" id="focus-include-completed">
+                            <label for="focus-include-no-due">Include No Due</label>
+                            <input type="checkbox" id="focus-include-no-due" checked>
+                            <button id="refresh-focus-tasks-btn" class="btn">Refresh Focus</button>
+                        </div>
+                    </div>
+                    <div id="focus-tasks-list" class="focus-tasks-list">
+                        <p>Focus tasks will appear here.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Calendar Tab -->
+            <div id="calendar-panel" class="panel">
+                <div class="panel-header">
+                    <h2>Calendar Workspace</h2>
+                    <button id="calendar-new-event-btn" class="btn primary">Add Event</button>
+                </div>
+                <div class="calendar-controls">
+                    <label for="calendar-view">View</label>
+                    <select id="calendar-view">
+                        <option value="day">Day</option>
+                        <option value="week" selected>Week</option>
+                        <option value="month">Month</option>
+                    </select>
+                    <label for="calendar-anchor">Anchor Date</label>
+                    <input type="date" id="calendar-anchor">
+                    <label for="calendar-namespace">Namespace</label>
+                    <input type="text" id="calendar-namespace" value="default" maxlength="128">
+                    <label for="calendar-include-completed">
+                        <input type="checkbox" id="calendar-include-completed">
+                        Include Completed Tasks
+                    </label>
+                    <button id="calendar-prev-btn" class="btn">Previous</button>
+                    <button id="calendar-today-btn" class="btn">Today</button>
+                    <button id="calendar-next-btn" class="btn">Next</button>
+                    <button id="refresh-calendar-btn" class="btn">Refresh</button>
+                    <button id="export-calendar-ical-btn" class="btn">Export iCal</button>
+                    <label class="btn" for="import-calendar-ical-file">Import iCal</label>
+                    <input type="file" id="import-calendar-ical-file" accept=".ics,text/calendar">
+                    <label for="calendar-import-overwrite">
+                        <input type="checkbox" id="calendar-import-overwrite">
+                        Overwrite Existing
+                    </label>
+                </div>
+                <div id="calendar-range-summary" class="calendar-range-summary">
+                    <p>Calendar range will appear here.</p>
+                </div>
+                <div id="calendar-items-list" class="calendar-items-list">
+                    <p>Scheduled tasks and events will appear here.</p>
+                </div>
+            </div>
+
+            <!-- Templates Tab -->
+            <div id="templates-panel" class="panel">
+                <div class="panel-header">
+                    <h2>Templates</h2>
+                    <button id="refresh-templates-btn" class="btn">Refresh Templates</button>
+                </div>
+                <div class="template-layout">
+                    <section class="template-section">
+                        <h3>Template Library</h3>
+                        <div class="template-pack-controls">
+                            <h4>Curated Packs</h4>
+                            <div class="template-pack-options">
+                                <label for="template-pack-namespace">Install Namespace</label>
+                                <input type="text" id="template-pack-namespace" value="default" maxlength="128">
+                                <label for="template-pack-tags">Additional Tags</label>
+                                <input type="text" id="template-pack-tags" placeholder="pack, team-standard">
+                                <label for="template-pack-overwrite">
+                                    <input type="checkbox" id="template-pack-overwrite">
+                                    Overwrite existing template keys
+                                </label>
+                                <button id="refresh-template-packs-btn" class="btn">Refresh Packs</button>
+                            </div>
+                            <div id="template-packs-list" class="template-packs-list">
+                                <p class="template-empty">Loading curated packs...</p>
+                            </div>
+                        </div>
+                        <div class="template-controls">
+                            <label for="template-namespace-filter">Namespace</label>
+                            <input type="text" id="template-namespace-filter" placeholder="All namespaces">
+                            <label for="template-kind-filter">Kind</label>
+                            <select id="template-kind-filter">
+                                <option value="">All Kinds</option>
+                                <option value="fact">Fact</option>
+                                <option value="task">Task</option>
+                                <option value="event">Event</option>
+                                <option value="decision">Decision</option>
+                                <option value="preference">Preference</option>
+                                <option value="entity">Entity</option>
+                                <option value="code_snippet">Code Snippet</option>
+                            </select>
+                            <button id="apply-template-filters-btn" class="btn">Apply</button>
+                        </div>
+                        <div id="templates-list" class="templates-list">
+                            <p>No templates loaded yet.</p>
+                        </div>
+                    </section>
+                    <section class="template-section">
+                        <h3>Create Template</h3>
+                        <form id="template-create-form" class="template-form">
+                            <div class="form-group">
+                                <label for="template-create-kind">Kind:</label>
+                                <select id="template-create-kind" required>
+                                    <option value="fact">Fact</option>
+                                    <option value="task">Task</option>
+                                    <option value="event">Event</option>
+                                    <option value="decision">Decision</option>
+                                    <option value="preference">Preference</option>
+                                    <option value="entity">Entity</option>
+                                    <option value="code_snippet">Code Snippet</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="template-create-title">Title (optional):</label>
+                                <input type="text" id="template-create-title" maxlength="512" placeholder="Sprint Plan {{date}}">
+                            </div>
+                            <div class="form-group">
+                                <label for="template-create-content">Content:</label>
+                                <textarea id="template-create-content" rows="8" maxlength="65536" required placeholder="## Goals&#10;- {{goal_1}}&#10;- {{goal_2}}"></textarea>
+                                <div class="form-help">Use <code>{{variable}}</code> placeholders for runtime substitution.</div>
+                            </div>
+                            <div class="form-group">
+                                <label for="template-create-namespace">Namespace:</label>
+                                <input type="text" id="template-create-namespace" value="default" maxlength="128">
+                            </div>
+                            <div class="form-group">
+                                <label for="template-create-tags">Tags (comma-separated):</label>
+                                <input type="text" id="template-create-tags" placeholder="planning, weekly">
+                            </div>
+                            <div class="form-group">
+                                <label for="template-create-template-key">Template Key (optional):</label>
+                                <input type="text" id="template-create-template-key" maxlength="128" placeholder="planning.weekly">
+                            </div>
+                            <div class="form-group">
+                                <label for="template-create-template-variables">Template Variables (optional, comma-separated):</label>
+                                <input type="text" id="template-create-template-variables" placeholder="goal_1, goal_2, date">
+                            </div>
+                            <div class="form-group">
+                                <label for="template-create-source">Source (optional):</label>
+                                <input type="text" id="template-create-source" maxlength="2048">
+                            </div>
+                            <div class="form-group">
+                                <label for="template-create-importance">Importance (0.0-1.0):</label>
+                                <input type="number" id="template-create-importance" min="0" max="1" step="0.1" value="0.5">
+                            </div>
+                            <div class="form-actions">
+                                <button type="submit" class="btn primary">Create Template</button>
+                            </div>
+                        </form>
+                    </section>
+                    <section class="template-section">
+                        <h3>Instantiate Template</h3>
+                        <div id="template-selection-summary" class="template-selection-summary">
+                            <p>Select a template card to configure instantiation.</p>
+                        </div>
+                        <form id="template-instance-form" class="template-form">
+                            <div class="form-group">
+                                <label for="template-instance-namespace">Target Namespace:</label>
+                                <input type="text" id="template-instance-namespace" value="default" maxlength="128">
+                            </div>
+                            <div class="form-group">
+                                <label for="template-instance-title">Title Override (optional):</label>
+                                <input type="text" id="template-instance-title" maxlength="512" placeholder="Leave empty to use rendered template title">
+                            </div>
+                            <div class="form-group">
+                                <label for="template-instance-tags">Additional Tags (comma-separated):</label>
+                                <input type="text" id="template-instance-tags" placeholder="execution, in-progress">
+                            </div>
+                            <div id="template-values-fields" class="template-values-fields"></div>
+                            <div class="template-history-section">
+                                <h4>Template History</h4>
+                                <div id="template-history-list" class="template-history-list">
+                                    <p class="template-empty">Version history appears when a template is selected.</p>
+                                </div>
+                            </div>
+                            <div class="form-actions">
+                                <button type="submit" id="instantiate-template-btn" class="btn primary" disabled>Instantiate</button>
+                            </div>
+                        </form>
+                    </section>
+                </div>
+            </div>
+
+            <!-- Access Tab -->
+            <div id="access-panel" class="panel">
+                <div class="panel-header">
+                    <h2>Access Templates</h2>
+                    <button id="refresh-permissions-btn" class="btn">Refresh</button>
+                </div>
+                <div class="access-layout">
+                    <section class="access-section">
+                        <h3>Create / Edit Template</h3>
+                        <form id="permission-template-form" class="access-form">
+                            <label for="permission-template-name">Name</label>
+                            <input type="text" id="permission-template-name" required>
+                            <label for="permission-template-description">Description</label>
+                            <input type="text" id="permission-template-description" placeholder="Optional">
+                            <label for="permission-template-tier">Tier</label>
+                            <select id="permission-template-tier">
+                                <option value="view">View</option>
+                                <option value="edit">Edit</option>
+                                <option value="action">Action</option>
+                                <option value="admin">Admin</option>
+                            </select>
+                            <label for="permission-template-namespace">Scope Namespace</label>
+                            <input type="text" id="permission-template-namespace" placeholder="assistant">
+                            <label for="permission-template-tags">Scope Tags (comma separated)</label>
+                            <input type="text" id="permission-template-tags" placeholder="shared, review">
+                            <label for="permission-template-actions">Allowed Actions (comma separated)</label>
+                            <input type="text" id="permission-template-actions" placeholder="transform, summarize">
+                            <div class="access-actions">
+                                <button type="submit" class="btn primary" id="permission-template-submit">Create Template</button>
+                                <button type="button" class="btn is-hidden" id="permission-template-cancel">Cancel Edit</button>
+                            </div>
+                        </form>
+                    </section>
+                    <section class="access-section">
+                        <h3>Templates</h3>
+                        <div id="permission-templates-list" class="access-list">
+                            <p class="template-empty">Loading templates...</p>
+                        </div>
+                    </section>
+                </div>
+                <div class="access-layout">
+                    <section class="access-section">
+                        <h3>Create Access Key</h3>
+                        <form id="access-key-form" class="access-form">
+                            <label for="access-key-template">Template</label>
+                            <select id="access-key-template"></select>
+                            <label for="access-key-name">Name</label>
+                            <input type="text" id="access-key-name" placeholder="Assistant key">
+                            <label for="access-key-expires">Expires At (RFC3339)</label>
+                            <input type="text" id="access-key-expires" placeholder="2026-12-31T23:59:59Z">
+                            <button type="submit" class="btn primary">Create Key</button>
+                        </form>
+                        <div id="access-key-output" class="access-token is-hidden">
+                            <h4>Token (save now — shown once)</h4>
+                            <code id="access-key-token"></code>
+                        </div>
+                    </section>
+                    <section class="access-section">
+                        <h3>Access Keys</h3>
+                        <div id="access-keys-list" class="access-list">
+                            <p class="template-empty">Loading access keys...</p>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- Search Tab -->
+            <div id="search-panel" class="panel">
+                <div class="panel-header">
+                    <h2>Search Knowledge</h2>
+                </div>
+                <div class="search-form">
+                    <input type="text" id="search-query" placeholder="Enter search query..." class="search-input">
+                    <select id="search-strategy">
+                        <option value="hybrid">Hybrid</option>
+                        <option value="vector">Vector</option>
+                        <option value="fulltext">Full Text</option>
+                        <option value="graph">Graph</option>
+                    </select>
+                    <input type="number" id="search-limit" placeholder="Limit" value="10" min="1" max="50">
+                    <button id="search-btn" class="btn primary">Search</button>
+                </div>
+                <div class="saved-search-controls">
+                    <input type="text" id="saved-search-name" placeholder="Name for current search">
+                    <button id="save-search-btn" class="btn">Save Current Search</button>
+                    <button id="update-search-btn" class="btn">Update Active</button>
+                    <button id="refresh-saved-searches-btn" class="btn">Refresh Saved</button>
+                </div>
+                <div class="saved-search-filter-controls">
+                    <input type="text" id="saved-search-description" placeholder="Description (optional)">
+                    <input type="text" id="saved-search-target-namespace" placeholder="Target namespace (optional)">
+                    <input type="text" id="saved-search-kinds" placeholder="Kinds (comma-separated, e.g. task,event)">
+                    <input type="text" id="saved-search-tags" placeholder="Tags (comma-separated)">
+                    <input type="number" id="saved-search-min-score" min="0" max="1" step="0.01" placeholder="Min score 0-1">
+                    <input type="number" id="saved-search-min-importance" min="0" max="1" step="0.01" placeholder="Min importance 0-1">
+                </div>
+                <div id="saved-searches-list" class="saved-searches-list">
+                    <p class="saved-search-empty">No saved searches yet.</p>
+                </div>
+                <div id="search-results" class="search-results">
+                    <!-- Search results will be loaded here -->
+                </div>
+            </div>
+
+            <!-- Graph Tab -->
+            <div id="graph-panel" class="panel">
+                <div class="panel-header">
+                    <h2>Knowledge Graph</h2>
+                </div>
+                <div class="graph-controls">
+                    <input type="text" id="graph-node-id" placeholder="Node ID (UUID)">
+                    <input type="number" id="graph-depth" placeholder="Depth" value="2" min="1" max="5">
+                    <button id="load-graph-btn" class="btn primary">Load Graph</button>
+                </div>
+                <div id="graph-container" class="graph-container">
+                    <!-- Graph visualization will be loaded here -->
+                </div>
+            </div>
+
+            <!-- Stats Tab -->
+            <div id="stats-panel" class="panel">
+                <div class="panel-header">
+                    <h2>System Statistics</h2>
+                </div>
+                <div class="transfer-controls">
+                    <button id="export-data-btn" class="btn">Export JSON</button>
+                    <label class="btn" for="import-data-file">Import JSON</label>
+                    <input type="file" id="import-data-file" accept="application/json">
+                </div>
+                <div id="stats-content" class="stats-content">
+                    <!-- Stats will be loaded here -->
+                </div>
+                <div class="audit-controls">
+                    <input type="number" id="audit-limit" min="1" max="200" value="50" placeholder="Limit">
+                    <input type="text" id="audit-subject" placeholder="Subject (optional)">
+                    <input type="text" id="audit-action" placeholder="Action (optional)">
+                    <input type="datetime-local" id="audit-since" title="Since (optional)">
+                    <button id="refresh-audit-btn" class="btn">Refresh Audit</button>
+                    <button id="clear-audit-filters-btn" class="btn">Clear Filters</button>
+                </div>
+                <div id="audit-content" class="audit-content">
+                    <p class="template-empty">Audit entries appear here for admin-authenticated sessions.</p>
+                </div>
+                <div class="audit-actions">
+                    <button id="load-more-audit-btn" class="btn" type="button" disabled>Load More</button>
+                </div>
+            </div>
+        </main>
+
+        <!-- Add/Edit Node Modal -->
+        <div id="node-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="modal-title">Add Knowledge Node</h3>
+                    <button id="close-modal-btn" class="close-btn">&times;</button>
+                </div>
+                <form id="node-form">
+                    <div class="form-group">
+                        <label for="node-kind">Kind:</label>
+                        <select id="node-kind" required>
+                            <option value="fact">Fact</option>
+                            <option value="task">Task</option>
+                            <option value="event">Event</option>
+                            <option value="decision">Decision</option>
+                            <option value="preference">Preference</option>
+                            <option value="entity">Entity</option>
+                            <option value="code_snippet">Code Snippet</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="node-title">Title:</label>
+                        <input type="text" id="node-title" maxlength="512">
+                    </div>
+                    <div class="form-group">
+                        <label for="rich-editor">Content:</label>
+                        <div class="editor-mode-bar">
+                            <div class="editor-mode-controls">
+                                <button type="button" class="btn editor-mode-btn active" data-editor-mode="wysiwyg">WYSIWYG</button>
+                                <button type="button" class="btn editor-mode-btn" data-editor-mode="markdown">Markdown</button>
+                                <button type="button" class="btn editor-mode-btn" data-editor-mode="split">Split</button>
+                            </div>
+                            <div class="editor-ai-actions">
+                                <button type="button" id="ai-suggest-btn" class="btn primary">AI Suggest Next</button>
+                                <label class="editor-ai-toggle" for="ai-suggest-auto">
+                                    <input type="checkbox" id="ai-suggest-auto" checked>
+                                    Auto Suggest
+                                </label>
+                                <button type="button" id="ai-link-btn" class="btn">AI Suggest Links</button>
+                                <select id="ai-transform-mode" class="editor-transform-select" aria-label="AI Transform Mode">
+                                    <option value="summarize">Summarize</option>
+                                    <option value="action_items">Action Items</option>
+                                    <option value="refine">Refine</option>
+                                </select>
+                                <select id="ai-transform-target" class="editor-transform-select" aria-label="AI Transform Target">
+                                    <option value="append_section">Insert Section</option>
+                                    <option value="replace_selection">Replace Selection</option>
+                                </select>
+                                <button type="button" id="ai-transform-btn" class="btn">AI Transform</button>
+                            </div>
+                        </div>
+                        <div class="editor-toolbar">
+                            <button type="button" class="btn editor-action-btn" data-editor-command="bold"><strong>B</strong></button>
+                            <button type="button" class="btn editor-action-btn" data-editor-command="italic"><em>I</em></button>
+                            <button type="button" class="btn editor-action-btn" data-editor-command="insertUnorderedList">• List</button>
+                            <button type="button" class="btn editor-action-btn" data-editor-command="insertOrderedList">1. List</button>
+                            <button type="button" class="btn editor-action-btn" data-editor-command="formatBlock:h2">H2</button>
+                            <button type="button" class="btn editor-action-btn" data-editor-command="formatBlock:blockquote">Quote</button>
+                            <button type="button" class="btn editor-action-btn" data-editor-command="createLink">Link</button>
+                            <button type="button" class="btn editor-action-btn" data-editor-command="removeFormat">Clear</button>
+                            <button type="button" id="ai-transform-selection-btn" class="btn editor-action-btn ai-transform-selection is-hidden">AI Transform Selection</button>
+                        </div>
+                        <div class="editor-surface mode-wysiwyg" id="editor-surface">
+                            <div id="rich-editor" class="rich-editor"></div>
+                            <textarea id="markdown-editor" class="markdown-editor" maxlength="65536" rows="8"></textarea>
+                        </div>
+                        <div id="ai-suggestions" class="ai-suggestions"></div>
+                        <div id="ai-suggestions-meta" class="ai-suggestions-meta"></div>
+                        <div id="autocomplete-suggestions" class="autocomplete-suggestions"></div>
+                        <div id="link-suggestions" class="link-suggestions"></div>
+                        <div class="form-help">Autocomplete: type in Markdown and press <code>Tab</code> or <code>Enter</code> to accept. Type <code>[[</code> for semantic wiki-link suggestions or <code>@</code>/<code>@"Title"</code> for mention suggestions (Markdown and WYSIWYG), then use <code>Up</code>/<code>Down</code> to pick. AI Transform can append a section or replace selected text (WYSIWYG supported via <code>Cmd/Ctrl+Shift+T</code> or the toolbar button). Auto Suggest uses vault context and displays grounding metadata.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="node-source">Source:</label>
+                        <input type="text" id="node-source" maxlength="2048">
+                    </div>
+                    <div class="form-group">
+                        <label for="node-namespace">Namespace:</label>
+                        <input type="text" id="node-namespace" value="default" maxlength="128">
+                    </div>
+                    <div class="form-group">
+                        <label for="node-tags">Tags (comma-separated):</label>
+                        <input type="text" id="node-tags" placeholder="tag1, tag2, tag3">
+                        <div class="form-help">Tip: tags like <code>task</code>, <code>todo</code>, or <code>event</code> auto-link this node to the matching daily note.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="node-importance">Importance (0.0-1.0):</label>
+                        <input type="number" id="node-importance" min="0" max="1" step="0.1" value="0.5">
+                    </div>
+                    <div class="form-group scheduling-group">
+                        <label for="node-due-at">Due At (optional):</label>
+                        <input type="datetime-local" id="node-due-at">
+                        <div class="scheduling-grid">
+                            <div>
+                                <label for="node-recurrence-frequency">Recurrence:</label>
+                                <select id="node-recurrence-frequency">
+                                    <option value="none">None</option>
+                                    <option value="daily">Daily</option>
+                                    <option value="weekly">Weekly</option>
+                                    <option value="monthly">Monthly</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="node-recurrence-interval">Interval:</label>
+                                <input type="number" id="node-recurrence-interval" min="1" max="365" value="1">
+                            </div>
+                        </div>
+                        <div class="form-help">Recurrence metadata is applied to native <code>task</code> nodes.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="file-attachments">Attachments:</label>
+                        <input type="file" id="file-attachments" multiple accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.txt,.md">
+                        <div id="attachment-preview" class="attachment-preview"></div>
+                    </div>
+                    <div class="form-group">
+                        <label>Node History:</label>
+                        <div id="node-version-history" class="node-version-history">
+                            <p class="template-empty">Version history appears after the first edit save.</p>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Relationship Context:</label>
+                        <div id="node-relationship-overview" class="node-relationship-overview">
+                            <p class="template-empty">Relationship context appears when editing an existing node.</p>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" id="cancel-node-btn" class="btn">Cancel</button>
+                        <button type="submit" class="btn primary">Save Node</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Template Version Diff Modal -->
+        <div id="template-version-modal" class="modal">
+            <div class="modal-content template-version-modal-content">
+                <div class="modal-header">
+                    <h3 id="template-version-modal-title">Template Version Preview</h3>
+                    <button id="close-template-version-modal-btn" class="close-btn">&times;</button>
+                </div>
+                <div class="template-version-modal-body">
+                    <div id="template-version-modal-meta" class="template-version-modal-meta"></div>
+                    <div class="template-version-field-changes-section">
+                        <h4>Field Changes</h4>
+                        <div id="template-version-field-changes" class="template-version-field-changes"></div>
+                    </div>
+                    <div class="template-version-diff-grid">
+                        <section class="template-version-diff-column">
+                            <h4>Removed Lines</h4>
+                            <div id="template-version-removed-lines" class="template-version-diff-lines"></div>
+                        </section>
+                        <section class="template-version-diff-column">
+                            <h4>Added Lines</h4>
+                            <div id="template-version-added-lines" class="template-version-diff-lines"></div>
+                        </section>
+                    </div>
+                </div>
+                <div class="form-actions template-version-modal-actions">
+                    <button type="button" id="template-version-modal-cancel-btn" class="btn">Close</button>
+                    <button type="button" id="template-version-modal-restore-btn" class="btn primary" disabled>Restore This Version</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Notifications -->
+        <div id="notifications" class="notifications">
+            <!-- Notifications will appear here -->
+        </div>
+    </div>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>

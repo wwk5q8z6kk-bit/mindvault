@@ -1,0 +1,185 @@
+/**
+ * Dark theme styles for highlight.js code blocks.
+ * Based on VS Code Dark+ theme.
+ */
+
+/* Base code block styling */
+.mv-editor-content pre {
+	background: rgb(15 23 42);
+	border: 1px solid rgb(30 41 59);
+	border-radius: 8px;
+	padding: 0.75rem 1rem;
+	margin: 0.5rem 0;
+	overflow-x: auto;
+	font-size: 0.8rem;
+}
+
+.mv-editor-content pre code {
+	font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', monospace;
+	font-size: 0.85em;
+	line-height: 1.5;
+	background: transparent;
+	padding: 0;
+	border-radius: 0;
+	color: rgb(212 212 212);
+}
+
+/* Highlight.js theme - VS Code Dark+ inspired */
+.mv-editor-content .hljs {
+	color: #d4d4d4;
+	background: rgb(15 23 42);
+}
+
+/* Comments */
+.mv-editor-content .hljs-comment,
+.mv-editor-content .hljs-quote {
+	color: #6a9955;
+	font-style: italic;
+}
+
+/* Keywords */
+.mv-editor-content .hljs-keyword,
+.mv-editor-content .hljs-selector-tag,
+.mv-editor-content .hljs-built_in,
+.mv-editor-content .hljs-name,
+.mv-editor-content .hljs-tag {
+	color: #569cd6;
+}
+
+/* Literals */
+.mv-editor-content .hljs-string,
+.mv-editor-content .hljs-title,
+.mv-editor-content .hljs-section,
+.mv-editor-content .hljs-attribute,
+.mv-editor-content .hljs-template-string,
+.mv-editor-content .hljs-addition {
+	color: #ce9178;
+}
+
+/* Numbers */
+.mv-editor-content .hljs-number,
+.mv-editor-content .hljs-literal,
+.mv-editor-content .hljs-variable,
+.mv-editor-content .hljs-template-variable,
+.mv-editor-content .hljs-regexp,
+.mv-editor-content .hljs-link {
+	color: #b5cea8;
+}
+
+/* Functions */
+.mv-editor-content .hljs-function,
+.mv-editor-content .hljs-title.function_,
+.mv-editor-content .hljs-title.class_ {
+	color: #dcdcaa;
+}
+
+/* Types */
+.mv-editor-content .hljs-type,
+.mv-editor-content .hljs-class,
+.mv-editor-content .hljs-title.class_inherited__ {
+	color: #4ec9b0;
+}
+
+/* Variables and properties */
+.mv-editor-content .hljs-property {
+	color: #9cdcfe;
+}
+
+/* Symbols */
+.mv-editor-content .hljs-symbol,
+.mv-editor-content .hljs-bullet,
+.mv-editor-content .hljs-subst {
+	color: #d7ba7d;
+}
+
+/* Meta */
+.mv-editor-content .hljs-meta,
+.mv-editor-content .hljs-meta .hljs-keyword,
+.mv-editor-content .hljs-selector-attr,
+.mv-editor-content .hljs-selector-pseudo,
+.mv-editor-content .hljs-selector-id {
+	color: #c586c0;
+}
+
+/* Emphasis */
+.mv-editor-content .hljs-emphasis {
+	font-style: italic;
+}
+
+.mv-editor-content .hljs-strong {
+	font-weight: bold;
+}
+
+/* Deletion */
+.mv-editor-content .hljs-deletion {
+	color: #f44747;
+}
+
+/* Operators and punctuation */
+.mv-editor-content .hljs-operator,
+.mv-editor-content .hljs-punctuation {
+	color: #d4d4d4;
+}
+
+/* Params */
+.mv-editor-content .hljs-params {
+	color: #9cdcfe;
+}
+
+/* Attributes */
+.mv-editor-content .hljs-attr {
+	color: #9cdcfe;
+}
+
+/* HTML/XML specific */
+.mv-editor-content .hljs-tag .hljs-name {
+	color: #569cd6;
+}
+
+.mv-editor-content .hljs-tag .hljs-attr {
+	color: #9cdcfe;
+}
+
+/* CSS specific */
+.mv-editor-content .hljs-selector-class {
+	color: #d7ba7d;
+}
+
+/* JSON specific */
+.mv-editor-content .hljs-punctuation {
+	color: #d4d4d4;
+}
+
+/* Line numbers (optional) */
+.mv-editor-content pre.line-numbers {
+	position: relative;
+	padding-left: 3.5rem;
+}
+
+.mv-editor-content pre.line-numbers .line-number {
+	position: absolute;
+	left: 0;
+	width: 3rem;
+	text-align: right;
+	padding-right: 0.5rem;
+	color: rgb(100 116 139);
+	user-select: none;
+	pointer-events: none;
+}
+
+/* Language label */
+.mv-editor-content pre::before {
+	content: attr(data-language);
+	position: absolute;
+	top: 0.25rem;
+	right: 0.5rem;
+	font-size: 0.65rem;
+	color: rgb(100 116 139);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.mv-editor-content pre[data-language] {
+	position: relative;
+	padding-top: 1.75rem;
+}

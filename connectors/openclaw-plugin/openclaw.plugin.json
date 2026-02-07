@@ -1,0 +1,86 @@
+{
+  "id": "mindvault",
+  "kind": "memory",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "serverUrl": {
+        "type": "string",
+        "description": "MindVault REST API URL"
+      },
+      "socketPath": {
+        "type": "string",
+        "description": "Unix socket path for local MindVault server"
+      },
+      "authToken": {
+        "type": "string",
+        "description": "Bearer auth token"
+      },
+      "autoCapture": {
+        "type": "boolean",
+        "description": "Automatically capture knowledge from conversations"
+      },
+      "autoRecall": {
+        "type": "boolean",
+        "description": "Automatically recall relevant knowledge before agent starts"
+      },
+      "namespace": {
+        "type": "string",
+        "description": "Default namespace for stored knowledge"
+      },
+      "recallLimit": {
+        "type": "number",
+        "description": "Max results for auto-recall"
+      },
+      "recallStrategy": {
+        "type": "string",
+        "description": "Search strategy for auto-recall (hybrid, fulltext, vector)"
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "description": "HTTP request timeout in milliseconds"
+      },
+      "maxRetries": {
+        "type": "number",
+        "description": "Maximum retries for transient API failures"
+      }
+    }
+  },
+  "uiHints": {
+    "serverUrl": {
+      "label": "Server URL",
+      "help": "URL of MindVault REST API (default: http://localhost:9470)",
+      "placeholder": "http://localhost:9470"
+    },
+    "socketPath": {
+      "label": "Socket Path",
+      "help": "Unix socket for local connections (faster than HTTP)",
+      "placeholder": "~/.mindvault/mindvault.sock",
+      "advanced": true
+    },
+    "authToken": {
+      "label": "Auth Token",
+      "help": "Bearer token for authentication",
+      "sensitive": true
+    },
+    "autoCapture": {
+      "label": "Auto-Capture",
+      "help": "Store knowledge from conversations automatically (default: off)"
+    },
+    "autoRecall": {
+      "label": "Auto-Recall",
+      "help": "Inject relevant memories into agent context"
+    },
+    "requestTimeoutMs": {
+      "label": "Request Timeout",
+      "help": "Timeout for MindVault API requests in milliseconds",
+      "advanced": true
+    },
+    "maxRetries": {
+      "label": "Max Retries",
+      "help": "Retry count for transient server/network failures",
+      "advanced": true
+    }
+  }
+}

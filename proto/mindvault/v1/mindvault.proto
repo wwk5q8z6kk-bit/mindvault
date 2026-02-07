@@ -1,0 +1,156 @@
+syntax = "proto3";
+
+package mindvault.v1;
+
+service MindVaultService {
+  rpc StoreNode(StoreNodeRequest) returns (StoreNodeResponse);
+  rpc GetNode(GetNodeRequest) returns (GetNodeResponse);
+  rpc UpdateNode(UpdateNodeRequest) returns (UpdateNodeResponse);
+  rpc DeleteNode(DeleteNodeRequest) returns (DeleteNodeResponse);
+  rpc Recall(RecallRequest) returns (RecallResponse);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  rpc AddRelationship(AddRelationshipRequest) returns (AddRelationshipResponse);
+  rpc GetNeighbors(GetNeighborsRequest) returns (GetNeighborsResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Streaming
+  rpc WatchChanges(WatchChangesRequest) returns (stream ChangeEvent);
+}
+
+// --- Node Messages ---
+
+message KnowledgeNodeProto {
+  string id = 1;
+  string kind = 2;
+  optional string title = 3;
+  string content = 4;
+  optional string source = 5;
+  string namespace = 6;
+  repeated string tags = 7;
+  double importance = 8;
+  string created_at = 9;
+  string updated_at = 10;
+  string last_accessed_at = 11;
+  uint64 access_count = 12;
+  uint32 version = 13;
+  optional string expires_at = 14;
+  string metadata_json = 15;
+}
+
+message StoreNodeRequest {
+  string kind = 1;
+  string content = 2;
+  optional string title = 3;
+  optional string source = 4;
+  string namespace = 5;
+  repeated string tags = 6;
+  optional double importance = 7;
+  optional string metadata_json = 8;
+}
+
+message StoreNodeResponse {
+  KnowledgeNodeProto node = 1;
+}
+
+message GetNodeRequest {
+  string id = 1;
+}
+
+message GetNodeResponse {
+  optional KnowledgeNodeProto node = 1;
+}
+
+message UpdateNodeRequest {
+  KnowledgeNodeProto node = 1;
+}
+
+message UpdateNodeResponse {
+  KnowledgeNodeProto node = 1;
+}
+
+message DeleteNodeRequest {
+  string id = 1;
+}
+
+message DeleteNodeResponse {
+  bool deleted = 1;
+}
+
+// --- Search Messages ---
+
+message RecallRequest {
+  string text = 1;
+  string strategy = 2;
+  uint32 limit = 3;
+  double min_score = 4;
+  optional string namespace = 5;
+  repeated string kinds = 6;
+  repeated string tags = 7;
+}
+
+message SearchResultProto {
+  KnowledgeNodeProto node = 1;
+  double score = 2;
+  string match_source = 3;
+}
+
+message RecallResponse {
+  repeated SearchResultProto results = 1;
+}
+
+message ListNodesRequest {
+  optional string namespace = 1;
+  repeated string kinds = 2;
+  uint32 limit = 3;
+  uint32 offset = 4;
+}
+
+message ListNodesResponse {
+  repeated KnowledgeNodeProto nodes = 1;
+  uint64 total = 2;
+}
+
+// --- Graph Messages ---
+
+message AddRelationshipRequest {
+  string from_node = 1;
+  string to_node = 2;
+  string kind = 3;
+  double weight = 4;
+}
+
+message AddRelationshipResponse {
+  string id = 1;
+}
+
+message GetNeighborsRequest {
+  string node_id = 1;
+  uint32 depth = 2;
+}
+
+message GetNeighborsResponse {
+  repeated string neighbor_ids = 1;
+}
+
+// --- Health ---
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  uint64 node_count = 2;
+  string version = 3;
+}
+
+// --- Streaming ---
+
+message WatchChangesRequest {
+  optional string namespace = 1;
+}
+
+message ChangeEvent {
+  string node_id = 1;
+  string operation = 2;  // "create", "update", "delete"
+  string timestamp = 3;
+  optional KnowledgeNodeProto node = 4;
+}

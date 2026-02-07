@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MindVault Clipper</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #111a33;
+      --border: #23345f;
+      --text: #e9edf8;
+      --muted: #9fb0db;
+      --accent: #2dd4bf;
+      --accent-2: #1d4ed8;
+      --danger: #ef4444;
+    }
+    body {
+      margin: 0;
+      width: 360px;
+      color: var(--text);
+      background: radial-gradient(circle at top, #1b2b58, var(--bg) 55%);
+      font: 13px/1.4 "IBM Plex Sans", "Segoe UI", sans-serif;
+    }
+    main { padding: 12px; }
+    h1 { font-size: 14px; margin: 0 0 10px; letter-spacing: 0.02em; }
+    .row { display: grid; gap: 6px; margin-bottom: 8px; }
+    label { color: var(--muted); font-size: 11px; }
+    input, textarea {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #0e1630;
+      color: var(--text);
+      padding: 8px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    textarea { min-height: 72px; resize: vertical; }
+    .actions { display: flex; gap: 8px; margin-top: 10px; }
+    .toggles {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .toggles label {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+    }
+    .toggles input {
+      width: auto;
+      padding: 0;
+    }
+    button {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #17264c;
+      color: var(--text);
+      padding: 8px 10px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button.primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      border: 0;
+      color: #04131f;
+      flex: 1;
+    }
+    button.link { margin-left: auto; }
+    .status { margin-top: 8px; min-height: 18px; color: var(--muted); font-size: 11px; }
+    .status.error { color: #fecaca; }
+    .status.ok { color: #bbf7d0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Clip to MindVault</h1>
+    <div class="row">
+      <label for="url">URL</label>
+      <input id="url" />
+    </div>
+    <div class="row">
+      <label for="title">Title</label>
+      <input id="title" />
+    </div>
+    <div class="row">
+      <label for="excerpt">Excerpt</label>
+      <textarea id="excerpt" placeholder="Selection or short summary"></textarea>
+    </div>
+    <div class="row">
+      <label for="tags">Tags (space/comma separated)</label>
+      <input id="tags" placeholder="research rust ai" />
+    </div>
+    <div class="toggles">
+      <label>
+        <input id="dedupe" type="checkbox" checked />
+        Dedupe existing clip
+      </label>
+      <label>
+        <input id="createNote" type="checkbox" />
+        Create linked note
+      </label>
+    </div>
+    <div class="actions">
+      <button id="selection">Use selection</button>
+      <button id="save" class="primary">Save clip</button>
+      <button id="options" class="link">Options</button>
+    </div>
+    <div id="status" class="status"></div>
+  </main>
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

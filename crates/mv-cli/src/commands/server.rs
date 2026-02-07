@@ -1,0 +1,168 @@
+use anyhow::Result;
+
+pub async fn start(
+    port: Option<u16>,
+    grpc_port: Option<u16>,
+    foreground: bool,
+    config_path: &str,
+) -> Result<()> {
+    let runtime = super::load_runtime_config(config_path)?;
+
+    let bind_host = runtime.server.bind_host.clone();
+    let rest_port = port.unwrap_or(runtime.server.rest_port);
+    let grpc_port = grpc_port.unwrap_or(runtime.server.grpc_port);
+
+    let server_config = mv_server::ServerConfig {
+        bind_host: bind_host.clone(),
+        rest_port,
+        grpc_port,
+        socket_path: runtime.server.socket_path,
+        cors_allowed_origins: runtime.server.cors_allowed_origins,
+        engine_config: runtime.engine,
+    };
+
+    if foreground {
+        println!("starting MindVault server (foreground)...");
+    } else {
+        println!("starting MindVault server...");
+        println!("note: daemon mode is not implemented; process stays attached");
+    }
+
+    println!("  REST: http://{bind_host}:{rest_port}");
+    println!("  gRPC: {bind_host}:{grpc_port}");
+
+    mv_server::start_server(server_config)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    Ok(())
+}
+
+pub async fn stop(config_path: &str) -> Result<()> {
+    let url = health_url(config_path)?;
+
+    let client = reqwest::Client::new();
+    match client.get(&url).send().await {
+        Ok(_) => {
+            println!("server appears to be running at {url}");
+            println!("stop by terminating the server process");
+            println!("  pkill -f 'mv server start'");
+        }
+        Err(_) => {
+            println!("server is not running ({url})");
+        }
+    }
+    Ok(())
+}
+
+pub async fn status(config_path: &str) -> Result<()> {
+    let url = health_url(config_path)?;
+    let diagnostics_url = embedding_diagnostics_url(config_path)?;
+
+    let client = reqwest::Client::new();
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                let body: serde_json::Value = resp.json().await?;
+                println!("status: running");
+                println!("  endpoint: {url}");
+                if let Some(count) = body.get("node_count") {
+                    println!("  nodes: {count}");
+                }
+                if let Some(version) = body.get("version").and_then(|v| v.as_str()) {
+                    println!("  version: {version}");
+                }
+
+                if let Ok(diag_resp) = client.get(&diagnostics_url).send().await {
+                    if diag_resp.status().is_success() {
+                        let diag: serde_json::Value = diag_resp.json().await?;
+                        print_embedding_diagnostics(&diag);
+                    }
+                }
+            } else {
+                println!("status: error (HTTP {})", resp.status());
+                println!("  endpoint: {url}");
+            }
+        }
+        Err(_) => {
+            println!("status: stopped");
+            println!("  endpoint: {url}");
+        }
+    }
+    Ok(())
+}
+
+fn print_embedding_diagnostics(diagnostics: &serde_json::Value) {
+    let configured_provider = diagnostics
+        .get("configured_provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let configured_model = diagnostics
+        .get("configured_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let configured_dimensions = diagnostics
+        .get("configured_dimensions")
+        .and_then(|v| v.as_u64())
+        .unwrap_or_default();
+    let effective_provider = diagnostics
+        .get("effective_provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let effective_model = diagnostics
+        .get("effective_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let effective_dimensions = diagnostics
+        .get("effective_dimensions")
+        .and_then(|v| v.as_u64())
+        .unwrap_or_default();
+    let fallback_to_noop = diagnostics
+        .get("fallback_to_noop")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let local_embeddings_feature_enabled = diagnostics
+        .get("local_embeddings_feature_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    println!("  embedding:");
+    println!(
+        "    configured: provider={configured_provider}, model={configured_model}, dims={configured_dimensions}"
+    );
+    println!(
+        "    effective: provider={effective_provider}, model={effective_model}, dims={effective_dimensions}"
+    );
+    println!("    fallback_to_noop: {fallback_to_noop}");
+    println!("    local_embeddings_feature_enabled: {local_embeddings_feature_enabled}");
+
+    if let Some(reason) = diagnostics.get("reason").and_then(|v| v.as_str()) {
+        println!("    reason: {reason}");
+    }
+}
+
+fn health_url(config_path: &str) -> Result<String> {
+    let runtime = super::load_runtime_config(config_path)?;
+    let host = local_rest_host(&runtime.server.bind_host);
+    Ok(format!(
+        "http://{host}:{}/api/v1/health",
+        runtime.server.rest_port
+    ))
+}
+
+fn embedding_diagnostics_url(config_path: &str) -> Result<String> {
+    let runtime = super::load_runtime_config(config_path)?;
+    let host = local_rest_host(&runtime.server.bind_host);
+    Ok(format!(
+        "http://{host}:{}/api/v1/diagnostics/embedding",
+        runtime.server.rest_port
+    ))
+}
+
+fn local_rest_host(bind_host: &str) -> &str {
+    if bind_host == "0.0.0.0" {
+        "127.0.0.1"
+    } else {
+        bind_host
+    }
+}

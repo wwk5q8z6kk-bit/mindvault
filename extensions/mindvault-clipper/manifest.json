@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "MindVault Clipper",
+  "description": "Capture web pages and selections directly into MindVault.",
+  "version": "0.1.0",
+  "permissions": ["storage", "activeTab", "scripting", "contextMenus", "tabs"],
+  "host_permissions": [
+    "http://127.0.0.1:9470/*",
+    "http://localhost:9470/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Save to MindVault",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "commands": {
+    "save-selection": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      },
+      "description": "Save page selection to MindVault"
+    }
+  }
+}
