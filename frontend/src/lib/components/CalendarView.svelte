@@ -56,6 +56,10 @@
 		}
 	}
 
+	export async function reload() {
+		await loadItems();
+	}
+
 	function getFormattedTitle(date: Date, v: ViewType): string {
 		if (v === 'day') {
 			return date.toLocaleDateString(undefined, {
