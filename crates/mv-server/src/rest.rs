@@ -109,6 +109,8 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/calendar/ical", get(export_calendar_ical))
         .route("/api/v1/calendar/ical/import", post(import_calendar_ical))
         .route("/api/v1/tasks/due", get(list_due_tasks))
+        .route("/api/v1/briefing", get(daily_briefing))
+        .route("/api/v1/agent/context", get(get_agent_context))
         .route("/api/v1/tasks/prioritize", post(prioritize_tasks))
         .route("/api/v1/tasks/{id}/complete", post(complete_task))
         .route("/api/v1/tasks/{id}/reopen", post(reopen_task))
@@ -178,9 +180,14 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         )
         .route("/api/v1/clips/import", post(import_clip))
         .route("/api/v1/clips/enrich", post(enrich_clip))
+        .route("/api/v1/clips/{id}/note", post(create_clip_note))
         .route("/api/v1/files/upload", post(upload_file))
         .route("/api/v1/voice/upload", post(upload_voice_note))
         .route("/api/v1/files/{node_id}", get(list_node_attachments))
+        .route(
+            "/api/v1/files/{node_id}/reindex-failed",
+            post(reindex_failed_attachments),
+        )
         .route(
             "/api/v1/files/{node_id}/{attachment_id}/chunks",
             get(get_attachment_chunks),
@@ -388,6 +395,16 @@ struct ClipEnrichRequest {
     html: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateClipNoteRequest {
+    title: Option<String>,
+    #[serde(alias = "text", alias = "selection")]
+    excerpt: Option<String>,
+    tags: Option<Vec<String>>,
+    namespace: Option<String>,
+    dedupe: Option<bool>,
+}
+
 #[derive(Deserialize)]
 struct RecallRequest {
     text: String,
@@ -482,6 +499,46 @@ struct DueTasksQuery {
     before: Option<String>,
     limit: Option<usize>,
     include_completed: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct BriefingQuery {
+    namespace: Option<String>,
+}
+
+#[derive(Serialize)]
+struct BriefingTaskDto {
+    id: String,
+    title: String,
+    due_at: Option<String>,
+    priority: i32,
+    status: String,
+}
+
+#[derive(Serialize)]
+struct BriefingHabitDto {
+    id: String,
+    name: String,
+    completed_today: bool,
+    current_streak: i32,
+}
+
+#[derive(Serialize)]
+struct BriefingNoteDto {
+    id: String,
+    title: String,
+    updated_at: String,
+}
+
+#[derive(Serialize)]
+struct BriefingResponse {
+    date: String,
+    due_today: Vec<BriefingTaskDto>,
+    overdue: Vec<BriefingTaskDto>,
+    in_progress: Vec<BriefingTaskDto>,
+    habits_today: Vec<BriefingHabitDto>,
+    recent_notes: Vec<BriefingNoteDto>,
+    summary: String,
 }
 
 #[derive(Deserialize)]
@@ -851,6 +908,12 @@ struct ClipEnrichResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct CreateClipNoteResponse {
+    note: KnowledgeNode,
+    created: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct FileUploadResponse {
     attachment_id: String,
     node_id: String,
@@ -888,6 +951,13 @@ struct AttachmentListItemResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     search_preview: Option<String>,
     download_url: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AttachmentListQuery {
+    q: Option<String>,
+    status: Option<String>,
+    failed_only: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -931,6 +1001,33 @@ struct AttachmentReindexResponse {
     search_chunk_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     search_preview: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AttachmentBatchReindexItemResponse {
+    attachment_id: String,
+    file_name: String,
+    previous_status: Option<String>,
+    extraction_status: Option<String>,
+    extracted_chars: Option<usize>,
+    outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_chunk_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_preview: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AttachmentBatchReindexResponse {
+    node_id: String,
+    total_attachments: usize,
+    attempted_reindex: usize,
+    reindexed: usize,
+    failed: usize,
+    skipped: usize,
+    items: Vec<AttachmentBatchReindexItemResponse>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1575,6 +1672,15 @@ fn clip_note_content(bookmark: &KnowledgeNode, excerpt: Option<&str>) -> String 
     lines.join("\n")
 }
 
+fn clip_linked_bookmark_id_for_node(node: &KnowledgeNode) -> Option<String> {
+    node.metadata
+        .get(CLIP_LINKED_BOOKMARK_ID_METADATA_KEY)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
 async fn find_existing_clip_by_url(
     state: &AppState,
     namespace: &str,
@@ -1612,6 +1718,139 @@ async fn find_existing_clip_by_url(
         offset = offset.saturating_add(CLIP_SCAN_PAGE_SIZE);
     }
     Ok(None)
+}
+
+async fn find_existing_clip_note_by_bookmark_id(
+    state: &AppState,
+    namespace: &str,
+    bookmark_id: uuid::Uuid,
+) -> Result<Option<KnowledgeNode>, (StatusCode, String)> {
+    let bookmark_id_text = bookmark_id.to_string();
+    let mut offset = 0usize;
+    loop {
+        let page = state
+            .engine
+            .list_nodes(
+                &QueryFilters {
+                    namespace: Some(namespace.to_string()),
+                    kinds: Some(vec![NodeKind::Fact]),
+                    ..Default::default()
+                },
+                CLIP_SCAN_PAGE_SIZE,
+                offset,
+            )
+            .await
+            .map_err(map_mv_error)?;
+        if page.is_empty() {
+            break;
+        }
+        let page_len = page.len();
+        if let Some(existing) = page.into_iter().find(|node| {
+            clip_linked_bookmark_id_for_node(node).is_some_and(|value| value == bookmark_id_text)
+        }) {
+            return Ok(Some(existing));
+        }
+        if page_len < CLIP_SCAN_PAGE_SIZE {
+            break;
+        }
+        offset = offset.saturating_add(CLIP_SCAN_PAGE_SIZE);
+    }
+    Ok(None)
+}
+
+async fn create_clip_note_for_bookmark(
+    state: &AppState,
+    bookmark: &KnowledgeNode,
+    namespace: &str,
+    title_override: Option<String>,
+    excerpt_override: Option<String>,
+    tags: &[String],
+    dedupe: bool,
+) -> Result<(KnowledgeNode, bool), (StatusCode, String)> {
+    if dedupe {
+        if let Some(existing) =
+            find_existing_clip_note_by_bookmark_id(state, namespace, bookmark.id).await?
+        {
+            return Ok((existing, false));
+        }
+    }
+
+    enforce_namespace_quota(&state.engine, namespace)
+        .await
+        .map_err(map_namespace_quota_error)?;
+
+    let excerpt = excerpt_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            let fallback = bookmark.content.trim();
+            if fallback.is_empty() {
+                None
+            } else {
+                Some(fallback.to_string())
+            }
+        });
+
+    let note_content = clip_note_content(bookmark, excerpt.as_deref());
+    let note_title = title_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            bookmark
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| format!("Clip Note: {value}"))
+        })
+        .unwrap_or_else(|| "Clip Note".to_string());
+    let note_tags = merge_tags_case_insensitive(tags, &["clip-note".to_string()]);
+
+    let mut note = KnowledgeNode::new(NodeKind::Fact, note_content);
+    note = note
+        .with_namespace(namespace.to_string())
+        .with_title(note_title)
+        .with_source("clip-import")
+        .with_tags(note_tags);
+    note.metadata.insert(
+        CLIP_LINKED_BOOKMARK_ID_METADATA_KEY.to_string(),
+        serde_json::Value::String(bookmark.id.to_string()),
+    );
+
+    validate_node_payload(
+        note.kind,
+        note.title.as_deref(),
+        &note.content,
+        note.source.as_deref(),
+        Some(&note.namespace),
+        &note.tags,
+        Some(note.importance),
+        Some(&note.metadata),
+    )
+    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+
+    let stored_note = state.engine.store_node(note).await.map_err(map_mv_error)?;
+    state.notify_change(
+        &stored_note.id.to_string(),
+        "create",
+        Some(&stored_note.namespace),
+    );
+
+    let relationship = Relationship::new(stored_note.id, bookmark.id, RelationKind::References);
+    if let Err(err) = state.engine.add_relationship(relationship).await {
+        tracing::warn!(
+            error = %err,
+            note_id = %stored_note.id,
+            bookmark_id = %bookmark.id,
+            "mindvault_clip_relationship_create_failed"
+        );
+    }
+
+    Ok((stored_note, true))
 }
 
 fn clip_text_value(raw: &str, max_chars: usize) -> Option<String> {
@@ -3942,6 +4181,40 @@ fn resolve_attachment_search_chunks(node: &KnowledgeNode, attachment_id: &str) -
     attachment_chunks_from_text_index(node, attachment_id)
 }
 
+fn should_batch_reindex_attachment(status: Option<&str>) -> bool {
+    matches!(
+        status.unwrap_or("").trim().to_ascii_lowercase().as_str(),
+        "tool_missing" | "extraction_failed" | "unsupported" | "empty"
+    )
+}
+
+fn normalize_attachment_status(status: Option<&str>) -> String {
+    status.unwrap_or("").trim().to_ascii_lowercase()
+}
+
+fn is_failed_attachment_status(status: &str) -> bool {
+    matches!(
+        status,
+        "tool_missing" | "extraction_failed" | "unsupported" | "empty"
+    )
+}
+
+fn attachment_matches_status_filter(status: &str, status_filter: &str) -> bool {
+    match status_filter {
+        "all" => true,
+        "failed" => is_failed_attachment_status(status),
+        "indexed" => status.starts_with("indexed"),
+        "transcribed" => status == "transcribed",
+        "unsupported" | "tool_missing" | "extraction_failed" | "empty" => status == status_filter,
+        "other" => {
+            !is_failed_attachment_status(status)
+                && !status.starts_with("indexed")
+                && status != "transcribed"
+        }
+        _ => status == status_filter,
+    }
+}
+
 fn attachment_chunk_summary(
     node: &KnowledgeNode,
     attachment_id: &str,
@@ -4757,6 +5030,254 @@ async fn list_due_tasks(
     Ok(Json(tasks))
 }
 
+/// GET /api/v1/briefing - Aggregated daily briefing with tasks, habits, notes, and summary
+async fn daily_briefing(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(mut params): Query<BriefingQuery>,
+) -> Result<Json<BriefingResponse>, (StatusCode, String)> {
+    use chrono::Timelike;
+
+    authorize_read(&auth)?;
+    let namespace = scoped_namespace(&auth, params.namespace.take())?;
+    let now = Utc::now();
+    let today = now.date_naive();
+    let today_start = today.and_hms_opt(0, 0, 0).unwrap();
+    let today_end = today.and_hms_opt(23, 59, 59).unwrap();
+    let today_start_utc = DateTime::<Utc>::from_naive_utc_and_offset(today_start, Utc);
+    let today_end_utc = DateTime::<Utc>::from_naive_utc_and_offset(today_end, Utc);
+
+    // Fetch tasks with due dates
+    let all_due_tasks = state
+        .engine
+        .list_due_tasks(
+            today_end_utc + Duration::days(1),
+            namespace.clone(),
+            100,
+            false,
+        )
+        .await
+        .map_err(map_mv_error)?;
+
+    let mut due_today = Vec::new();
+    let mut overdue = Vec::new();
+    let mut in_progress = Vec::new();
+
+    for task in all_due_tasks {
+        let status = task
+            .metadata
+            .get("task_status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("inbox")
+            .to_string();
+
+        let priority = task
+            .metadata
+            .get("task_priority")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(3) as i32;
+
+        let due_at = parse_optional_metadata_datetime(&task.metadata, TASK_DUE_AT_METADATA_KEY)
+            .ok()
+            .flatten();
+
+        let dto = BriefingTaskDto {
+            id: task.id.to_string(),
+            title: task.title.clone().unwrap_or_else(|| "Untitled".to_string()),
+            due_at: due_at.map(|d| d.to_rfc3339()),
+            priority,
+            status: status.clone(),
+        };
+
+        if status == "in_progress" {
+            in_progress.push(dto);
+        } else if let Some(due) = due_at {
+            if due < today_start_utc {
+                overdue.push(dto);
+            } else if due >= today_start_utc && due <= today_end_utc {
+                due_today.push(dto);
+            }
+        }
+    }
+
+    // Fetch habits (nodes with mv_object_type = "habit")
+    let habit_filters = QueryFilters {
+        namespace: namespace.clone(),
+        kinds: Some(vec![mv_core::NodeKind::Project]),
+        ..Default::default()
+    };
+    let habit_nodes = state
+        .engine
+        .list_nodes(&habit_filters, 100, 0)
+        .await
+        .map_err(map_mv_error)?;
+
+    let today_str = today.format("%Y-%m-%d").to_string();
+    let mut habits_today = Vec::new();
+
+    for node in habit_nodes {
+        let obj_type = node.metadata.get("mv_object_type").and_then(|v| v.as_str());
+
+        if obj_type != Some("habit") {
+            continue;
+        }
+
+        let enabled = node
+            .metadata
+            .get("habit_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        if !enabled {
+            continue;
+        }
+
+        let checkins: Vec<String> = node
+            .metadata
+            .get("habit_checkins")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| item.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let completed_today = checkins.iter().any(|c| c == &today_str);
+
+        // Calculate current streak (simplified)
+        let mut streak = 0i32;
+        let mut check_date = today;
+        loop {
+            let date_str = check_date.format("%Y-%m-%d").to_string();
+            if checkins.contains(&date_str) {
+                streak += 1;
+                check_date = check_date.pred_opt().unwrap_or(check_date);
+            } else {
+                break;
+            }
+        }
+
+        habits_today.push(BriefingHabitDto {
+            id: node.id.to_string(),
+            name: node
+                .title
+                .clone()
+                .unwrap_or_else(|| "Unnamed habit".to_string()),
+            completed_today,
+            current_streak: streak,
+        });
+    }
+
+    // Fetch recent notes
+    let note_filters = QueryFilters {
+        namespace: namespace.clone(),
+        kinds: Some(vec![mv_core::NodeKind::Fact]),
+        ..Default::default()
+    };
+    let note_nodes = state
+        .engine
+        .list_nodes(&note_filters, 5, 0)
+        .await
+        .map_err(map_mv_error)?;
+
+    let recent_notes: Vec<BriefingNoteDto> = note_nodes
+        .into_iter()
+        .map(|node| BriefingNoteDto {
+            id: node.id.to_string(),
+            title: node.title.clone().unwrap_or_else(|| "Untitled".to_string()),
+            updated_at: node.temporal.updated_at.to_rfc3339(),
+        })
+        .collect();
+
+    // Generate summary
+    let due_today_count = due_today.len();
+    let overdue_count = overdue.len();
+    let in_progress_count = in_progress.len();
+    let habits_done = habits_today.iter().filter(|h| h.completed_today).count();
+    let habits_total = habits_today.len();
+
+    let summary = format!(
+        "Good {}! You have {} task{} due today{}, {} in progress. {}/{} habits completed.",
+        if now.hour() < 12 {
+            "morning"
+        } else if now.hour() < 17 {
+            "afternoon"
+        } else {
+            "evening"
+        },
+        due_today_count,
+        if due_today_count == 1 { "" } else { "s" },
+        if overdue_count > 0 {
+            format!(" and {} overdue", overdue_count)
+        } else {
+            String::new()
+        },
+        in_progress_count,
+        habits_done,
+        habits_total
+    );
+
+    Ok(Json(BriefingResponse {
+        date: today.format("%Y-%m-%d").to_string(),
+        recent_notes,
+        summary,
+    }))
+}
+
+#[derive(Deserialize)]
+struct AgentContextQuery {
+    namespace: Option<String>,
+    basis_node_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AgentContextResponse {
+    executive_summary: String,
+    related_nodes: Vec<BriefingNoteDto>,
+}
+
+/// GET /api/v1/agent/context
+async fn get_agent_context(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AgentContextQuery>,
+) -> Result<Json<AgentContextResponse>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let namespace = scoped_namespace(&auth, params.namespace)?;
+
+    let summary = state
+        .proactive
+        .get_executive_summary(namespace.clone())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut related_nodes = Vec::new();
+    if let Some(basis_id_str) = params.basis_node_id {
+        let basis_id = Uuid::parse_str(&basis_id_str)
+            .map_err(|_| (StatusCode::BAD_REQUEST, "invalid basis_node_id".to_string()))?;
+
+        let nodes = state
+            .proactive
+            .find_related_context(basis_id, 5)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        for node in nodes {
+            related_nodes.push(BriefingNoteDto {
+                id: node.id.to_string(),
+                title: node.title.unwrap_or_else(|| "Untitled".to_string()),
+                updated_at: node.temporal.updated_at.to_rfc3339(),
+            });
+        }
+    }
+
+    Ok(Json(AgentContextResponse {
+        executive_summary: summary,
+        related_nodes,
+    }))
+}
+
 async fn prioritize_tasks(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
@@ -5424,6 +5945,7 @@ async fn list_node_attachments(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
     Path(node_id_raw): Path<String>,
+    Query(query): Query<AttachmentListQuery>,
 ) -> Result<Json<Vec<AttachmentListItemResponse>>, (StatusCode, String)> {
     authorize_read(&auth)?;
     let node_id = parse_uuid_param(&node_id_raw, "node_id")?;
@@ -5435,8 +5957,32 @@ async fn list_node_attachments(
         .ok_or((StatusCode::NOT_FOUND, "node not found".into()))?;
     authorize_namespace(&auth, &node.namespace)?;
 
+    let query_text = query.q.as_deref().unwrap_or("").trim().to_ascii_lowercase();
+    let status_filter = query
+        .status
+        .as_deref()
+        .unwrap_or("all")
+        .trim()
+        .to_ascii_lowercase();
+    let failed_only = query.failed_only.unwrap_or(false);
+
     let attachments = parse_node_attachments(&node)
         .into_iter()
+        .filter(|attachment| {
+            let status = normalize_attachment_status(attachment.extraction_status.as_deref());
+            if failed_only && !is_failed_attachment_status(&status) {
+                return false;
+            }
+            if !failed_only && !attachment_matches_status_filter(&status, &status_filter) {
+                return false;
+            }
+            if query_text.is_empty() {
+                return true;
+            }
+            let search_blob = format!("{} {} {}", attachment.file_name, attachment.id, status)
+                .to_ascii_lowercase();
+            search_blob.contains(&query_text)
+        })
         .map(|attachment| {
             let (search_chunk_count, search_preview) =
                 attachment_chunk_summary(&node, &attachment.id);
@@ -5614,6 +6160,206 @@ async fn reindex_attachment(
         extracted_chars: extraction.extracted_chars,
         search_chunk_count,
         search_preview,
+    }))
+}
+
+async fn reindex_failed_attachments(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(node_id_raw): Path<String>,
+) -> Result<Json<AttachmentBatchReindexResponse>, (StatusCode, String)> {
+    authorize_write(&auth)?;
+    let node_id = parse_uuid_param(&node_id_raw, "node_id")?;
+    let mut node = state
+        .engine
+        .get_node(node_id)
+        .await
+        .map_err(map_mv_error)?
+        .ok_or((StatusCode::NOT_FOUND, "node not found".into()))?;
+    authorize_namespace(&auth, &node.namespace)?;
+
+    let mut attachments = parse_node_attachments(&node);
+    let total_attachments = attachments.len();
+    let mut attempted_reindex = 0usize;
+    let mut reindexed = 0usize;
+    let mut failed = 0usize;
+    let mut skipped = 0usize;
+    let mut items = Vec::with_capacity(total_attachments);
+
+    for index in 0..attachments.len() {
+        let mut attachment = attachments[index].clone();
+        let attachment_id = attachment.id.clone();
+        let previous_status = attachment.extraction_status.clone();
+        let normalized_previous = previous_status
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+
+        if normalized_previous == "transcribed" {
+            skipped += 1;
+            items.push(AttachmentBatchReindexItemResponse {
+                attachment_id,
+                file_name: attachment.file_name.clone(),
+                previous_status,
+                extraction_status: attachment.extraction_status.clone(),
+                extracted_chars: attachment.extracted_chars,
+                outcome: "skipped".to_string(),
+                message: Some(
+                    "transcribed attachments are indexed from voice transcription".to_string(),
+                ),
+                search_chunk_count: None,
+                search_preview: None,
+            });
+            continue;
+        }
+
+        if !should_batch_reindex_attachment(previous_status.as_deref()) {
+            skipped += 1;
+            items.push(AttachmentBatchReindexItemResponse {
+                attachment_id,
+                file_name: attachment.file_name.clone(),
+                previous_status,
+                extraction_status: attachment.extraction_status.clone(),
+                extracted_chars: attachment.extracted_chars,
+                outcome: "skipped".to_string(),
+                message: Some("attachment status not eligible for batch reindex".to_string()),
+                search_chunk_count: None,
+                search_preview: None,
+            });
+            continue;
+        }
+
+        attempted_reindex += 1;
+        let safe_path = match resolve_attachment_path(&state, node_id, &attachment).await {
+            Ok(path) => path,
+            Err((code, message)) => {
+                failed += 1;
+                items.push(AttachmentBatchReindexItemResponse {
+                    attachment_id,
+                    file_name: attachment.file_name.clone(),
+                    previous_status,
+                    extraction_status: attachment.extraction_status.clone(),
+                    extracted_chars: attachment.extracted_chars,
+                    outcome: "failed".to_string(),
+                    message: Some(format!("{code}: {message}")),
+                    search_chunk_count: None,
+                    search_preview: None,
+                });
+                continue;
+            }
+        };
+
+        let file_bytes = match tokio::fs::read(&safe_path).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                failed += 1;
+                items.push(AttachmentBatchReindexItemResponse {
+                    attachment_id,
+                    file_name: attachment.file_name.clone(),
+                    previous_status,
+                    extraction_status: attachment.extraction_status.clone(),
+                    extracted_chars: attachment.extracted_chars,
+                    outcome: "failed".to_string(),
+                    message: Some(format!("failed to read attachment file: {err}")),
+                    search_chunk_count: None,
+                    search_preview: None,
+                });
+                continue;
+            }
+        };
+
+        let file_name_for_extraction = attachment.file_name.clone();
+        let content_type_for_extraction = attachment.content_type.clone();
+        let extraction_task = tokio::task::spawn_blocking(move || {
+            extract_attachment_search_text(
+                &file_name_for_extraction,
+                content_type_for_extraction.as_deref(),
+                &file_bytes,
+                MAX_ATTACHMENT_EXTRACTED_TEXT_CHARS,
+            )
+        })
+        .await;
+        let extraction = match extraction_task {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                failed += 1;
+                items.push(AttachmentBatchReindexItemResponse {
+                    attachment_id,
+                    file_name: attachment.file_name.clone(),
+                    previous_status,
+                    extraction_status: attachment.extraction_status.clone(),
+                    extracted_chars: attachment.extracted_chars,
+                    outcome: "failed".to_string(),
+                    message: Some(format!("attachment extraction task failed: {err}")),
+                    search_chunk_count: None,
+                    search_preview: None,
+                });
+                continue;
+            }
+        };
+
+        attachment.extraction_status = Some(extraction.status.clone());
+        attachment.extracted_chars = Some(extraction.extracted_chars);
+        attachments[index] = attachment.clone();
+
+        upsert_attachment_text_index_entry(
+            &mut node,
+            &attachment_id,
+            extraction.extracted_text.as_deref(),
+        );
+        upsert_attachment_text_chunk_index_entry(
+            &mut node,
+            &attachment_id,
+            extraction.extracted_text.as_deref(),
+        );
+        let (search_chunk_count, search_preview) = attachment_chunk_summary(&node, &attachment_id);
+
+        reindexed += 1;
+        items.push(AttachmentBatchReindexItemResponse {
+            attachment_id,
+            file_name: attachment.file_name.clone(),
+            previous_status,
+            extraction_status: attachment.extraction_status.clone(),
+            extracted_chars: attachment.extracted_chars,
+            outcome: "reindexed".to_string(),
+            message: None,
+            search_chunk_count,
+            search_preview,
+        });
+    }
+
+    if attachments.is_empty() {
+        node.metadata.remove("attachments");
+    } else {
+        let attachment_metadata = attachments
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to serialize attachment metadata: {err}"),
+                )
+            })?;
+        node.metadata.insert(
+            "attachments".to_string(),
+            serde_json::Value::Array(attachment_metadata),
+        );
+    }
+    sync_attachment_search_blob_metadata(&mut node);
+
+    let updated = state.engine.update_node(node).await.map_err(map_mv_error)?;
+    state.notify_change(&updated.id.to_string(), "update", Some(&updated.namespace));
+
+    Ok(Json(AttachmentBatchReindexResponse {
+        node_id: updated.id.to_string(),
+        total_attachments,
+        attempted_reindex,
+        reindexed,
+        failed,
+        skipped,
+        items,
     }))
 }
 
@@ -7351,71 +8097,27 @@ async fn import_clip(
         stored
     };
 
-    let note = if create_note {
-        enforce_namespace_quota(&state.engine, &namespace)
-            .await
-            .map_err(map_namespace_quota_error)?;
-        let note_content = clip_note_content(
+    let (note, note_created) = if create_note {
+        let (stored_note, created_note) = create_clip_note_for_bookmark(
+            state.as_ref(),
             &bookmark,
+            &namespace,
+            None,
             if excerpt.is_empty() {
                 None
             } else {
-                Some(excerpt.as_str())
+                Some(excerpt.clone())
             },
-        );
-        let note_title = bookmark
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| format!("Clip Note: {value}"))
-            .unwrap_or_else(|| "Clip Note".to_string());
-        let note_tags = merge_tags_case_insensitive(&tags, &["clip-note".to_string()]);
-        let mut note = KnowledgeNode::new(NodeKind::Fact, note_content);
-        note = note
-            .with_namespace(namespace.clone())
-            .with_title(note_title)
-            .with_source("clip-import")
-            .with_tags(note_tags);
-        note.metadata.insert(
-            CLIP_LINKED_BOOKMARK_ID_METADATA_KEY.to_string(),
-            serde_json::Value::String(bookmark.id.to_string()),
-        );
-
-        validate_node_payload(
-            note.kind,
-            note.title.as_deref(),
-            &note.content,
-            note.source.as_deref(),
-            Some(&note.namespace),
-            &note.tags,
-            Some(note.importance),
-            Some(&note.metadata),
+            &tags,
+            true,
         )
-        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
-
-        let stored_note = state.engine.store_node(note).await.map_err(map_mv_error)?;
-        state.notify_change(
-            &stored_note.id.to_string(),
-            "create",
-            Some(&stored_note.namespace),
-        );
-
-        let relationship = Relationship::new(stored_note.id, bookmark.id, RelationKind::References);
-        if let Err(err) = state.engine.add_relationship(relationship).await {
-            tracing::warn!(
-                error = %err,
-                note_id = %stored_note.id,
-                bookmark_id = %bookmark.id,
-                "mindvault_clip_relationship_create_failed"
-            );
-        }
-        Some(stored_note)
+        .await?;
+        (Some(stored_note), created_note)
     } else {
-        None
+        (None, false)
     };
 
-    let status = if created || note.is_some() {
+    let status = if created || note_created {
         StatusCode::CREATED
     } else {
         StatusCode::OK
@@ -7427,6 +8129,78 @@ async fn import_clip(
             created,
             note,
         }),
+    ))
+}
+
+async fn create_clip_note(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(bookmark_id_raw): Path<String>,
+    Json(mut req): Json<CreateClipNoteRequest>,
+) -> Result<(StatusCode, Json<CreateClipNoteResponse>), (StatusCode, String)> {
+    authorize_write(&auth)?;
+    let bookmark_id = parse_uuid_param(&bookmark_id_raw, "bookmark id")?;
+
+    let bookmark = state
+        .engine
+        .get_node(bookmark_id)
+        .await
+        .map_err(map_mv_error)?
+        .ok_or((StatusCode::NOT_FOUND, "bookmark not found".into()))?;
+    authorize_namespace(&auth, &bookmark.namespace)?;
+
+    if bookmark.kind != NodeKind::Bookmark {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "target node must be a bookmark".into(),
+        ));
+    }
+
+    let namespace = namespace_for_create(
+        &auth,
+        normalize_optional_namespace_value(req.namespace.take()),
+        &bookmark.namespace,
+    )?;
+    if namespace != bookmark.namespace {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "clip note namespace must match bookmark namespace".into(),
+        ));
+    }
+
+    let tags = normalize_clip_tags(req.tags.take().unwrap_or_default());
+    let title = req
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let excerpt = req
+        .excerpt
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let dedupe = req.dedupe.unwrap_or(true);
+
+    let (note, created) = create_clip_note_for_bookmark(
+        state.as_ref(),
+        &bookmark,
+        &namespace,
+        title,
+        excerpt,
+        &tags,
+        dedupe,
+    )
+    .await?;
+
+    Ok((
+        if created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(CreateClipNoteResponse { note, created }),
     ))
 }
 
@@ -8880,6 +9654,32 @@ mod tests {
         let parsed = parse_node_attachments(&node);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].id, "a-1");
+    }
+
+    #[test]
+    fn should_batch_reindex_attachment_targets_failed_statuses() {
+        assert!(should_batch_reindex_attachment(Some("unsupported")));
+        assert!(should_batch_reindex_attachment(Some("tool_missing")));
+        assert!(should_batch_reindex_attachment(Some("extraction_failed")));
+        assert!(should_batch_reindex_attachment(Some("empty")));
+        assert!(should_batch_reindex_attachment(Some("  UnSuPpOrTeD  ")));
+
+        assert!(!should_batch_reindex_attachment(Some("indexed_text")));
+        assert!(!should_batch_reindex_attachment(Some("transcribed")));
+        assert!(!should_batch_reindex_attachment(None));
+    }
+
+    #[test]
+    fn attachment_matches_status_filter_handles_groups() {
+        assert!(attachment_matches_status_filter("tool_missing", "failed"));
+        assert!(attachment_matches_status_filter("indexed_text", "indexed"));
+        assert!(attachment_matches_status_filter(
+            "transcribed",
+            "transcribed"
+        ));
+        assert!(attachment_matches_status_filter("queued", "other"));
+        assert!(!attachment_matches_status_filter("indexed_text", "failed"));
+        assert!(!attachment_matches_status_filter("unsupported", "other"));
     }
 
     #[test]
@@ -10480,6 +11280,7 @@ mod tests {
             Extension(AuthContext::system_admin()),
             State(Arc::clone(&state)),
             Path(stored.id.to_string()),
+            Query(AttachmentListQuery::default()),
         )
         .await
         .expect("list attachments should succeed");
@@ -10494,6 +11295,141 @@ mod tests {
         assert!(items[0]
             .download_url
             .contains(&format!("/api/v1/files/{}/att-1", stored.id)));
+    }
+
+    #[tokio::test]
+    async fn list_node_attachments_supports_query_and_status_filters() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let mut node =
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+        node.metadata.insert(
+            "attachments".into(),
+            serde_json::json!([
+                {
+                    "id": "att-indexed",
+                    "file_name": "incident-report.txt",
+                    "content_type": "text/plain",
+                    "size_bytes": 128,
+                    "stored_path": "/tmp/incident-report.txt",
+                    "uploaded_at": "2026-02-06T00:00:00Z",
+                    "extraction_status": "indexed_text",
+                    "extracted_chars": 90
+                },
+                {
+                    "id": "att-missing",
+                    "file_name": "scan.png",
+                    "content_type": "image/png",
+                    "size_bytes": 256,
+                    "stored_path": "/tmp/scan.png",
+                    "uploaded_at": "2026-02-06T00:00:00Z",
+                    "extraction_status": "tool_missing",
+                    "extracted_chars": 0
+                },
+                {
+                    "id": "att-unsupported",
+                    "file_name": "archive.bin",
+                    "content_type": "application/octet-stream",
+                    "size_bytes": 512,
+                    "stored_path": "/tmp/archive.bin",
+                    "uploaded_at": "2026-02-06T00:00:00Z",
+                    "extraction_status": "unsupported",
+                    "extracted_chars": 0
+                },
+                {
+                    "id": "att-transcribed",
+                    "file_name": "meeting.wav",
+                    "content_type": "audio/wav",
+                    "size_bytes": 1024,
+                    "stored_path": "/tmp/meeting.wav",
+                    "uploaded_at": "2026-02-06T00:00:00Z",
+                    "extraction_status": "transcribed",
+                    "extracted_chars": 120
+                },
+                {
+                    "id": "att-other",
+                    "file_name": "queued.csv",
+                    "content_type": "text/csv",
+                    "size_bytes": 96,
+                    "stored_path": "/tmp/queued.csv",
+                    "uploaded_at": "2026-02-06T00:00:00Z",
+                    "extraction_status": "queued",
+                    "extracted_chars": 0
+                }
+            ]),
+        );
+        let stored = state
+            .engine
+            .store_node(node)
+            .await
+            .expect("node should store");
+
+        let Json(failed_items) = list_node_attachments(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(stored.id.to_string()),
+            Query(AttachmentListQuery {
+                q: None,
+                status: Some("failed".to_string()),
+                failed_only: None,
+            }),
+        )
+        .await
+        .expect("failed filter should succeed");
+        assert_eq!(failed_items.len(), 2);
+        assert!(failed_items
+            .iter()
+            .any(|item| item.attachment_id == "att-missing"));
+        assert!(failed_items
+            .iter()
+            .any(|item| item.attachment_id == "att-unsupported"));
+
+        let Json(query_items) = list_node_attachments(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(stored.id.to_string()),
+            Query(AttachmentListQuery {
+                q: Some("meeting".to_string()),
+                status: Some("all".to_string()),
+                failed_only: None,
+            }),
+        )
+        .await
+        .expect("query filter should succeed");
+        assert_eq!(query_items.len(), 1);
+        assert_eq!(query_items[0].attachment_id, "att-transcribed");
+
+        let Json(other_items) = list_node_attachments(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(stored.id.to_string()),
+            Query(AttachmentListQuery {
+                q: None,
+                status: Some("other".to_string()),
+                failed_only: None,
+            }),
+        )
+        .await
+        .expect("other filter should succeed");
+        assert_eq!(other_items.len(), 1);
+        assert_eq!(other_items[0].attachment_id, "att-other");
+
+        let Json(forced_failed_only_items) = list_node_attachments(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(stored.id.to_string()),
+            Query(AttachmentListQuery {
+                q: None,
+                status: Some("indexed".to_string()),
+                failed_only: Some(true),
+            }),
+        )
+        .await
+        .expect("failed-only override should succeed");
+        assert_eq!(forced_failed_only_items.len(), 2);
+        assert!(forced_failed_only_items
+            .iter()
+            .all(|item| item.attachment_id == "att-missing"
+                || item.attachment_id == "att-unsupported"));
     }
 
     #[tokio::test]
@@ -10726,6 +11662,192 @@ mod tests {
         assert!(err
             .1
             .contains("transcribed attachments are indexed from voice transcription"));
+    }
+
+    #[tokio::test]
+    async fn reindex_failed_attachments_processes_mixed_statuses() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let stored = state
+            .engine
+            .store_node(
+                KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops"),
+            )
+            .await
+            .expect("node should store");
+
+        let scoped_dir = PathBuf::from(&state.engine.config.data_dir)
+            .join("blobs")
+            .join(stored.id.to_string());
+        tokio::fs::create_dir_all(&scoped_dir)
+            .await
+            .expect("attachment dir should exist");
+
+        let recover_file_name = "recoverable.txt";
+        let recover_stored_path = scoped_dir.join("att-recover-recoverable.txt");
+        tokio::fs::write(
+            &recover_stored_path,
+            b"Alpha planning notes.\nBeta follow up actions.",
+        )
+        .await
+        .expect("recoverable attachment should write");
+
+        let indexed_file_name = "already-indexed.txt";
+        let indexed_stored_path = scoped_dir.join("att-indexed-already-indexed.txt");
+        tokio::fs::write(
+            &indexed_stored_path,
+            b"Existing indexed attachment payload that should be skipped.",
+        )
+        .await
+        .expect("indexed attachment should write");
+
+        let missing_stored_path = scoped_dir.join("att-missing-missing.txt");
+
+        let mut node = state
+            .engine
+            .get_node(stored.id)
+            .await
+            .expect("node fetch should work")
+            .expect("node should exist");
+        node.metadata.insert(
+            "attachments".into(),
+            serde_json::json!([
+                {
+                    "id": "att-recover",
+                    "file_name": recover_file_name,
+                    "content_type": "text/plain",
+                    "size_bytes": 64,
+                    "stored_path": recover_stored_path.to_string_lossy().to_string(),
+                    "uploaded_at": "2026-02-06T00:00:00Z",
+                    "extraction_status": "unsupported",
+                    "extracted_chars": 0
+                },
+                {
+                    "id": "att-indexed",
+                    "file_name": indexed_file_name,
+                    "content_type": "text/plain",
+                    "size_bytes": 128,
+                    "stored_path": indexed_stored_path.to_string_lossy().to_string(),
+                    "uploaded_at": "2026-02-06T00:00:00Z",
+                    "extraction_status": "indexed_text",
+                    "extracted_chars": 52
+                },
+                {
+                    "id": "att-voice",
+                    "file_name": "voice.wav",
+                    "content_type": "audio/wav",
+                    "size_bytes": 1024,
+                    "stored_path": "/tmp/voice.wav",
+                    "uploaded_at": "2026-02-06T00:00:00Z",
+                    "extraction_status": "transcribed",
+                    "extracted_chars": 24
+                },
+                {
+                    "id": "att-missing",
+                    "file_name": "missing.txt",
+                    "content_type": "text/plain",
+                    "size_bytes": 32,
+                    "stored_path": missing_stored_path.to_string_lossy().to_string(),
+                    "uploaded_at": "2026-02-06T00:00:00Z",
+                    "extraction_status": "tool_missing",
+                    "extracted_chars": 0
+                }
+            ]),
+        );
+        state
+            .engine
+            .update_node(node)
+            .await
+            .expect("node should update");
+
+        let Json(response) = reindex_failed_attachments(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(stored.id.to_string()),
+        )
+        .await
+        .expect("batch reindex should succeed");
+
+        assert_eq!(response.total_attachments, 4);
+        assert_eq!(response.attempted_reindex, 2);
+        assert_eq!(response.reindexed, 1);
+        assert_eq!(response.failed, 1);
+        assert_eq!(response.skipped, 2);
+        assert_eq!(response.items.len(), 4);
+
+        let recover_item = response
+            .items
+            .iter()
+            .find(|item| item.attachment_id == "att-recover")
+            .expect("recover item should exist");
+        assert_eq!(recover_item.outcome, "reindexed");
+        assert_eq!(
+            recover_item.extraction_status.as_deref(),
+            Some("indexed_text")
+        );
+        assert!(recover_item
+            .search_chunk_count
+            .is_some_and(|count| count >= 1));
+        assert!(recover_item.extracted_chars.unwrap_or_default() > 0);
+
+        let indexed_item = response
+            .items
+            .iter()
+            .find(|item| item.attachment_id == "att-indexed")
+            .expect("indexed item should exist");
+        assert_eq!(indexed_item.outcome, "skipped");
+        assert!(indexed_item
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("not eligible")));
+
+        let transcribed_item = response
+            .items
+            .iter()
+            .find(|item| item.attachment_id == "att-voice")
+            .expect("transcribed item should exist");
+        assert_eq!(transcribed_item.outcome, "skipped");
+        assert!(transcribed_item
+            .message
+            .as_deref()
+            .is_some_and(|message| { message.contains("transcribed attachments are indexed") }));
+
+        let missing_item = response
+            .items
+            .iter()
+            .find(|item| item.attachment_id == "att-missing")
+            .expect("missing item should exist");
+        assert_eq!(missing_item.outcome, "failed");
+        assert!(missing_item
+            .message
+            .as_deref()
+            .is_some_and(|message| !message.trim().is_empty()));
+
+        let refreshed = state
+            .engine
+            .get_node(stored.id)
+            .await
+            .expect("node fetch should succeed")
+            .expect("node should exist");
+        let parsed = parse_node_attachments(&refreshed);
+        let recovered = parsed
+            .iter()
+            .find(|attachment| attachment.id == "att-recover")
+            .expect("recovered attachment should exist");
+        assert_eq!(recovered.extraction_status.as_deref(), Some("indexed_text"));
+        assert!(recovered.extracted_chars.unwrap_or_default() > 0);
+
+        let missing = parsed
+            .iter()
+            .find(|attachment| attachment.id == "att-missing")
+            .expect("missing attachment should exist");
+        assert_eq!(missing.extraction_status.as_deref(), Some("tool_missing"));
+
+        let attachment_text_index = refreshed
+            .metadata
+            .get(ATTACHMENT_TEXT_INDEX_METADATA_KEY)
+            .and_then(serde_json::Value::as_object)
+            .expect("attachment text index should exist");
+        assert!(attachment_text_index.contains_key("att-recover"));
     }
 
     #[tokio::test]
@@ -10983,6 +12105,85 @@ mod tests {
             .incoming
             .iter()
             .any(|edge| edge.related_node_id == note.id.to_string()
+                && edge.relation_kind == "references"));
+    }
+
+    #[tokio::test]
+    async fn create_clip_note_endpoint_creates_then_dedupes() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+
+        let (_status, Json(imported)) = import_clip(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Json(ClipImportRequest {
+                url: "https://example.com/design".to_string(),
+                title: Some("Design Notes".to_string()),
+                excerpt: Some("Captured from article body".to_string()),
+                tags: Some(vec!["research".to_string()]),
+                namespace: Some("ops".to_string()),
+                clip_source: Some("extension".to_string()),
+                dedupe: Some(true),
+                create_note: Some(false),
+            }),
+        )
+        .await
+        .expect("clip import should succeed");
+        let bookmark_id = imported.bookmark.id.to_string();
+
+        let (create_status, Json(created_note_response)) = create_clip_note(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(bookmark_id.clone()),
+            Json(CreateClipNoteRequest {
+                title: None,
+                excerpt: Some("Focused highlights".to_string()),
+                tags: Some(vec!["review".to_string()]),
+                namespace: Some("ops".to_string()),
+                dedupe: Some(true),
+            }),
+        )
+        .await
+        .expect("note creation should succeed");
+        assert_eq!(create_status, StatusCode::CREATED);
+        assert!(created_note_response.created);
+        let first_note = created_note_response.note;
+        assert_eq!(
+            first_note
+                .metadata
+                .get(CLIP_LINKED_BOOKMARK_ID_METADATA_KEY)
+                .and_then(serde_json::Value::as_str),
+            Some(bookmark_id.as_str())
+        );
+
+        let (dedupe_status, Json(deduped_note_response)) = create_clip_note(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(bookmark_id.clone()),
+            Json(CreateClipNoteRequest {
+                title: None,
+                excerpt: Some("Focused highlights".to_string()),
+                tags: Some(vec!["review".to_string()]),
+                namespace: Some("ops".to_string()),
+                dedupe: Some(true),
+            }),
+        )
+        .await
+        .expect("note dedupe should succeed");
+        assert_eq!(dedupe_status, StatusCode::OK);
+        assert!(!deduped_note_response.created);
+        assert_eq!(deduped_note_response.note.id, first_note.id);
+
+        let Json(relationships) = get_node_relationships(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(bookmark_id.clone()),
+        )
+        .await
+        .expect("relationship overview should load");
+        assert!(relationships
+            .incoming
+            .iter()
+            .any(|edge| edge.related_node_id == first_note.id.to_string()
                 && edge.relation_kind == "references"));
     }
 

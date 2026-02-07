@@ -31,10 +31,27 @@ export type CreateBookmarkResult = {
 	note?: KnowledgeNode | null;
 };
 
+export type CreateBookmarkNotePayload = {
+	title?: string;
+	excerpt?: string;
+	tags?: string[];
+	namespace?: string | null;
+};
+
+export type CreateBookmarkNoteResult = {
+	note: KnowledgeNode;
+	created: boolean;
+};
+
 type ClipImportResponse = {
 	bookmark: KnowledgeNode;
 	created: boolean;
 	note?: KnowledgeNode | null;
+};
+
+type ClipCreateNoteResponse = {
+	note: KnowledgeNode;
+	created: boolean;
 };
 
 function normalizeTagList(tags: string[]): string[] {
@@ -155,6 +172,24 @@ export async function createBookmark(
 		throw new Error('Bookmark creation returned invalid payload');
 	}
 	return { bookmark, created: response.created, note: response.note };
+}
+
+export async function createBookmarkNote(
+	bookmarkId: string,
+	payload: CreateBookmarkNotePayload,
+	{ dedupe = true }: { dedupe?: boolean } = {}
+): Promise<CreateBookmarkNoteResult> {
+	const response = await fetchJson<ClipCreateNoteResponse>(`/api/v1/clips/${bookmarkId}/note`, {
+		method: 'POST',
+		body: JSON.stringify({
+			title: payload.title?.trim() || undefined,
+			excerpt: payload.excerpt?.trim() || undefined,
+			tags: normalizeTagList(payload.tags ?? []),
+			namespace: payload.namespace ?? undefined,
+			dedupe
+		})
+	});
+	return { note: response.note, created: response.created };
 }
 
 export async function setBookmarkRead(bookmarkId: string, read: boolean): Promise<Bookmark> {

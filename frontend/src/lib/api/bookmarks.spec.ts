@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+	createBookmarkNote,
 	createBookmark,
 	listBookmarks,
 	normalizeBookmarkUrl,
@@ -174,6 +175,51 @@ describe('bookmarks api client', () => {
 		expect(JSON.parse(String(putOptions.body)).metadata).toEqual({
 			foo: 'bar',
 			read: true
+		});
+	});
+
+	it('creates a linked note for existing bookmark via dedicated endpoint', async () => {
+		fetchMock.mockResolvedValueOnce(
+			new Response(
+				JSON.stringify({
+					created: true,
+					note: {
+						id: 'note-1',
+						kind: 'fact',
+						title: 'Clip Note: Existing',
+						content: 'body',
+						source: 'clip-import',
+						namespace: 'default',
+						tags: ['clip-note', 'web-clip'],
+						importance: 0.5,
+						temporal: { created_at: '2026-02-06T11:00:00Z', updated_at: '2026-02-06T11:00:00Z' },
+						metadata: { clip_bookmark_id: 'bookmark-1' }
+					}
+				}),
+				{ status: 201, headers: { 'Content-Type': 'application/json' } }
+			)
+		);
+
+		const result = await createBookmarkNote(
+			'bookmark-1',
+			{
+				excerpt: 'capture',
+				tags: ['Research', 'web clip'],
+				namespace: 'default'
+			},
+			{ dedupe: true }
+		);
+
+		expect(result.created).toBe(true);
+		expect(result.note.id).toBe('note-1');
+		const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe(`${API_BASE}/api/v1/clips/bookmark-1/note`);
+		expect(options.method).toBe('POST');
+		expect(JSON.parse(String(options.body))).toMatchObject({
+			excerpt: 'capture',
+			tags: ['research', 'webclip'],
+			namespace: 'default',
+			dedupe: true
 		});
 	});
 });

@@ -3,6 +3,7 @@
 	import { get } from 'svelte/store';
 	import { page } from '$app/stores';
 	import {
+		createBookmarkNote,
 		createBookmark,
 		deleteBookmark,
 		listBookmarks,
@@ -330,16 +331,23 @@
 		if (!dedupeConflict || resolvingConflict) return;
 		resolvingConflict = true;
 		try {
-			const result = await createBookmark(
-				{ ...dedupeConflict.payload, create_note: true },
+			const result = await createBookmarkNote(
+				dedupeConflict.bookmark.id,
+				{
+					title: dedupeConflict.payload.title,
+					excerpt: dedupeConflict.payload.excerpt,
+					tags: dedupeConflict.payload.tags,
+					namespace: dedupeConflict.payload.namespace
+				},
 				{ dedupe: true }
 			);
 			await refreshBookmarks();
-			if (result.note) {
+			if (result.created) {
 				pushToast('Linked note created for existing clip.', 'success');
 				dedupeConflict = null;
 			} else {
-				pushToast('Clip exists but note could not be created.', 'warning');
+				pushToast('Linked note already exists for this clip.', 'info');
+				dedupeConflict = null;
 			}
 		} catch {
 			pushToast('Failed to create linked note.', 'danger');
