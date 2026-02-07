@@ -202,6 +202,7 @@ MindVault supports fast capture flows from anywhere in the app, with desktop-glo
 - Quick Capture Presets in Settings allow reusable mode/target/prefill bundles with optional shortcut assignments.
 - Command Palette (`Cmd/Ctrl+K`) now includes enabled quick-capture presets as direct actions.
 - Smart Inbox includes `AI Triage` to suggest priority/status updates for inbox tasks and apply top recommendations in one click.
+- Inbox AI triage behavior is configurable in Settings (`auto-run on open` and default `Apply Top N` size).
 
 ## Web Editor
 

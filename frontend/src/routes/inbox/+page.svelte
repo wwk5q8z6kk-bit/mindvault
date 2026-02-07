@@ -16,6 +16,11 @@
 		INBOX_TRIAGE_EVENT_NAME,
 		type InboxTriageSuggestion
 	} from '$lib/inbox/triage';
+	import {
+		INBOX_TRIAGE_SETTINGS_STORAGE_KEY,
+		INBOX_TRIAGE_SETTINGS_UPDATED_EVENT_NAME,
+		loadInboxTriageSettings
+	} from '$lib/inbox/triage-settings';
 
 	type InboxItem =
 		| { type: 'task'; data: TaskRecord; created: string }
@@ -29,6 +34,7 @@
 	let suggestedTags: Map<string, string[]> = new Map();
 	let triageLoading = false;
 	let triageSuggestions: Map<string, InboxTriageSuggestion> = new Map();
+	let triageSettings = loadInboxTriageSettings();
 
 	$: {
 		const taskItems: InboxItem[] = $tasksStore
@@ -44,14 +50,30 @@
 
 	onMount(() => {
 		const handleExternalTriage = () => {
+			triageSettings = loadInboxTriageSettings();
 			void runAiInboxTriage();
 		};
+		const refreshTriageSettings = () => {
+			triageSettings = loadInboxTriageSettings();
+		};
+		const handleStorageEvent = (event: StorageEvent) => {
+			if (event.key && event.key !== INBOX_TRIAGE_SETTINGS_STORAGE_KEY) return;
+			refreshTriageSettings();
+		};
 		window.addEventListener(INBOX_TRIAGE_EVENT_NAME, handleExternalTriage);
+		window.addEventListener(INBOX_TRIAGE_SETTINGS_UPDATED_EVENT_NAME, refreshTriageSettings);
+		window.addEventListener('storage', handleStorageEvent);
 		void Promise.all([loadTasks(), loadNotes()]).finally(() => {
+			triageSettings = loadInboxTriageSettings();
 			loading = false;
+			if (triageSettings.auto_run_on_open) {
+				void runAiInboxTriage();
+			}
 		});
 		return () => {
 			window.removeEventListener(INBOX_TRIAGE_EVENT_NAME, handleExternalTriage);
+			window.removeEventListener(INBOX_TRIAGE_SETTINGS_UPDATED_EVENT_NAME, refreshTriageSettings);
+			window.removeEventListener('storage', handleStorageEvent);
 		};
 	});
 
@@ -227,7 +249,7 @@
 		}
 	}
 
-	async function applyTopAiTriage(limit = 3) {
+	async function applyTopAiTriage(limit = triageSettings.default_apply_limit) {
 		const ordered = [...triageSuggestions.values()]
 			.sort((a, b) => a.rank - b.rank)
 			.slice(0, limit);
@@ -300,9 +322,9 @@
 			{#if triageSuggestions.size > 0}
 				<button
 					class="rounded-lg border border-violet-500/30 px-3 py-1.5 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/10"
-					on:click={() => applyTopAiTriage(3)}
+					on:click={() => applyTopAiTriage()}
 				>
-					Apply Top 3
+					Apply Top {triageSettings.default_apply_limit}
 				</button>
 				<button
 					class="rounded-lg border border-slate-700 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"

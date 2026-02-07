@@ -21,6 +21,11 @@
 		type CapturePresetShortcut
 	} from '$lib/capture/presets';
 	import type { QuickCaptureMode, QuickCaptureTarget } from '$lib/capture/quick-capture';
+	import {
+		INBOX_TRIAGE_SETTINGS_UPDATED_EVENT_NAME,
+		loadInboxTriageSettings,
+		saveInboxTriageSettings
+	} from '$lib/inbox/triage-settings';
 	import ImportExportPanel from '$lib/components/ImportExportPanel.svelte';
 
 	let showServerExport = false;
@@ -310,6 +315,9 @@
 	let notifCheckInterval = localStorage.getItem('mv_notification_check_interval') ?? '60000';
 	let notifClickAction: NotificationClickAction = getNotificationClickAction();
 	let capturePresets: CapturePreset[] = loadCapturePresets();
+	let inboxTriageSettings = loadInboxTriageSettings();
+	let inboxTriageAutoRunOnOpen = inboxTriageSettings.auto_run_on_open;
+	let inboxTriageDefaultApplyLimit = String(inboxTriageSettings.default_apply_limit);
 
 	const captureModeOptions: Array<{ value: QuickCaptureMode; label: string }> = [
 		{ value: 'task', label: 'Task' },
@@ -369,6 +377,21 @@
 		stopNotifications();
 		startNotifications();
 		pushToast('Notification settings saved', 'success');
+	}
+
+	function saveInboxTriagePreferences() {
+		const parsedLimit = Number.parseInt(inboxTriageDefaultApplyLimit, 10);
+		const normalized = saveInboxTriageSettings({
+			auto_run_on_open: inboxTriageAutoRunOnOpen,
+			default_apply_limit: Number.isFinite(parsedLimit)
+				? parsedLimit
+				: inboxTriageSettings.default_apply_limit
+		});
+		inboxTriageSettings = normalized;
+		inboxTriageAutoRunOnOpen = normalized.auto_run_on_open;
+		inboxTriageDefaultApplyLimit = String(normalized.default_apply_limit);
+		window.dispatchEvent(new CustomEvent(INBOX_TRIAGE_SETTINGS_UPDATED_EVENT_NAME));
+		pushToast('Inbox AI triage settings saved', 'success');
 	}
 
 	function clearLocalData() {
@@ -647,6 +670,45 @@
 					on:click={saveNotificationSettings}
 				>
 					Save reminder settings
+				</button>
+			</div>
+		</section>
+
+		<!-- Inbox AI triage -->
+		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+			<h3 class="text-sm font-semibold text-white">Inbox AI Triage</h3>
+			<p class="mt-1 text-[11px] text-slate-400">
+				Control how Smart Inbox runs and applies AI triage suggestions.
+			</p>
+			<div class="mt-3 flex flex-col gap-3">
+				<label class="flex items-center gap-2 text-xs text-slate-300">
+					<input
+						type="checkbox"
+						checked={inboxTriageAutoRunOnOpen}
+						on:change={(event) =>
+							(inboxTriageAutoRunOnOpen = (event.currentTarget as HTMLInputElement).checked)}
+					/>
+					Auto-run AI triage when opening Smart Inbox
+				</label>
+				<div>
+					<label class="text-[10px] uppercase tracking-wider text-slate-500" for="inbox-triage-limit"
+						>Default "Apply Top" count</label
+					>
+					<select
+						id="inbox-triage-limit"
+						class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white"
+						bind:value={inboxTriageDefaultApplyLimit}
+					>
+						{#each ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] as option}
+							<option value={option}>{option}</option>
+						{/each}
+					</select>
+				</div>
+				<button
+					class="self-start rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400"
+					on:click={saveInboxTriagePreferences}
+				>
+					Save inbox triage settings
 				</button>
 			</div>
 		</section>
