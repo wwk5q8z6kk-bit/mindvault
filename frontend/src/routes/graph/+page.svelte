@@ -71,6 +71,9 @@
 	let loadingClusters = false;
 	let nodeClusterMap: Map<string, number> = new Map();
 
+	// Graph depth control
+	let graphDepth = 1;
+
 	const CLUSTER_COLORS = [
 		'#38bdf8', '#22c55e', '#f97316', '#a78bfa', '#ec4899',
 		'#eab308', '#14b8a6', '#ef4444', '#8b5cf6', '#06b6d4'
@@ -122,7 +125,9 @@
 	);
 	$: uniqueRelationshipTypes = [...new Set(edges.map((e) => e.kind))].sort();
 
-	onMount(async () => {
+	async function loadGraph(depth: number = 1) {
+		loading = true;
+		edges = [];
 		try {
 			const allNodes = await listNodes({ limit: 100 });
 			const cx = width / 2;
@@ -146,7 +151,7 @@
 			const edgeSet = new Set<string>();
 			for (const node of allNodes.slice(0, 30)) {
 				try {
-					const result = await getNeighbors(node.id, 1);
+					const result = await getNeighbors(node.id, depth);
 					for (const neighbor of result.neighbors) {
 						const key = [node.id, neighbor.node.id].sort().join('-');
 						if (!edgeSet.has(key)) {
@@ -169,6 +174,15 @@
 			loading = false;
 			pushToast('Failed to load graph', 'danger');
 		}
+	}
+
+	async function reloadWithDepth() {
+		if (animFrame) cancelAnimationFrame(animFrame);
+		await loadGraph(graphDepth);
+	}
+
+	onMount(async () => {
+		await loadGraph(graphDepth);
 	});
 
 	onDestroy(() => {
@@ -390,6 +404,19 @@
 					<option value={relType}>{relType}</option>
 				{/each}
 			</select>
+			<div class="flex items-center gap-1.5">
+				<label class="text-[10px] text-slate-400" for="graph-depth">Depth</label>
+				<select
+					id="graph-depth"
+					class="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-white"
+					bind:value={graphDepth}
+					on:change={reloadWithDepth}
+				>
+					<option value={1}>1 hop</option>
+					<option value={2}>2 hops</option>
+					<option value={3}>3 hops</option>
+				</select>
+			</div>
 			{#if creatingRelationship}
 				<button
 					class="rounded-lg border border-red-500/40 bg-red-500/10 px-2 py-1 text-[10px] text-red-300"

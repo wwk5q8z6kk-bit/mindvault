@@ -46,6 +46,8 @@
 	// Bulk selection state
 	let selectedIds = new Set<string>();
 	let bulkMoveStatus: TaskStatus = 'planned';
+	let bulkPriority: 1 | 2 | 3 | 4 | 5 = 3;
+	let bulkLabelInput = '';
 	let showDeleteConfirm = false;
 
 	$: selectionCount = selectedIds.size;
@@ -99,6 +101,47 @@
 		pushToast(`Trashed ${deleted} task${deleted === 1 ? '' : 's'}`, 'success');
 		clearSelection();
 		showDeleteConfirm = false;
+	}
+
+	async function bulkSetPriority() {
+		let updated = 0;
+		for (const id of selectedIds) {
+			try {
+				await updateTaskOptimistic(id, { priority: bulkPriority });
+				updated++;
+			} catch {
+				// continue
+			}
+		}
+		pushToast(`Set priority P${bulkPriority} on ${updated} task${updated === 1 ? '' : 's'}`, 'success');
+		clearSelection();
+	}
+
+	async function bulkAddLabels() {
+		const newLabels = bulkLabelInput
+			.split(/[,\s]+/)
+			.map((t) => t.replace(/^#/, '').trim())
+			.filter((t) => t.length > 0);
+		if (newLabels.length === 0) {
+			pushToast('Enter at least one label', 'warning');
+			return;
+		}
+		let updated = 0;
+		for (const id of selectedIds) {
+			const task = $tasksStore.find((t) => t.id === id);
+			if (!task) continue;
+			const existingLabels = task.labels ?? [];
+			const mergedLabels = [...new Set([...existingLabels, ...newLabels])];
+			try {
+				await updateTaskOptimistic(id, { labels: mergedLabels });
+				updated++;
+			} catch {
+				// continue
+			}
+		}
+		pushToast(`Added ${newLabels.length} label${newLabels.length === 1 ? '' : 's'} to ${updated} task${updated === 1 ? '' : 's'}`, 'success');
+		bulkLabelInput = '';
+		clearSelection();
 	}
 
 	// Quick add preview
@@ -645,7 +688,7 @@
 		<span class="text-xs font-medium text-white">{selectionCount} selected</span>
 
 		<div class="flex items-center gap-1.5">
-			<label class="text-[10px] text-slate-400" for="bulk-move">Move to</label>
+			<label class="text-[10px] text-slate-400" for="bulk-move">Status</label>
 			<select
 				id="bulk-move"
 				class="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-white"
@@ -665,11 +708,54 @@
 
 		<div class="h-4 w-px bg-slate-700"></div>
 
+		<div class="flex items-center gap-1.5">
+			<label class="text-[10px] text-slate-400" for="bulk-priority">Priority</label>
+			<select
+				id="bulk-priority"
+				class="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-white"
+				bind:value={bulkPriority}
+			>
+				<option value={1}>P1</option>
+				<option value={2}>P2</option>
+				<option value={3}>P3</option>
+				<option value={4}>P4</option>
+				<option value={5}>P5</option>
+			</select>
+			<button
+				class="rounded-md bg-amber-500/20 px-2 py-1 text-[11px] text-amber-200 hover:bg-amber-500/30"
+				on:click={bulkSetPriority}
+			>
+				Set
+			</button>
+		</div>
+
+		<div class="h-4 w-px bg-slate-700"></div>
+
+		<div class="flex items-center gap-1.5">
+			<label class="text-[10px] text-slate-400" for="bulk-labels">Labels</label>
+			<input
+				id="bulk-labels"
+				type="text"
+				class="w-24 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-white placeholder:text-slate-500"
+				placeholder="work, urgent"
+				bind:value={bulkLabelInput}
+				on:keydown={(e) => e.key === 'Enter' && bulkAddLabels()}
+			/>
+			<button
+				class="rounded-md bg-violet-500/20 px-2 py-1 text-[11px] text-violet-200 hover:bg-violet-500/30"
+				on:click={bulkAddLabels}
+			>
+				Add
+			</button>
+		</div>
+
+		<div class="h-4 w-px bg-slate-700"></div>
+
 		<button
 			class="rounded-md bg-red-500/20 px-2.5 py-1 text-[11px] text-red-200 hover:bg-red-500/30"
 			on:click={() => (showDeleteConfirm = true)}
 		>
-			Trash selected
+			Trash
 		</button>
 
 		<button
