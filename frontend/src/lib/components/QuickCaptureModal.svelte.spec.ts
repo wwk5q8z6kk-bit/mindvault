@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import QuickCaptureModal from './QuickCaptureModal.svelte';
+import { CAPTURE_PRESETS_STORAGE_KEY } from '$lib/capture/presets';
 
 describe('QuickCaptureModal', () => {
+	beforeEach(() => {
+		localStorage.removeItem(CAPTURE_PRESETS_STORAGE_KEY);
+	});
+
 	it('opens when the desktop quick-capture event is dispatched', async () => {
 		render(QuickCaptureModal);
 		window.dispatchEvent(new CustomEvent('mindvault:quick-capture'));
@@ -52,5 +57,28 @@ describe('QuickCaptureModal', () => {
 		);
 		const taskInput = page.getByPlaceholder('buy milk tomorrow 5pm p2 #home');
 		await expect.element(taskInput).toHaveValue('Follow up: Review roadmap');
+	});
+
+	it('supports user-defined preset shortcut routing', async () => {
+		localStorage.setItem(
+			CAPTURE_PRESETS_STORAGE_KEY,
+			JSON.stringify([
+				{
+					id: 'preset-1',
+					name: 'Morning planning',
+					mode: 'task',
+					target: 'planned',
+					prefill: 'Plan: ',
+					shortcut: '1',
+					enabled: true
+				}
+			])
+		);
+		render(QuickCaptureModal);
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: '1', ctrlKey: true, shiftKey: true }));
+		const targetSelect = page.getByLabelText('Capture target');
+		const taskInput = page.getByPlaceholder('buy milk tomorrow 5pm p2 #home');
+		await expect.element(targetSelect).toHaveValue('planned');
+		await expect.element(taskInput).toHaveValue('Plan:');
 	});
 });

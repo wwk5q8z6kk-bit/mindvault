@@ -12,6 +12,15 @@
 		getNotificationClickAction,
 		type NotificationClickAction
 	} from '$lib/stores/notifications';
+	import {
+		createCapturePresetDraft,
+		isCapturePresetShortcut,
+		loadCapturePresets,
+		saveCapturePresets,
+		type CapturePreset,
+		type CapturePresetShortcut
+	} from '$lib/capture/presets';
+	import type { QuickCaptureMode, QuickCaptureTarget } from '$lib/capture/quick-capture';
 	import ImportExportPanel from '$lib/components/ImportExportPanel.svelte';
 
 	let showServerExport = false;
@@ -300,6 +309,57 @@
 	let notifLeadMinutes = localStorage.getItem('mv_notification_lead_minutes') ?? '30';
 	let notifCheckInterval = localStorage.getItem('mv_notification_check_interval') ?? '60000';
 	let notifClickAction: NotificationClickAction = getNotificationClickAction();
+	let capturePresets: CapturePreset[] = loadCapturePresets();
+
+	const captureModeOptions: Array<{ value: QuickCaptureMode; label: string }> = [
+		{ value: 'task', label: 'Task' },
+		{ value: 'note', label: 'Note' },
+		{ value: 'link', label: 'Link' },
+		{ value: 'voice', label: 'Voice' }
+	];
+	const captureTargetOptions: Array<{ value: QuickCaptureTarget; label: string }> = [
+		{ value: 'default', label: 'Default' },
+		{ value: 'inbox', label: 'Inbox' },
+		{ value: 'daily', label: 'Daily note' },
+		{ value: 'planned', label: 'Planned' },
+		{ value: 'review', label: 'Review' }
+	];
+	const captureShortcutOptions: CapturePresetShortcut[] = ['none', '1', '2', '3', '4', '5'];
+
+	function addCapturePreset() {
+		capturePresets = [...capturePresets, createCapturePresetDraft(capturePresets.length + 1)];
+	}
+
+	function removeCapturePreset(id: string) {
+		capturePresets = capturePresets.filter((preset) => preset.id !== id);
+	}
+
+	function updateCapturePreset(id: string, patch: Partial<CapturePreset>) {
+		capturePresets = capturePresets.map((preset) => (preset.id === id ? { ...preset, ...patch } : preset));
+	}
+
+	function saveCapturePresetSettings() {
+		const seenShortcuts = new Set<string>();
+		for (const preset of capturePresets) {
+			if (!preset.enabled || preset.shortcut === 'none') continue;
+			if (seenShortcuts.has(preset.shortcut)) {
+				pushToast(`Shortcut ${preset.shortcut} is assigned more than once`, 'danger');
+				return;
+			}
+			seenShortcuts.add(preset.shortcut);
+		}
+
+		const normalized = capturePresets.map((preset) => ({
+			...preset,
+			name: preset.name.trim() || 'Untitled preset',
+			prefill: preset.prefill.trim(),
+			shortcut: isCapturePresetShortcut(preset.shortcut) ? preset.shortcut : 'none'
+		}));
+		saveCapturePresets(normalized);
+		capturePresets = normalized;
+		window.dispatchEvent(new CustomEvent('mindvault:capture-presets-updated'));
+		pushToast('Quick capture presets saved', 'success');
+	}
 
 	function saveNotificationSettings() {
 		localStorage.setItem('mv_notification_lead_minutes', notifLeadMinutes);
@@ -479,7 +539,7 @@
 		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
 			<h3 class="text-sm font-semibold text-white">Keyboard Shortcuts</h3>
 			<div class="mt-3 grid grid-cols-2 gap-2 text-xs">
-				{#each [['Cmd/Ctrl + K', 'Command palette'], ['Cmd/Ctrl + Shift + N', 'Quick Capture task (global in desktop app)'], ['Cmd/Ctrl + Shift + M', 'Quick Capture note (global in desktop app)'], ['Cmd/Ctrl + Shift + L', 'Quick Capture link (global in desktop app)'], ['Cmd/Ctrl + Shift + V', 'Quick Capture voice (global in desktop app)'], ['Cmd/Ctrl + Shift + I', 'Quick Capture task to Inbox (global in desktop app)'], ['Cmd/Ctrl + Shift + D', 'Quick Capture note to Daily note (global in desktop app)'], ['Cmd/Ctrl + Shift + P', 'Quick Capture task to Planned (global in desktop app)'], ['Cmd/Ctrl + Shift + R', 'Quick Capture task to Review (global in desktop app)'], ['N', 'New task (in tasks/kanban)'], ['Cmd/Ctrl + B', 'Bold (in editor)'], ['Cmd/Ctrl + I', 'Italic (in editor)'], ['Cmd/Ctrl + K', 'Insert link (in editor)'], ['Cmd/Ctrl + S', 'Save (in editor)'], ['Cmd/Ctrl + Z', 'Undo (in editor)'], ['Cmd/Ctrl + F', 'Search in editor'], ['Cmd/Ctrl + H', 'Search & Replace'], ['/', 'Slash commands (in editor)'], ['Escape', 'Close modals/menus']] as [shortcut, action]}
+				{#each [['Cmd/Ctrl + K', 'Command palette'], ['Cmd/Ctrl + Shift + N', 'Quick Capture task (global in desktop app)'], ['Cmd/Ctrl + Shift + M', 'Quick Capture note (global in desktop app)'], ['Cmd/Ctrl + Shift + L', 'Quick Capture link (global in desktop app)'], ['Cmd/Ctrl + Shift + V', 'Quick Capture voice (global in desktop app)'], ['Cmd/Ctrl + Shift + I', 'Quick Capture task to Inbox (global in desktop app)'], ['Cmd/Ctrl + Shift + D', 'Quick Capture note to Daily note (global in desktop app)'], ['Cmd/Ctrl + Shift + P', 'Quick Capture task to Planned (global in desktop app)'], ['Cmd/Ctrl + Shift + R', 'Quick Capture task to Review (global in desktop app)'], ['Cmd/Ctrl + Shift + 1..5', 'Custom quick capture preset (configurable below)'], ['N', 'New task (in tasks/kanban)'], ['Cmd/Ctrl + B', 'Bold (in editor)'], ['Cmd/Ctrl + I', 'Italic (in editor)'], ['Cmd/Ctrl + K', 'Insert link (in editor)'], ['Cmd/Ctrl + S', 'Save (in editor)'], ['Cmd/Ctrl + Z', 'Undo (in editor)'], ['Cmd/Ctrl + F', 'Search in editor'], ['Cmd/Ctrl + H', 'Search & Replace'], ['/', 'Slash commands (in editor)'], ['Escape', 'Close modals/menus']] as [shortcut, action]}
 					<div class="flex items-center gap-2 rounded-lg border border-slate-800/60 px-3 py-2">
 						<kbd
 							class="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300"
@@ -587,6 +647,119 @@
 					on:click={saveNotificationSettings}
 				>
 					Save reminder settings
+				</button>
+			</div>
+		</section>
+
+		<!-- Quick Capture Presets -->
+		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+			<h3 class="text-sm font-semibold text-white">Quick Capture Presets</h3>
+			<p class="mt-1 text-[11px] text-slate-400">
+				Create reusable capture presets and optionally assign `Cmd/Ctrl + Shift + 1..5` shortcuts.
+			</p>
+			<div class="mt-3 space-y-3">
+				{#if capturePresets.length === 0}
+					<p class="rounded-lg border border-dashed border-slate-700 px-3 py-2 text-xs text-slate-500">
+						No custom presets yet.
+					</p>
+				{:else}
+					{#each capturePresets as preset (preset.id)}
+						<div class="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+							<div class="flex items-center gap-2">
+								<input
+									class="flex-1 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white"
+									value={preset.name}
+									on:input={(event) =>
+										updateCapturePreset(preset.id, {
+											name: (event.currentTarget as HTMLInputElement).value
+										})}
+									placeholder="Preset name"
+								/>
+								<label class="flex items-center gap-1 text-[11px] text-slate-400">
+									<input
+										type="checkbox"
+										checked={preset.enabled}
+										on:change={(event) =>
+											updateCapturePreset(preset.id, {
+												enabled: (event.currentTarget as HTMLInputElement).checked
+											})}
+									/>
+									Enabled
+								</label>
+								<button
+									class="rounded border border-red-500/30 px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/10"
+									on:click={() => removeCapturePreset(preset.id)}
+								>
+									Remove
+								</button>
+							</div>
+							<div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+								<select
+									class="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white"
+									value={preset.mode}
+									on:change={(event) =>
+										updateCapturePreset(preset.id, {
+											mode: (event.currentTarget as HTMLSelectElement).value as QuickCaptureMode
+										})}
+								>
+									{#each captureModeOptions as option (option.value)}
+										<option value={option.value}>{option.label}</option>
+									{/each}
+								</select>
+								<select
+									class="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white"
+									value={preset.target}
+									on:change={(event) =>
+										updateCapturePreset(preset.id, {
+											target: (event.currentTarget as HTMLSelectElement).value as QuickCaptureTarget
+										})}
+								>
+									{#each captureTargetOptions as option (option.value)}
+										<option value={option.value}>{option.label}</option>
+									{/each}
+								</select>
+								<select
+									class="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white"
+									value={preset.shortcut}
+									on:change={(event) =>
+										updateCapturePreset(preset.id, {
+											shortcut: (event.currentTarget as HTMLSelectElement).value as CapturePresetShortcut
+										})}
+								>
+									{#each captureShortcutOptions as option (option)}
+										<option value={option}>
+											{option === 'none'
+												? 'No shortcut'
+												: `Cmd/Ctrl+Shift+${option}`}
+										</option>
+									{/each}
+								</select>
+							</div>
+							<input
+								class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white"
+								value={preset.prefill}
+								on:input={(event) =>
+									updateCapturePreset(preset.id, {
+										prefill: (event.currentTarget as HTMLInputElement).value
+									})}
+								placeholder="Optional prefill text"
+							/>
+						</div>
+					{/each}
+				{/if}
+			</div>
+			<div class="mt-3 flex items-center gap-2">
+				<button
+					class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800"
+					on:click={addCapturePreset}
+				>
+					Add preset
+				</button>
+				<button
+					class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400"
+					on:click={saveCapturePresetSettings}
+				>
+					Save presets
 				</button>
 			</div>
 		</section>

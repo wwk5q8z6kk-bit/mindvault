@@ -18,6 +18,7 @@
 		type QuickCaptureMode,
 		type QuickCaptureTarget
 	} from '$lib/capture/quick-capture';
+	import { findCapturePresetForEvent, loadCapturePresets, type CapturePreset } from '$lib/capture/presets';
 
 	const NOTE_KINDS: { value: NodeKind; label: string; description: string }[] = [
 		{ value: 'fact', label: 'Note', description: 'General note or thought' },
@@ -62,6 +63,7 @@
 	let audioUrl: string | null = null;
 	let voiceEnabled = localStorage.getItem('mv_feature_voice') !== 'false';
 	let uploadPhase: 'idle' | 'uploading' | 'transcribing' = 'idle';
+	let capturePresets: CapturePreset[] = [];
 
 	// AI Enrichment state
 	import { enrichedNodes } from '$lib/api/agent';
@@ -225,6 +227,12 @@
 
 	function handleGlobalKeydown(event: KeyboardEvent) {
 		if ((event.metaKey || event.ctrlKey) && event.shiftKey) {
+			const preset = findCapturePresetForEvent(event, capturePresets);
+			if (preset) {
+				event.preventDefault();
+				void openCapture(preset.mode, preset.target, preset.prefill || null);
+				return;
+			}
 			const key = event.key.toLowerCase();
 			if (key === 'n') {
 				event.preventDefault();
@@ -455,6 +463,7 @@
 	onMount(() => {
 		captureModeTargets = readCaptureModeTargetsPreference();
 		captureTarget = readCaptureTargetPreference();
+		capturePresets = loadCapturePresets();
 
 		const handleGlobalCaptureEvent = (event: Event) => {
 			const detail = event instanceof CustomEvent ? event.detail : null;
@@ -468,9 +477,19 @@
 				requestedMode === 'voice' && !voiceEnabled ? ('task' as CaptureType) : requestedMode;
 			void openCapture(resolvedMode, requestedTarget, requestedPrefill);
 		};
+		const handleStorageEvent = () => {
+			capturePresets = loadCapturePresets();
+		};
+		const handlePresetUpdateEvent = () => {
+			capturePresets = loadCapturePresets();
+		};
 		window.addEventListener(QUICK_CAPTURE_EVENT_NAME, handleGlobalCaptureEvent);
+		window.addEventListener('storage', handleStorageEvent);
+		window.addEventListener('mindvault:capture-presets-updated', handlePresetUpdateEvent);
 		return () => {
 			window.removeEventListener(QUICK_CAPTURE_EVENT_NAME, handleGlobalCaptureEvent);
+			window.removeEventListener('storage', handleStorageEvent);
+			window.removeEventListener('mindvault:capture-presets-updated', handlePresetUpdateEvent);
 		};
 	});
 </script>
