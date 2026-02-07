@@ -201,6 +201,7 @@ MindVault supports fast capture flows from anywhere in the app, with desktop-glo
 - Task reminders can open prefilled quick capture on notification click (configurable in Settings: Inbox, Daily note, Planned, Review, or disabled).
 - Quick Capture Presets in Settings allow reusable mode/target/prefill bundles with optional shortcut assignments.
 - Command Palette (`Cmd/Ctrl+K`) now includes enabled quick-capture presets as direct actions.
+- Smart Inbox includes `AI Triage` to suggest priority/status updates for inbox tasks and apply top recommendations in one click.
 
 ## Web Editor
 

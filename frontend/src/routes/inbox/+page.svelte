@@ -8,6 +8,13 @@
 	import type { Note } from '$lib/api/notes';
 	import type { TaskStatus } from '$lib/api/tasks';
 	import { updateNote } from '$lib/api/notes';
+	import { assistAutoTag } from '$lib/api/assist';
+	import { prioritizeTasks } from '$lib/api/ai';
+	import {
+		buildInboxTriagePatch,
+		buildInboxTriageSuggestions,
+		type InboxTriageSuggestion
+	} from '$lib/inbox/triage';
 
 	type InboxItem =
 		| { type: 'task'; data: TaskRecord; created: string }
@@ -17,6 +24,10 @@
 	let loading = true;
 	let processedCount = 0;
 	let snoozeOpenId: string | null = null;
+	let suggestingTagsFor: string | null = null;
+	let suggestedTags: Map<string, string[]> = new Map();
+	let triageLoading = false;
+	let triageSuggestions: Map<string, InboxTriageSuggestion> = new Map();
 
 	$: {
 		const taskItems: InboxItem[] = $tasksStore
@@ -112,6 +123,117 @@
 		}
 	}
 
+	async function suggestTags(item: InboxItem) {
+		const id = item.data.id;
+		if (suggestingTagsFor === id) return;
+		suggestingTagsFor = id;
+		try {
+			const text =
+				item.type === 'task'
+					? `${item.data.title}${item.data.description ? '\n' + item.data.description : ''}`
+					: `${item.data.title ?? ''}${item.data.markdown ? '\n' + item.data.markdown : ''}`;
+			// Gather existing tags from notes for context
+			const existingTags = [...new Set($notesStore.flatMap((n) => n.tags ?? []))].slice(0, 30);
+			const result = await assistAutoTag({ text, existing_tags: existingTags });
+			suggestedTags = new Map(suggestedTags).set(id, result.tags);
+		} catch {
+			pushToast('Failed to suggest tags', 'danger');
+		} finally {
+			suggestingTagsFor = null;
+		}
+	}
+
+	async function applyTag(itemId: string, tag: string, itemType: 'task' | 'note') {
+		try {
+			if (itemType === 'note') {
+				const note = $notesStore.find((n) => n.id === itemId);
+				if (!note) return;
+				await updateNote(itemId, { tags: [...(note.tags ?? []), tag] });
+				await loadNotes();
+			} else {
+				await updateTaskOptimistic(itemId, { labels: [...(($tasksStore.find((t) => t.id === itemId)?.labels) ?? []), tag] });
+			}
+			// Remove the applied tag from suggestions
+			const remaining = (suggestedTags.get(itemId) ?? []).filter((t) => t !== tag);
+			suggestedTags = new Map(suggestedTags);
+			if (remaining.length === 0) {
+				suggestedTags.delete(itemId);
+			} else {
+				suggestedTags.set(itemId, remaining);
+			}
+			processedCount++;
+			pushToast(`Tagged with "${tag}"`, 'success');
+		} catch {
+			pushToast('Failed to apply tag', 'danger');
+		}
+	}
+
+	async function runAiInboxTriage() {
+		if (triageLoading) return;
+		triageLoading = true;
+		try {
+			const response = await prioritizeTasks({
+				statuses: ['inbox'],
+				include_done: false,
+				limit: 60
+			});
+			triageSuggestions = buildInboxTriageSuggestions(
+				response.items.filter((item) => item.task.status === 'inbox')
+			);
+			if (triageSuggestions.size === 0) {
+				pushToast('No inbox tasks available for AI triage', 'info');
+			} else {
+				pushToast(`Prepared AI triage suggestions for ${triageSuggestions.size} task(s)`, 'success');
+			}
+		} catch {
+			pushToast('Failed to run AI inbox triage', 'danger');
+		} finally {
+			triageLoading = false;
+		}
+	}
+
+	function clearAiInboxTriage() {
+		triageSuggestions = new Map();
+	}
+
+	async function applyAiTriageSuggestion(taskId: string, silent = false): Promise<boolean> {
+		const suggestion = triageSuggestions.get(taskId);
+		const task = $tasksStore.find((entry) => entry.id === taskId);
+		if (!suggestion || !task) return false;
+		const patch = buildInboxTriagePatch(task, suggestion);
+		triageSuggestions = new Map(triageSuggestions);
+		triageSuggestions.delete(taskId);
+		if (!patch) {
+			if (!silent) pushToast('Task already matches AI triage suggestion', 'info');
+			return false;
+		}
+		try {
+			await updateTaskOptimistic(taskId, patch);
+			processedCount++;
+			if (!silent) pushToast('Applied AI triage suggestion', 'success');
+			return true;
+		} catch {
+			if (!silent) pushToast('Failed to apply AI triage suggestion', 'danger');
+			return false;
+		}
+	}
+
+	async function applyTopAiTriage(limit = 3) {
+		const ordered = [...triageSuggestions.values()]
+			.sort((a, b) => a.rank - b.rank)
+			.slice(0, limit);
+		let applied = 0;
+		for (const suggestion of ordered) {
+			const success = await applyAiTriageSuggestion(suggestion.taskId, true);
+			if (success) applied++;
+		}
+		if (applied > 0) {
+			pushToast(`Applied ${applied} AI triage suggestion(s)`, 'success');
+		} else {
+			pushToast('No AI triage suggestions were applicable', 'info');
+		}
+	}
+
 	function relativeTime(dateStr: string): string {
 		const now = Date.now();
 		const date = new Date(dateStr).getTime();
@@ -122,6 +244,23 @@
 		if (diffHr < 24) return `${diffHr}h ago`;
 		const diffDay = Math.floor(diffHr / 24);
 		return `${diffDay}d ago`;
+	}
+
+	function statusLabel(status: TaskStatus): string {
+		switch (status) {
+			case 'in_progress':
+				return 'In progress';
+			case 'planned':
+				return 'Planned';
+			case 'review':
+				return 'Review';
+			case 'waiting':
+				return 'Waiting';
+			case 'done':
+				return 'Done';
+			default:
+				return 'Inbox';
+		}
 	}
 
 	const STATUS_ACTIONS: Array<{ status: TaskStatus; label: string; color: string }> = [
@@ -140,6 +279,29 @@
 					&middot; {processedCount} processed this session
 				{/if}
 			</p>
+		</div>
+		<div class="flex items-center gap-2">
+			<button
+				class="rounded-lg border border-indigo-500/30 px-3 py-1.5 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/10 disabled:opacity-50"
+				on:click={runAiInboxTriage}
+				disabled={triageLoading}
+			>
+				{triageLoading ? 'Triaging...' : 'AI Triage'}
+			</button>
+			{#if triageSuggestions.size > 0}
+				<button
+					class="rounded-lg border border-violet-500/30 px-3 py-1.5 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/10"
+					on:click={() => applyTopAiTriage(3)}
+				>
+					Apply Top 3
+				</button>
+				<button
+					class="rounded-lg border border-slate-700 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
+					on:click={clearAiInboxTriage}
+				>
+					Clear
+				</button>
+			{/if}
 		</div>
 	</div>
 
@@ -183,6 +345,22 @@
 							{/if}
 							{#if item.type === 'note' && item.data.markdown}
 								<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">{item.data.markdown.slice(0, 150)}</p>
+							{/if}
+							{#if item.type === 'task' && triageSuggestions.has(item.data.id)}
+								{@const suggestion = triageSuggestions.get(item.data.id)}
+								{#if suggestion}
+									<div class="mt-2 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-2">
+										<div class="flex items-center gap-2 text-[10px] text-indigo-200">
+											<span class="rounded bg-indigo-500/20 px-1.5 py-0.5 font-medium">AI triage</span>
+											<span>Rank #{suggestion.rank}</span>
+											<span>Priority P{suggestion.suggestedPriority}</span>
+											<span>{statusLabel(suggestion.suggestedStatus)}</span>
+										</div>
+										{#if suggestion.reason}
+											<p class="mt-1 line-clamp-2 text-[10px] text-indigo-100/90">{suggestion.reason}</p>
+										{/if}
+									</div>
+								{/if}
 							{/if}
 						</div>
 					</div>
@@ -233,6 +411,21 @@
 							>
 								Done
 							</button>
+							<button
+								class="rounded-lg border border-teal-500/30 px-2.5 py-1 text-[10px] font-medium text-teal-300 transition hover:bg-teal-500/10 disabled:opacity-50"
+								disabled={suggestingTagsFor === item.data.id}
+								on:click={() => suggestTags(item)}
+							>
+								{suggestingTagsFor === item.data.id ? 'Thinking...' : 'AI Tag'}
+							</button>
+							{#if triageSuggestions.has(item.data.id)}
+								<button
+									class="rounded-lg border border-indigo-500/30 px-2.5 py-1 text-[10px] font-medium text-indigo-200 transition hover:bg-indigo-500/10"
+									on:click={() => applyAiTriageSuggestion(item.data.id)}
+								>
+									Apply AI
+								</button>
+							{/if}
 							<a
 								href="/tasks?task={item.data.id}"
 								class="rounded-lg border border-slate-700 px-2.5 py-1 text-[10px] text-slate-300 transition hover:bg-slate-800"
@@ -245,6 +438,13 @@
 								on:click={() => tagNote(item.data.id)}
 							>
 								Tag
+							</button>
+							<button
+								class="rounded-lg border border-teal-500/30 px-2.5 py-1 text-[10px] font-medium text-teal-300 transition hover:bg-teal-500/10 disabled:opacity-50"
+								disabled={suggestingTagsFor === item.data.id}
+								on:click={() => suggestTags(item)}
+							>
+								{suggestingTagsFor === item.data.id ? 'Thinking...' : 'AI Tag'}
 							</button>
 							<button
 								class="rounded-lg border border-slate-600 px-2.5 py-1 text-[10px] text-slate-300 transition hover:bg-slate-800"
@@ -260,6 +460,20 @@
 							</a>
 						{/if}
 					</div>
+
+					{#if suggestedTags.has(item.data.id)}
+						<div class="mt-2 flex flex-wrap gap-1.5">
+							<span class="text-[10px] text-slate-500">Suggested:</span>
+							{#each suggestedTags.get(item.data.id) ?? [] as tag}
+								<button
+									class="rounded-full border border-teal-500/30 bg-teal-500/10 px-2 py-0.5 text-[10px] text-teal-300 transition hover:bg-teal-500/20"
+									on:click={() => applyTag(item.data.id, tag, item.type)}
+								>
+									+ {tag}
+								</button>
+							{/each}
+						</div>
+					{/if}
 				</div>
 			{/each}
 		{/if}
