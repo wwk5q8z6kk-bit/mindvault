@@ -7,6 +7,7 @@ import { quickAddTaskOptimistic } from '$lib/stores/tasks';
 import { taskFilter } from '$lib/stores/tasks';
 import { focusPlannerState } from '$lib/stores/ui';
 import { createSavedSearch, deleteSavedSearch, listSavedSearches, runSavedSearch, type SavedSearch } from '$lib/api/search';
+import { dispatchQuickCapture } from '$lib/capture/quick-capture';
 
 let cachedSavedSearches: SavedSearch[] = [];
 let savedSearchesLoaded = false;
@@ -39,15 +40,8 @@ const STATUS_MAP: Record<string, string> = {
 	done: 'done'
 };
 
-type QuickCaptureMode = 'task' | 'note' | 'link' | 'voice';
-type QuickCaptureTarget = 'default' | 'inbox' | 'daily';
-
-function dispatchQuickCaptureEvent(
-	mode: QuickCaptureMode = 'task',
-	target: QuickCaptureTarget = 'default'
-) {
-	if (typeof window === 'undefined') return;
-	window.dispatchEvent(new CustomEvent('mindvault:quick-capture', { detail: { mode, target } }));
+function dispatchQuickCaptureEvent(mode: 'task' | 'note' | 'link' | 'voice', target: 'default' | 'inbox' | 'daily') {
+	dispatchQuickCapture({ mode, target });
 }
 
 export function registerBuiltInActions() {

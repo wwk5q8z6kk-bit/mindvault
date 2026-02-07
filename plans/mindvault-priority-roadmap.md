@@ -327,7 +327,8 @@ Last updated: 2026-02-07
   - Desktop quick-capture entry point and global hotkeys. (Done: Tauri global `Cmd/Ctrl+Shift+N` opens task capture; `Cmd/Ctrl+Shift+M/L/V` open note/link/voice capture; `Cmd/Ctrl+Shift+I/D` route capture directly to Inbox/Daily note; shortcuts restore and focus app window.)
   - Capture target routing in quick capture (`Default`, `Inbox`, `Daily note`) with auto-tag and daily-link behavior. (Done)
   - Command palette quick-capture actions dispatch mode+target events for parity with desktop shortcut routing. (Done)
-  - Remaining: notification action shortcuts and richer system-level capture targets.
+  - Reminder notification click actions can trigger prefilled quick capture with configurable target (`Inbox`, `Daily note`, or disabled). (Done)
+  - Remaining: additional system-level target presets beyond inbox/daily.
 
 ### MV-022: Voice notes and transcription
 - Priority: High

@@ -197,6 +197,7 @@ MindVault supports fast capture flows from anywhere in the app, with desktop-glo
 - Browser/web: works while the app tab is focused.
 - Capture modes: task, note, link, and voice (when enabled).
 - Capture target routing in modal: `Default`, `Inbox` (auto-tag), `Daily note` (auto-link to today's daily note).
+- Task reminders can open prefilled quick capture on notification click (configurable in Settings: Inbox task, Daily note, or disabled).
 
 ## Web Editor
 

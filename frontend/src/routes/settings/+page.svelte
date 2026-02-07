@@ -5,7 +5,13 @@
 	import { db } from '$lib/db';
 	import { syncQueue, loadTasks } from '$lib/stores/tasks';
 	import { loadNotes } from '$lib/stores/notes';
-	import { startNotifications, stopNotifications, resetNotifiedIds } from '$lib/stores/notifications';
+	import {
+		startNotifications,
+		stopNotifications,
+		resetNotifiedIds,
+		getNotificationClickAction,
+		type NotificationClickAction
+	} from '$lib/stores/notifications';
 	import ImportExportPanel from '$lib/components/ImportExportPanel.svelte';
 
 	let showServerExport = false;
@@ -23,7 +29,11 @@
 
 	// BYOK / LLM Provider settings
 	const AI_PROVIDERS = [
-		{ value: 'default', label: 'Server Default', description: 'Use the backend configured provider' },
+		{
+			value: 'default',
+			label: 'Server Default',
+			description: 'Use the backend configured provider'
+		},
 		{ value: 'openai', label: 'OpenAI', description: 'GPT-4o, GPT-4, GPT-3.5' },
 		{ value: 'anthropic', label: 'Anthropic', description: 'Claude Opus, Sonnet, Haiku' },
 		{ value: 'ollama', label: 'Ollama (Local)', description: 'Self-hosted open models' }
@@ -161,7 +171,9 @@
 					note.tags?.length ? `tags: [${note.tags.join(', ')}]` : null,
 					note.pinned ? 'pinned: true' : null,
 					'---'
-				].filter(Boolean).join('\n');
+				]
+					.filter(Boolean)
+					.join('\n');
 				return `${frontmatter}\n\n# ${note.title ?? 'Untitled'}\n\n${note.markdown ?? ''}`;
 			});
 
@@ -192,16 +204,66 @@
 	};
 
 	const FEATURE_TOGGLES: FeatureToggle[] = [
-		{ key: 'mv_feature_voice', label: 'Voice Notes', description: 'Record audio in Quick Capture', default: true },
-		{ key: 'mv_feature_notifications', label: 'Task Reminders', description: 'Browser notifications for due/overdue tasks', default: true },
-		{ key: 'mv_feature_flashcards', label: 'Flashcards', description: 'Spaced repetition learning cards', default: true },
-		{ key: 'mv_feature_habits', label: 'Habit Tracking', description: 'Daily habit checklist on Daily Notes page', default: true },
-		{ key: 'mv_feature_graph', label: 'Knowledge Graph', description: 'Visual node graph explorer', default: true },
-		{ key: 'mv_feature_canvas', label: 'Canvas / Mind Map', description: 'Freeform spatial workspace', default: true },
-		{ key: 'mv_feature_bookmarks', label: 'Reading List', description: 'Web clip and reference management', default: true },
-		{ key: 'mv_feature_autotag', label: 'AI Auto-Tagging', description: 'Suggest tags for notes using AI', default: true },
-		{ key: 'mv_feature_connections', label: 'Suggested Connections', description: 'AI-powered similar item discovery', default: true },
-		{ key: 'mv_feature_review', label: 'Proactive Review', description: 'Weekly AI digest and review prompts', default: true }
+		{
+			key: 'mv_feature_voice',
+			label: 'Voice Notes',
+			description: 'Record audio in Quick Capture',
+			default: true
+		},
+		{
+			key: 'mv_feature_notifications',
+			label: 'Task Reminders',
+			description: 'Browser notifications for due/overdue tasks',
+			default: true
+		},
+		{
+			key: 'mv_feature_flashcards',
+			label: 'Flashcards',
+			description: 'Spaced repetition learning cards',
+			default: true
+		},
+		{
+			key: 'mv_feature_habits',
+			label: 'Habit Tracking',
+			description: 'Daily habit checklist on Daily Notes page',
+			default: true
+		},
+		{
+			key: 'mv_feature_graph',
+			label: 'Knowledge Graph',
+			description: 'Visual node graph explorer',
+			default: true
+		},
+		{
+			key: 'mv_feature_canvas',
+			label: 'Canvas / Mind Map',
+			description: 'Freeform spatial workspace',
+			default: true
+		},
+		{
+			key: 'mv_feature_bookmarks',
+			label: 'Reading List',
+			description: 'Web clip and reference management',
+			default: true
+		},
+		{
+			key: 'mv_feature_autotag',
+			label: 'AI Auto-Tagging',
+			description: 'Suggest tags for notes using AI',
+			default: true
+		},
+		{
+			key: 'mv_feature_connections',
+			label: 'Suggested Connections',
+			description: 'AI-powered similar item discovery',
+			default: true
+		},
+		{
+			key: 'mv_feature_review',
+			label: 'Proactive Review',
+			description: 'Weekly AI digest and review prompts',
+			default: true
+		}
 	];
 
 	function isFeatureEnabled(key: string, defaultVal: boolean): boolean {
@@ -237,10 +299,12 @@
 	// Notification settings
 	let notifLeadMinutes = localStorage.getItem('mv_notification_lead_minutes') ?? '30';
 	let notifCheckInterval = localStorage.getItem('mv_notification_check_interval') ?? '60000';
+	let notifClickAction: NotificationClickAction = getNotificationClickAction();
 
 	function saveNotificationSettings() {
 		localStorage.setItem('mv_notification_lead_minutes', notifLeadMinutes);
 		localStorage.setItem('mv_notification_check_interval', notifCheckInterval);
+		localStorage.setItem('mv_notification_click_action', notifClickAction);
 		resetNotifiedIds();
 		stopNotifications();
 		startNotifications();
@@ -248,7 +312,9 @@
 	}
 
 	function clearLocalData() {
-		if (confirm('This will clear all local cached data. Data on the server will not be affected.')) {
+		if (
+			confirm('This will clear all local cached data. Data on the server will not be affected.')
+		) {
 			localStorage.clear();
 			indexedDB.deleteDatabase('mindvault');
 			pushToast('Local data cleared. Reload to re-sync.', 'info');
@@ -314,7 +380,8 @@
 		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
 			<h3 class="text-sm font-semibold text-white">AI Provider</h3>
 			<p class="mt-1 text-[11px] text-slate-400">
-				Bring your own API key or use a local LLM. Leave as "Server Default" to use the backend's configured provider.
+				Bring your own API key or use a local LLM. Leave as "Server Default" to use the backend's
+				configured provider.
 			</p>
 
 			<div class="mt-3 grid grid-cols-2 gap-2">
@@ -325,7 +392,9 @@
 								? 'border-sky-500/60 bg-sky-500/10'
 								: 'border-slate-800 hover:border-slate-600'
 						}`}
-						on:click={() => { aiProvider = provider.value; }}
+						on:click={() => {
+							aiProvider = provider.value;
+						}}
 					>
 						<div class="text-xs font-semibold text-white">{provider.label}</div>
 						<div class="mt-0.5 text-[10px] text-slate-400">{provider.description}</div>
@@ -336,16 +405,24 @@
 			{#if aiProvider !== 'default'}
 				<div class="mt-3 flex flex-col gap-3">
 					<div>
-						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="ai-model">Model</label>
+						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="ai-model"
+							>Model</label
+						>
 						<input
 							id="ai-model"
 							class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
-							placeholder={aiProvider === 'openai' ? 'gpt-4o' : aiProvider === 'anthropic' ? 'claude-sonnet-4-5-20250929' : 'llama3.1'}
+							placeholder={aiProvider === 'openai'
+								? 'gpt-4o'
+								: aiProvider === 'anthropic'
+									? 'claude-sonnet-4-5-20250929'
+									: 'llama3.1'}
 							bind:value={aiModel}
 						/>
 					</div>
 					<div>
-						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="ai-key">API Key</label>
+						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="ai-key"
+							>API Key</label
+						>
 						<div class="relative mt-1">
 							<input
 								id="ai-key"
@@ -356,7 +433,9 @@
 							/>
 							<button
 								class="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 hover:text-white"
-								on:click={() => { showApiKey = !showApiKey; }}
+								on:click={() => {
+									showApiKey = !showApiKey;
+								}}
 							>
 								{showApiKey ? 'Hide' : 'Show'}
 							</button>
@@ -364,7 +443,9 @@
 					</div>
 					{#if aiProvider === 'ollama'}
 						<div>
-							<label class="text-[10px] uppercase tracking-wider text-slate-500" for="ai-url">Base URL</label>
+							<label class="text-[10px] uppercase tracking-wider text-slate-500" for="ai-url"
+								>Base URL</label
+							>
 							<input
 								id="ai-url"
 								class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
@@ -398,22 +479,12 @@
 		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
 			<h3 class="text-sm font-semibold text-white">Keyboard Shortcuts</h3>
 			<div class="mt-3 grid grid-cols-2 gap-2 text-xs">
-				{#each [
-					['Cmd/Ctrl + K', 'Command palette'],
-					['Cmd/Ctrl + Shift + N', 'Quick Capture'],
-					['N', 'New task (in tasks/kanban)'],
-					['Cmd/Ctrl + B', 'Bold (in editor)'],
-					['Cmd/Ctrl + I', 'Italic (in editor)'],
-					['Cmd/Ctrl + K', 'Insert link (in editor)'],
-					['Cmd/Ctrl + S', 'Save (in editor)'],
-					['Cmd/Ctrl + Z', 'Undo (in editor)'],
-					['Cmd/Ctrl + F', 'Search in editor'],
-					['Cmd/Ctrl + H', 'Search & Replace'],
-					['/', 'Slash commands (in editor)'],
-					['Escape', 'Close modals/menus'],
-				] as [shortcut, action]}
+				{#each [['Cmd/Ctrl + K', 'Command palette'], ['Cmd/Ctrl + Shift + N', 'Quick Capture task (global in desktop app)'], ['Cmd/Ctrl + Shift + M', 'Quick Capture note (global in desktop app)'], ['Cmd/Ctrl + Shift + L', 'Quick Capture link (global in desktop app)'], ['Cmd/Ctrl + Shift + V', 'Quick Capture voice (global in desktop app)'], ['Cmd/Ctrl + Shift + I', 'Quick Capture task to Inbox (global in desktop app)'], ['Cmd/Ctrl + Shift + D', 'Quick Capture note to Daily note (global in desktop app)'], ['N', 'New task (in tasks/kanban)'], ['Cmd/Ctrl + B', 'Bold (in editor)'], ['Cmd/Ctrl + I', 'Italic (in editor)'], ['Cmd/Ctrl + K', 'Insert link (in editor)'], ['Cmd/Ctrl + S', 'Save (in editor)'], ['Cmd/Ctrl + Z', 'Undo (in editor)'], ['Cmd/Ctrl + F', 'Search in editor'], ['Cmd/Ctrl + H', 'Search & Replace'], ['/', 'Slash commands (in editor)'], ['Escape', 'Close modals/menus']] as [shortcut, action]}
 					<div class="flex items-center gap-2 rounded-lg border border-slate-800/60 px-3 py-2">
-						<kbd class="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300">{shortcut}</kbd>
+						<kbd
+							class="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300"
+							>{shortcut}</kbd
+						>
 						<span class="text-slate-400">{action}</span>
 					</div>
 				{/each}
@@ -423,10 +494,14 @@
 		<!-- Feature Toggles -->
 		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
 			<h3 class="text-sm font-semibold text-white">Feature Toggles</h3>
-			<p class="mt-1 text-[11px] text-slate-400">Enable or disable optional features. Changes apply immediately.</p>
+			<p class="mt-1 text-[11px] text-slate-400">
+				Enable or disable optional features. Changes apply immediately.
+			</p>
 			<div class="mt-3 grid grid-cols-1 gap-2">
 				{#each featureStates as feature (feature.key)}
-					<div class="flex items-center justify-between rounded-lg border border-slate-800/60 px-3 py-2.5">
+					<div
+						class="flex items-center justify-between rounded-lg border border-slate-800/60 px-3 py-2.5"
+					>
 						<div>
 							<div class="text-xs font-medium text-white">{feature.label}</div>
 							<div class="text-[10px] text-slate-400">{feature.description}</div>
@@ -438,9 +513,11 @@
 							on:click={() => toggleFeature(feature.key, feature.default)}
 							aria-label="Toggle {feature.label}"
 						>
-							<span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform {feature.enabled
-								? 'translate-x-4'
-								: 'translate-x-0.5'}"></span>
+							<span
+								class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform {feature.enabled
+									? 'translate-x-4'
+									: 'translate-x-0.5'}"
+							></span>
 						</button>
 					</div>
 				{/each}
@@ -450,10 +527,14 @@
 		<!-- Notification Settings -->
 		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
 			<h3 class="text-sm font-semibold text-white">Task Reminders</h3>
-			<p class="mt-1 text-[11px] text-slate-400">Configure when and how you get reminded about due tasks.</p>
+			<p class="mt-1 text-[11px] text-slate-400">
+				Configure when and how you get reminded about due tasks.
+			</p>
 			<div class="mt-3 flex flex-col gap-3">
 				<div>
-					<label class="text-[10px] uppercase tracking-wider text-slate-500" for="notif-lead">Remind me this many minutes before due</label>
+					<label class="text-[10px] uppercase tracking-wider text-slate-500" for="notif-lead"
+						>Remind me this many minutes before due</label
+					>
 					<select
 						id="notif-lead"
 						class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white"
@@ -468,7 +549,9 @@
 					</select>
 				</div>
 				<div>
-					<label class="text-[10px] uppercase tracking-wider text-slate-500" for="notif-interval">Check frequency</label>
+					<label class="text-[10px] uppercase tracking-wider text-slate-500" for="notif-interval"
+						>Check frequency</label
+					>
 					<select
 						id="notif-interval"
 						class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white"
@@ -479,6 +562,23 @@
 						<option value="300000">Every 5 minutes</option>
 						<option value="600000">Every 10 minutes</option>
 					</select>
+				</div>
+				<div>
+					<label class="text-[10px] uppercase tracking-wider text-slate-500" for="notif-click-action"
+						>When a reminder is clicked</label
+					>
+					<select
+						id="notif-click-action"
+						class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white"
+						bind:value={notifClickAction}
+					>
+						<option value="inbox">Open task capture in Inbox</option>
+						<option value="daily">Open note capture in Daily note</option>
+						<option value="none">Do nothing</option>
+					</select>
+					<p class="mt-1 text-[10px] text-slate-500">
+						Applies to due/overdue notifications. Capture opens with a follow-up prefill.
+					</p>
 				</div>
 				<button
 					class="self-start rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400"
@@ -498,8 +598,18 @@
 					href="/settings/views"
 					class="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-700"
 				>
-					<svg class="h-3.5 w-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+					<svg
+						class="h-3.5 w-3.5 text-slate-400"
+						fill="none"
+						stroke="currentColor"
+						viewBox="0 0 24 24"
+					>
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M4 6h16M4 10h16M4 14h16M4 18h16"
+						/>
 					</svg>
 					Saved Views
 				</a>
@@ -507,8 +617,18 @@
 					href="/settings/audit"
 					class="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-700"
 				>
-					<svg class="h-3.5 w-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+					<svg
+						class="h-3.5 w-3.5 text-slate-400"
+						fill="none"
+						stroke="currentColor"
+						viewBox="0 0 24 24"
+					>
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"
+						/>
 					</svg>
 					Audit Log
 				</a>
@@ -528,7 +648,9 @@
 				>
 					{isExportingMd ? 'Exporting...' : 'Export Markdown'}
 				</button>
-				<label class="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-700 cursor-pointer">
+				<label
+					class="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-700 cursor-pointer"
+				>
 					Import JSON
 					<input
 						type="file"
@@ -540,7 +662,9 @@
 				</label>
 				<button
 					class="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-300 transition hover:bg-sky-500/20"
-					on:click={() => { showServerExport = true; }}
+					on:click={() => {
+						showServerExport = true;
+					}}
 				>
 					Server Export/Import
 				</button>
@@ -552,11 +676,10 @@
 				</button>
 			</div>
 			<p class="mt-2 text-[10px] text-slate-500">
-				Export JSON saves all tasks and notes from local cache.
-				Export Markdown downloads notes as a .md file with YAML frontmatter.
-				Import merges data into local cache (overwrites by ID).
-				Server Export/Import uses the backend API for full data portability.
-				Clear removes IndexedDB and localStorage (server data unaffected).
+				Export JSON saves all tasks and notes from local cache. Export Markdown downloads notes as a
+				.md file with YAML frontmatter. Import merges data into local cache (overwrites by ID).
+				Server Export/Import uses the backend API for full data portability. Clear removes IndexedDB
+				and localStorage (server data unaffected).
 			</p>
 		</section>
 
@@ -574,7 +697,15 @@
 
 <ImportExportPanel
 	open={showServerExport}
-	on:close={() => { showServerExport = false; }}
-	on:exportComplete={() => { pushToast('Export complete', 'success'); }}
-	on:importComplete={async () => { await Promise.all([loadTasks(), loadNotes()]); pushToast('Import complete', 'success'); showServerExport = false; }}
+	on:close={() => {
+		showServerExport = false;
+	}}
+	on:exportComplete={() => {
+		pushToast('Export complete', 'success');
+	}}
+	on:importComplete={async () => {
+		await Promise.all([loadTasks(), loadNotes()]);
+		pushToast('Import complete', 'success');
+		showServerExport = false;
+	}}
 />

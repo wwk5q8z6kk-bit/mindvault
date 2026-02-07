@@ -10,6 +10,13 @@
 	import { activeNamespace } from '$lib/stores/namespace';
 	import { uploadVoiceNote, type VoiceUploadProgress } from '$lib/api/voice';
 	import type { NodeKind } from '$lib/api/types';
+	import {
+		QUICK_CAPTURE_EVENT_NAME,
+		isQuickCaptureMode,
+		isQuickCaptureTarget,
+		type QuickCaptureMode,
+		type QuickCaptureTarget
+	} from '$lib/capture/quick-capture';
 
 	const NOTE_KINDS: { value: NodeKind; label: string; description: string }[] = [
 		{ value: 'fact', label: 'Note', description: 'General note or thought' },
@@ -22,8 +29,8 @@
 	];
 
 	let open = false;
-	type CaptureType = 'task' | 'note' | 'link' | 'voice';
-	type CaptureTarget = 'default' | 'inbox' | 'daily';
+	type CaptureType = QuickCaptureMode;
+	type CaptureTarget = QuickCaptureTarget;
 	type CaptureModeTargets = Record<CaptureType, CaptureTarget>;
 
 	const QUICK_CAPTURE_TARGET_STORAGE_KEY = 'mv_quick_capture_target';
@@ -62,18 +69,10 @@
 	let processingEnrichment = false;
 	let showAiSuggestions = false;
 
-	function isCaptureType(value: unknown): value is CaptureType {
-		return value === 'task' || value === 'note' || value === 'link' || value === 'voice';
-	}
-
-	function isCaptureTarget(value: unknown): value is CaptureTarget {
-		return value === 'default' || value === 'inbox' || value === 'daily';
-	}
-
 	function readCaptureTargetPreference(): CaptureTarget {
 		if (typeof localStorage === 'undefined') return 'default';
 		const stored = localStorage.getItem(QUICK_CAPTURE_TARGET_STORAGE_KEY);
-		return isCaptureTarget(stored) ? stored : 'default';
+		return isQuickCaptureTarget(stored) ? stored : 'default';
 	}
 
 	function readCaptureModeTargetsPreference(): CaptureModeTargets {
@@ -83,10 +82,10 @@
 		try {
 			const parsed = JSON.parse(raw) as Partial<Record<CaptureType, unknown>>;
 			return {
-				task: isCaptureTarget(parsed.task) ? parsed.task : 'default',
-				note: isCaptureTarget(parsed.note) ? parsed.note : 'default',
-				link: isCaptureTarget(parsed.link) ? parsed.link : 'default',
-				voice: isCaptureTarget(parsed.voice) ? parsed.voice : 'default'
+				task: isQuickCaptureTarget(parsed.task) ? parsed.task : 'default',
+				note: isQuickCaptureTarget(parsed.note) ? parsed.note : 'default',
+				link: isQuickCaptureTarget(parsed.link) ? parsed.link : 'default',
+				voice: isQuickCaptureTarget(parsed.voice) ? parsed.voice : 'default'
 			};
 		} catch {
 			return { ...DEFAULT_CAPTURE_MODE_TARGETS };
@@ -244,12 +243,14 @@
 
 	async function openCapture(
 		nextType: CaptureType = 'task',
-		forcedTarget: CaptureTarget | null = null
+		forcedTarget: CaptureTarget | null = null,
+		prefill: string | null = null
 	) {
 		const preferredTarget = forcedTarget ?? captureModeTargets[nextType] ?? captureTarget;
+		const normalizedPrefill = typeof prefill === 'string' ? prefill.trim() : null;
 		if (!open) {
 			open = true;
-			text = '';
+			text = normalizedPrefill ?? '';
 			captureType = nextType;
 			captureTarget = preferredTarget;
 			noteKind = 'fact';
@@ -263,6 +264,9 @@
 			captureTarget = preferredTarget;
 		} else if (forcedTarget) {
 			captureTarget = preferredTarget;
+		}
+		if (normalizedPrefill !== null) {
+			text = normalizedPrefill;
 		}
 		await tick();
 		inputEl?.focus();
@@ -425,15 +429,19 @@
 
 		const handleGlobalCaptureEvent = (event: Event) => {
 			const detail = event instanceof CustomEvent ? event.detail : null;
-			const requestedMode = isCaptureType(detail?.mode) ? detail.mode : 'task';
-			const requestedTarget = isCaptureTarget(detail?.target) ? detail.target : null;
+			const requestedMode = isQuickCaptureMode(detail?.mode) ? detail.mode : 'task';
+			const requestedTarget = isQuickCaptureTarget(detail?.target) ? detail.target : null;
+			const requestedPrefill =
+				typeof detail?.prefill === 'string' && detail.prefill.trim()
+					? detail.prefill
+					: null;
 			const resolvedMode =
 				requestedMode === 'voice' && !voiceEnabled ? ('task' as CaptureType) : requestedMode;
-			void openCapture(resolvedMode, requestedTarget);
+			void openCapture(resolvedMode, requestedTarget, requestedPrefill);
 		};
-		window.addEventListener('mindvault:quick-capture', handleGlobalCaptureEvent);
+		window.addEventListener(QUICK_CAPTURE_EVENT_NAME, handleGlobalCaptureEvent);
 		return () => {
-			window.removeEventListener('mindvault:quick-capture', handleGlobalCaptureEvent);
+			window.removeEventListener(QUICK_CAPTURE_EVENT_NAME, handleGlobalCaptureEvent);
 		};
 	});
 </script>
@@ -508,7 +516,7 @@
 						value={captureTarget}
 						on:change={(event) => {
 							const nextTarget = (event.currentTarget as HTMLSelectElement).value;
-							if (!isCaptureTarget(nextTarget)) return;
+							if (!isQuickCaptureTarget(nextTarget)) return;
 							updateCaptureTarget(nextTarget);
 						}}
 					>

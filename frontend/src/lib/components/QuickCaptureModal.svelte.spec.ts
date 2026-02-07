@@ -33,4 +33,15 @@ describe('QuickCaptureModal', () => {
 		const targetSelect = page.getByLabelText('Capture target');
 		await expect.element(targetSelect).toHaveValue('daily');
 	});
+
+	it('prefills capture text when event detail includes prefill', async () => {
+		render(QuickCaptureModal);
+		window.dispatchEvent(
+			new CustomEvent('mindvault:quick-capture', {
+				detail: { mode: 'task', target: 'inbox', prefill: 'Follow up: Review roadmap' }
+			})
+		);
+		const taskInput = page.getByPlaceholder('buy milk tomorrow 5pm p2 #home');
+		await expect.element(taskInput).toHaveValue('Follow up: Review roadmap');
+	});
 });

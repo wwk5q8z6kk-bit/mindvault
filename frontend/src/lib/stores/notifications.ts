@@ -1,9 +1,13 @@
 import { get } from 'svelte/store';
 import { tasksStore } from './tasks';
 import { pushToast } from './toast';
+import { dispatchQuickCapture, type QuickCaptureMode, type QuickCaptureTarget } from '$lib/capture/quick-capture';
 
 let checkInterval: ReturnType<typeof setInterval> | null = null;
 let notifiedIds = new Set<string>();
+const NOTIFICATION_CLICK_ACTION_STORAGE_KEY = 'mv_notification_click_action';
+
+export type NotificationClickAction = 'none' | 'inbox' | 'daily';
 
 function isEnabled(): boolean {
 	return localStorage.getItem('mv_feature_notifications') !== 'false';
@@ -17,6 +21,24 @@ function getCheckIntervalMs(): number {
 	return parseInt(localStorage.getItem('mv_notification_check_interval') ?? '60000', 10);
 }
 
+export function getNotificationClickAction(): NotificationClickAction {
+	const stored = localStorage.getItem(NOTIFICATION_CLICK_ACTION_STORAGE_KEY);
+	if (stored === 'none' || stored === 'daily') return stored;
+	return 'inbox';
+}
+
+function resolveNotificationCaptureAction(): {
+	mode: QuickCaptureMode;
+	target: QuickCaptureTarget;
+} | null {
+	const action = getNotificationClickAction();
+	if (action === 'none') return null;
+	if (action === 'daily') {
+		return { mode: 'note', target: 'daily' };
+	}
+	return { mode: 'task', target: 'inbox' };
+}
+
 async function requestPermission(): Promise<boolean> {
 	if (!('Notification' in window)) return false;
 	if (Notification.permission === 'granted') return true;
@@ -25,13 +47,32 @@ async function requestPermission(): Promise<boolean> {
 	return result === 'granted';
 }
 
-function sendNotification(title: string, body: string) {
+function openReminderQuickCapture(taskTitle: string) {
+	const action = resolveNotificationCaptureAction();
+	if (!action) return;
+	window.focus();
+	dispatchQuickCapture({
+		mode: action.mode,
+		target: action.target,
+		prefill: `Follow up: ${taskTitle}`
+	});
+	pushToast('Reminder opened quick capture', 'info', 2000);
+}
+
+function sendNotification(title: string, body: string, taskTitle?: string) {
 	if (Notification.permission === 'granted') {
-		new Notification(title, {
-			body,
+		const clickableAction = taskTitle ? resolveNotificationCaptureAction() : null;
+		const notification = new Notification(title, {
+			body: clickableAction ? `${body}\nClick to capture follow-up.` : body,
 			icon: '/favicon.png',
 			tag: 'mindvault-reminder'
 		});
+		if (taskTitle && clickableAction) {
+			notification.onclick = () => {
+				openReminderQuickCapture(taskTitle);
+				notification.close();
+			};
+		}
 	}
 }
 
@@ -52,13 +93,13 @@ function checkDueTasks() {
 		// Overdue
 		if (diff < 0) {
 			notifiedIds.add(task.id);
-			sendNotification('Overdue Task', `"${task.title}" was due ${formatRelative(due)}`);
+			sendNotification('Overdue Task', `"${task.title}" was due ${formatRelative(due)}`, task.title);
 			pushToast(`Overdue: ${task.title}`, 'warning');
 		}
 		// Due soon (within lead time)
 		else if (diff <= leadMs) {
 			notifiedIds.add(task.id);
-			sendNotification('Task Due Soon', `"${task.title}" is due ${formatRelative(due)}`);
+			sendNotification('Task Due Soon', `"${task.title}" is due ${formatRelative(due)}`, task.title);
 		}
 	}
 }
