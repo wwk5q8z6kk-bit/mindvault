@@ -26,6 +26,7 @@
 	}
 
 	const navItems = [
+		{ label: 'Plan', href: '/plan' },
 		{ label: 'Tasks', href: '/tasks' },
 		{ label: 'Focus', href: '/focus' },
 		{ label: 'Goals', href: '/goals' },
@@ -52,6 +53,11 @@
 	];
 
 	const routeMeta: Array<{ href: string; title: string; subtitle: string }> = [
+		{
+			href: '/plan',
+			title: 'Smart Daily Planner',
+			subtitle: 'AI-powered daily planning with priorities and focus blocks.'
+		},
 		{
 			href: '/tasks',
 			title: 'Task Management Center',
