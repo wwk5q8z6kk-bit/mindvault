@@ -23,6 +23,7 @@ export type PrioritizeTasksRequest = {
 	statuses?: TaskStatus[];
 	persist?: boolean;
 	provider?: string;
+	namespace?: string;
 };
 
 type RawPrioritizedItem = {
