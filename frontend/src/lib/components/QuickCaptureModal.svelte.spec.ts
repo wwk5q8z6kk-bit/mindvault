@@ -34,6 +34,15 @@ describe('QuickCaptureModal', () => {
 		await expect.element(targetSelect).toHaveValue('daily');
 	});
 
+	it('supports planned target routing via shortcut detail', async () => {
+		render(QuickCaptureModal);
+		window.dispatchEvent(
+			new CustomEvent('mindvault:quick-capture', { detail: { mode: 'task', target: 'planned' } })
+		);
+		const targetSelect = page.getByLabelText('Capture target');
+		await expect.element(targetSelect).toHaveValue('planned');
+	});
+
 	it('prefills capture text when event detail includes prefill', async () => {
 		render(QuickCaptureModal);
 		window.dispatchEvent(

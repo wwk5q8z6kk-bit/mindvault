@@ -192,11 +192,11 @@ MindVault supports fast capture flows from anywhere in the app, with desktop-glo
 
 - Shortcut: `Cmd/Ctrl + Shift + N`
 - Mode shortcuts (desktop Tauri app): `Cmd/Ctrl+Shift+M` (note), `Cmd/Ctrl+Shift+L` (link), `Cmd/Ctrl+Shift+V` (voice)
-- Target shortcuts (desktop Tauri app): `Cmd/Ctrl+Shift+I` (task -> Inbox), `Cmd/Ctrl+Shift+D` (note -> Daily note)
+- Target shortcuts (desktop Tauri app): `Cmd/Ctrl+Shift+I` (task -> Inbox), `Cmd/Ctrl+Shift+D` (note -> Daily note), `Cmd/Ctrl+Shift+P` (task -> Planned), `Cmd/Ctrl+Shift+R` (task -> Review)
 - Desktop (Tauri): works as a global system hotkey, restores/focuses the app window, and opens quick capture.
 - Browser/web: works while the app tab is focused.
 - Capture modes: task, note, link, and voice (when enabled).
-- Capture target routing in modal: `Default`, `Inbox` (auto-tag), `Daily note` (auto-link to today's daily note).
+- Capture target routing in modal: `Default`, `Inbox` (task status inbox + auto-tag), `Daily note` (auto-link to today's daily note), `Planned` (task status planned), `Review` (task status review).
 - Task reminders can open prefilled quick capture on notification click (configurable in Settings: Inbox task, Daily note, or disabled).
 
 ## Web Editor

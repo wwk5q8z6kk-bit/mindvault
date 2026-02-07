@@ -50,6 +50,13 @@ export interface TaskPatchPayload {
 	metadata?: Record<string, unknown>;
 }
 
+export interface QuickAddTaskOptions {
+	/** Labels to append to parsed quick-add labels (deduplicated, case-insensitive) */
+	default_labels?: string[];
+	/** Default status when quick-add text does not encode one explicitly */
+	default_status?: TaskStatus;
+}
+
 export async function listTasks(status?: TaskStatus, namespace?: string | null): Promise<Task[]> {
 	const params = new URLSearchParams({ kind: 'task', limit: '200' });
 	if (namespace) params.set('namespace', namespace);
@@ -129,7 +136,12 @@ export async function listDueTasks(params: DueTasksParams = {}): Promise<DueTask
 	const query = searchParams.toString();
 	const path = `/api/v1/tasks/due${query ? `?${query}` : ''}`;
 
-	const response = await fetchJson<{ tasks: KnowledgeNode[]; overdue_count: number; due_today_count: number; due_this_week_count: number }>(path);
+	const response = await fetchJson<{
+		tasks: KnowledgeNode[];
+		overdue_count: number;
+		due_today_count: number;
+		due_this_week_count: number;
+	}>(path);
 
 	return {
 		tasks: response.tasks.map(nodeToTask),
@@ -200,8 +212,15 @@ export async function snoozeTillNextWeek(taskId: string): Promise<Task> {
 }
 
 /** Client-side quick-add: parse text for title/priority/date, then create a task. */
-export async function quickAddTask(text: string): Promise<{ task: Task }> {
+export async function quickAddTask(
+	text: string,
+	options: QuickAddTaskOptions = {}
+): Promise<{ task: Task }> {
 	const parsed = parseQuickAdd(text);
+	parsed.labels = mergeTaskLabels(parsed.labels ?? [], options.default_labels ?? []);
+	if (options.default_status) {
+		parsed.status = options.default_status;
+	}
 	const task = await createTask(parsed);
 	return { task };
 }
@@ -220,6 +239,20 @@ export interface QuickAddPreview {
 /** Parse quick add text and return preview (for UI) */
 export function parseQuickAddPreview(text: string): QuickAddPreview {
 	return parseQuickAdd(text) as QuickAddPreview;
+}
+
+export function mergeTaskLabels(labels: string[], defaults: string[] = []): string[] {
+	const merged: string[] = [];
+	const seen = new Set<string>();
+	for (const label of [...labels, ...defaults]) {
+		const normalized = label.trim();
+		if (!normalized) continue;
+		const key = normalized.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		merged.push(normalized);
+	}
+	return merged;
 }
 
 function parseQuickAdd(text: string): TaskCreatePayload {
@@ -271,27 +304,40 @@ function parseQuickAdd(text: string): TaskCreatePayload {
 
 	// Extract natural language dates: "tomorrow", "next monday", "5pm", etc.
 	const datePatterns = [
-		{ pattern: /\btomorrow\b/i, compute: () => { const d = new Date(); d.setDate(d.getDate() + 1); return d; } },
+		{
+			pattern: /\btomorrow\b/i,
+			compute: () => {
+				const d = new Date();
+				d.setDate(d.getDate() + 1);
+				return d;
+			}
+		},
 		{ pattern: /\btoday\b/i, compute: () => new Date() },
-		{ pattern: /\bnext\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i, compute: (m: RegExpMatchArray) => {
-			const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-			const targetDay = days.indexOf(m[1].toLowerCase());
-			const d = new Date();
-			const currentDay = d.getDay();
-			const daysAhead = ((targetDay - currentDay + 7) % 7) || 7;
-			d.setDate(d.getDate() + daysAhead);
-			return d;
-		}},
-		{ pattern: /(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i, compute: (m: RegExpMatchArray) => {
-			const d = new Date();
-			let hours = parseInt(m[1]);
-			const minutes = m[2] ? parseInt(m[2]) : 0;
-			const meridiem = m[3].toLowerCase();
-			if (meridiem === 'pm' && hours < 12) hours += 12;
-			if (meridiem === 'am' && hours === 12) hours = 0;
-			d.setHours(hours, minutes, 0, 0);
-			return d;
-		}}
+		{
+			pattern: /\bnext\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
+			compute: (m: RegExpMatchArray) => {
+				const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+				const targetDay = days.indexOf(m[1].toLowerCase());
+				const d = new Date();
+				const currentDay = d.getDay();
+				const daysAhead = (targetDay - currentDay + 7) % 7 || 7;
+				d.setDate(d.getDate() + daysAhead);
+				return d;
+			}
+		},
+		{
+			pattern: /(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i,
+			compute: (m: RegExpMatchArray) => {
+				const d = new Date();
+				let hours = parseInt(m[1]);
+				const minutes = m[2] ? parseInt(m[2]) : 0;
+				const meridiem = m[3].toLowerCase();
+				if (meridiem === 'pm' && hours < 12) hours += 12;
+				if (meridiem === 'am' && hours === 12) hours = 0;
+				d.setHours(hours, minutes, 0, 0);
+				return d;
+			}
+		}
 	];
 
 	for (const { pattern, compute } of datePatterns) {

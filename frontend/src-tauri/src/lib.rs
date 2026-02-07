@@ -10,7 +10,7 @@ struct QuickCaptureShortcutBinding {
     target: &'static str,
 }
 
-const QUICK_CAPTURE_SHORTCUT_BINDINGS: [QuickCaptureShortcutBinding; 6] = [
+const QUICK_CAPTURE_SHORTCUT_BINDINGS: [QuickCaptureShortcutBinding; 8] = [
     QuickCaptureShortcutBinding {
         shortcut: "CommandOrControl+Shift+N",
         mode: "task",
@@ -40,6 +40,16 @@ const QUICK_CAPTURE_SHORTCUT_BINDINGS: [QuickCaptureShortcutBinding; 6] = [
         shortcut: "CommandOrControl+Shift+D",
         mode: "note",
         target: "daily",
+    },
+    QuickCaptureShortcutBinding {
+        shortcut: "CommandOrControl+Shift+P",
+        mode: "task",
+        target: "planned",
+    },
+    QuickCaptureShortcutBinding {
+        shortcut: "CommandOrControl+Shift+R",
+        mode: "task",
+        target: "review",
     },
 ];
 

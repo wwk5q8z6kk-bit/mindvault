@@ -10,6 +10,7 @@
 	import { activeNamespace } from '$lib/stores/namespace';
 	import { uploadVoiceNote, type VoiceUploadProgress } from '$lib/api/voice';
 	import type { NodeKind } from '$lib/api/types';
+	import type { TaskStatus } from '$lib/api/tasks';
 	import {
 		QUICK_CAPTURE_EVENT_NAME,
 		isQuickCaptureMode,
@@ -124,6 +125,12 @@
 		if (captureTarget === 'daily') {
 			tags.push('daily-capture');
 		}
+		if (captureTarget === 'planned') {
+			tags.push('planned-capture');
+		}
+		if (captureTarget === 'review') {
+			tags.push('review-capture');
+		}
 		const deduped: string[] = [];
 		const seen = new Set<string>();
 		for (const tag of tags) {
@@ -135,6 +142,20 @@
 			deduped.push(normalized);
 		}
 		return deduped;
+	}
+
+	function resolveTaskCaptureDefaults(): { default_labels: string[]; default_status?: TaskStatus } {
+		const default_labels = applyCaptureTargetTags([]);
+		if (captureTarget === 'planned') {
+			return { default_labels, default_status: 'planned' };
+		}
+		if (captureTarget === 'review') {
+			return { default_labels, default_status: 'review' };
+		}
+		if (captureTarget === 'inbox') {
+			return { default_labels, default_status: 'inbox' };
+		}
+		return { default_labels };
 	}
 
 	async function routeCapturedNodeToDailyNote(nodeId: string): Promise<void> {
@@ -230,6 +251,16 @@
 				void openCapture('task', 'inbox');
 				return;
 			}
+			if (key === 'p') {
+				event.preventDefault();
+				void openCapture('task', 'planned');
+				return;
+			}
+			if (key === 'r') {
+				event.preventDefault();
+				void openCapture('task', 'review');
+				return;
+			}
 			if (key === 'd') {
 				event.preventDefault();
 				void openCapture('note', 'daily');
@@ -292,9 +323,7 @@
 		try {
 			let newNode: any = null;
 			if (captureType === 'task') {
-				newNode = await quickAddTaskOptimistic(value, {
-					default_labels: applyCaptureTargetTags([])
-				});
+				newNode = await quickAddTaskOptimistic(value, resolveTaskCaptureDefaults());
 				pushToast('Task captured', 'success');
 			} else if (captureType === 'link') {
 				const url = value.startsWith('http') ? value : `https://${value}`;
@@ -523,6 +552,8 @@
 						<option value="default">Default</option>
 						<option value="inbox">Inbox</option>
 						<option value="daily">Daily note</option>
+						<option value="planned">Planned queue</option>
+						<option value="review">Review queue</option>
 					</select>
 				</label>
 
@@ -654,7 +685,11 @@
 						? 'save normally'
 						: captureTarget === 'inbox'
 							? 'auto-tag as inbox'
-							: "auto-link to today's daily note"}
+							: captureTarget === 'daily'
+								? "auto-link to today's daily note"
+								: captureTarget === 'planned'
+									? 'task status defaults to planned'
+									: 'task status defaults to review'}
 				</p>
 
 				<div class="mt-3 flex justify-end gap-2">

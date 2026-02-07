@@ -13,6 +13,8 @@ describe('quick capture dispatch', () => {
 		expect(isQuickCaptureMode('task')).toBe(true);
 		expect(isQuickCaptureMode('daily')).toBe(false);
 		expect(isQuickCaptureTarget('inbox')).toBe(true);
+		expect(isQuickCaptureTarget('planned')).toBe(true);
+		expect(isQuickCaptureTarget('review')).toBe(true);
 		expect(isQuickCaptureTarget('archive')).toBe(false);
 	});
 

@@ -1,8 +1,24 @@
 import { derived, get, writable } from 'svelte/store';
-import type { TaskCreatePayload, TaskPatchPayload, TaskStatus, SnoozeTaskParams } from '$lib/api/tasks';
+import type {
+	Task,
+	TaskCreatePayload,
+	TaskPatchPayload,
+	TaskStatus,
+	SnoozeTaskParams,
+	QuickAddTaskOptions
+} from '$lib/api/tasks';
 
 export type TaskView = 'all' | 'inbox' | 'today' | 'upcoming';
-import { createTask, deleteTask, listTasks, updateTask, quickAddTask, completeTask, reopenTask, snoozeTask } from '$lib/api/tasks';
+import {
+	createTask,
+	deleteTask,
+	listTasks,
+	updateTask,
+	quickAddTask,
+	completeTask,
+	reopenTask,
+	snoozeTask
+} from '$lib/api/tasks';
 import { db, type OfflineOp, type TaskRecord } from '$lib/db';
 import { activeNamespace } from '$lib/stores/namespace';
 import { pushUndo } from '$lib/stores/undo';
@@ -103,12 +119,12 @@ export async function loadTasks(): Promise<void> {
 	}
 }
 
-export async function createTaskOptimistic(payload: TaskCreatePayload): Promise<void> {
+export async function createTaskOptimistic(payload: TaskCreatePayload): Promise<Task | TaskRecord> {
 	if (navigator.onLine) {
 		const created = await createTask(payload);
 		await db.tasks.put(created);
 		tasksStore.update((items) => [created, ...items]);
-		return;
+		return created;
 	}
 
 	const localId = crypto.randomUUID();
@@ -142,17 +158,25 @@ export async function createTaskOptimistic(payload: TaskCreatePayload): Promise<
 		payload,
 		createdAt: now
 	});
+	return localTask;
 }
 
-export async function quickAddTaskOptimistic(text: string): Promise<void> {
+export async function quickAddTaskOptimistic(
+	text: string,
+	options: QuickAddTaskOptions = {}
+): Promise<Task | TaskRecord> {
 	if (navigator.onLine) {
-		const response = await quickAddTask(text);
+		const response = await quickAddTask(text, options);
 		await db.tasks.put(response.task);
 		tasksStore.update((items) => [response.task, ...items]);
-		return;
+		return response.task;
 	}
 
-	await createTaskOptimistic({ title: text });
+	return await createTaskOptimistic({
+		title: text,
+		status: options.default_status,
+		labels: options.default_labels ?? []
+	});
 }
 
 export async function updateTaskOptimistic(

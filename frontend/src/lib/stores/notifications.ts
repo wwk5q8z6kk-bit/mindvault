@@ -7,7 +7,7 @@ let checkInterval: ReturnType<typeof setInterval> | null = null;
 let notifiedIds = new Set<string>();
 const NOTIFICATION_CLICK_ACTION_STORAGE_KEY = 'mv_notification_click_action';
 
-export type NotificationClickAction = 'none' | 'inbox' | 'daily';
+export type NotificationClickAction = 'none' | 'inbox' | 'daily' | 'planned' | 'review';
 
 function isEnabled(): boolean {
 	return localStorage.getItem('mv_feature_notifications') !== 'false';
@@ -23,7 +23,14 @@ function getCheckIntervalMs(): number {
 
 export function getNotificationClickAction(): NotificationClickAction {
 	const stored = localStorage.getItem(NOTIFICATION_CLICK_ACTION_STORAGE_KEY);
-	if (stored === 'none' || stored === 'daily') return stored;
+	if (
+		stored === 'none' ||
+		stored === 'daily' ||
+		stored === 'planned' ||
+		stored === 'review'
+	) {
+		return stored;
+	}
 	return 'inbox';
 }
 
@@ -35,6 +42,12 @@ function resolveNotificationCaptureAction(): {
 	if (action === 'none') return null;
 	if (action === 'daily') {
 		return { mode: 'note', target: 'daily' };
+	}
+	if (action === 'planned') {
+		return { mode: 'task', target: 'planned' };
+	}
+	if (action === 'review') {
+		return { mode: 'task', target: 'review' };
 	}
 	return { mode: 'task', target: 'inbox' };
 }

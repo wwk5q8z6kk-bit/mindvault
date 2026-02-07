@@ -3,7 +3,7 @@ export const QUICK_CAPTURE_EVENT_NAME = 'mindvault:quick-capture';
 export const QUICK_CAPTURE_MODES = ['task', 'note', 'link', 'voice'] as const;
 export type QuickCaptureMode = (typeof QUICK_CAPTURE_MODES)[number];
 
-export const QUICK_CAPTURE_TARGETS = ['default', 'inbox', 'daily'] as const;
+export const QUICK_CAPTURE_TARGETS = ['default', 'inbox', 'daily', 'planned', 'review'] as const;
 export type QuickCaptureTarget = (typeof QUICK_CAPTURE_TARGETS)[number];
 
 export interface QuickCaptureRequest {
@@ -19,7 +19,13 @@ export function isQuickCaptureMode(value: unknown): value is QuickCaptureMode {
 }
 
 export function isQuickCaptureTarget(value: unknown): value is QuickCaptureTarget {
-	return value === 'default' || value === 'inbox' || value === 'daily';
+	return (
+		value === 'default' ||
+		value === 'inbox' ||
+		value === 'daily' ||
+		value === 'planned' ||
+		value === 'review'
+	);
 }
 
 export function dispatchQuickCapture(request: QuickCaptureRequest = {}): boolean {

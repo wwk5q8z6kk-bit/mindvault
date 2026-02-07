@@ -25,6 +25,8 @@
 					{ keys: ['Cmd', 'Shift', 'V'], description: 'Quick capture voice (global in desktop app)' },
 					{ keys: ['Cmd', 'Shift', 'I'], description: 'Quick capture task to Inbox (global in desktop app)' },
 					{ keys: ['Cmd', 'Shift', 'D'], description: 'Quick capture note to Daily Note (global in desktop app)' },
+					{ keys: ['Cmd', 'Shift', 'P'], description: 'Quick capture task to Planned (global in desktop app)' },
+					{ keys: ['Cmd', 'Shift', 'R'], description: 'Quick capture task to Review (global in desktop app)' },
 					{ keys: ['Esc'], description: 'Close modal / Cancel' }
 				]
 			},

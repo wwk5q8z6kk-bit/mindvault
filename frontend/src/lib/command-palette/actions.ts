@@ -7,7 +7,11 @@ import { quickAddTaskOptimistic } from '$lib/stores/tasks';
 import { taskFilter } from '$lib/stores/tasks';
 import { focusPlannerState } from '$lib/stores/ui';
 import { createSavedSearch, deleteSavedSearch, listSavedSearches, runSavedSearch, type SavedSearch } from '$lib/api/search';
-import { dispatchQuickCapture } from '$lib/capture/quick-capture';
+import {
+	dispatchQuickCapture,
+	type QuickCaptureMode,
+	type QuickCaptureTarget
+} from '$lib/capture/quick-capture';
 
 let cachedSavedSearches: SavedSearch[] = [];
 let savedSearchesLoaded = false;
@@ -40,7 +44,7 @@ const STATUS_MAP: Record<string, string> = {
 	done: 'done'
 };
 
-function dispatchQuickCaptureEvent(mode: 'task' | 'note' | 'link' | 'voice', target: 'default' | 'inbox' | 'daily') {
+function dispatchQuickCaptureEvent(mode: QuickCaptureMode, target: QuickCaptureTarget) {
 	dispatchQuickCapture({ mode, target });
 }
 
@@ -281,6 +285,24 @@ export function registerBuiltInActions() {
 			keywords: ['capture', 'daily', 'journal', 'quick'],
 			handler: () => {
 				dispatchQuickCaptureEvent('note', 'daily');
+			}
+		},
+		{
+			id: 'quick-capture-planned',
+			title: 'Quick Capture to Planned',
+			subtitle: 'Capture task routed to Planned queue (Cmd+Shift+P)',
+			keywords: ['capture', 'planned', 'queue', 'quick'],
+			handler: () => {
+				dispatchQuickCaptureEvent('task', 'planned');
+			}
+		},
+		{
+			id: 'quick-capture-review',
+			title: 'Quick Capture to Review',
+			subtitle: 'Capture task routed to Review queue (Cmd+Shift+R)',
+			keywords: ['capture', 'review', 'queue', 'quick'],
+			handler: () => {
+				dispatchQuickCaptureEvent('task', 'review');
 			}
 		},
 		{

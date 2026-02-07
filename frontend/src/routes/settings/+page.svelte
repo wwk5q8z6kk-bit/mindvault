@@ -479,7 +479,7 @@
 		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
 			<h3 class="text-sm font-semibold text-white">Keyboard Shortcuts</h3>
 			<div class="mt-3 grid grid-cols-2 gap-2 text-xs">
-				{#each [['Cmd/Ctrl + K', 'Command palette'], ['Cmd/Ctrl + Shift + N', 'Quick Capture task (global in desktop app)'], ['Cmd/Ctrl + Shift + M', 'Quick Capture note (global in desktop app)'], ['Cmd/Ctrl + Shift + L', 'Quick Capture link (global in desktop app)'], ['Cmd/Ctrl + Shift + V', 'Quick Capture voice (global in desktop app)'], ['Cmd/Ctrl + Shift + I', 'Quick Capture task to Inbox (global in desktop app)'], ['Cmd/Ctrl + Shift + D', 'Quick Capture note to Daily note (global in desktop app)'], ['N', 'New task (in tasks/kanban)'], ['Cmd/Ctrl + B', 'Bold (in editor)'], ['Cmd/Ctrl + I', 'Italic (in editor)'], ['Cmd/Ctrl + K', 'Insert link (in editor)'], ['Cmd/Ctrl + S', 'Save (in editor)'], ['Cmd/Ctrl + Z', 'Undo (in editor)'], ['Cmd/Ctrl + F', 'Search in editor'], ['Cmd/Ctrl + H', 'Search & Replace'], ['/', 'Slash commands (in editor)'], ['Escape', 'Close modals/menus']] as [shortcut, action]}
+				{#each [['Cmd/Ctrl + K', 'Command palette'], ['Cmd/Ctrl + Shift + N', 'Quick Capture task (global in desktop app)'], ['Cmd/Ctrl + Shift + M', 'Quick Capture note (global in desktop app)'], ['Cmd/Ctrl + Shift + L', 'Quick Capture link (global in desktop app)'], ['Cmd/Ctrl + Shift + V', 'Quick Capture voice (global in desktop app)'], ['Cmd/Ctrl + Shift + I', 'Quick Capture task to Inbox (global in desktop app)'], ['Cmd/Ctrl + Shift + D', 'Quick Capture note to Daily note (global in desktop app)'], ['Cmd/Ctrl + Shift + P', 'Quick Capture task to Planned (global in desktop app)'], ['Cmd/Ctrl + Shift + R', 'Quick Capture task to Review (global in desktop app)'], ['N', 'New task (in tasks/kanban)'], ['Cmd/Ctrl + B', 'Bold (in editor)'], ['Cmd/Ctrl + I', 'Italic (in editor)'], ['Cmd/Ctrl + K', 'Insert link (in editor)'], ['Cmd/Ctrl + S', 'Save (in editor)'], ['Cmd/Ctrl + Z', 'Undo (in editor)'], ['Cmd/Ctrl + F', 'Search in editor'], ['Cmd/Ctrl + H', 'Search & Replace'], ['/', 'Slash commands (in editor)'], ['Escape', 'Close modals/menus']] as [shortcut, action]}
 					<div class="flex items-center gap-2 rounded-lg border border-slate-800/60 px-3 py-2">
 						<kbd
 							class="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300"
@@ -574,6 +574,8 @@
 					>
 						<option value="inbox">Open task capture in Inbox</option>
 						<option value="daily">Open note capture in Daily note</option>
+						<option value="planned">Open task capture in Planned</option>
+						<option value="review">Open task capture in Review</option>
 						<option value="none">Do nothing</option>
 					</select>
 					<p class="mt-1 text-[10px] text-slate-500">
