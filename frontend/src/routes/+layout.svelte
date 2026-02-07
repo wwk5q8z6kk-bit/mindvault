@@ -27,8 +27,10 @@
 
 	const navItems = [
 		{ label: 'Tasks', href: '/tasks' },
+		{ label: 'Focus', href: '/focus' },
 		{ label: 'Goals', href: '/goals' },
 		{ label: 'Notes', href: '/notes' },
+		{ label: 'Voice', href: '/voice' },
 		{ label: 'Chat', href: '/chat' },
 		{ label: 'Inbox', href: '/inbox' },
 		{ label: 'Templates', href: '/templates' },
@@ -54,6 +56,16 @@
 			href: '/tasks',
 			title: 'Task Management Center',
 			subtitle: 'Command the day. Syncs locally by default.'
+		},
+		{
+			href: '/focus',
+			title: 'Focus Mode',
+			subtitle: 'Deep work with AI-prioritized tasks and Pomodoro timer.'
+		},
+		{
+			href: '/voice',
+			title: 'Voice Notes',
+			subtitle: 'Record audio and get AI-powered transcriptions.'
 		},
 		{
 			href: '/goals',
