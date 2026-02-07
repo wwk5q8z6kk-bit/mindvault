@@ -7,8 +7,11 @@
 	import type { CalendarItem } from '$lib/api/calendar';
 	import { activeNamespace } from '$lib/stores/namespace';
 	import {
+		applyRescheduledTimeBlocks,
 		applyTimeBlocks,
+		suggestRescheduledTimeBlocks,
 		suggestTimeBlocks,
+		type TimeBlockRescheduleSuggestion,
 		type TimeBlockSuggestion
 	} from '$lib/api/time-blocks';
 	import SavedViewSelector from '$lib/components/SavedViewSelector.svelte';
@@ -24,8 +27,11 @@
 	let defaultBlockMinutes = 45;
 	let timeBlockLimit = 6;
 	let blockSuggestions: TimeBlockSuggestion[] = [];
+	let reflowSuggestions: TimeBlockRescheduleSuggestion[] = [];
 	let suggestingBlocks = false;
+	let suggestingReflow = false;
 	let applyingBlocks = false;
+	let applyingReflow = false;
 
 	onMount(() => {
 		loadSavedViews();
@@ -103,6 +109,47 @@
 		}
 	}
 
+	async function suggestReflowBlocks() {
+		if (suggestingReflow) return;
+		suggestingReflow = true;
+		try {
+			const namespace = get(activeNamespace);
+			const suggestions = await suggestRescheduledTimeBlocks({
+				date: formatCalendarDate(plannerDate),
+				namespace,
+				limit: timeBlockLimit,
+				workdayStartHour,
+				workdayEndHour,
+				defaultBlockMinutes
+			});
+			reflowSuggestions = suggestions;
+			if (suggestions.length === 0) {
+				pushToast('No rescheduling opportunities detected.', 'info');
+			} else {
+				pushToast(`Prepared ${suggestions.length} reschedule suggestions.`, 'success');
+			}
+		} catch {
+			pushToast('Failed to prepare reschedule suggestions.', 'danger');
+		} finally {
+			suggestingReflow = false;
+		}
+	}
+
+	async function applyReflowSuggestions() {
+		if (applyingReflow || reflowSuggestions.length === 0) return;
+		applyingReflow = true;
+		try {
+			const result = await applyRescheduledTimeBlocks(reflowSuggestions);
+			pushToast(`Rescheduled ${result.updated} focus blocks.`, 'success');
+			reflowSuggestions = [];
+			await calendarViewRef?.reload();
+		} catch {
+			pushToast('Failed to apply reschedule suggestions.', 'danger');
+		} finally {
+			applyingReflow = false;
+		}
+	}
+
 	async function handleIcalImport(event: Event) {
 		const input = event.currentTarget as HTMLInputElement;
 		const file = input.files?.[0];
@@ -140,13 +187,22 @@
 				<h3 class="text-sm font-semibold text-white">AI Time-Blocking</h3>
 				<p class="text-xs text-slate-400">Suggest focus blocks from prioritized tasks and available calendar space.</p>
 			</div>
-			<button
-				class="rounded-lg border border-emerald-500/30 px-3 py-2 text-xs text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
-				on:click={suggestFocusBlocks}
-				disabled={suggestingBlocks || applyingBlocks}
-			>
-				{suggestingBlocks ? 'Suggesting...' : 'Suggest focus blocks'}
-			</button>
+			<div class="flex flex-wrap items-center gap-2">
+				<button
+					class="rounded-lg border border-emerald-500/30 px-3 py-2 text-xs text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
+					on:click={suggestFocusBlocks}
+					disabled={suggestingBlocks || applyingBlocks}
+				>
+					{suggestingBlocks ? 'Suggesting...' : 'Suggest focus blocks'}
+				</button>
+				<button
+					class="rounded-lg border border-amber-500/30 px-3 py-2 text-xs text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
+					on:click={suggestReflowBlocks}
+					disabled={suggestingReflow || applyingReflow}
+				>
+					{suggestingReflow ? 'Analyzing...' : 'Suggest reflow'}
+				</button>
+			</div>
 		</div>
 
 		<div class="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
@@ -223,6 +279,41 @@
 							{#if block.reason}
 								<p class="text-slate-500">{block.reason}</p>
 							{/if}
+						</li>
+					{/each}
+				</ul>
+			</div>
+		{/if}
+
+		{#if reflowSuggestions.length > 0}
+			<div class="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+				<div class="flex items-center justify-between gap-2">
+					<p class="text-xs text-amber-200">Reflow suggestions for existing focus blocks</p>
+					<div class="flex items-center gap-2">
+						<button
+							class="rounded-lg border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+							on:click={() => {
+								reflowSuggestions = [];
+							}}
+						>
+							Clear
+						</button>
+						<button
+							class="rounded-lg bg-amber-500 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-amber-400 disabled:opacity-50"
+							on:click={applyReflowSuggestions}
+							disabled={applyingReflow}
+						>
+							{applyingReflow ? 'Applying...' : `Apply ${reflowSuggestions.length} reflows`}
+						</button>
+					</div>
+				</div>
+				<ul class="mt-2 space-y-1.5">
+					{#each reflowSuggestions as block (block.eventId + block.start)}
+						<li class="rounded-md border border-amber-500/20 px-2 py-1.5 text-[11px]">
+							<p class="font-medium text-slate-200">{block.taskTitle}</p>
+							<p class="text-slate-400">
+								{formatSuggestionWindow(block.previousStart, block.previousEnd)} -> {formatSuggestionWindow(block.start, block.end)}
+							</p>
 						</li>
 					{/each}
 				</ul>

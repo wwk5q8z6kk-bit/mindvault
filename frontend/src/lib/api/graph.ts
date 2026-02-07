@@ -28,7 +28,7 @@ export async function addRelationship(
 ): Promise<void> {
 	await fetchJson('/api/v1/graph/relationships', {
 		method: 'POST',
-		body: JSON.stringify({ from, to, kind })
+		body: JSON.stringify({ from_node: from, to_node: to, kind })
 	});
 }
 
