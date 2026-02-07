@@ -33,6 +33,7 @@
 	} from '$lib/api/files';
 	import type { Note } from '$lib/api/notes';
 	import { pushToast } from '$lib/stores/toast';
+	import VersionHistory from '$lib/components/VersionHistory.svelte';
 
 	let notes: Note[] = [];
 	let selectedNote: Note | null = null;
@@ -40,6 +41,7 @@
 	let markdown = '';
 	let loading = false;
 	let saving = false;
+	let showVersionHistory = false;
 	let attachments: NodeAttachment[] = [];
 	let attachmentsLoading = false;
 	let attachmentUploadPending = false;
@@ -51,6 +53,15 @@
 	let autoTagging = false;
 	let extractingActionItems = false;
 	let suggestedTags: string[] = [];
+
+	// Bulk selection state
+	let selectedNoteIds: Set<string> = new Set();
+	let bulkMode = false;
+	let bulkTagInput = '';
+	let bulkProcessing = false;
+
+	$: selectedCount = selectedNoteIds.size;
+	$: allDisplayedSelected = displayedNotes.length > 0 && displayedNotes.every((n) => selectedNoteIds.has(n.id));
 
 	const ATTACHMENT_CHUNK_PAGE_SIZE = 6;
 	const ATTACHMENT_CHUNK_MAX_PAGES = 12;
@@ -147,6 +158,153 @@
 			pushToast('Unable to delete note.', 'danger');
 		}
 	}
+
+	// Bulk operations
+	function toggleBulkMode() {
+		bulkMode = !bulkMode;
+		if (!bulkMode) {
+			selectedNoteIds = new Set();
+		}
+	}
+
+	function toggleNoteSelection(noteId: string) {
+		const newSet = new Set(selectedNoteIds);
+		if (newSet.has(noteId)) {
+			newSet.delete(noteId);
+		} else {
+			newSet.add(noteId);
+		}
+		selectedNoteIds = newSet;
+	}
+
+	function toggleSelectAll() {
+		if (allDisplayedSelected) {
+			// Deselect all displayed
+			const newSet = new Set(selectedNoteIds);
+			for (const note of displayedNotes) {
+				newSet.delete(note.id);
+			}
+			selectedNoteIds = newSet;
+		} else {
+			// Select all displayed
+			const newSet = new Set(selectedNoteIds);
+			for (const note of displayedNotes) {
+				newSet.add(note.id);
+			}
+			selectedNoteIds = newSet;
+		}
+	}
+
+	function clearSelection() {
+		selectedNoteIds = new Set();
+	}
+
+	async function bulkDeleteNotes() {
+		if (selectedCount === 0) return;
+		if (!confirm(`Delete ${selectedCount} note${selectedCount > 1 ? 's' : ''}? This cannot be undone.`)) return;
+
+		bulkProcessing = true;
+		let successCount = 0;
+		let failCount = 0;
+
+		for (const noteId of selectedNoteIds) {
+			try {
+				await deleteNote(noteId);
+				successCount++;
+			} catch {
+				failCount++;
+			}
+		}
+
+		bulkProcessing = false;
+		selectedNoteIds = new Set();
+
+		if (failCount === 0) {
+			pushToast(`Deleted ${successCount} note${successCount > 1 ? 's' : ''}`, 'success');
+		} else {
+			pushToast(`Deleted ${successCount}, failed ${failCount}`, 'warning');
+		}
+
+		if (selectedNote && !notes.find((n) => n.id === selectedNote?.id)) {
+			newNote();
+		}
+		await loadNotes();
+	}
+
+	async function bulkAddTag() {
+		if (selectedCount === 0 || !bulkTagInput.trim()) return;
+		const tag = bulkTagInput.trim().toLowerCase();
+
+		bulkProcessing = true;
+		let successCount = 0;
+
+		for (const noteId of selectedNoteIds) {
+			const note = notes.find((n) => n.id === noteId);
+			if (!note) continue;
+			const currentTags = note.tags ?? [];
+			if (currentTags.includes(tag)) continue;
+
+			try {
+				await updateNote(noteId, { tags: [...currentTags, tag] });
+				successCount++;
+			} catch {
+				// continue
+			}
+		}
+
+		bulkProcessing = false;
+		bulkTagInput = '';
+
+		if (successCount > 0) {
+			pushToast(`Added tag "${tag}" to ${successCount} note${successCount > 1 ? 's' : ''}`, 'success');
+			await loadNotes();
+		}
+	}
+
+	async function bulkRemoveTag(tag: string) {
+		if (selectedCount === 0) return;
+
+		bulkProcessing = true;
+		let successCount = 0;
+
+		for (const noteId of selectedNoteIds) {
+			const note = notes.find((n) => n.id === noteId);
+			if (!note) continue;
+			const currentTags = note.tags ?? [];
+			if (!currentTags.includes(tag)) continue;
+
+			try {
+				await updateNote(noteId, { tags: currentTags.filter((t) => t !== tag) });
+				successCount++;
+			} catch {
+				// continue
+			}
+		}
+
+		bulkProcessing = false;
+
+		if (successCount > 0) {
+			pushToast(`Removed tag "${tag}" from ${successCount} note${successCount > 1 ? 's' : ''}`, 'success');
+			await loadNotes();
+		}
+	}
+
+	// Get common tags from selected notes (for removal UI)
+	$: selectedNoteTags = (() => {
+		if (selectedCount === 0) return [];
+		const tagCounts = new Map<string, number>();
+		for (const noteId of selectedNoteIds) {
+			const note = notes.find((n) => n.id === noteId);
+			if (!note) continue;
+			for (const tag of note.tags ?? []) {
+				tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+			}
+		}
+		return [...tagCounts.entries()]
+			.filter(([_, count]) => count > 0)
+			.sort((a, b) => b[1] - a[1])
+			.map(([tag]) => tag);
+	})();
 
 	async function refreshAttachments(noteId: string) {
 		attachmentsLoading = true;
@@ -441,14 +599,33 @@
 		<div class="flex items-center justify-between">
 			<div>
 				<h2 class="text-lg font-semibold text-white">Notes</h2>
-				<p class="text-xs text-slate-400">{displayedNotes.length}{displayedNotes.length !== notes.length ? ` / ${notes.length}` : ''} notes</p>
+				<p class="text-xs text-slate-400">
+					{#if bulkMode && selectedCount > 0}
+						{selectedCount} selected
+					{:else}
+						{displayedNotes.length}{displayedNotes.length !== notes.length ? ` / ${notes.length}` : ''} notes
+					{/if}
+				</p>
 			</div>
-			<button
-				class="rounded-lg bg-slate-800 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700"
-				on:click={newNote}
-			>
-				New note
-			</button>
+			<div class="flex gap-2">
+				<button
+					class={`rounded-lg border px-3 py-2 text-xs transition ${
+						bulkMode
+							? 'border-sky-500 bg-sky-500/20 text-sky-300'
+							: 'border-slate-700 text-slate-300 hover:bg-slate-800'
+					}`}
+					on:click={toggleBulkMode}
+					title={bulkMode ? 'Exit bulk mode' : 'Select multiple notes'}
+				>
+					{bulkMode ? 'Done' : 'Select'}
+				</button>
+				<button
+					class="rounded-lg bg-slate-800 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700"
+					on:click={newNote}
+				>
+					New note
+				</button>
+			</div>
 		</div>
 
 		<div class="mt-3 flex gap-2">
@@ -471,6 +648,62 @@
 				</select>
 			{/if}
 		</div>
+
+		{#if bulkMode && displayedNotes.length > 0}
+			<div class="mt-3 rounded-lg border border-slate-700 bg-slate-800/50 p-3">
+				<div class="flex flex-wrap items-center gap-2">
+					<button
+						class="rounded-lg border border-slate-600 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-700"
+						on:click={toggleSelectAll}
+					>
+						{allDisplayedSelected ? 'Deselect all' : 'Select all'}
+					</button>
+
+					{#if selectedCount > 0}
+						<span class="text-[11px] text-slate-500">|</span>
+
+						<button
+							class="rounded-lg border border-red-500/30 px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/10"
+							on:click={bulkDeleteNotes}
+							disabled={bulkProcessing}
+						>
+							Delete ({selectedCount})
+						</button>
+
+						<div class="flex items-center gap-1">
+							<input
+								class="w-24 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1 text-[11px] text-white placeholder-slate-500"
+								placeholder="Add tag..."
+								bind:value={bulkTagInput}
+								on:keydown={(e) => e.key === 'Enter' && bulkAddTag()}
+							/>
+							<button
+								class="rounded-lg border border-slate-600 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-700"
+								on:click={bulkAddTag}
+								disabled={bulkProcessing || !bulkTagInput.trim()}
+							>
+								Add
+							</button>
+						</div>
+
+						{#if selectedNoteTags.length > 0}
+							<div class="flex flex-wrap items-center gap-1">
+								<span class="text-[11px] text-slate-500">Remove:</span>
+								{#each selectedNoteTags.slice(0, 5) as tag}
+									<button
+										class="rounded bg-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-red-500/30 hover:text-red-200"
+										on:click={() => bulkRemoveTag(tag)}
+										disabled={bulkProcessing}
+									>
+										{tag} &times;
+									</button>
+								{/each}
+							</div>
+						{/if}
+					{/if}
+				</div>
+			</div>
+		{/if}
 
 		<div class="mt-3 flex flex-col gap-2">
 			{#if loading}
@@ -502,29 +735,45 @@
 				</div>
 			{:else}
 				{#each displayedNotes as note (note.id)}
-					<button
-						class={`rounded-lg border px-3 py-2 text-left text-xs transition ${
-							note.id === selectedNote?.id
-								? 'border-sky-500 bg-sky-500/10 text-sky-200'
-								: 'border-slate-800 bg-slate-900/40 text-slate-200 hover:border-slate-700'
+					<div
+						class={`flex items-start gap-2 rounded-lg border px-3 py-2 text-left text-xs transition ${
+							selectedNoteIds.has(note.id)
+								? 'border-sky-500 bg-sky-500/10'
+								: note.id === selectedNote?.id
+									? 'border-sky-500 bg-sky-500/10 text-sky-200'
+									: 'border-slate-800 bg-slate-900/40 text-slate-200 hover:border-slate-700'
 						}`}
-						on:click={() => selectNote(note)}
 					>
-						<div class="flex items-center gap-1.5 font-semibold">
-							{#if note.pinned}<span class="text-amber-400" title="Pinned">*</span>{/if}
-							{note.title}
-						</div>
-						{#if note.tags && note.tags.length > 0}
-							<div class="mt-1 flex flex-wrap gap-1">
-								{#each note.tags.slice(0, 3) as tag}
-									<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-400">{tag}</span>
-								{/each}
-							</div>
+						{#if bulkMode}
+							<label class="flex h-5 cursor-pointer items-center">
+								<input
+									type="checkbox"
+									class="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 text-sky-500 focus:ring-sky-500 focus:ring-offset-0"
+									checked={selectedNoteIds.has(note.id)}
+									on:change={() => toggleNoteSelection(note.id)}
+								/>
+							</label>
 						{/if}
-						<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">
-							{note.markdown.slice(0, 120) || 'No content'}
-						</p>
-					</button>
+						<button
+							class="min-w-0 flex-1 text-left"
+							on:click={() => bulkMode ? toggleNoteSelection(note.id) : selectNote(note)}
+						>
+							<div class="flex items-center gap-1.5 font-semibold">
+								{#if note.pinned}<span class="text-amber-400" title="Pinned">*</span>{/if}
+								{note.title}
+							</div>
+							{#if note.tags && note.tags.length > 0}
+								<div class="mt-1 flex flex-wrap gap-1">
+									{#each note.tags.slice(0, 3) as tag}
+										<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-400">{tag}</span>
+									{/each}
+								</div>
+							{/if}
+							<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">
+								{note.markdown.slice(0, 120) || 'No content'}
+							</p>
+						</button>
+					</div>
 				{/each}
 			{/if}
 		</div>
@@ -606,6 +855,12 @@
 					}}
 				>
 					Export .md
+				</button>
+				<button
+					class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
+					on:click={() => { showVersionHistory = true; }}
+				>
+					History
 				</button>
 				<button
 					class="rounded-lg border border-red-500/30 px-3 py-2 text-xs text-red-300 hover:bg-red-500/10"
@@ -855,3 +1110,18 @@
 		{/if}
 	</section>
 </div>
+
+{#if selectedNote}
+	<VersionHistory
+		nodeId={selectedNote.id}
+		bind:open={showVersionHistory}
+		on:restored={async () => {
+			showVersionHistory = false;
+			await loadNotes();
+			if (selectedNote) {
+				const refreshed = notes.find((n) => n.id === selectedNote?.id);
+				if (refreshed) selectNote(refreshed);
+			}
+		}}
+	/>
+{/if}

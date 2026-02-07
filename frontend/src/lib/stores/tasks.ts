@@ -217,21 +217,28 @@ export async function deleteTaskOptimistic(taskId: string): Promise<string | und
 
 	let undoId: string | undefined;
 	if (snapshot) {
-		undoId = pushUndo(`Delete "${snapshot.title}"`, async () => {
-			await db.tasks.put(snapshot);
-			tasksStore.update((list) => [snapshot, ...list]);
-			if (navigator.onLine) {
-				await createTask({
-					title: snapshot.title,
-					description: snapshot.description,
-					status: snapshot.status,
-					priority: snapshot.priority,
-					due_at: snapshot.due_at,
-					labels: snapshot.labels,
-					metadata: snapshot.metadata
-				});
-			}
-		});
+		undoId = pushUndo(
+			`Delete "${snapshot.title}"`,
+			async () => {
+				await db.tasks.put(snapshot);
+				tasksStore.update((list) => [snapshot, ...list]);
+				if (navigator.onLine) {
+					await createTask({
+						title: snapshot.title,
+						description: snapshot.description,
+						status: snapshot.status,
+						priority: snapshot.priority,
+						due_at: snapshot.due_at,
+						labels: snapshot.labels,
+						metadata: snapshot.metadata
+					});
+				}
+			},
+			async () => {
+				await deleteTaskOptimistic(taskId);
+			},
+			'task'
+		);
 	}
 
 	if (navigator.onLine) {
@@ -264,9 +271,16 @@ export async function completeTaskOptimistic(taskId: string): Promise<string | u
 	tasksStore.update((list) => list.map((task) => (task.id === taskId ? updated : task)));
 	await db.tasks.put(updated);
 
-	const undoId = pushUndo(`Complete "${existing?.title ?? 'task'}"`, async () => {
-		await reopenTaskOptimistic(taskId);
-	});
+	const undoId = pushUndo(
+		`Complete "${existing?.title ?? 'task'}"`,
+		async () => {
+			await reopenTaskOptimistic(taskId);
+		},
+		async () => {
+			await completeTaskOptimistic(taskId);
+		},
+		'task'
+	);
 
 	if (navigator.onLine) {
 		await completeTask(taskId);

@@ -19,6 +19,10 @@
 
 	let entries: TimelineEntry[] = [];
 	let filter: 'all' | 'tasks' | 'notes' = 'all';
+	let dateRange: 'all' | 'today' | 'week' | 'month' = 'all';
+	let eventTypes: Set<string> = new Set(['task_created', 'task_completed', 'task_updated', 'note_created', 'note_updated']);
+	let searchQuery = '';
+	let showFilters = false;
 
 	onMount(async () => {
 		await Promise.all([loadTasks(), loadNotes()]);
@@ -91,9 +95,62 @@
 		entries = items;
 	}
 
-	$: filteredEntries = filter === 'all'
-		? entries
-		: entries.filter((e) => e.objectType === (filter === 'tasks' ? 'task' : 'note'));
+	$: filteredEntries = (() => {
+		let result = entries;
+
+		// Filter by object type (tasks/notes/all)
+		if (filter !== 'all') {
+			result = result.filter((e) => e.objectType === (filter === 'tasks' ? 'task' : 'note'));
+		}
+
+		// Filter by event type
+		if (eventTypes.size < 5) {
+			result = result.filter((e) => eventTypes.has(e.type));
+		}
+
+		// Filter by date range
+		if (dateRange !== 'all') {
+			const now = new Date();
+			const cutoff = new Date();
+			if (dateRange === 'today') {
+				cutoff.setHours(0, 0, 0, 0);
+			} else if (dateRange === 'week') {
+				cutoff.setDate(now.getDate() - 7);
+			} else if (dateRange === 'month') {
+				cutoff.setDate(now.getDate() - 30);
+			}
+			result = result.filter((e) => new Date(e.timestamp) >= cutoff);
+		}
+
+		// Filter by search query
+		if (searchQuery.trim()) {
+			const q = searchQuery.toLowerCase();
+			result = result.filter((e) => e.title.toLowerCase().includes(q));
+		}
+
+		return result;
+	})();
+
+	function toggleEventType(type: string) {
+		const newSet = new Set(eventTypes);
+		if (newSet.has(type)) {
+			if (newSet.size > 1) {
+				newSet.delete(type);
+			}
+		} else {
+			newSet.add(type);
+		}
+		eventTypes = newSet;
+	}
+
+	function resetFilters() {
+		filter = 'all';
+		dateRange = 'all';
+		eventTypes = new Set(['task_created', 'task_completed', 'task_updated', 'note_created', 'note_updated']);
+		searchQuery = '';
+	}
+
+	$: hasActiveFilters = filter !== 'all' || dateRange !== 'all' || eventTypes.size < 5 || searchQuery.trim() !== '';
 
 	function formatTimestamp(iso: string): string {
 		const d = new Date(iso);
@@ -151,32 +208,112 @@
 </script>
 
 <div class="flex flex-col gap-4">
-	<div class="flex items-center justify-between">
+	<div class="flex flex-wrap items-center justify-between gap-3">
 		<div>
 			<h2 class="text-lg font-semibold text-white">Timeline</h2>
 			<p class="text-xs text-slate-400">{filteredEntries.length} activity events</p>
 		</div>
-		<div class="flex rounded-lg border border-slate-700 text-[10px]">
+		<div class="flex flex-wrap items-center gap-2">
+			<!-- Search -->
+			<input
+				class="w-40 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+				placeholder="Search..."
+				bind:value={searchQuery}
+			/>
+
+			<!-- Date range filter -->
+			<div class="flex rounded-lg border border-slate-700 text-[10px]">
+				<button
+					class={`px-2 py-1 transition ${dateRange === 'all' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+					on:click={() => (dateRange = 'all')}
+				>
+					All time
+				</button>
+				<button
+					class={`px-2 py-1 transition ${dateRange === 'today' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+					on:click={() => (dateRange = 'today')}
+				>
+					Today
+				</button>
+				<button
+					class={`px-2 py-1 transition ${dateRange === 'week' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+					on:click={() => (dateRange = 'week')}
+				>
+					7 days
+				</button>
+				<button
+					class={`px-2 py-1 transition ${dateRange === 'month' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+					on:click={() => (dateRange = 'month')}
+				>
+					30 days
+				</button>
+			</div>
+
+			<!-- Object type filter -->
+			<div class="flex rounded-lg border border-slate-700 text-[10px]">
+				<button
+					class={`px-3 py-1 transition ${filter === 'all' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+					on:click={() => (filter = 'all')}
+				>
+					All
+				</button>
+				<button
+					class={`px-3 py-1 transition ${filter === 'tasks' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+					on:click={() => (filter = 'tasks')}
+				>
+					Tasks
+				</button>
+				<button
+					class={`px-3 py-1 transition ${filter === 'notes' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+					on:click={() => (filter = 'notes')}
+				>
+					Notes
+				</button>
+			</div>
+
+			<!-- More filters toggle -->
 			<button
-				class={`px-3 py-1 transition ${filter === 'all' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
-				on:click={() => (filter = 'all')}
+				class={`rounded-lg border px-2 py-1 text-[10px] transition ${
+					showFilters || hasActiveFilters
+						? 'border-sky-500 bg-sky-500/20 text-sky-300'
+						: 'border-slate-700 text-slate-400 hover:text-white'
+				}`}
+				on:click={() => (showFilters = !showFilters)}
 			>
-				All
+				{showFilters ? 'Less' : 'More'}
 			</button>
-			<button
-				class={`px-3 py-1 transition ${filter === 'tasks' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
-				on:click={() => (filter = 'tasks')}
-			>
-				Tasks
-			</button>
-			<button
-				class={`px-3 py-1 transition ${filter === 'notes' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
-				on:click={() => (filter = 'notes')}
-			>
-				Notes
-			</button>
+
+			{#if hasActiveFilters}
+				<button
+					class="rounded-lg border border-slate-700 px-2 py-1 text-[10px] text-slate-400 hover:text-white"
+					on:click={resetFilters}
+				>
+					Reset
+				</button>
+			{/if}
 		</div>
 	</div>
+
+	{#if showFilters}
+		<div class="rounded-lg border border-slate-700 bg-slate-800/50 p-3">
+			<p class="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Event Types</p>
+			<div class="flex flex-wrap gap-2">
+				{#each Object.entries(typeLabels) as [type, label]}
+					<button
+						class={`flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[10px] transition ${
+							eventTypes.has(type)
+								? 'border-sky-500/50 bg-sky-500/10 text-sky-300'
+								: 'border-slate-700 text-slate-500 hover:text-slate-300'
+						}`}
+						on:click={() => toggleEventType(type)}
+					>
+						<span class={`h-2 w-2 rounded-full ${typeColors[type]}`}></span>
+						{label}
+					</button>
+				{/each}
+			</div>
+		</div>
+	{/if}
 
 	{#if filteredEntries.length === 0}
 		<div class="rounded-xl border border-dashed border-slate-800 p-12 text-center text-sm text-slate-400">

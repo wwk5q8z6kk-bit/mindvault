@@ -116,15 +116,22 @@ export async function deleteNoteOptimistic(noteId: string): Promise<string | und
 
 	let undoId: string | undefined;
 	if (snapshot) {
-		undoId = pushUndo(`Delete "${snapshot.title ?? 'note'}"`, async () => {
-			await db.notes.put(snapshot);
-			notesStore.update((list) => [snapshot, ...list]);
-			try {
-				await createNote(snapshot.markdown, snapshot.title ?? undefined);
-			} catch {
-				// local restore still works
-			}
-		});
+		undoId = pushUndo(
+			`Delete "${snapshot.title ?? 'note'}"`,
+			async () => {
+				await db.notes.put(snapshot);
+				notesStore.update((list) => [snapshot, ...list]);
+				try {
+					await createNote(snapshot.markdown, snapshot.title ?? undefined);
+				} catch {
+					// local restore still works
+				}
+			},
+			async () => {
+				await deleteNoteOptimistic(noteId);
+			},
+			'note'
+		);
 	}
 
 	try {

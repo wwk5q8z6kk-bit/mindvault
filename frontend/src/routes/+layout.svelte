@@ -8,9 +8,12 @@
 	import QuickSearch from '$lib/components/QuickSearch.svelte';
 	import KeyboardShortcutsModal from '$lib/components/KeyboardShortcutsModal.svelte';
 	import MobileNav from '$lib/components/MobileNav.svelte';
+	import UndoIndicator from '$lib/components/UndoIndicator.svelte';
+	import LinkPreview from '$lib/components/LinkPreview.svelte';
 	import { startSyncLoop, pendingSyncCount } from '$lib/stores/tasks';
 	import { startNotifications, stopNotifications } from '$lib/stores/notifications';
 	import { startWebSocket, stopWebSocket, wsStatus } from '$lib/stores/websocket';
+	import { handleUndoKeyboard } from '$lib/stores/undo';
 	import NamespaceSelector from '$lib/components/NamespaceSelector.svelte';
 	import { loadAvailableNamespaces } from '$lib/stores/namespace';
 	import { onMount } from 'svelte';
@@ -184,7 +187,14 @@
 			stopWebSocket();
 		};
 	});
+
+	async function handleGlobalKeydown(event: KeyboardEvent) {
+		// Handle undo/redo shortcuts (Cmd+Z, Cmd+Shift+Z, Ctrl+Y)
+		await handleUndoKeyboard(event);
+	}
 </script>
+
+<svelte:window on:keydown={handleGlobalKeydown} />
 
 <svelte:head>
 	<title>MindVault</title>
@@ -316,3 +326,5 @@
 <QuickSearch />
 <KeyboardShortcutsModal />
 <MobileNav />
+<UndoIndicator />
+<LinkPreview />

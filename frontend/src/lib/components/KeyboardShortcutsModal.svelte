@@ -24,6 +24,14 @@
 			]
 		},
 		{
+			name: 'Undo / Redo',
+			shortcuts: [
+				{ keys: ['Cmd', 'Z'], description: 'Undo last action' },
+				{ keys: ['Cmd', 'Shift', 'Z'], description: 'Redo last action' },
+				{ keys: ['Ctrl', 'Y'], description: 'Redo (Windows)' }
+			]
+		},
+		{
 			name: 'Tasks',
 			shortcuts: [
 				{ keys: ['N'], description: 'New task (on tasks page)' },
@@ -42,6 +50,14 @@
 				{ keys: ['Tab'], description: 'Accept AI completion' },
 				{ keys: ['[['], description: 'Link to note (wiki-link)' },
 				{ keys: ['@'], description: 'Mention/link to note' }
+			]
+		},
+		{
+			name: 'Bulk Operations',
+			shortcuts: [
+				{ keys: ['Select', 'button'], description: 'Enter bulk selection mode (notes page)' },
+				{ keys: ['Checkbox'], description: 'Toggle individual item selection' },
+				{ keys: ['Select all'], description: 'Select/deselect all visible items' }
 			]
 		},
 		{
