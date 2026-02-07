@@ -5220,6 +5220,10 @@ async fn daily_briefing(
 
     Ok(Json(BriefingResponse {
         date: today.format("%Y-%m-%d").to_string(),
+        due_today,
+        overdue,
+        in_progress,
+        habits_today,
         recent_notes,
         summary,
     }))
