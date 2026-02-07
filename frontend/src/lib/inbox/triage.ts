@@ -11,6 +11,8 @@ export interface InboxTriageSuggestion {
 	suggestedStatus: TaskStatus;
 }
 
+export const INBOX_TRIAGE_EVENT_NAME = 'mindvault:inbox-triage';
+
 export function scoreToTaskPriority(score: number): number {
 	const normalized = Number.isFinite(score) ? score : 0;
 	if (normalized >= 0.85) return 1;
@@ -55,4 +57,10 @@ export function buildInboxTriagePatch(
 		patch.status = suggestion.suggestedStatus;
 	}
 	return Object.keys(patch).length ? patch : null;
+}
+
+export function dispatchInboxTriage(): boolean {
+	if (typeof window === 'undefined') return false;
+	window.dispatchEvent(new CustomEvent(INBOX_TRIAGE_EVENT_NAME));
+	return true;
 }

@@ -12,6 +12,7 @@ import {
 	type QuickCaptureMode,
 	type QuickCaptureTarget
 } from '$lib/capture/quick-capture';
+import { dispatchInboxTriage } from '$lib/inbox/triage';
 import { loadCapturePresets } from '$lib/capture/presets';
 
 let cachedSavedSearches: SavedSearch[] = [];
@@ -277,6 +278,16 @@ export function registerBuiltInActions() {
 			subtitle: 'Triage new captures',
 			keywords: ['inbox', 'triage', 'capture', 'unsorted'],
 			handler: (ctx) => ctx.navigate('/inbox')
+		},
+		{
+			id: 'ai-triage-inbox',
+			title: 'AI: Triage Inbox',
+			subtitle: 'Open Inbox and generate AI triage suggestions',
+			keywords: ['ai', 'triage', 'inbox', 'prioritize'],
+			handler: async (ctx) => {
+				await ctx.navigate('/inbox');
+				dispatchInboxTriage();
+			}
 		},
 		{
 			id: 'quick-capture',

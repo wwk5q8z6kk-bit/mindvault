@@ -13,6 +13,7 @@
 	import {
 		buildInboxTriagePatch,
 		buildInboxTriageSuggestions,
+		INBOX_TRIAGE_EVENT_NAME,
 		type InboxTriageSuggestion
 	} from '$lib/inbox/triage';
 
@@ -41,9 +42,17 @@
 		);
 	}
 
-	onMount(async () => {
-		await Promise.all([loadTasks(), loadNotes()]);
-		loading = false;
+	onMount(() => {
+		const handleExternalTriage = () => {
+			void runAiInboxTriage();
+		};
+		window.addEventListener(INBOX_TRIAGE_EVENT_NAME, handleExternalTriage);
+		void Promise.all([loadTasks(), loadNotes()]).finally(() => {
+			loading = false;
+		});
+		return () => {
+			window.removeEventListener(INBOX_TRIAGE_EVENT_NAME, handleExternalTriage);
+		};
 	});
 
 	async function moveTask(taskId: string, status: TaskStatus) {

@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { buildDynamicActions } from './actions';
+import { get } from 'svelte/store';
+import { buildDynamicActions, registerBuiltInActions } from './actions';
 import type { CommandContext } from './types';
 import { CAPTURE_PRESETS_STORAGE_KEY } from '$lib/capture/presets';
 import { QUICK_CAPTURE_EVENT_NAME } from '$lib/capture/quick-capture';
+import { INBOX_TRIAGE_EVENT_NAME } from '$lib/inbox/triage';
+import { actionsStore } from './registry';
 
 function makeContext(query: string): CommandContext {
 	return {
@@ -29,6 +32,7 @@ function makeContext(query: string): CommandContext {
 describe('command palette quick-capture presets', () => {
 	beforeEach(() => {
 		localStorage.removeItem(CAPTURE_PRESETS_STORAGE_KEY);
+		actionsStore.set([]);
 	});
 
 	it('exposes enabled capture presets as dynamic actions', () => {
@@ -96,5 +100,27 @@ describe('command palette quick-capture presets', () => {
 			target: 'inbox',
 			prefill: 'Triage:'
 		});
+	});
+
+	it('registers AI inbox triage action and dispatches triage event', async () => {
+		registerBuiltInActions();
+		const builtInAction = get(actionsStore).find((action) => action.id === 'ai-triage-inbox');
+		expect(builtInAction).toBeDefined();
+
+		const triageEvents: Event[] = [];
+		window.addEventListener(INBOX_TRIAGE_EVENT_NAME, (event) => {
+			triageEvents.push(event);
+		});
+
+		const navigations: string[] = [];
+		await builtInAction?.handler({
+			...makeContext(''),
+			navigate: async (path: string) => {
+				navigations.push(path);
+			}
+		});
+
+		expect(navigations).toEqual(['/inbox']);
+		expect(triageEvents).toHaveLength(1);
 	});
 });
