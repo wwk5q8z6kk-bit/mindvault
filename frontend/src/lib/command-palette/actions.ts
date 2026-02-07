@@ -12,6 +12,7 @@ import {
 	type QuickCaptureMode,
 	type QuickCaptureTarget
 } from '$lib/capture/quick-capture';
+import { loadCapturePresets } from '$lib/capture/presets';
 
 let cachedSavedSearches: SavedSearch[] = [];
 let savedSearchesLoaded = false;
@@ -46,6 +47,23 @@ const STATUS_MAP: Record<string, string> = {
 
 function dispatchQuickCaptureEvent(mode: QuickCaptureMode, target: QuickCaptureTarget) {
 	dispatchQuickCapture({ mode, target });
+}
+
+function targetLabel(target: QuickCaptureTarget): string {
+	switch (target) {
+		case 'default':
+			return 'Default';
+		case 'inbox':
+			return 'Inbox';
+		case 'daily':
+			return 'Daily note';
+		case 'planned':
+			return 'Planned';
+		case 'review':
+			return 'Review';
+		default:
+			return 'Default';
+	}
 }
 
 export function registerBuiltInActions() {
@@ -417,6 +435,37 @@ export function buildDynamicActions(query: string, ctx: CommandContext): Command
 	const raw = query.trim();
 	const trimmed = raw.toLowerCase();
 	const actions: CommandAction[] = [];
+
+	if (trimmed.length === 0 || trimmed.includes('capture') || trimmed.includes('preset')) {
+		const presets = loadCapturePresets()
+			.filter((preset) => preset.enabled)
+			.slice(0, 5);
+		for (const preset of presets) {
+			const shortcutHint =
+				preset.shortcut === 'none' ? '' : ` · Cmd/Ctrl+Shift+${preset.shortcut}`;
+			actions.push({
+				id: `quick-capture-preset-${preset.id}`,
+				title: `Quick Capture: ${preset.name}`,
+				subtitle: `${preset.mode} -> ${targetLabel(preset.target)}${shortcutHint}`,
+				group: 'Quick Capture Presets',
+				keywords: [
+					'quick capture',
+					'capture preset',
+					'preset',
+					preset.name.toLowerCase(),
+					preset.mode,
+					preset.target
+				],
+				handler: () => {
+					dispatchQuickCapture({
+						mode: preset.mode,
+						target: preset.target,
+						prefill: preset.prefill
+					});
+				}
+			});
+		}
+	}
 
 	if (trimmed.startsWith('add tag ') || trimmed.startsWith('tag ')) {
 		const label = trimmed.replace(/^add tag\s+|^tag\s+/, '').trim();
