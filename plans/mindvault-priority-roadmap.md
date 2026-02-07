@@ -261,6 +261,16 @@ Last updated: 2026-02-06
   - Namespace-scoped authorization for target namespace filters to prevent cross-scope leakage.
 - ROI: High (cuts repeated query friction and improves retrieval workflow throughput)
 
+### MV-041: Saved views (list/kanban/calendar presets)
+- Priority: High
+- Status: Done
+- Scope:
+  - Persisted saved views with filters, sort, group_by, and query payloads. (Done)
+  - REST lifecycle (`GET/POST/PATCH/DELETE /api/v1/saved_views`) with validation. (Done)
+  - Frontend selector to apply saved views across list/kanban/calendar. (Done)
+  - Saved view navigation across task/kanban/calendar views. (Done)
+- ROI: High (fast context switching and reusable workflow presets)
+
 ### MV-037: Rich editor grounded auto-suggest mode
 - Priority: High
 - Status: Done
