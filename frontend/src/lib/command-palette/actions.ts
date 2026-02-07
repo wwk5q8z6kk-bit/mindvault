@@ -12,7 +12,7 @@ import {
 	type QuickCaptureMode,
 	type QuickCaptureTarget
 } from '$lib/capture/quick-capture';
-import { dispatchInboxTriage } from '$lib/inbox/triage';
+import { dispatchInboxTriage, dispatchInboxTriageApplyTop } from '$lib/inbox/triage';
 import { loadCapturePresets } from '$lib/capture/presets';
 
 let cachedSavedSearches: SavedSearch[] = [];
@@ -287,6 +287,16 @@ export function registerBuiltInActions() {
 			handler: async (ctx) => {
 				await ctx.navigate('/inbox');
 				dispatchInboxTriage();
+			}
+		},
+		{
+			id: 'ai-triage-inbox-apply',
+			title: 'AI: Apply Top Inbox Triage',
+			subtitle: 'Open Inbox, run AI triage, and apply top suggestions',
+			keywords: ['ai', 'triage', 'inbox', 'apply top', 'auto triage'],
+			handler: async (ctx) => {
+				await ctx.navigate('/inbox');
+				dispatchInboxTriageApplyTop();
 			}
 		},
 		{

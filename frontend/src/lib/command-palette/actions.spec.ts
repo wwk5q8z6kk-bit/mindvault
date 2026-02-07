@@ -6,7 +6,7 @@ import { buildDynamicActions, registerBuiltInActions } from './actions';
 import type { CommandContext } from './types';
 import { CAPTURE_PRESETS_STORAGE_KEY } from '$lib/capture/presets';
 import { QUICK_CAPTURE_EVENT_NAME } from '$lib/capture/quick-capture';
-import { INBOX_TRIAGE_EVENT_NAME } from '$lib/inbox/triage';
+import { INBOX_TRIAGE_APPLY_TOP_EVENT_NAME, INBOX_TRIAGE_EVENT_NAME } from '$lib/inbox/triage';
 import { actionsStore } from './registry';
 
 function makeContext(query: string): CommandContext {
@@ -122,5 +122,27 @@ describe('command palette quick-capture presets', () => {
 
 		expect(navigations).toEqual(['/inbox']);
 		expect(triageEvents).toHaveLength(1);
+	});
+
+	it('registers AI inbox apply-top action and dispatches apply event', async () => {
+		registerBuiltInActions();
+		const builtInAction = get(actionsStore).find((action) => action.id === 'ai-triage-inbox-apply');
+		expect(builtInAction).toBeDefined();
+
+		const applyEvents: Event[] = [];
+		window.addEventListener(INBOX_TRIAGE_APPLY_TOP_EVENT_NAME, (event) => {
+			applyEvents.push(event);
+		});
+
+		const navigations: string[] = [];
+		await builtInAction?.handler({
+			...makeContext(''),
+			navigate: async (path: string) => {
+				navigations.push(path);
+			}
+		});
+
+		expect(navigations).toEqual(['/inbox']);
+		expect(applyEvents).toHaveLength(1);
 	});
 });

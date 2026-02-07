@@ -13,6 +13,7 @@
 	import {
 		buildInboxTriagePatch,
 		buildInboxTriageSuggestions,
+		INBOX_TRIAGE_APPLY_TOP_EVENT_NAME,
 		INBOX_TRIAGE_EVENT_NAME,
 		type InboxTriageSuggestion
 	} from '$lib/inbox/triage';
@@ -53,6 +54,21 @@
 			triageSettings = loadInboxTriageSettings();
 			void runAiInboxTriage();
 		};
+		const handleExternalApplyTop = (event: Event) => {
+			triageSettings = loadInboxTriageSettings();
+			const customEvent = event as CustomEvent<{ limit?: number }>;
+			const requestedLimit =
+				typeof customEvent?.detail?.limit === 'number'
+					? customEvent.detail.limit
+					: triageSettings.default_apply_limit;
+			const normalizedLimit = Math.min(10, Math.max(1, Math.round(requestedLimit)));
+			void (async () => {
+				if (triageSuggestions.size === 0) {
+					await runAiInboxTriage();
+				}
+				await applyTopAiTriage(normalizedLimit);
+			})();
+		};
 		const refreshTriageSettings = () => {
 			triageSettings = loadInboxTriageSettings();
 		};
@@ -61,6 +77,7 @@
 			refreshTriageSettings();
 		};
 		window.addEventListener(INBOX_TRIAGE_EVENT_NAME, handleExternalTriage);
+		window.addEventListener(INBOX_TRIAGE_APPLY_TOP_EVENT_NAME, handleExternalApplyTop as EventListener);
 		window.addEventListener(INBOX_TRIAGE_SETTINGS_UPDATED_EVENT_NAME, refreshTriageSettings);
 		window.addEventListener('storage', handleStorageEvent);
 		void Promise.all([loadTasks(), loadNotes()]).finally(() => {
@@ -72,6 +89,10 @@
 		});
 		return () => {
 			window.removeEventListener(INBOX_TRIAGE_EVENT_NAME, handleExternalTriage);
+			window.removeEventListener(
+				INBOX_TRIAGE_APPLY_TOP_EVENT_NAME,
+				handleExternalApplyTop as EventListener
+			);
 			window.removeEventListener(INBOX_TRIAGE_SETTINGS_UPDATED_EVENT_NAME, refreshTriageSettings);
 			window.removeEventListener('storage', handleStorageEvent);
 		};

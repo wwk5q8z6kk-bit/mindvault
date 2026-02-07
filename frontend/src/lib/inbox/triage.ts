@@ -12,6 +12,7 @@ export interface InboxTriageSuggestion {
 }
 
 export const INBOX_TRIAGE_EVENT_NAME = 'mindvault:inbox-triage';
+export const INBOX_TRIAGE_APPLY_TOP_EVENT_NAME = 'mindvault:inbox-triage-apply-top';
 
 export function scoreToTaskPriority(score: number): number {
 	const normalized = Number.isFinite(score) ? score : 0;
@@ -62,5 +63,15 @@ export function buildInboxTriagePatch(
 export function dispatchInboxTriage(): boolean {
 	if (typeof window === 'undefined') return false;
 	window.dispatchEvent(new CustomEvent(INBOX_TRIAGE_EVENT_NAME));
+	return true;
+}
+
+export function dispatchInboxTriageApplyTop(limit?: number): boolean {
+	if (typeof window === 'undefined') return false;
+	const detail =
+		typeof limit === 'number' && Number.isFinite(limit)
+			? { limit: Math.max(1, Math.round(limit)) }
+			: undefined;
+	window.dispatchEvent(new CustomEvent(INBOX_TRIAGE_APPLY_TOP_EVENT_NAME, { detail }));
 	return true;
 }
