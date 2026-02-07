@@ -678,6 +678,13 @@
 					pushToast(`Status: ${e.detail.replace('_', ' ')}`, 'success');
 				}
 			}}
+			on:subtasksUpdate={async (e) => {
+				if (selectedTask) {
+					await updateTaskOptimistic(selectedTask.id, {
+						metadata: { ...(selectedTask.metadata ?? {}), subtasks: e.detail }
+					});
+				}
+			}}
 		/>
 	</section>
 </div>

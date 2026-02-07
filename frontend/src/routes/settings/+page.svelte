@@ -27,6 +27,13 @@
 		saveInboxTriageSettings
 	} from '$lib/inbox/triage-settings';
 	import ImportExportPanel from '$lib/components/ImportExportPanel.svelte';
+	import {
+		getSecretStatus,
+		setSecret,
+		deleteSecret,
+		KNOWN_SECRETS,
+		type BackendStatus
+	} from '$lib/api/secrets';
 
 	let showServerExport = false;
 
@@ -78,6 +85,66 @@
 		localStorage.removeItem('mv_ai_base_url');
 		pushToast('AI settings cleared', 'success');
 	}
+
+	// ── Server Credentials (Keychain) ─────────────────────────────
+	let credBackends: BackendStatus[] = [];
+	let credLoading = false;
+	let credError = '';
+	let addSecretKey = '';
+	let addSecretValue = '';
+	let addSecretBusy = false;
+	let showSecretValue = false;
+	let deletingKey = '';
+
+	/** All keys that are currently stored across any backend. */
+	$: storedKeys = new Set(credBackends.flatMap((b) => b.keys));
+
+	async function loadCredentials() {
+		credLoading = true;
+		credError = '';
+		try {
+			const res = await getSecretStatus();
+			credBackends = res.backends;
+		} catch (e: any) {
+			credError = e?.message ?? 'Failed to load credential status';
+		} finally {
+			credLoading = false;
+		}
+	}
+
+	async function handleAddSecret() {
+		if (!addSecretKey || !addSecretValue) return;
+		addSecretBusy = true;
+		try {
+			const res = await setSecret(addSecretKey, addSecretValue);
+			pushToast(`${res.key} stored in ${res.stored_in}`, 'success');
+			addSecretKey = '';
+			addSecretValue = '';
+			showSecretValue = false;
+			await loadCredentials();
+		} catch (e: any) {
+			pushToast(e?.message ?? 'Failed to store secret', 'danger');
+		} finally {
+			addSecretBusy = false;
+		}
+	}
+
+	async function handleDeleteSecret(key: string) {
+		deletingKey = key;
+		try {
+			const res = await deleteSecret(key);
+			const where = res.deleted_from.join(', ') || 'nowhere';
+			pushToast(`${key} deleted from ${where}`, 'success');
+			await loadCredentials();
+		} catch (e: any) {
+			pushToast(e?.message ?? 'Failed to delete secret', 'danger');
+		} finally {
+			deletingKey = '';
+		}
+	}
+
+	// Load credentials on mount
+	loadCredentials();
 
 	function handleThemeChange(mode: ThemeMode) {
 		setTheme(mode);
@@ -555,6 +622,134 @@
 						Reset to default
 					</button>
 				{/if}
+			</div>
+		</section>
+
+		<!-- Server Credentials (Keychain) -->
+		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+			<div class="flex items-center justify-between">
+				<div>
+					<h3 class="text-sm font-semibold text-white">Server Credentials</h3>
+					<p class="mt-1 text-[11px] text-slate-400">
+						API keys and secrets stored securely via the server's credential backends (OS
+						Keychain, environment variables).
+					</p>
+				</div>
+				<button
+					class="rounded-lg border border-slate-700 px-2.5 py-1.5 text-[10px] text-slate-300 hover:bg-slate-800"
+					on:click={loadCredentials}
+					disabled={credLoading}
+				>
+					{credLoading ? 'Loading...' : 'Refresh'}
+				</button>
+			</div>
+
+			{#if credError}
+				<div
+					class="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300"
+				>
+					{credError}
+				</div>
+			{/if}
+
+			<!-- Backend status table -->
+			{#if credBackends.length > 0}
+				<div class="mt-3 space-y-2">
+					{#each credBackends as backend (backend.name)}
+						<div class="rounded-lg border border-slate-800/60 px-3 py-2.5">
+							<div class="flex items-center gap-2">
+								<span
+									class={`h-2 w-2 rounded-full ${backend.available ? 'bg-emerald-400' : 'bg-slate-600'}`}
+								></span>
+								<span class="text-xs font-medium text-white">{backend.name}</span>
+								<span class="text-[10px] text-slate-500"
+									>{backend.available ? 'available' : 'unavailable'}</span
+								>
+							</div>
+							{#if backend.keys.length > 0}
+								<div class="mt-2 flex flex-wrap gap-1.5">
+									{#each backend.keys as key (key)}
+										<span
+											class="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-[10px] text-slate-300"
+										>
+											{key}
+											<button
+												class="ml-0.5 text-slate-500 hover:text-red-400"
+												title="Delete {key}"
+												disabled={deletingKey === key}
+												on:click={() => handleDeleteSecret(key)}
+											>
+												{deletingKey === key ? '...' : '×'}
+											</button>
+										</span>
+									{/each}
+								</div>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			{/if}
+
+			<!-- Known secrets quick-add -->
+			<div class="mt-4">
+				<h4 class="text-[10px] uppercase tracking-wider text-slate-500">Add Secret</h4>
+				<div class="mt-2 flex flex-wrap gap-1.5">
+					{#each KNOWN_SECRETS as secret (secret.key)}
+						<button
+							class={`rounded-md border px-2 py-1 text-[10px] transition ${
+								storedKeys.has(secret.key)
+									? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+									: addSecretKey === secret.key
+										? 'border-sky-500/60 bg-sky-500/10 text-sky-300'
+										: 'border-slate-700 text-slate-400 hover:border-slate-500'
+							}`}
+							title={secret.description}
+							disabled={storedKeys.has(secret.key)}
+							on:click={() => {
+								addSecretKey = secret.key;
+							}}
+						>
+							{secret.label}
+							{#if secret.required}
+								<span class="text-amber-400">*</span>
+							{/if}
+							{#if storedKeys.has(secret.key)}
+								<span class="ml-0.5">&#10003;</span>
+							{/if}
+						</button>
+					{/each}
+				</div>
+
+				<div class="mt-3 flex gap-2">
+					<input
+						class="flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
+						placeholder="Key name (e.g. OPENAI_API_KEY)"
+						bind:value={addSecretKey}
+					/>
+					<div class="relative flex-1">
+						<input
+							class="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 pr-14 text-xs text-white outline-none focus:border-sky-500"
+							type={showSecretValue ? 'text' : 'password'}
+							placeholder="Secret value"
+							bind:value={addSecretValue}
+						/>
+						<button
+							class="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 hover:text-white"
+							on:click={() => {
+								showSecretValue = !showSecretValue;
+							}}
+						>
+							{showSecretValue ? 'Hide' : 'Show'}
+						</button>
+					</div>
+					<button
+						class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+						disabled={!addSecretKey || !addSecretValue || addSecretBusy}
+						on:click={handleAddSecret}
+					>
+						{addSecretBusy ? 'Storing...' : 'Store'}
+					</button>
+				</div>
 			</div>
 		</section>
 

@@ -710,3 +710,371 @@ impl MindVaultService for MindVaultGrpc {
         Ok(Response::new(Box::pin(stream)))
     }
 }
+
+// ---------------------------------------------------------------------------
+// Keychain gRPC service
+// ---------------------------------------------------------------------------
+
+use proto::keychain_service_server::KeychainService;
+
+pub struct KeychainGrpc {
+    state: Arc<AppState>,
+}
+
+impl KeychainGrpc {
+    pub fn new(state: Arc<AppState>) -> Self {
+        Self { state }
+    }
+}
+
+fn ensure_admin(req: &Request<impl std::fmt::Debug>) -> Result<AuthContext, Status> {
+    let auth = req
+        .extensions()
+        .get::<AuthContext>()
+        .cloned()
+        .ok_or_else(|| Status::unauthenticated("no auth"))?;
+    if !auth.is_admin() {
+        return Err(Status::permission_denied("admin only"));
+    }
+    Ok(auth)
+}
+
+fn map_keychain_status(err: mv_core::MvError) -> Status {
+    match &err {
+        mv_core::MvError::VaultSealed => Status::failed_precondition(err.to_string()),
+        mv_core::MvError::Keychain(ref msg) if msg.contains("not found") => {
+            Status::not_found(err.to_string())
+        }
+        mv_core::MvError::Keychain(ref msg) if msg.contains("invalid password") => {
+            Status::unauthenticated(err.to_string())
+        }
+        _ => Status::internal(err.to_string()),
+    }
+}
+
+#[tonic::async_trait]
+impl KeychainService for KeychainGrpc {
+    async fn init_vault(
+        &self,
+        request: Request<proto::InitVaultRequest>,
+    ) -> Result<Response<proto::InitVaultResponse>, Status> {
+        let _auth = ensure_admin(&request)?;
+        let req = request.into_inner();
+        let engine = &self.state.engine;
+
+        engine
+            .keychain
+            .initialize_vault(&req.password, req.macos_bridge)
+            .await
+            .map_err(map_keychain_status)?;
+
+        let (_, meta) = engine
+            .keychain
+            .vault_status()
+            .await
+            .map_err(map_keychain_status)?;
+
+        Ok(Response::new(proto::InitVaultResponse {
+            status: "initialized".into(),
+            key_epoch: meta.map(|m| m.key_epoch).unwrap_or(0),
+        }))
+    }
+
+    async fn unseal(
+        &self,
+        request: Request<proto::UnsealRequest>,
+    ) -> Result<Response<proto::UnsealResponse>, Status> {
+        let _auth = ensure_admin(&request)?;
+        let req = request.into_inner();
+        let engine = &self.state.engine;
+
+        if req.from_macos_keychain {
+            engine
+                .keychain
+                .unseal_from_macos_keychain()
+                .await
+                .map_err(map_keychain_status)?;
+        } else {
+            engine
+                .keychain
+                .unseal(&req.password.unwrap_or_default())
+                .await
+                .map_err(map_keychain_status)?;
+        }
+
+        Ok(Response::new(proto::UnsealResponse {
+            status: "unsealed".into(),
+        }))
+    }
+
+    async fn seal(
+        &self,
+        request: Request<proto::SealRequest>,
+    ) -> Result<Response<proto::SealResponse>, Status> {
+        let _auth = ensure_admin(&request)?;
+
+        self.state
+            .engine
+            .keychain
+            .seal()
+            .await
+            .map_err(map_keychain_status)?;
+
+        Ok(Response::new(proto::SealResponse {
+            status: "sealed".into(),
+        }))
+    }
+
+    async fn get_vault_status(
+        &self,
+        request: Request<proto::GetVaultStatusRequest>,
+    ) -> Result<Response<proto::KeychainStatusResponse>, Status> {
+        let _auth = ensure_admin(&request)?;
+
+        let (state, meta) = self
+            .state
+            .engine
+            .keychain
+            .vault_status()
+            .await
+            .map_err(map_keychain_status)?;
+
+        Ok(Response::new(proto::KeychainStatusResponse {
+            status: "ok".into(),
+            state: state.as_str().to_string(),
+            key_epoch: meta.map(|m| m.key_epoch).unwrap_or(0),
+        }))
+    }
+
+    async fn rotate_key(
+        &self,
+        request: Request<proto::RotateKeyRequest>,
+    ) -> Result<Response<proto::RotateKeyResponse>, Status> {
+        let _auth = ensure_admin(&request)?;
+        let req = request.into_inner();
+
+        self.state
+            .engine
+            .keychain
+            .rotate_master_key(&req.new_password, req.grace_hours)
+            .await
+            .map_err(map_keychain_status)?;
+
+        let (_, meta) = self
+            .state
+            .engine
+            .keychain
+            .vault_status()
+            .await
+            .map_err(map_keychain_status)?;
+
+        Ok(Response::new(proto::RotateKeyResponse {
+            status: "rotated".into(),
+            new_epoch: meta.map(|m| m.key_epoch).unwrap_or(0),
+        }))
+    }
+
+    async fn store_credential(
+        &self,
+        request: Request<proto::StoreCredentialRequest>,
+    ) -> Result<Response<proto::CredentialResponse>, Status> {
+        let _auth = ensure_admin(&request)?;
+        let req = request.into_inner();
+
+        let domain_id: Uuid = req
+            .domain_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("invalid domain_id UUID"))?;
+
+        let expires_at = req
+            .expires_at
+            .as_deref()
+            .map(|s| {
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .map_err(|_| Status::invalid_argument("invalid expires_at"))
+            })
+            .transpose()?;
+
+        let cred = self
+            .state
+            .engine
+            .keychain
+            .store_credential(
+                domain_id,
+                &req.name,
+                &req.kind,
+                req.value.as_bytes(),
+                req.tags,
+                expires_at,
+            )
+            .await
+            .map_err(map_keychain_status)?;
+
+        Ok(Response::new(proto::CredentialResponse {
+            id: cred.id.to_string(),
+            name: cred.name,
+            kind: cred.kind,
+            domain_id: cred.domain_id.to_string(),
+            state: cred.state.as_str().to_string(),
+            created_at: cred.created_at.to_rfc3339(),
+        }))
+    }
+
+    async fn read_credential(
+        &self,
+        request: Request<proto::ReadCredentialRequest>,
+    ) -> Result<Response<proto::ReadCredentialResponse>, Status> {
+        let _auth = ensure_admin(&request)?;
+        let req = request.into_inner();
+
+        let id: Uuid = req
+            .id
+            .parse()
+            .map_err(|_| Status::invalid_argument("invalid credential id UUID"))?;
+
+        let (cred, plaintext) = self
+            .state
+            .engine
+            .keychain
+            .read_credential(id, &req.subject)
+            .await
+            .map_err(map_keychain_status)?;
+
+        Ok(Response::new(proto::ReadCredentialResponse {
+            id: cred.id.to_string(),
+            name: cred.name,
+            kind: cred.kind,
+            domain_id: cred.domain_id.to_string(),
+            value: String::from_utf8_lossy(&plaintext).to_string(),
+            state: cred.state.as_str().to_string(),
+            created_at: cred.created_at.to_rfc3339(),
+            expires_at: cred.expires_at.map(|dt| dt.to_rfc3339()),
+        }))
+    }
+
+    async fn list_credentials(
+        &self,
+        request: Request<proto::ListCredentialsRequest>,
+    ) -> Result<Response<proto::ListCredentialsResponse>, Status> {
+        let _auth = ensure_admin(&request)?;
+        let req = request.into_inner();
+
+        let domain_id = req
+            .domain
+            .as_deref()
+            .map(|s| s.parse::<Uuid>())
+            .transpose()
+            .map_err(|_| Status::invalid_argument("invalid domain UUID"))?;
+
+        let state_filter = req.state.as_deref().map(|s| {
+            s.parse::<mv_core::model::keychain::CredentialState>()
+                .map_err(|_| Status::invalid_argument("invalid state"))
+        }).transpose()?;
+
+        let creds = self
+            .state
+            .engine
+            .keychain
+            .list_credentials(domain_id, state_filter, req.limit as usize, req.offset as usize)
+            .await
+            .map_err(map_keychain_status)?;
+
+        let total = creds.len() as u64;
+        let credentials = creds
+            .into_iter()
+            .map(|c| proto::CredentialResponse {
+                id: c.id.to_string(),
+                name: c.name,
+                kind: c.kind,
+                domain_id: c.domain_id.to_string(),
+                state: c.state.as_str().to_string(),
+                created_at: c.created_at.to_rfc3339(),
+            })
+            .collect();
+
+        Ok(Response::new(proto::ListCredentialsResponse {
+            credentials,
+            total,
+        }))
+    }
+
+    async fn destroy_credential(
+        &self,
+        request: Request<proto::DestroyCredentialRequest>,
+    ) -> Result<Response<proto::DestroyCredentialResponse>, Status> {
+        let _auth = ensure_admin(&request)?;
+        let req = request.into_inner();
+
+        let id: Uuid = req
+            .id
+            .parse()
+            .map_err(|_| Status::invalid_argument("invalid credential id UUID"))?;
+
+        self.state
+            .engine
+            .keychain
+            .destroy_credential(id)
+            .await
+            .map_err(map_keychain_status)?;
+
+        Ok(Response::new(proto::DestroyCredentialResponse {
+            status: "destroyed".into(),
+        }))
+    }
+
+    async fn generate_proof(
+        &self,
+        request: Request<proto::GenerateProofRequest>,
+    ) -> Result<Response<proto::ZkProofResponse>, Status> {
+        let _auth = ensure_admin(&request)?;
+        let req = request.into_inner();
+
+        let credential_id: Uuid = req
+            .credential_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("invalid credential_id UUID"))?;
+
+        let proof = self
+            .state
+            .engine
+            .keychain
+            .generate_proof(credential_id, &req.nonce)
+            .await
+            .map_err(map_keychain_status)?;
+
+        Ok(Response::new(proto::ZkProofResponse {
+            proof: proof.proof,
+            expires_at: proof.expires_at.to_rfc3339(),
+        }))
+    }
+
+    async fn verify_proof(
+        &self,
+        request: Request<proto::VerifyProofRequest>,
+    ) -> Result<Response<proto::VerifyProofResponse>, Status> {
+        let _auth = ensure_admin(&request)?;
+        let req = request.into_inner();
+
+        // Deserialize the proof from JSON
+        let proof: mv_core::model::keychain::ZkAccessProof = serde_json::from_str(&req.proof)
+            .map_err(|e| Status::invalid_argument(format!("invalid proof JSON: {e}")))?;
+
+        let valid = self
+            .state
+            .engine
+            .keychain
+            .verify_proof(&proof)
+            .await
+            .map_err(map_keychain_status)?;
+
+        Ok(Response::new(proto::VerifyProofResponse {
+            valid,
+            credential_id: if valid {
+                Some(proof.credential_id.to_string())
+            } else {
+                None
+            },
+        }))
+    }
+}

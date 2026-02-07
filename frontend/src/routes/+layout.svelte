@@ -10,12 +10,16 @@
 	import MobileNav from '$lib/components/MobileNav.svelte';
 	import UndoIndicator from '$lib/components/UndoIndicator.svelte';
 	import LinkPreview from '$lib/components/LinkPreview.svelte';
+	import FavoritesBar from '$lib/components/FavoritesBar.svelte';
+	import ProposalInbox from '$lib/components/ProposalInbox.svelte';
 	import { startSyncLoop, pendingSyncCount } from '$lib/stores/tasks';
+	import { loadNotes } from '$lib/stores/notes';
 	import { startNotifications, stopNotifications } from '$lib/stores/notifications';
 	import { startWebSocket, stopWebSocket, wsStatus } from '$lib/stores/websocket';
 	import { handleUndoKeyboard } from '$lib/stores/undo';
 	import NamespaceSelector from '$lib/components/NamespaceSelector.svelte';
 	import { loadAvailableNamespaces } from '$lib/stores/namespace';
+	import { connectAgentStream, disconnectAgentStream } from '$lib/api/agent';
 	import { onMount } from 'svelte';
 
 	let online = true;
@@ -196,13 +200,16 @@
 		startSyncLoop();
 		startNotifications();
 		startWebSocket();
+		connectAgentStream();
 		loadAvailableNamespaces();
+		loadNotes();
 		window.addEventListener('online', onOnline);
 		window.addEventListener('offline', onOffline);
 		return () => {
 			window.removeEventListener('online', onOnline);
 			window.removeEventListener('offline', onOffline);
 			stopWebSocket();
+			disconnectAgentStream();
 		};
 	});
 
@@ -290,6 +297,7 @@
 				{/if}
 			</div>
 		</header>
+		<FavoritesBar />
 		<!-- Mobile slide-out menu -->
 		{#if mobileMenuOpen}
 			<div
@@ -346,3 +354,4 @@
 <MobileNav />
 <UndoIndicator />
 <LinkPreview />
+<ProposalInbox />

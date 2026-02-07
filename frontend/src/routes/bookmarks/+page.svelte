@@ -9,6 +9,7 @@
 		listBookmarks,
 		normalizeBookmarkUrl,
 		setBookmarkRead,
+		updateBookmarkTags,
 		type Bookmark,
 		type CreateBookmarkPayload
 	} from '$lib/api/bookmarks';
@@ -16,6 +17,18 @@
 	import { assistAutoTag, assistTransform } from '$lib/api/assist';
 	import { activeNamespace } from '$lib/stores/namespace';
 	import { pushToast } from '$lib/stores/toast';
+
+	// Folder/Collection system
+	const FOLDER_PREFIX = 'folder:';
+	const FOLDER_STORAGE_KEY = 'mindvault-bookmark-folders';
+	const FOLDER_COLORS = ['slate', 'red', 'orange', 'amber', 'yellow', 'lime', 'green', 'emerald', 'teal', 'cyan', 'sky', 'blue', 'indigo', 'violet', 'purple', 'fuchsia', 'pink', 'rose'];
+
+	interface BookmarkFolder {
+		id: string;
+		name: string;
+		color: string;
+		createdAt: string;
+	}
 
 	let bookmarks: Bookmark[] = [];
 	let loading = true;
@@ -38,9 +51,109 @@
 	let dedupeConflict: { bookmark: Bookmark; payload: CreateBookmarkPayload } | null = null;
 	let resolvingConflict = false;
 
-	$: allTags = [...new Set(bookmarks.flatMap((item) => item.tags ?? []))].sort();
+	// Folder state
+	let folders: BookmarkFolder[] = [];
+	let selectedFolder: string | null = null;
+	let showFolderModal = false;
+	let showMoveModal = false;
+	let moveTargetBookmarkId: string | null = null;
+	let newFolderName = '';
+	let newFolderColor = 'sky';
+	let editingFolder: BookmarkFolder | null = null;
+	let foldersSidebarCollapsed = false;
+
+	function loadFolders() {
+		try {
+			const stored = localStorage.getItem(FOLDER_STORAGE_KEY);
+			folders = stored ? JSON.parse(stored) : [];
+		} catch {
+			folders = [];
+		}
+	}
+
+	function saveFolders() {
+		localStorage.setItem(FOLDER_STORAGE_KEY, JSON.stringify(folders));
+	}
+
+	function createFolder() {
+		if (!newFolderName.trim()) return;
+		const folder: BookmarkFolder = {
+			id: crypto.randomUUID(),
+			name: newFolderName.trim(),
+			color: newFolderColor,
+			createdAt: new Date().toISOString()
+		};
+		folders = [...folders, folder];
+		saveFolders();
+		newFolderName = '';
+		newFolderColor = 'sky';
+		showFolderModal = false;
+		pushToast(`Folder "${folder.name}" created`, 'success');
+	}
+
+	function deleteFolder(folderId: string) {
+		const folder = folders.find((f) => f.id === folderId);
+		if (!folder) return;
+		folders = folders.filter((f) => f.id !== folderId);
+		saveFolders();
+		if (selectedFolder === folderId) selectedFolder = null;
+		pushToast(`Folder "${folder.name}" deleted`, 'success');
+	}
+
+	function getFolderTag(folderId: string): string {
+		return `${FOLDER_PREFIX}${folderId}`;
+	}
+
+	function getBookmarkFolderId(bookmark: Bookmark): string | null {
+		const folderTag = bookmark.tags.find((tag) => tag.startsWith(FOLDER_PREFIX));
+		return folderTag ? folderTag.slice(FOLDER_PREFIX.length) : null;
+	}
+
+	async function moveBookmarkToFolder(bookmarkId: string, folderId: string | null) {
+		const bookmark = bookmarks.find((b) => b.id === bookmarkId);
+		if (!bookmark) return;
+		const existingFolderTag = bookmark.tags.find((tag) => tag.startsWith(FOLDER_PREFIX));
+		let newTags = bookmark.tags.filter((tag) => !tag.startsWith(FOLDER_PREFIX));
+		if (folderId) {
+			newTags = [...newTags, getFolderTag(folderId)];
+		}
+		try {
+			const updated = await updateBookmarkTags(bookmarkId, newTags);
+			bookmarks = bookmarks.map((b) => (b.id === bookmarkId ? updated : b));
+			const folder = folders.find((f) => f.id === folderId);
+			pushToast(folderId ? `Moved to "${folder?.name}"` : 'Removed from folder', 'success');
+		} catch {
+			pushToast('Failed to move bookmark', 'danger');
+		}
+		showMoveModal = false;
+		moveTargetBookmarkId = null;
+	}
+
+	function openMoveModal(bookmarkId: string) {
+		moveTargetBookmarkId = bookmarkId;
+		showMoveModal = true;
+	}
+
+	function getBookmarksInFolder(folderId: string | null): Bookmark[] {
+		if (folderId === null) {
+			return bookmarks.filter((b) => !b.tags.some((tag) => tag.startsWith(FOLDER_PREFIX)));
+		}
+		const folderTag = getFolderTag(folderId);
+		return bookmarks.filter((b) => b.tags.includes(folderTag));
+	}
+
+	function countBookmarksInFolder(folderId: string | null): number {
+		return getBookmarksInFolder(folderId).length;
+	}
+
+	$: allTags = [...new Set(bookmarks.flatMap((item) => item.tags ?? []))].filter((tag) => !tag.startsWith(FOLDER_PREFIX)).sort();
 	$: displayed = bookmarks
 		.filter((bookmark) => {
+			// Folder filter
+			if (selectedFolder !== null) {
+				const folderTag = getFolderTag(selectedFolder);
+				if (!bookmark.tags.includes(folderTag)) return false;
+			}
 			if (filter === 'unread' && bookmark.read) return false;
 			if (filter === 'read' && !bookmark.read) return false;
 			if (searchQuery.trim()) {
@@ -75,6 +188,7 @@
 	}
 
 	onMount(async () => {
+		loadFolders();
 		await refreshBookmarks();
 		prefillFromQuery(get(page).url.searchParams);
 	});
@@ -357,20 +471,95 @@
 	}
 </script>
 
-<div class="mx-auto max-w-4xl">
-	<div class="flex items-start justify-between gap-3">
-		<div>
-			<h2 class="text-lg font-semibold text-white">Reading List & Clipper</h2>
-			<p class="text-xs text-slate-400">Capture web content into MindVault with local-first storage and AI assist.</p>
+<div class="flex gap-6">
+	<!-- Folder Sidebar -->
+	<aside class="hidden w-56 flex-shrink-0 md:block">
+		<div class="sticky top-6 rounded-xl border border-slate-800/60 bg-slate-900/40 p-3">
+			<div class="flex items-center justify-between">
+				<h3 class="text-xs font-semibold text-slate-300">Folders</h3>
+				<button
+					class="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+					on:click={() => (showFolderModal = true)}
+					title="Create folder"
+				>
+					<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+					</svg>
+				</button>
+			</div>
+			<nav class="mt-3 space-y-1">
+				<button
+					class="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs transition {selectedFolder === null ? 'bg-sky-500/20 text-sky-300' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}"
+					on:click={() => (selectedFolder = null)}
+				>
+					<span>All Bookmarks</span>
+					<span class="text-[10px] text-slate-500">{bookmarks.length}</span>
+				</button>
+				{#each folders as folder (folder.id)}
+					<button
+						class="group flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs transition {selectedFolder === folder.id ? `bg-${folder.color}-500/20 text-${folder.color}-300` : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}"
+						on:click={() => (selectedFolder = folder.id)}
+					>
+						<div class="flex items-center gap-2">
+							<span class="h-2 w-2 rounded-full bg-{folder.color}-400"></span>
+							<span class="truncate">{folder.name}</span>
+						</div>
+						<div class="flex items-center gap-1">
+							<span class="text-[10px] text-slate-500">{countBookmarksInFolder(folder.id)}</span>
+							<button
+								class="hidden rounded p-0.5 text-slate-600 hover:bg-red-500/20 hover:text-red-300 group-hover:block"
+								on:click|stopPropagation={() => deleteFolder(folder.id)}
+								title="Delete folder"
+							>
+								<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+								</svg>
+							</button>
+						</div>
+					</button>
+				{/each}
+				{#if folders.length === 0}
+					<p class="px-2 py-1 text-[10px] text-slate-600">No folders yet</p>
+				{/if}
+			</nav>
 		</div>
-		<button
-			class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-50"
-			on:click={copyBookmarklet}
-			disabled={bookmarkletCopying}
-		>
-			{bookmarkletCopying ? 'Copying...' : 'Copy bookmarklet'}
-		</button>
-	</div>
+	</aside>
+
+	<!-- Main Content -->
+	<div class="min-w-0 flex-1">
+		<div class="flex items-start justify-between gap-3">
+			<div>
+				<h2 class="text-lg font-semibold text-white">
+					{#if selectedFolder}
+						{folders.find(f => f.id === selectedFolder)?.name ?? 'Folder'}
+					{:else}
+						Reading List & Clipper
+					{/if}
+				</h2>
+				<p class="text-xs text-slate-400">
+					{#if selectedFolder}
+						{countBookmarksInFolder(selectedFolder)} bookmark{countBookmarksInFolder(selectedFolder) === 1 ? '' : 's'} in this folder
+					{:else}
+						Capture web content into MindVault with local-first storage and AI assist.
+					{/if}
+				</p>
+			</div>
+			<div class="flex gap-2">
+				<button
+					class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800 md:hidden"
+					on:click={() => (showFolderModal = true)}
+				>
+					Folders
+				</button>
+				<button
+					class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+					on:click={copyBookmarklet}
+					disabled={bookmarkletCopying}
+				>
+					{bookmarkletCopying ? 'Copying...' : 'Copy bookmarklet'}
+				</button>
+			</div>
+		</div>
 
 	<div class="mt-4 rounded-2xl border border-slate-800/70 bg-slate-900/40 p-4">
 		<div class="flex items-center justify-between gap-2">
@@ -537,9 +726,18 @@
 							{#if bookmark.excerpt}
 								<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">{bookmark.excerpt}</p>
 							{/if}
-							{#if bookmark.tags.length > 0}
+							{@const visibleTags = bookmark.tags.filter(t => !t.startsWith(FOLDER_PREFIX))}
+							{@const bookmarkFolderId = getBookmarkFolderId(bookmark)}
+							{@const bookmarkFolder = bookmarkFolderId ? folders.find(f => f.id === bookmarkFolderId) : null}
+							{#if bookmarkFolder}
+								<div class="mt-1 flex items-center gap-1">
+									<span class="h-1.5 w-1.5 rounded-full bg-{bookmarkFolder.color}-400"></span>
+									<span class="text-[9px] text-{bookmarkFolder.color}-300">{bookmarkFolder.name}</span>
+								</div>
+							{/if}
+							{#if visibleTags.length > 0}
 								<div class="mt-1.5 flex flex-wrap gap-1">
-									{#each bookmark.tags as tag}
+									{#each visibleTags as tag}
 										<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-400">{tag}</span>
 									{/each}
 								</div>
@@ -547,6 +745,13 @@
 						</div>
 						<div class="flex items-center gap-2">
 							<span class="text-[9px] text-slate-600">{relativeTime(bookmark.created_at)}</span>
+							<button
+								class="rounded-lg border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800"
+								on:click={() => openMoveModal(bookmark.id)}
+								title="Move to folder"
+							>
+								Move
+							</button>
 							<a
 								href={bookmark.url}
 								target="_blank"
@@ -567,4 +772,95 @@
 			{/each}
 		{/if}
 	</div>
+	</div>
 </div>
+
+<!-- Create Folder Modal -->
+{#if showFolderModal}
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" role="presentation">
+		<div class="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-xl" role="dialog" aria-modal="true">
+			<h3 class="text-sm font-semibold text-white">Create Folder</h3>
+			<div class="mt-4 space-y-3">
+				<div>
+					<label class="text-[10px] uppercase tracking-wide text-slate-500" for="folder-name">Name</label>
+					<input
+						id="folder-name"
+						class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white"
+						bind:value={newFolderName}
+						placeholder="Reading Queue"
+						on:keydown={(e) => e.key === 'Enter' && createFolder()}
+					/>
+				</div>
+				<div>
+					<label class="text-[10px] uppercase tracking-wide text-slate-500">Color</label>
+					<div class="mt-1 flex flex-wrap gap-1.5">
+						{#each FOLDER_COLORS as color}
+							<button
+								class="h-5 w-5 rounded-full bg-{color}-400 ring-2 ring-offset-2 ring-offset-slate-900 transition {newFolderColor === color ? 'ring-white' : 'ring-transparent hover:ring-slate-600'}"
+								on:click={() => (newFolderColor = color)}
+							></button>
+						{/each}
+					</div>
+				</div>
+			</div>
+			<div class="mt-5 flex justify-end gap-2">
+				<button
+					class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+					on:click={() => { showFolderModal = false; newFolderName = ''; }}
+				>
+					Cancel
+				</button>
+				<button
+					class="rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+					on:click={createFolder}
+					disabled={!newFolderName.trim()}
+				>
+					Create
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- Move to Folder Modal -->
+{#if showMoveModal && moveTargetBookmarkId}
+	{@const targetBookmark = bookmarks.find(b => b.id === moveTargetBookmarkId)}
+	{@const currentFolderId = targetBookmark ? getBookmarkFolderId(targetBookmark) : null}
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" role="presentation">
+		<div class="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-xl" role="dialog" aria-modal="true">
+			<h3 class="text-sm font-semibold text-white">Move to Folder</h3>
+			<p class="mt-1 text-[11px] text-slate-400 truncate">{targetBookmark?.title}</p>
+			<div class="mt-4 space-y-1">
+				<button
+					class="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition {currentFolderId === null ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}"
+					on:click={() => moveBookmarkToFolder(moveTargetBookmarkId!, null)}
+				>
+					<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+					</svg>
+					No Folder
+				</button>
+				{#each folders as folder (folder.id)}
+					<button
+						class="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition {currentFolderId === folder.id ? `bg-${folder.color}-500/20 text-${folder.color}-300` : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}"
+						on:click={() => moveBookmarkToFolder(moveTargetBookmarkId!, folder.id)}
+					>
+						<span class="h-3 w-3 rounded-full bg-{folder.color}-400"></span>
+						{folder.name}
+					</button>
+				{/each}
+				{#if folders.length === 0}
+					<p class="px-3 py-2 text-[10px] text-slate-600">No folders. Create one first.</p>
+				{/if}
+			</div>
+			<div class="mt-4 flex justify-end">
+				<button
+					class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+					on:click={() => { showMoveModal = false; moveTargetBookmarkId = null; }}
+				>
+					Cancel
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}

@@ -207,25 +207,36 @@ impl VectorStore for LanceVectorStore {
 /// OpenAI-compatible embedding client.
 pub struct OpenAiEmbedder {
     client: reqwest::Client,
-    api_key: String,
+    base_url: String,
+    api_key: Option<String>,
     model: String,
     dimensions: usize,
 }
 
 impl OpenAiEmbedder {
-    pub fn new(api_key: String, model: String, dimensions: usize) -> Self {
+    pub fn new(base_url: String, api_key: Option<String>, model: String, dimensions: usize) -> Self {
         Self {
             client: reqwest::Client::new(),
+            base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             model,
             dimensions,
         }
     }
 
-    pub fn from_env(model: String, dimensions: usize) -> MvResult<Self> {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .map_err(|_| MvError::Config("OPENAI_API_KEY not set".into()))?;
-        Ok(Self::new(api_key, model, dimensions))
+    /// Create for Ollama (no API key, default base URL).
+    pub fn for_ollama(base_url: Option<String>, model: String, dimensions: usize) -> Self {
+        Self::new(
+            base_url.unwrap_or_else(|| "http://localhost:11434/v1".into()),
+            None,
+            model,
+            dimensions,
+        )
+    }
+
+    /// Create for any OpenAI-compatible API.
+    pub fn for_compatible(base_url: String, api_key: Option<String>, model: String, dimensions: usize) -> Self {
+        Self::new(base_url, api_key, model, dimensions)
     }
 }
 
@@ -310,14 +321,18 @@ impl Embedder for OpenAiEmbedder {
             embedding: Vec<f32>,
         }
 
-        let resp = self
+        let url = format!("{}/embeddings", self.base_url);
+        let mut req_builder = self
             .client
-            .post("https://api.openai.com/v1/embeddings")
-            .bearer_auth(&self.api_key)
+            .post(&url)
             .json(&EmbedRequest {
                 model: &self.model,
                 input: texts,
-            })
+            });
+        if let Some(ref key) = self.api_key {
+            req_builder = req_builder.bearer_auth(key);
+        }
+        let resp = req_builder
             .send()
             .await
             .map_err(|e| MvError::Embedding(format!("request failed: {e}")))?;

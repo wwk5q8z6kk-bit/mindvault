@@ -204,6 +204,7 @@ MindVault supports fast capture flows from anywhere in the app, with desktop-glo
 - Smart Inbox includes `AI Triage` to suggest priority/status updates for inbox tasks and apply top recommendations in one click.
 - Inbox AI triage behavior is configurable in Settings (`auto-run on open` and default `Apply Top N` size).
 - Command Palette includes `AI: Triage Inbox` and `AI: Apply Top Inbox Triage` for keyboard-first triage workflows.
+- Command Palette also supports query action `triage top N` (e.g. `triage top 5`) for one-off batch triage size.
 
 ## Web Editor
 

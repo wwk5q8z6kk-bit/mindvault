@@ -189,10 +189,10 @@ pub async fn validate(config_path: &str) -> Result<()> {
                 println!("  data_dir exists: no (will be created on first use)");
             }
 
-            if std::env::var("OPENAI_API_KEY").is_ok() {
-                println!("  OPENAI_API_KEY: set");
-            } else {
-                println!("  OPENAI_API_KEY: not set (vector search will be disabled)");
+            let creds = mv_core::credentials::CredentialStore::new("mindvault");
+            match creds.get("OPENAI_API_KEY") {
+                Ok(Some(sv)) => println!("  OPENAI_API_KEY: set (via {})", sv.source()),
+                _ => println!("  OPENAI_API_KEY: not set (vector search will be disabled)"),
             }
         }
         Err(e) => {

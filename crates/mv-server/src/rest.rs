@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -17,6 +18,7 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+use uuid::Uuid;
 
 use mv_core::*;
 use mv_engine::engine::{PrioritizedTask, TaskPrioritizationOptions};
@@ -59,6 +61,8 @@ use node_versions::{
     push_node_version_snapshot, set_node_versions_in_metadata, NodeVersionDetailResponse,
     NodeVersionSummary,
 };
+#[path = "rest/secrets.rs"]
+mod secrets;
 #[path = "rest/voice.rs"]
 mod voice;
 use voice::{is_audio_file, transcribe_audio, transcribe_audio_api, WhisperConfig};
@@ -111,6 +115,16 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/tasks/due", get(list_due_tasks))
         .route("/api/v1/briefing", get(daily_briefing))
         .route("/api/v1/agent/context", get(get_agent_context))
+        .route("/api/v1/agent/chronicle", get(list_chronicles))
+        .route("/api/v1/agent/intents", get(list_intents))
+        .route("/api/v1/agent/intents/{id}/apply", post(apply_intent))
+        .route("/api/v1/agent/intents/{id}/dismiss", post(dismiss_intent))
+        .route("/api/v1/agent/models", get(list_models))
+        .route("/api/v1/proactive/insights", get(list_insights))
+        .route("/api/v1/proactive/insights/{id}", delete(delete_insight))
+        .route("/api/v1/proactive/generate", post(generate_insights));
+
+    let router = router
         .route("/api/v1/tasks/prioritize", post(prioritize_tasks))
         .route("/api/v1/tasks/{id}/complete", post(complete_task))
         .route("/api/v1/tasks/{id}/reopen", post(reopen_task))
@@ -183,10 +197,19 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/clips/{id}/note", post(create_clip_note))
         .route("/api/v1/files/upload", post(upload_file))
         .route("/api/v1/voice/upload", post(upload_voice_note))
+        .route("/api/v1/files", get(list_attachments_index))
         .route("/api/v1/files/{node_id}", get(list_node_attachments))
+        .route(
+            "/api/v1/files/{node_id}/paged",
+            get(list_node_attachments_paged),
+        )
         .route(
             "/api/v1/files/{node_id}/reindex-failed",
             post(reindex_failed_attachments),
+        )
+        .route(
+            "/api/v1/files/{node_id}/delete-filtered",
+            post(delete_filtered_attachments),
         )
         .route(
             "/api/v1/files/{node_id}/{attachment_id}/chunks",
@@ -222,6 +245,9 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(get_node_relationships),
         )
         .route("/api/v1/graph/neighbors/{id}", get(get_neighbors))
+        .route("/api/v1/secrets/status", get(secrets::secret_status))
+        .route("/api/v1/secrets", post(secrets::set_secret))
+        .route("/api/v1/secrets/{key}", delete(secrets::delete_secret))
         .route("/api/v1/audit", get(list_audit_logs))
         .route("/metrics", get(metrics_handler))
         .route("/api/openapi.json", get(openapi_spec_handler))
@@ -564,10 +590,12 @@ struct PrioritizeTasksResponse {
 struct CalendarItemsQuery {
     namespace: Option<String>,
     view: Option<String>,
+    date: Option<String>,
     anchor: Option<String>,
     start: Option<String>,
     end: Option<String>,
     limit: Option<usize>,
+    include_tasks: Option<bool>,
     include_completed: Option<bool>,
 }
 
@@ -937,7 +965,7 @@ struct NodeAttachmentRecord {
     extracted_chars: Option<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct AttachmentListItemResponse {
     attachment_id: String,
     file_name: String,
@@ -958,6 +986,76 @@ struct AttachmentListQuery {
     q: Option<String>,
     status: Option<String>,
     failed_only: Option<bool>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    sort: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AttachmentIndexQuery {
+    q: Option<String>,
+    status: Option<String>,
+    failed_only: Option<bool>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    sort: Option<String>,
+    namespace: Option<String>,
+    kind: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct AttachmentIndexItemResponse {
+    node_id: String,
+    node_title: String,
+    node_kind: String,
+    namespace: Option<String>,
+    attachment_id: String,
+    file_name: String,
+    content_type: Option<String>,
+    size_bytes: usize,
+    uploaded_at: Option<String>,
+    extraction_status: Option<String>,
+    extracted_chars: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_chunk_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_preview: Option<String>,
+    download_url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AttachmentIndexPagedResponse {
+    total: usize,
+    limit: usize,
+    offset: usize,
+    returned: usize,
+    has_more: bool,
+    sort: String,
+    items: Vec<AttachmentIndexItemResponse>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct AttachmentStatusFacetResponse {
+    all: usize,
+    failed: usize,
+    indexed: usize,
+    transcribed: usize,
+    tool_missing: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct AttachmentListPagedResponse {
+    node_id: String,
+    total: usize,
+    total_query_matched: usize,
+    total_unfiltered: usize,
+    limit: usize,
+    offset: usize,
+    returned: usize,
+    has_more: bool,
+    sort: String,
+    status_facets: AttachmentStatusFacetResponse,
+    items: Vec<AttachmentListItemResponse>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1035,6 +1133,37 @@ struct AttachmentDeleteResponse {
     attachment_id: String,
     file_deleted: bool,
     remaining_attachments: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentBulkDeleteRequest {
+    q: Option<String>,
+    status: Option<String>,
+    failed_only: Option<bool>,
+    sort: Option<String>,
+    dry_run: Option<bool>,
+    confirmed_count: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct AttachmentBulkDeleteItemResponse {
+    attachment_id: String,
+    file_name: String,
+    status: String,
+    file_deleted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AttachmentBulkDeleteResponse {
+    node_id: String,
+    dry_run: bool,
+    matched_count: usize,
+    deleted_count: usize,
+    failed_count: usize,
+    remaining_attachments: usize,
+    items: Vec<AttachmentBulkDeleteItemResponse>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1156,6 +1285,8 @@ const MAX_ATTACHMENT_SEARCH_CHUNK_COUNT: usize = 32;
 const MAX_ATTACHMENT_SEARCH_PREVIEW_CHARS: usize = 180;
 const DEFAULT_ATTACHMENT_CHUNK_PAGE_SIZE: usize = 8;
 const MAX_ATTACHMENT_CHUNK_PAGE_SIZE: usize = 64;
+const DEFAULT_ATTACHMENT_LIST_PAGE_SIZE: usize = 20;
+const MAX_ATTACHMENT_LIST_PAGE_SIZE: usize = 100;
 const ATTACHMENT_TEXT_INDEX_METADATA_KEY: &str = "attachment_text_index";
 const ATTACHMENT_TEXT_CHUNK_INDEX_METADATA_KEY: &str = "attachment_text_chunks";
 const ATTACHMENT_SEARCH_BLOB_METADATA_KEY: &str = "attachment_search_text";
@@ -1178,6 +1309,15 @@ const MAX_SAVED_VIEW_NAME_LEN: usize = 160;
 const MAX_SAVED_VIEW_GROUP_BY_LEN: usize = 120;
 const EVENT_START_AT_METADATA_KEY: &str = "event_start_at";
 const EVENT_END_AT_METADATA_KEY: &str = "event_end_at";
+const TIME_BLOCK_TASK_ID_METADATA_KEY: &str = "time_block_task_id";
+const TIME_BLOCK_TASK_COMPLETED_METADATA_KEY: &str = "time_block_task_completed";
+const TIME_BLOCK_TASK_COMPLETED_AT_METADATA_KEY: &str = "time_block_task_completed_at";
+const TIME_BLOCK_STATUS_METADATA_KEY: &str = "time_block_status";
+const TIME_BLOCK_PREVIOUS_END_AT_ON_COMPLETE_METADATA_KEY: &str =
+    "time_block_previous_end_at_on_complete";
+const TIME_BLOCK_REOPENED_AT_METADATA_KEY: &str = "time_block_reopened_at";
+const TIME_BLOCK_STATUS_ACTIVE: &str = "active";
+const TIME_BLOCK_STATUS_CLOSED: &str = "closed";
 const ICAL_UID_METADATA_KEY: &str = "ical_uid";
 const ICAL_STATUS_METADATA_KEY: &str = "ical_status";
 const ICAL_IMPORTED_AT_METADATA_KEY: &str = "ical_imported_at";
@@ -2472,6 +2612,19 @@ fn resolve_calendar_window(
     }
 }
 
+fn resolve_calendar_anchor(
+    anchor: Option<String>,
+    date: Option<String>,
+) -> Result<DateTime<Utc>, (StatusCode, String)> {
+    if let Some(anchor_value) = parse_optional_rfc3339_datetime(anchor, "anchor")? {
+        return Ok(anchor_value);
+    }
+    if let Some(date_value) = parse_optional_iso_date(date, "date")? {
+        return Ok(start_of_day_utc(date_value));
+    }
+    Ok(Utc::now())
+}
+
 fn parse_calendar_datetime_metadata(node: &KnowledgeNode, key: &str) -> Option<DateTime<Utc>> {
     match parse_optional_metadata_datetime(&node.metadata, key) {
         Ok(value) => value,
@@ -2537,11 +2690,20 @@ fn is_completed_calendar_task(node: &KnowledgeNode) -> bool {
     parse_optional_metadata_bool(&node.metadata, TASK_COMPLETED_METADATA_KEY).unwrap_or(false)
 }
 
+fn is_completed_linked_time_block_event(node: &KnowledgeNode) -> bool {
+    if node.kind != NodeKind::Event {
+        return false;
+    }
+    parse_optional_metadata_bool(&node.metadata, TIME_BLOCK_TASK_COMPLETED_METADATA_KEY)
+        .unwrap_or(false)
+}
+
 async fn collect_calendar_items(
     state: &AppState,
     namespace: Option<String>,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
+    include_tasks: bool,
     include_completed: bool,
     limit: usize,
 ) -> Result<CalendarCollectionResult, (StatusCode, String)> {
@@ -2554,7 +2716,11 @@ async fn collect_calendar_items(
             .list_nodes(
                 &QueryFilters {
                     namespace: namespace.clone(),
-                    kinds: Some(vec![NodeKind::Task, NodeKind::Event]),
+                    kinds: if include_tasks {
+                        Some(vec![NodeKind::Task, NodeKind::Event])
+                    } else {
+                        Some(vec![NodeKind::Event])
+                    },
                     ..Default::default()
                 },
                 CALENDAR_SCAN_PAGE_SIZE,
@@ -2577,6 +2743,12 @@ async fn collect_calendar_items(
 
             let completed = is_completed_calendar_task(&node);
             if node.kind == NodeKind::Task && completed && !include_completed {
+                continue;
+            }
+            if node.kind == NodeKind::Event
+                && is_completed_linked_time_block_event(&node)
+                && !include_completed
+            {
                 continue;
             }
 
@@ -4228,6 +4400,150 @@ fn attachment_chunk_summary(
     (Some(chunks.len()), Some(preview))
 }
 
+fn normalize_attachment_sort(sort: Option<&str>) -> &'static str {
+    match sort
+        .unwrap_or("uploaded_at_desc")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "uploaded_at_asc" => "uploaded_at_asc",
+        "uploaded_at_desc" => "uploaded_at_desc",
+        "file_name_asc" => "file_name_asc",
+        "file_name_desc" => "file_name_desc",
+        _ => "uploaded_at_desc",
+    }
+}
+
+fn sort_attachment_items(items: &mut [AttachmentListItemResponse], sort: &str) {
+    items.sort_by(|left, right| match sort {
+        "uploaded_at_asc" => left
+            .uploaded_at
+            .cmp(&right.uploaded_at)
+            .then_with(|| left.file_name.cmp(&right.file_name))
+            .then_with(|| left.attachment_id.cmp(&right.attachment_id)),
+        "file_name_asc" => left
+            .file_name
+            .cmp(&right.file_name)
+            .then_with(|| left.attachment_id.cmp(&right.attachment_id)),
+        "file_name_desc" => right
+            .file_name
+            .cmp(&left.file_name)
+            .then_with(|| left.attachment_id.cmp(&right.attachment_id)),
+        _ => right
+            .uploaded_at
+            .cmp(&left.uploaded_at)
+            .then_with(|| left.file_name.cmp(&right.file_name))
+            .then_with(|| left.attachment_id.cmp(&right.attachment_id)),
+    });
+}
+
+fn sort_attachment_index_items(items: &mut [AttachmentIndexItemResponse], sort: &str) {
+    items.sort_by(|left, right| match sort {
+        "uploaded_at_asc" => left
+            .uploaded_at
+            .cmp(&right.uploaded_at)
+            .then_with(|| left.file_name.cmp(&right.file_name))
+            .then_with(|| left.attachment_id.cmp(&right.attachment_id)),
+        "file_name_asc" => left
+            .file_name
+            .cmp(&right.file_name)
+            .then_with(|| left.attachment_id.cmp(&right.attachment_id)),
+        "file_name_desc" => right
+            .file_name
+            .cmp(&left.file_name)
+            .then_with(|| left.attachment_id.cmp(&right.attachment_id)),
+        _ => right
+            .uploaded_at
+            .cmp(&left.uploaded_at)
+            .then_with(|| left.file_name.cmp(&right.file_name))
+            .then_with(|| left.attachment_id.cmp(&right.attachment_id)),
+    });
+}
+
+fn collect_attachment_items(
+    node: &KnowledgeNode,
+    query: &AttachmentListQuery,
+) -> Vec<AttachmentListItemResponse> {
+    let query_text = query.q.as_deref().unwrap_or("").trim().to_ascii_lowercase();
+    let status_filter = query
+        .status
+        .as_deref()
+        .unwrap_or("all")
+        .trim()
+        .to_ascii_lowercase();
+    let failed_only = query.failed_only.unwrap_or(false);
+
+    parse_node_attachments(node)
+        .into_iter()
+        .filter(|attachment| {
+            let status = normalize_attachment_status(attachment.extraction_status.as_deref());
+            if failed_only && !is_failed_attachment_status(&status) {
+                return false;
+            }
+            if !failed_only && !attachment_matches_status_filter(&status, &status_filter) {
+                return false;
+            }
+            if query_text.is_empty() {
+                return true;
+            }
+            let search_blob = format!("{} {} {}", attachment.file_name, attachment.id, status)
+                .to_ascii_lowercase();
+            search_blob.contains(&query_text)
+        })
+        .map(|attachment| {
+            let (search_chunk_count, search_preview) =
+                attachment_chunk_summary(node, &attachment.id);
+            AttachmentListItemResponse {
+                attachment_id: attachment.id.clone(),
+                file_name: attachment.file_name.clone(),
+                content_type: attachment.content_type.clone(),
+                size_bytes: attachment.size_bytes,
+                uploaded_at: attachment.uploaded_at.clone(),
+                extraction_status: attachment.extraction_status.clone(),
+                extracted_chars: attachment.extracted_chars,
+                search_chunk_count,
+                search_preview,
+                download_url: format!("/api/v1/files/{}/{}", node.id, attachment.id),
+            }
+        })
+        .collect()
+}
+
+fn attachment_status_facets(items: &[AttachmentListItemResponse]) -> AttachmentStatusFacetResponse {
+    let mut facets = AttachmentStatusFacetResponse::default();
+    facets.all = items.len();
+    for item in items {
+        let status = normalize_attachment_status(item.extraction_status.as_deref());
+        if is_failed_attachment_status(&status) {
+            facets.failed += 1;
+        }
+        if status.starts_with("indexed") {
+            facets.indexed += 1;
+        }
+        if status == "transcribed" {
+            facets.transcribed += 1;
+        }
+        if status == "tool_missing" {
+            facets.tool_missing += 1;
+        }
+    }
+    facets
+}
+
+fn attachment_list_query_from_bulk_delete(
+    request: &AttachmentBulkDeleteRequest,
+) -> AttachmentListQuery {
+    AttachmentListQuery {
+        q: request.q.clone(),
+        status: request.status.clone(),
+        failed_only: request.failed_only,
+        limit: None,
+        offset: None,
+        sort: request.sort.clone(),
+    }
+}
+
 fn sync_attachment_search_blob_metadata(node: &mut KnowledgeNode) {
     let Some(index_map) = node
         .metadata
@@ -4755,12 +5071,12 @@ async fn list_calendar_items(
     authorize_read(&auth)?;
     let requested_limit = params.limit.unwrap_or(200);
     validate_list_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let include_tasks = params.include_tasks.unwrap_or(true);
     let include_completed = params.include_completed.unwrap_or(false);
     let namespace = scoped_namespace(&auth, params.namespace.take())?;
 
     let view = CalendarView::from_query(params.view.take())?;
-    let anchor =
-        parse_optional_rfc3339_datetime(params.anchor.take(), "anchor")?.unwrap_or_else(Utc::now);
+    let anchor = resolve_calendar_anchor(params.anchor.take(), params.date.take())?;
     let explicit_start = parse_optional_rfc3339_datetime(params.start.take(), "start")?;
     let explicit_end = parse_optional_rfc3339_datetime(params.end.take(), "end")?;
     let resolved_window = resolve_calendar_window(anchor, view, explicit_start, explicit_end)?;
@@ -4769,6 +5085,7 @@ async fn list_calendar_items(
         namespace,
         resolved_window.range_start,
         resolved_window.range_end,
+        include_tasks,
         include_completed,
         requested_limit,
     )
@@ -4794,12 +5111,12 @@ async fn export_calendar_ical(
     authorize_read(&auth)?;
     let requested_limit = params.limit.unwrap_or(500);
     validate_list_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let include_tasks = params.include_tasks.unwrap_or(true);
     let include_completed = params.include_completed.unwrap_or(false);
     let namespace = scoped_namespace(&auth, params.namespace.take())?;
 
     let view = CalendarView::from_query(params.view.take())?;
-    let anchor =
-        parse_optional_rfc3339_datetime(params.anchor.take(), "anchor")?.unwrap_or_else(Utc::now);
+    let anchor = resolve_calendar_anchor(params.anchor.take(), params.date.take())?;
     let explicit_start = parse_optional_rfc3339_datetime(params.start.take(), "start")?;
     let explicit_end = parse_optional_rfc3339_datetime(params.end.take(), "end")?;
     let resolved_window = resolve_calendar_window(anchor, view, explicit_start, explicit_end)?;
@@ -4808,6 +5125,7 @@ async fn export_calendar_ical(
         namespace.clone(),
         resolved_window.range_start,
         resolved_window.range_end,
+        include_tasks,
         include_completed,
         requested_limit,
     )
@@ -5235,6 +5553,213 @@ struct AgentContextQuery {
     basis_node_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ChronicleQuery {
+    node_id: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+/// GET /api/v1/agent/chronicle
+async fn list_chronicles(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ChronicleQuery>,
+) -> Result<Json<Vec<ChronicleEntry>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+
+    let node_id = if let Some(id_str) = params.node_id {
+        Some(
+            Uuid::parse_str(&id_str)
+                .map_err(|_| (StatusCode::BAD_REQUEST, "invalid node_id".to_string()))?,
+        )
+    } else {
+        None
+    };
+
+    let limit = params.limit.unwrap_or(50).min(100);
+    let offset = params.offset.unwrap_or(0);
+
+    let logs = state
+        .engine
+        .list_chronicles(node_id, limit, offset)
+        .await
+        .map_err(map_mv_error)?;
+
+    Ok(Json(logs))
+}
+
+#[derive(Deserialize)]
+struct IntentQuery {
+    node_id: Option<String>,
+    status: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+/// GET /api/v1/agent/intents
+async fn list_intents(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<IntentQuery>,
+) -> Result<Json<Vec<CapturedIntent>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+
+    let node_id = if let Some(id_str) = params.node_id {
+        Some(
+            Uuid::parse_str(&id_str)
+                .map_err(|_| (StatusCode::BAD_REQUEST, "invalid node_id".to_string()))?,
+        )
+    } else {
+        None
+    };
+
+    let status = if let Some(st_str) = params.status {
+        match st_str.as_str() {
+            "suggested" => Some(IntentStatus::Suggested),
+            "applied" => Some(IntentStatus::Applied),
+            "dismissed" => Some(IntentStatus::Dismissed),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    let limit = params.limit.unwrap_or(50).min(100);
+    let offset = params.offset.unwrap_or(0);
+
+    let intents = state
+        .engine
+        .list_intents(node_id, status, limit, offset)
+        .await
+        .map_err(map_mv_error)?;
+
+    Ok(Json(intents))
+}
+
+/// POST /api/v1/agent/intents/{id}/apply
+async fn apply_intent(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    authorize_write(&auth)?;
+    let uuid = Uuid::parse_str(&id)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid intent id".to_string()))?;
+
+    let ok = state
+        .engine
+        .update_intent_status(uuid, IntentStatus::Applied)
+        .await
+        .map_err(map_mv_error)?;
+    if ok {
+        Ok(StatusCode::OK)
+    } else {
+        Err((StatusCode::NOT_FOUND, "intent not found".to_string()))
+    }
+}
+
+/// POST /api/v1/agent/intents/{id}/dismiss
+async fn dismiss_intent(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    authorize_write(&auth)?;
+    let uuid = Uuid::parse_str(&id)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid intent id".to_string()))?;
+
+    let ok = state
+        .engine
+        .update_intent_status(uuid, IntentStatus::Dismissed)
+        .await
+        .map_err(map_mv_error)?;
+    if ok {
+        Ok(StatusCode::OK)
+    } else {
+        Err((StatusCode::NOT_FOUND, "intent not found".to_string()))
+    }
+}
+
+#[derive(Deserialize)]
+struct InsightQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+/// GET /api/v1/proactive/insights
+async fn list_insights(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<InsightQuery>,
+) -> Result<Json<Vec<ProactiveInsight>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let limit = params.limit.unwrap_or(20);
+    let offset = params.offset.unwrap_or(0);
+
+    let insights = state
+        .engine
+        .list_insights(limit, offset)
+        .await
+        .map_err(map_mv_error)?;
+    Ok(Json(insights))
+}
+
+/// DELETE /api/v1/proactive/insights/{id}
+async fn delete_insight(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    authorize_write(&auth)?;
+    let uuid = Uuid::parse_str(&id)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid insight id".to_string()))?;
+
+    let ok = state
+        .engine
+        .delete_insight(uuid)
+        .await
+        .map_err(map_mv_error)?;
+    if ok {
+        Ok(StatusCode::OK)
+    } else {
+        Err((StatusCode::NOT_FOUND, "insight not found".to_string()))
+    }
+}
+
+/// POST /api/v1/proactive/generate
+async fn generate_insights(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<ProactiveInsight>>, (StatusCode, String)> {
+    authorize_write(&auth)?;
+    let namespace = auth.namespace.clone().unwrap_or_else(|| "default".to_string());
+
+    let insights = state
+        .engine
+        .proactive
+        .generate_insights(namespace)
+        .await
+        .map_err(map_mv_error)?;
+
+    Ok(Json(insights))
+}
+
+/// GET /api/v1/agent/models
+async fn list_models(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    // Return a simple placeholder for now - full model registry can be added later
+    Ok(Json(serde_json::json!({
+        "embedding": {
+            "provider": "openai",
+            "model": "text-embedding-3-small"
+        }
+    })))
+}
+
 #[derive(Serialize)]
 struct AgentContextResponse {
     executive_summary: String,
@@ -5249,25 +5774,57 @@ async fn get_agent_context(
 ) -> Result<Json<AgentContextResponse>, (StatusCode, String)> {
     authorize_read(&auth)?;
     let namespace = scoped_namespace(&auth, params.namespace)?;
-
-    let summary = state
-        .proactive
-        .get_executive_summary(namespace.clone())
+    let summary_nodes = state
+        .engine
+        .list_nodes(
+            &QueryFilters {
+                namespace: namespace.clone(),
+                ..Default::default()
+            },
+            500,
+            0,
+        )
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(map_mv_error)?;
+    let total_nodes = summary_nodes.len();
+    let task_count = summary_nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::Task)
+        .count();
+    let event_count = summary_nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::Event)
+        .count();
+    let fact_count = summary_nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::Fact)
+        .count();
+    let summary = format!(
+        "Vault context: {total_nodes} nodes ({task_count} tasks, {event_count} events, {fact_count} facts)"
+    );
 
     let mut related_nodes = Vec::new();
     if let Some(basis_id_str) = params.basis_node_id {
         let basis_id = Uuid::parse_str(&basis_id_str)
             .map_err(|_| (StatusCode::BAD_REQUEST, "invalid basis_node_id".to_string()))?;
-
-        let nodes = state
-            .proactive
-            .find_related_context(basis_id, 5)
+        let neighbors = state
+            .engine
+            .graph
+            .get_neighbors(basis_id, 2)
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(map_mv_error)?;
 
-        for node in nodes {
+        for node_id in neighbors.into_iter().take(5) {
+            let Some(node) = state.engine.get_node(node_id).await.map_err(map_mv_error)? else {
+                continue;
+            };
+            if let Some(ref scoped) = namespace {
+                if node.namespace != *scoped {
+                    continue;
+                }
+            } else if !auth.allows_namespace(&node.namespace) {
+                continue;
+            }
             related_nodes.push(BriefingNoteDto {
                 id: node.id.to_string(),
                 title: node.title.unwrap_or_else(|| "Untitled".to_string()),
@@ -5945,6 +6502,101 @@ async fn upload_voice_note(
     ))
 }
 
+async fn list_attachments_index(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AttachmentIndexQuery>,
+) -> Result<Json<AttachmentIndexPagedResponse>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+
+    let limit = params.limit.unwrap_or(100);
+    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let offset = params.offset.unwrap_or(0);
+    let sort = normalize_attachment_sort(params.sort.as_deref()).to_string();
+
+    let kinds = match params.kind {
+        Some(kind) => Some(vec![kind
+            .parse::<NodeKind>()
+            .map_err(|e: String| (StatusCode::BAD_REQUEST, e))?]),
+        None => None,
+    };
+
+    let scoped_ns = scoped_namespace(&auth, params.namespace)?;
+
+    let filters = QueryFilters {
+        namespace: scoped_ns,
+        kinds,
+        ..Default::default()
+    };
+
+    let query = AttachmentListQuery {
+        q: params.q.clone(),
+        status: params.status.clone(),
+        failed_only: params.failed_only,
+        limit: None,
+        offset: None,
+        sort: None,
+    };
+
+    let mut items: Vec<AttachmentIndexItemResponse> = Vec::new();
+    let mut node_offset = 0usize;
+    let node_limit = 200usize;
+
+    loop {
+        let nodes = state
+            .engine
+            .list_nodes(&filters, node_limit, node_offset)
+            .await
+            .map_err(map_mv_error)?;
+        if nodes.is_empty() {
+            break;
+        }
+
+        for node in &nodes {
+            let attachment_items = collect_attachment_items(&node, &query);
+            for item in attachment_items {
+                items.push(AttachmentIndexItemResponse {
+                    node_id: node.id.to_string(),
+                    node_title: node.title.clone().unwrap_or_else(|| "Untitled".to_string()),
+                    node_kind: node.kind.to_string(),
+                    namespace: Some(node.namespace.clone()),
+                    attachment_id: item.attachment_id,
+                    file_name: item.file_name,
+                    content_type: item.content_type,
+                    size_bytes: item.size_bytes,
+                    uploaded_at: item.uploaded_at,
+                    extraction_status: item.extraction_status,
+                    extracted_chars: item.extracted_chars,
+                    search_chunk_count: item.search_chunk_count,
+                    search_preview: item.search_preview,
+                    download_url: item.download_url,
+                });
+            }
+        }
+
+        node_offset += nodes.len();
+        if nodes.len() < node_limit {
+            break;
+        }
+    }
+
+    sort_attachment_index_items(&mut items, sort.as_str());
+    let total = items.len();
+    let end = offset.saturating_add(limit).min(total);
+    let slice = if offset >= total { Vec::new() } else { items[offset..end].to_vec() };
+    let has_more = offset.saturating_add(limit) < total;
+
+    Ok(Json(AttachmentIndexPagedResponse {
+        total,
+        limit,
+        offset,
+        returned: slice.len(),
+        has_more,
+        sort,
+        items: slice,
+    }))
+}
+
 async fn list_node_attachments(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
@@ -5961,51 +6613,77 @@ async fn list_node_attachments(
         .ok_or((StatusCode::NOT_FOUND, "node not found".into()))?;
     authorize_namespace(&auth, &node.namespace)?;
 
-    let query_text = query.q.as_deref().unwrap_or("").trim().to_ascii_lowercase();
-    let status_filter = query
-        .status
-        .as_deref()
-        .unwrap_or("all")
-        .trim()
-        .to_ascii_lowercase();
-    let failed_only = query.failed_only.unwrap_or(false);
+    let sort = normalize_attachment_sort(query.sort.as_deref());
+    let mut attachments = collect_attachment_items(&node, &query);
+    sort_attachment_items(&mut attachments, sort);
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_ATTACHMENT_LIST_PAGE_SIZE)
+        .clamp(1, MAX_ATTACHMENT_LIST_PAGE_SIZE);
+    let offset = query.offset.unwrap_or(0);
+    let end = offset.saturating_add(limit).min(attachments.len());
 
-    let attachments = parse_node_attachments(&node)
-        .into_iter()
-        .filter(|attachment| {
-            let status = normalize_attachment_status(attachment.extraction_status.as_deref());
-            if failed_only && !is_failed_attachment_status(&status) {
-                return false;
-            }
-            if !failed_only && !attachment_matches_status_filter(&status, &status_filter) {
-                return false;
-            }
-            if query_text.is_empty() {
-                return true;
-            }
-            let search_blob = format!("{} {} {}", attachment.file_name, attachment.id, status)
-                .to_ascii_lowercase();
-            search_blob.contains(&query_text)
-        })
-        .map(|attachment| {
-            let (search_chunk_count, search_preview) =
-                attachment_chunk_summary(&node, &attachment.id);
-            AttachmentListItemResponse {
-                attachment_id: attachment.id.clone(),
-                file_name: attachment.file_name.clone(),
-                content_type: attachment.content_type.clone(),
-                size_bytes: attachment.size_bytes,
-                uploaded_at: attachment.uploaded_at.clone(),
-                extraction_status: attachment.extraction_status.clone(),
-                extracted_chars: attachment.extracted_chars,
-                search_chunk_count,
-                search_preview,
-                download_url: format!("/api/v1/files/{}/{}", node.id, attachment.id),
-            }
-        })
-        .collect();
+    let attachments = if offset >= attachments.len() {
+        Vec::new()
+    } else {
+        attachments[offset..end].to_vec()
+    };
 
     Ok(Json(attachments))
+}
+
+async fn list_node_attachments_paged(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(node_id_raw): Path<String>,
+    Query(query): Query<AttachmentListQuery>,
+) -> Result<Json<AttachmentListPagedResponse>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let node_id = parse_uuid_param(&node_id_raw, "node_id")?;
+    let node = state
+        .engine
+        .get_node(node_id)
+        .await
+        .map_err(map_mv_error)?
+        .ok_or((StatusCode::NOT_FOUND, "node not found".into()))?;
+    authorize_namespace(&auth, &node.namespace)?;
+
+    let total_unfiltered = parse_node_attachments(&node).len();
+    let sort = normalize_attachment_sort(query.sort.as_deref());
+    let mut filtered = collect_attachment_items(&node, &query);
+    let status_facets = attachment_status_facets(&filtered);
+    sort_attachment_items(&mut filtered, sort);
+
+    let total_query_matched = filtered.len();
+    let total = total_query_matched;
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_ATTACHMENT_LIST_PAGE_SIZE)
+        .clamp(1, MAX_ATTACHMENT_LIST_PAGE_SIZE);
+    let offset = query.offset.unwrap_or(0);
+    let end = offset.saturating_add(limit).min(filtered.len());
+
+    let items = if offset >= filtered.len() {
+        Vec::new()
+    } else {
+        filtered[offset..end].to_vec()
+    };
+    let returned = items.len();
+    let has_more = end < filtered.len();
+
+    Ok(Json(AttachmentListPagedResponse {
+        node_id: node.id.to_string(),
+        total,
+        total_query_matched,
+        total_unfiltered,
+        limit,
+        offset,
+        returned,
+        has_more,
+        sort: sort.to_string(),
+        status_facets,
+        items,
+    }))
 }
 
 async fn get_attachment_chunks(
@@ -6478,6 +7156,334 @@ async fn delete_attachment(
     }))
 }
 
+async fn delete_filtered_attachments(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(node_id_raw): Path<String>,
+    Json(request): Json<AttachmentBulkDeleteRequest>,
+) -> Result<Json<AttachmentBulkDeleteResponse>, (StatusCode, String)> {
+    authorize_write(&auth)?;
+    let node_id = parse_uuid_param(&node_id_raw, "node_id")?;
+    let mut node = state
+        .engine
+        .get_node(node_id)
+        .await
+        .map_err(map_mv_error)?
+        .ok_or((StatusCode::NOT_FOUND, "node not found".into()))?;
+    authorize_namespace(&auth, &node.namespace)?;
+
+    let query = attachment_list_query_from_bulk_delete(&request);
+    let sort = normalize_attachment_sort(query.sort.as_deref());
+    let mut matched = collect_attachment_items(&node, &query);
+    sort_attachment_items(&mut matched, sort);
+    let matched_count = matched.len();
+    let dry_run = request.dry_run.unwrap_or(true);
+
+    if dry_run {
+        let items = matched
+            .into_iter()
+            .map(|item| AttachmentBulkDeleteItemResponse {
+                attachment_id: item.attachment_id,
+                file_name: item.file_name,
+                status: normalize_attachment_status(item.extraction_status.as_deref()),
+                file_deleted: false,
+                message: None,
+            })
+            .collect::<Vec<_>>();
+        return Ok(Json(AttachmentBulkDeleteResponse {
+            node_id: node.id.to_string(),
+            dry_run: true,
+            matched_count,
+            deleted_count: 0,
+            failed_count: 0,
+            remaining_attachments: parse_node_attachments(&node).len(),
+            items,
+        }));
+    }
+
+    if request.confirmed_count != Some(matched_count) {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "confirmation count mismatch: expected {}, got {}",
+                matched_count,
+                request
+                    .confirmed_count
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string())
+            ),
+        ));
+    }
+
+    if matched_count == 0 {
+        return Ok(Json(AttachmentBulkDeleteResponse {
+            node_id: node.id.to_string(),
+            dry_run: false,
+            matched_count: 0,
+            deleted_count: 0,
+            failed_count: 0,
+            remaining_attachments: parse_node_attachments(&node).len(),
+            items: Vec::new(),
+        }));
+    }
+
+    let matched_ids = matched
+        .iter()
+        .map(|item| item.attachment_id.clone())
+        .collect::<HashSet<_>>();
+    let mut retained = Vec::new();
+    let mut deleted_count = 0usize;
+    let mut failed_count = 0usize;
+    let mut items = Vec::new();
+
+    for attachment in parse_node_attachments(&node) {
+        if !matched_ids.contains(&attachment.id) {
+            retained.push(attachment);
+            continue;
+        }
+
+        let status = normalize_attachment_status(attachment.extraction_status.as_deref());
+        let (file_deleted, failure_message) =
+            match resolve_attachment_path(&state, node_id, &attachment).await {
+                Ok(path) => match tokio::fs::remove_file(path).await {
+                    Ok(_) => (true, None),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => (false, None),
+                    Err(err) => (
+                        false,
+                        Some(format!("failed to delete attachment file: {err}")),
+                    ),
+                },
+                Err((StatusCode::NOT_FOUND, _)) => (false, None),
+                Err((status_code, message)) => (false, Some(format!("{status_code}: {message}"))),
+            };
+
+        if let Some(message) = failure_message {
+            failed_count += 1;
+            items.push(AttachmentBulkDeleteItemResponse {
+                attachment_id: attachment.id.clone(),
+                file_name: attachment.file_name.clone(),
+                status,
+                file_deleted: false,
+                message: Some(message),
+            });
+            retained.push(attachment);
+            continue;
+        }
+
+        deleted_count += 1;
+        remove_attachment_text_index_entry(&mut node, &attachment.id);
+        remove_attachment_text_chunk_index_entry(&mut node, &attachment.id);
+        items.push(AttachmentBulkDeleteItemResponse {
+            attachment_id: attachment.id.clone(),
+            file_name: attachment.file_name.clone(),
+            status,
+            file_deleted,
+            message: None,
+        });
+    }
+
+    let remaining_attachments = retained.len();
+    if deleted_count > 0 {
+        if retained.is_empty() {
+            node.metadata.remove("attachments");
+        } else {
+            let serialized = retained
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("failed to serialize attachment metadata: {err}"),
+                    )
+                })?;
+            node.metadata.insert(
+                "attachments".to_string(),
+                serde_json::Value::Array(serialized),
+            );
+        }
+        sync_attachment_search_blob_metadata(&mut node);
+        let updated = state.engine.update_node(node).await.map_err(map_mv_error)?;
+        state.notify_change(&updated.id.to_string(), "update", Some(&updated.namespace));
+    }
+
+    Ok(Json(AttachmentBulkDeleteResponse {
+        node_id: node_id.to_string(),
+        dry_run: false,
+        matched_count,
+        deleted_count,
+        failed_count,
+        remaining_attachments,
+        items,
+    }))
+}
+
+fn update_metadata_bool(node: &mut KnowledgeNode, key: &str, value: bool) -> bool {
+    if node.metadata.get(key).and_then(serde_json::Value::as_bool) == Some(value) {
+        return false;
+    }
+    node.metadata
+        .insert(key.to_string(), serde_json::Value::Bool(value));
+    true
+}
+
+fn update_metadata_string(node: &mut KnowledgeNode, key: &str, value: &str) -> bool {
+    if node.metadata.get(key).and_then(serde_json::Value::as_str) == Some(value) {
+        return false;
+    }
+    node.metadata.insert(
+        key.to_string(),
+        serde_json::Value::String(value.to_string()),
+    );
+    true
+}
+
+fn is_linked_time_block_event_for_task(node: &KnowledgeNode, task_id: &str) -> bool {
+    if node.kind != NodeKind::Event {
+        return false;
+    }
+
+    let has_matching_metadata = node
+        .metadata
+        .get(TIME_BLOCK_TASK_ID_METADATA_KEY)
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| value == task_id);
+    if has_matching_metadata {
+        return true;
+    }
+
+    node.tags
+        .iter()
+        .any(|tag| tag.eq_ignore_ascii_case("time-block"))
+}
+
+fn apply_task_completion_to_linked_time_block(
+    node: &mut KnowledgeNode,
+    task_id: &str,
+    completed: bool,
+    now: DateTime<Utc>,
+) -> bool {
+    if node.kind != NodeKind::Event {
+        return false;
+    }
+
+    let mut changed = false;
+    changed |= update_metadata_string(node, TIME_BLOCK_TASK_ID_METADATA_KEY, task_id);
+
+    if completed {
+        changed |= update_metadata_bool(node, TIME_BLOCK_TASK_COMPLETED_METADATA_KEY, true);
+        changed |= update_metadata_string(
+            node,
+            TIME_BLOCK_TASK_COMPLETED_AT_METADATA_KEY,
+            &now.to_rfc3339(),
+        );
+        changed |= update_metadata_string(
+            node,
+            TIME_BLOCK_STATUS_METADATA_KEY,
+            TIME_BLOCK_STATUS_CLOSED,
+        );
+        if node
+            .metadata
+            .remove(TIME_BLOCK_REOPENED_AT_METADATA_KEY)
+            .is_some()
+        {
+            changed = true;
+        }
+
+        let start_at = parse_calendar_datetime_metadata(node, EVENT_START_AT_METADATA_KEY);
+        let end_at = parse_calendar_datetime_metadata(node, EVENT_END_AT_METADATA_KEY);
+        if start_at.is_some_and(|start| start <= now) {
+            if let Some(end) = end_at {
+                if end > now {
+                    changed |= update_metadata_string(
+                        node,
+                        TIME_BLOCK_PREVIOUS_END_AT_ON_COMPLETE_METADATA_KEY,
+                        &end.to_rfc3339(),
+                    );
+                    changed |=
+                        update_metadata_string(node, EVENT_END_AT_METADATA_KEY, &now.to_rfc3339());
+                }
+            } else {
+                changed |=
+                    update_metadata_string(node, EVENT_END_AT_METADATA_KEY, &now.to_rfc3339());
+            }
+        }
+    } else {
+        changed |= update_metadata_bool(node, TIME_BLOCK_TASK_COMPLETED_METADATA_KEY, false);
+        changed |= update_metadata_string(
+            node,
+            TIME_BLOCK_STATUS_METADATA_KEY,
+            TIME_BLOCK_STATUS_ACTIVE,
+        );
+        changed |=
+            update_metadata_string(node, TIME_BLOCK_REOPENED_AT_METADATA_KEY, &now.to_rfc3339());
+
+        if node
+            .metadata
+            .remove(TIME_BLOCK_TASK_COMPLETED_AT_METADATA_KEY)
+            .is_some()
+        {
+            changed = true;
+        }
+
+        if let Some(previous_end) = node
+            .metadata
+            .remove(TIME_BLOCK_PREVIOUS_END_AT_ON_COMPLETE_METADATA_KEY)
+            .and_then(|value| value.as_str().map(str::to_string))
+        {
+            changed = true;
+            changed |= update_metadata_string(node, EVENT_END_AT_METADATA_KEY, &previous_end);
+        }
+    }
+
+    changed
+}
+
+async fn sync_linked_time_blocks_for_task_completion(
+    auth: &AuthContext,
+    state: &Arc<AppState>,
+    task: &KnowledgeNode,
+    completed: bool,
+    now: DateTime<Utc>,
+) -> MvResult<usize> {
+    let incoming = state.engine.graph.get_relationships_to(task.id).await?;
+    let mut updated_count = 0usize;
+    let task_id = task.id.to_string();
+    let mut visited = HashSet::new();
+
+    for relationship in incoming {
+        if relationship.kind != RelationKind::References {
+            continue;
+        }
+        if !visited.insert(relationship.from_node) {
+            continue;
+        }
+
+        let Some(mut event_node) = state.engine.get_node(relationship.from_node).await? else {
+            continue;
+        };
+        if !auth.allows_namespace(&event_node.namespace) {
+            continue;
+        }
+        if !is_linked_time_block_event_for_task(&event_node, &task_id) {
+            continue;
+        }
+        if !apply_task_completion_to_linked_time_block(&mut event_node, &task_id, completed, now) {
+            continue;
+        }
+
+        let updated_event = state.engine.update_node(event_node).await?;
+        state.notify_change(
+            &updated_event.id.to_string(),
+            "update",
+            Some(&updated_event.namespace),
+        );
+        updated_count += 1;
+    }
+
+    Ok(updated_count)
+}
+
 async fn set_task_completion_status(
     auth: AuthContext,
     state: Arc<AppState>,
@@ -6501,6 +7507,7 @@ async fn set_task_completion_status(
             "completion status can only be updated for kind=task".into(),
         ));
     }
+    let now = Utc::now();
 
     node.metadata.insert(
         TASK_COMPLETED_METADATA_KEY.into(),
@@ -6510,7 +7517,7 @@ async fn set_task_completion_status(
     if completed {
         node.metadata.insert(
             TASK_COMPLETED_AT_METADATA_KEY.into(),
-            serde_json::Value::String(Utc::now().to_rfc3339()),
+            serde_json::Value::String(now.to_rfc3339()),
         );
         node.metadata.insert(
             TASK_REMINDER_STATUS_METADATA_KEY.into(),
@@ -6524,6 +7531,25 @@ async fn set_task_completion_status(
 
     let updated = state.engine.update_node(node).await.map_err(map_mv_error)?;
     state.notify_change(&id, "update", Some(&updated.namespace));
+    match sync_linked_time_blocks_for_task_completion(&auth, &state, &updated, completed, now).await
+    {
+        Ok(updated_time_blocks) => {
+            tracing::debug!(
+                task_id = %updated.id,
+                completed,
+                updated_time_blocks,
+                "mindvault_task_completion_synced_linked_time_blocks"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                task_id = %updated.id,
+                completed,
+                error = %err,
+                "mindvault_task_completion_failed_to_sync_linked_time_blocks"
+            );
+        }
+    }
 
     Ok(Json(updated))
 }
@@ -10429,10 +11455,12 @@ mod tests {
             Query(CalendarItemsQuery {
                 namespace: Some("ops".into()),
                 view: Some("week".into()),
+                date: None,
                 anchor: Some("2026-02-06T10:00:00Z".into()),
                 start: None,
                 end: None,
                 limit: Some(25),
+                include_tasks: Some(true),
                 include_completed: Some(false),
             }),
         )
@@ -10499,10 +11527,12 @@ mod tests {
             Query(CalendarItemsQuery {
                 namespace: Some("ops".into()),
                 view: Some("day".into()),
+                date: None,
                 anchor: Some("2026-02-06T00:00:00Z".into()),
                 start: None,
                 end: None,
                 limit: Some(20),
+                include_tasks: Some(true),
                 include_completed: Some(false),
             }),
         )
@@ -10517,16 +11547,138 @@ mod tests {
             Query(CalendarItemsQuery {
                 namespace: Some("ops".into()),
                 view: Some("day".into()),
+                date: None,
                 anchor: Some("2026-02-06T00:00:00Z".into()),
                 start: None,
                 end: None,
                 limit: Some(20),
+                include_tasks: Some(true),
                 include_completed: Some(true),
             }),
         )
         .await
         .expect("calendar list with completed should succeed");
         assert_eq!(include_completed_view.items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_calendar_items_handler_uses_date_as_anchor_alias() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let event_start_at = Utc
+            .with_ymd_and_hms(2026, 2, 6, 9, 0, 0)
+            .single()
+            .expect("valid datetime");
+        let mut event =
+            KnowledgeNode::new(NodeKind::Event, "Morning standup".into()).with_namespace("ops");
+        event.metadata.insert(
+            EVENT_START_AT_METADATA_KEY.into(),
+            serde_json::Value::String(event_start_at.to_rfc3339()),
+        );
+        state
+            .engine
+            .store_node(event)
+            .await
+            .expect("event should store");
+
+        let Json(calendar) = list_calendar_items(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Query(CalendarItemsQuery {
+                namespace: Some("ops".into()),
+                view: Some("day".into()),
+                date: Some("2026-02-06".into()),
+                anchor: None,
+                start: None,
+                end: None,
+                limit: Some(20),
+                include_tasks: Some(true),
+                include_completed: Some(false),
+            }),
+        )
+        .await
+        .expect("calendar list should succeed");
+
+        assert_eq!(
+            calendar.anchor,
+            start_of_day_utc(event_start_at.date_naive())
+        );
+        assert_eq!(calendar.items.len(), 1);
+        assert_eq!(calendar.items[0].node.kind, NodeKind::Event);
+    }
+
+    #[tokio::test]
+    async fn list_calendar_items_handler_respects_include_tasks_flag() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let task_due_at = Utc
+            .with_ymd_and_hms(2026, 2, 6, 8, 0, 0)
+            .single()
+            .expect("valid datetime");
+        let event_start_at = Utc
+            .with_ymd_and_hms(2026, 2, 6, 11, 0, 0)
+            .single()
+            .expect("valid datetime");
+
+        let mut task =
+            KnowledgeNode::new(NodeKind::Task, "Finalize agenda".into()).with_namespace("ops");
+        task.metadata.insert(
+            TASK_DUE_AT_METADATA_KEY.into(),
+            serde_json::Value::String(task_due_at.to_rfc3339()),
+        );
+        let mut event =
+            KnowledgeNode::new(NodeKind::Event, "Client sync".into()).with_namespace("ops");
+        event.metadata.insert(
+            EVENT_START_AT_METADATA_KEY.into(),
+            serde_json::Value::String(event_start_at.to_rfc3339()),
+        );
+        state
+            .engine
+            .store_node(task)
+            .await
+            .expect("task should store");
+        state
+            .engine
+            .store_node(event)
+            .await
+            .expect("event should store");
+
+        let Json(with_tasks) = list_calendar_items(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Query(CalendarItemsQuery {
+                namespace: Some("ops".into()),
+                view: Some("day".into()),
+                date: Some("2026-02-06".into()),
+                anchor: None,
+                start: None,
+                end: None,
+                limit: Some(20),
+                include_tasks: Some(true),
+                include_completed: Some(false),
+            }),
+        )
+        .await
+        .expect("calendar list should succeed");
+        assert_eq!(with_tasks.items.len(), 2);
+
+        let Json(events_only) = list_calendar_items(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Query(CalendarItemsQuery {
+                namespace: Some("ops".into()),
+                view: Some("day".into()),
+                date: Some("2026-02-06".into()),
+                anchor: None,
+                start: None,
+                end: None,
+                limit: Some(20),
+                include_tasks: Some(false),
+                include_completed: Some(false),
+            }),
+        )
+        .await
+        .expect("calendar list should succeed");
+        assert_eq!(events_only.items.len(), 1);
+        assert_eq!(events_only.items[0].node.kind, NodeKind::Event);
     }
 
     #[tokio::test]
@@ -10539,10 +11691,12 @@ mod tests {
             Query(CalendarItemsQuery {
                 namespace: None,
                 view: Some("week".into()),
+                date: None,
                 anchor: Some("2026-02-06T00:00:00Z".into()),
                 start: Some("2026-02-01T00:00:00Z".into()),
                 end: None,
                 limit: Some(10),
+                include_tasks: Some(true),
                 include_completed: Some(false),
             }),
         )
@@ -10617,10 +11771,12 @@ mod tests {
             Query(CalendarItemsQuery {
                 namespace: Some("ops".into()),
                 view: Some("day".into()),
+                date: None,
                 anchor: Some("2026-02-06T00:00:00Z".into()),
                 start: None,
                 end: None,
                 limit: Some(50),
+                include_tasks: Some(true),
                 include_completed: Some(false),
             }),
         )
@@ -10861,6 +12017,188 @@ mod tests {
         assert!(!reopened
             .metadata
             .contains_key(TASK_COMPLETED_AT_METADATA_KEY));
+    }
+
+    #[tokio::test]
+    async fn complete_and_reopen_task_syncs_linked_time_block_state() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let task = state
+            .engine
+            .store_node(
+                KnowledgeNode::new(NodeKind::Task, "Draft launch checklist".into())
+                    .with_namespace("ops"),
+            )
+            .await
+            .expect("task should store");
+
+        let event_start_at = Utc
+            .with_ymd_and_hms(2026, 2, 6, 10, 0, 0)
+            .single()
+            .expect("valid datetime");
+        let event_end_at = Utc
+            .with_ymd_and_hms(2026, 2, 6, 11, 0, 0)
+            .single()
+            .expect("valid datetime");
+        let mut time_block =
+            KnowledgeNode::new(NodeKind::Event, "Focus block: launch checklist".into())
+                .with_namespace("ops");
+        time_block.tags.push("time-block".to_string());
+        time_block.metadata.insert(
+            EVENT_START_AT_METADATA_KEY.to_string(),
+            serde_json::Value::String(event_start_at.to_rfc3339()),
+        );
+        time_block.metadata.insert(
+            EVENT_END_AT_METADATA_KEY.to_string(),
+            serde_json::Value::String(event_end_at.to_rfc3339()),
+        );
+        time_block.metadata.insert(
+            TIME_BLOCK_TASK_ID_METADATA_KEY.to_string(),
+            serde_json::Value::String(task.id.to_string()),
+        );
+        let time_block = state
+            .engine
+            .store_node(time_block)
+            .await
+            .expect("time block should store");
+        state
+            .engine
+            .add_relationship(Relationship::new(
+                time_block.id,
+                task.id,
+                RelationKind::References,
+            ))
+            .await
+            .expect("relationship should store");
+
+        let _ = complete_task(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(task.id.to_string()),
+        )
+        .await
+        .expect("complete should succeed");
+
+        let completed_block = state
+            .engine
+            .get_node(time_block.id)
+            .await
+            .expect("event should load")
+            .expect("event should exist");
+        assert_eq!(
+            completed_block
+                .metadata
+                .get(TIME_BLOCK_TASK_COMPLETED_METADATA_KEY)
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            completed_block
+                .metadata
+                .get(TIME_BLOCK_STATUS_METADATA_KEY)
+                .and_then(serde_json::Value::as_str),
+            Some(TIME_BLOCK_STATUS_CLOSED)
+        );
+        assert!(completed_block
+            .metadata
+            .contains_key(TIME_BLOCK_TASK_COMPLETED_AT_METADATA_KEY));
+
+        let Json(default_calendar) = list_calendar_items(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Query(CalendarItemsQuery {
+                namespace: Some("ops".into()),
+                view: Some("day".into()),
+                date: Some("2026-02-06".into()),
+                anchor: None,
+                start: None,
+                end: None,
+                limit: Some(20),
+                include_tasks: Some(true),
+                include_completed: Some(false),
+            }),
+        )
+        .await
+        .expect("calendar should load");
+        assert!(default_calendar
+            .items
+            .iter()
+            .all(|item| item.node.id != time_block.id));
+
+        let Json(include_completed_calendar) = list_calendar_items(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Query(CalendarItemsQuery {
+                namespace: Some("ops".into()),
+                view: Some("day".into()),
+                date: Some("2026-02-06".into()),
+                anchor: None,
+                start: None,
+                end: None,
+                limit: Some(20),
+                include_tasks: Some(true),
+                include_completed: Some(true),
+            }),
+        )
+        .await
+        .expect("calendar with completed should load");
+        assert!(include_completed_calendar
+            .items
+            .iter()
+            .any(|item| item.node.id == time_block.id));
+
+        let _ = reopen_task(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(task.id.to_string()),
+        )
+        .await
+        .expect("reopen should succeed");
+
+        let reopened_block = state
+            .engine
+            .get_node(time_block.id)
+            .await
+            .expect("event should load")
+            .expect("event should exist");
+        assert_eq!(
+            reopened_block
+                .metadata
+                .get(TIME_BLOCK_TASK_COMPLETED_METADATA_KEY)
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            reopened_block
+                .metadata
+                .get(TIME_BLOCK_STATUS_METADATA_KEY)
+                .and_then(serde_json::Value::as_str),
+            Some(TIME_BLOCK_STATUS_ACTIVE)
+        );
+        assert!(!reopened_block
+            .metadata
+            .contains_key(TIME_BLOCK_TASK_COMPLETED_AT_METADATA_KEY));
+
+        let Json(reopened_calendar) = list_calendar_items(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Query(CalendarItemsQuery {
+                namespace: Some("ops".into()),
+                view: Some("day".into()),
+                date: Some("2026-02-06".into()),
+                anchor: None,
+                start: None,
+                end: None,
+                limit: Some(20),
+                include_tasks: Some(true),
+                include_completed: Some(false),
+            }),
+        )
+        .await
+        .expect("calendar after reopen should load");
+        assert!(reopened_calendar
+            .items
+            .iter()
+            .any(|item| item.node.id == time_block.id));
     }
 
     #[tokio::test]
@@ -11375,6 +12713,9 @@ mod tests {
                 q: None,
                 status: Some("failed".to_string()),
                 failed_only: None,
+                limit: None,
+                offset: None,
+                sort: None,
             }),
         )
         .await
@@ -11395,6 +12736,9 @@ mod tests {
                 q: Some("meeting".to_string()),
                 status: Some("all".to_string()),
                 failed_only: None,
+                limit: None,
+                offset: None,
+                sort: None,
             }),
         )
         .await
@@ -11410,6 +12754,9 @@ mod tests {
                 q: None,
                 status: Some("other".to_string()),
                 failed_only: None,
+                limit: None,
+                offset: None,
+                sort: None,
             }),
         )
         .await
@@ -11425,6 +12772,9 @@ mod tests {
                 q: None,
                 status: Some("indexed".to_string()),
                 failed_only: Some(true),
+                limit: None,
+                offset: None,
+                sort: None,
             }),
         )
         .await
@@ -11434,6 +12784,202 @@ mod tests {
             .iter()
             .all(|item| item.attachment_id == "att-missing"
                 || item.attachment_id == "att-unsupported"));
+    }
+
+    #[tokio::test]
+    async fn list_node_attachments_supports_limit_and_offset() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let mut node =
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+        node.metadata.insert(
+            "attachments".into(),
+            serde_json::json!([
+                {
+                    "id": "att-1",
+                    "file_name": "first.txt",
+                    "content_type": "text/plain",
+                    "size_bytes": 16,
+                    "stored_path": "/tmp/first.txt",
+                    "uploaded_at": "2026-02-05T00:00:00Z"
+                },
+                {
+                    "id": "att-2",
+                    "file_name": "second.txt",
+                    "content_type": "text/plain",
+                    "size_bytes": 16,
+                    "stored_path": "/tmp/second.txt",
+                    "uploaded_at": "2026-02-06T00:00:00Z"
+                },
+                {
+                    "id": "att-3",
+                    "file_name": "third.txt",
+                    "content_type": "text/plain",
+                    "size_bytes": 16,
+                    "stored_path": "/tmp/third.txt",
+                    "uploaded_at": "2026-02-07T00:00:00Z"
+                }
+            ]),
+        );
+        let stored = state
+            .engine
+            .store_node(node)
+            .await
+            .expect("node should store");
+
+        let Json(items) = list_node_attachments(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(stored.id.to_string()),
+            Query(AttachmentListQuery {
+                limit: Some(2),
+                offset: Some(1),
+                ..AttachmentListQuery::default()
+            }),
+        )
+        .await
+        .expect("paginated attachment list should succeed");
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].attachment_id, "att-2");
+        assert_eq!(items[1].attachment_id, "att-1");
+    }
+
+    #[tokio::test]
+    async fn list_node_attachments_paged_returns_counts_and_facets() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let mut node =
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+        node.metadata.insert(
+            "attachments".into(),
+            serde_json::json!([
+                {
+                    "id": "att-1",
+                    "file_name": "one.txt",
+                    "content_type": "text/plain",
+                    "size_bytes": 16,
+                    "stored_path": "/tmp/one.txt",
+                    "uploaded_at": "2026-02-05T00:00:00Z",
+                    "extraction_status": "indexed_text",
+                    "extracted_chars": 24
+                },
+                {
+                    "id": "att-2",
+                    "file_name": "two.txt",
+                    "content_type": "text/plain",
+                    "size_bytes": 16,
+                    "stored_path": "/tmp/two.txt",
+                    "uploaded_at": "2026-02-06T00:00:00Z",
+                    "extraction_status": "tool_missing",
+                    "extracted_chars": 0
+                },
+                {
+                    "id": "att-3",
+                    "file_name": "three.txt",
+                    "content_type": "text/plain",
+                    "size_bytes": 16,
+                    "stored_path": "/tmp/three.txt",
+                    "uploaded_at": "2026-02-07T00:00:00Z",
+                    "extraction_status": "transcribed",
+                    "extracted_chars": 64
+                }
+            ]),
+        );
+        let stored = state
+            .engine
+            .store_node(node)
+            .await
+            .expect("node should store");
+
+        let Json(page) = list_node_attachments_paged(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(stored.id.to_string()),
+            Query(AttachmentListQuery {
+                limit: Some(2),
+                offset: Some(0),
+                ..AttachmentListQuery::default()
+            }),
+        )
+        .await
+        .expect("paged list should succeed");
+
+        assert_eq!(page.node_id, stored.id.to_string());
+        assert_eq!(page.total, 3);
+        assert_eq!(page.total_query_matched, 3);
+        assert_eq!(page.total_unfiltered, 3);
+        assert_eq!(page.limit, 2);
+        assert_eq!(page.offset, 0);
+        assert_eq!(page.returned, 2);
+        assert!(page.has_more);
+        assert_eq!(page.sort, "uploaded_at_desc");
+        assert_eq!(page.status_facets.all, 3);
+        assert_eq!(page.status_facets.failed, 1);
+        assert_eq!(page.status_facets.indexed, 1);
+        assert_eq!(page.status_facets.transcribed, 1);
+        assert_eq!(page.status_facets.tool_missing, 1);
+        assert_eq!(page.items[0].attachment_id, "att-3");
+        assert_eq!(page.items[1].attachment_id, "att-2");
+    }
+
+    #[tokio::test]
+    async fn list_node_attachments_paged_supports_sort_orders() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let mut node =
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+        node.metadata.insert(
+            "attachments".into(),
+            serde_json::json!([
+                {
+                    "id": "att-zulu",
+                    "file_name": "zulu.txt",
+                    "content_type": "text/plain",
+                    "size_bytes": 16,
+                    "stored_path": "/tmp/zulu.txt",
+                    "uploaded_at": "2026-02-06T00:00:00Z"
+                },
+                {
+                    "id": "att-alpha",
+                    "file_name": "alpha.txt",
+                    "content_type": "text/plain",
+                    "size_bytes": 16,
+                    "stored_path": "/tmp/alpha.txt",
+                    "uploaded_at": "2026-02-06T00:00:00Z"
+                }
+            ]),
+        );
+        let stored = state
+            .engine
+            .store_node(node)
+            .await
+            .expect("node should store");
+
+        let Json(ascending) = list_node_attachments_paged(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(stored.id.to_string()),
+            Query(AttachmentListQuery {
+                sort: Some("file_name_asc".to_string()),
+                ..AttachmentListQuery::default()
+            }),
+        )
+        .await
+        .expect("ascending sort should succeed");
+        assert_eq!(ascending.sort, "file_name_asc");
+        assert_eq!(ascending.items[0].attachment_id, "att-alpha");
+
+        let Json(descending) = list_node_attachments_paged(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(stored.id.to_string()),
+            Query(AttachmentListQuery {
+                sort: Some("file_name_desc".to_string()),
+                ..AttachmentListQuery::default()
+            }),
+        )
+        .await
+        .expect("descending sort should succeed");
+        assert_eq!(descending.sort, "file_name_desc");
+        assert_eq!(descending.items[0].attachment_id, "att-zulu");
     }
 
     #[tokio::test]
@@ -11918,6 +13464,221 @@ mod tests {
         assert!(!refreshed
             .metadata
             .contains_key(ATTACHMENT_SEARCH_BLOB_METADATA_KEY));
+    }
+
+    #[tokio::test]
+    async fn delete_filtered_attachments_supports_dry_run_and_confirmation_guards() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let mut node =
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+        node.metadata.insert(
+            "attachments".into(),
+            serde_json::json!([
+                {
+                    "id": "att-indexed",
+                    "file_name": "report.txt",
+                    "content_type": "text/plain",
+                    "size_bytes": 128,
+                    "stored_path": "/tmp/report.txt",
+                    "uploaded_at": "2026-02-07T00:00:00Z",
+                    "extraction_status": "indexed_text",
+                    "extracted_chars": 64
+                },
+                {
+                    "id": "att-failed",
+                    "file_name": "scan.png",
+                    "content_type": "image/png",
+                    "size_bytes": 96,
+                    "stored_path": "/tmp/scan.png",
+                    "uploaded_at": "2026-02-06T00:00:00Z",
+                    "extraction_status": "tool_missing",
+                    "extracted_chars": 0
+                }
+            ]),
+        );
+        let stored = state
+            .engine
+            .store_node(node)
+            .await
+            .expect("node should store");
+
+        let Json(dry_run) = delete_filtered_attachments(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(stored.id.to_string()),
+            Json(AttachmentBulkDeleteRequest {
+                q: None,
+                status: Some("failed".to_string()),
+                failed_only: None,
+                sort: None,
+                dry_run: Some(true),
+                confirmed_count: None,
+            }),
+        )
+        .await
+        .expect("dry run should succeed");
+        assert!(dry_run.dry_run);
+        assert_eq!(dry_run.matched_count, 1);
+        assert_eq!(dry_run.deleted_count, 0);
+        assert_eq!(dry_run.failed_count, 0);
+
+        let err = delete_filtered_attachments(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(stored.id.to_string()),
+            Json(AttachmentBulkDeleteRequest {
+                q: None,
+                status: Some("failed".to_string()),
+                failed_only: None,
+                sort: None,
+                dry_run: Some(false),
+                confirmed_count: Some(0),
+            }),
+        )
+        .await
+        .expect_err("confirmation mismatch should fail");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert!(err.1.contains("confirmation count mismatch"));
+
+        let refreshed = state
+            .engine
+            .get_node(stored.id)
+            .await
+            .expect("node fetch should succeed")
+            .expect("node should exist");
+        assert_eq!(parse_node_attachments(&refreshed).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn delete_filtered_attachments_removes_selected_and_preserves_others() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let stored = state
+            .engine
+            .store_node(
+                KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops"),
+            )
+            .await
+            .expect("node should store");
+
+        let scoped_dir = PathBuf::from(&state.engine.config.data_dir)
+            .join("blobs")
+            .join(stored.id.to_string());
+        tokio::fs::create_dir_all(&scoped_dir)
+            .await
+            .expect("attachment dir should exist");
+
+        let failed_file_path = scoped_dir.join("att-failed-scan.png");
+        tokio::fs::write(&failed_file_path, b"binary-data")
+            .await
+            .expect("failed attachment should write");
+
+        let mut node = state
+            .engine
+            .get_node(stored.id)
+            .await
+            .expect("node fetch should work")
+            .expect("node should exist");
+        node.metadata.insert(
+            "attachments".into(),
+            serde_json::json!([
+                {
+                    "id": "att-indexed",
+                    "file_name": "report.txt",
+                    "content_type": "text/plain",
+                    "size_bytes": 128,
+                    "stored_path": "/tmp/report.txt",
+                    "uploaded_at": "2026-02-07T00:00:00Z",
+                    "extraction_status": "indexed_text",
+                    "extracted_chars": 64
+                },
+                {
+                    "id": "att-failed",
+                    "file_name": "scan.png",
+                    "content_type": "image/png",
+                    "size_bytes": 96,
+                    "stored_path": failed_file_path.to_string_lossy().to_string(),
+                    "uploaded_at": "2026-02-06T00:00:00Z",
+                    "extraction_status": "tool_missing",
+                    "extracted_chars": 0
+                },
+                {
+                    "id": "att-unsupported",
+                    "file_name": "archive.bin",
+                    "content_type": "application/octet-stream",
+                    "size_bytes": 512,
+                    "stored_path": "/tmp/archive.bin",
+                    "uploaded_at": "2026-02-05T00:00:00Z",
+                    "extraction_status": "unsupported",
+                    "extracted_chars": 0
+                }
+            ]),
+        );
+        node.metadata.insert(
+            ATTACHMENT_TEXT_INDEX_METADATA_KEY.into(),
+            serde_json::json!({
+                "att-indexed": "indexed text",
+                "att-failed": "failed text",
+                "att-unsupported": "unsupported text"
+            }),
+        );
+        node.metadata.insert(
+            ATTACHMENT_TEXT_CHUNK_INDEX_METADATA_KEY.into(),
+            serde_json::json!({
+                "att-indexed": ["indexed text"],
+                "att-failed": ["failed text"],
+                "att-unsupported": ["unsupported text"]
+            }),
+        );
+        sync_attachment_search_blob_metadata(&mut node);
+        state
+            .engine
+            .update_node(node)
+            .await
+            .expect("node should update");
+
+        let Json(response) = delete_filtered_attachments(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(stored.id.to_string()),
+            Json(AttachmentBulkDeleteRequest {
+                q: None,
+                status: Some("failed".to_string()),
+                failed_only: None,
+                sort: None,
+                dry_run: Some(false),
+                confirmed_count: Some(2),
+            }),
+        )
+        .await
+        .expect("filtered delete should succeed");
+        assert!(!response.dry_run);
+        assert_eq!(response.matched_count, 2);
+        assert_eq!(response.deleted_count, 2);
+        assert_eq!(response.failed_count, 0);
+        assert_eq!(response.remaining_attachments, 1);
+        assert_eq!(response.items.len(), 2);
+        assert!(!tokio::fs::try_exists(&failed_file_path)
+            .await
+            .expect("file check should succeed"));
+
+        let refreshed = state
+            .engine
+            .get_node(stored.id)
+            .await
+            .expect("node fetch should succeed")
+            .expect("node should exist");
+        let attachments = parse_node_attachments(&refreshed);
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].id, "att-indexed");
+
+        let text_index = refreshed
+            .metadata
+            .get(ATTACHMENT_TEXT_INDEX_METADATA_KEY)
+            .and_then(serde_json::Value::as_object)
+            .expect("attachment text index should exist");
+        assert!(text_index.contains_key("att-indexed"));
+        assert!(!text_index.contains_key("att-failed"));
+        assert!(!text_index.contains_key("att-unsupported"));
     }
 
     #[test]

@@ -24,7 +24,13 @@
       "Bash(/tmp/check_exports.sh:*)",
       "Bash(chmod:*)",
       "Bash(/tmp/check_exports.sh)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(cargo check:*)",
+      "Bash(1)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "mindvault",
+    "sequential-thinking"
+  ]
 }

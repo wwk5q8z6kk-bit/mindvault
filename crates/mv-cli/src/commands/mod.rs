@@ -5,8 +5,10 @@ pub mod encrypt;
 pub mod export;
 pub mod graph;
 pub mod import;
+pub mod keychain;
 pub mod recall;
 pub mod search;
+pub mod secret;
 pub mod server;
 pub mod stats;
 pub mod store;
@@ -55,6 +57,7 @@ struct FileConfig {
     daily_notes: Option<FileDailyNotesConfig>,
     recurrence: Option<FileRecurrenceConfig>,
     encryption: Option<FileEncryptionConfig>,
+    llm: Option<FileLlmConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -76,6 +79,7 @@ struct FileEmbeddingConfig {
     provider: Option<String>,
     model: Option<String>,
     dimensions: Option<usize>,
+    base_url: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -135,6 +139,16 @@ struct FileEncryptionConfig {
     argon2_parallelism: Option<u32>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct FileLlmConfig {
+    enabled: Option<bool>,
+    base_url: Option<String>,
+    model: Option<String>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    timeout_secs: Option<u64>,
+}
+
 /// Load engine from config file path (expanding ~).
 pub async fn load_engine(config_path: &str) -> anyhow::Result<MindVaultEngine> {
     let config = load_config(config_path)?;
@@ -169,6 +183,30 @@ pub fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
             }
             if let Some(dimensions) = embedding.dimensions {
                 engine.embedding.dimensions = dimensions;
+            }
+            if let Some(base_url) = embedding.base_url {
+                engine.embedding.base_url = Some(base_url);
+            }
+        }
+
+        if let Some(llm) = file_config.llm {
+            if let Some(enabled) = llm.enabled {
+                engine.llm.enabled = enabled;
+            }
+            if let Some(base_url) = llm.base_url {
+                engine.llm.base_url = base_url;
+            }
+            if let Some(model) = llm.model {
+                engine.llm.model = model;
+            }
+            if let Some(max_tokens) = llm.max_tokens {
+                engine.llm.max_tokens = max_tokens;
+            }
+            if let Some(temperature) = llm.temperature {
+                engine.llm.temperature = temperature;
+            }
+            if let Some(timeout_secs) = llm.timeout_secs {
+                engine.llm.timeout_secs = timeout_secs;
             }
         }
 
@@ -329,6 +367,36 @@ fn apply_env_overrides(engine: &mut EngineConfig, server: &mut ServerRuntimeConf
 
     if let Some(dimensions) = parse_env::<usize>("MINDVAULT_EMBEDDING_DIMENSIONS") {
         engine.embedding.dimensions = dimensions;
+    }
+
+    if let Ok(value) = std::env::var("MINDVAULT_EMBEDDING_BASE_URL") {
+        if !value.is_empty() {
+            engine.embedding.base_url = Some(value);
+        }
+    }
+
+    // LLM env overrides
+    if let Some(value) = parse_env_bool("MINDVAULT_LLM_ENABLED") {
+        engine.llm.enabled = value;
+    }
+    if let Ok(value) = std::env::var("MINDVAULT_LLM_BASE_URL") {
+        if !value.is_empty() {
+            engine.llm.base_url = value;
+        }
+    }
+    if let Ok(value) = std::env::var("MINDVAULT_LLM_MODEL") {
+        if !value.is_empty() {
+            engine.llm.model = value;
+        }
+    }
+    if let Some(value) = parse_env::<u32>("MINDVAULT_LLM_MAX_TOKENS") {
+        engine.llm.max_tokens = value;
+    }
+    if let Some(value) = parse_env::<f32>("MINDVAULT_LLM_TEMPERATURE") {
+        engine.llm.temperature = value;
+    }
+    if let Some(value) = parse_env::<u64>("MINDVAULT_LLM_TIMEOUT_SECS") {
+        engine.llm.timeout_secs = value;
     }
 
     if let Some(default_limit) = parse_env::<usize>("MINDVAULT_SEARCH_DEFAULT_LIMIT") {

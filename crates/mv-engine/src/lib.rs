@@ -3,6 +3,15 @@ pub mod backlinks;
 pub mod config;
 pub mod daily_notes;
 pub mod engine;
+#[cfg(feature = "wip")]
+pub mod enrichment;
+#[cfg(feature = "wip")]
+pub mod import;
 pub mod ingest;
+pub mod intent;
+pub mod keychain;
+pub mod llm;
+pub mod proactive;
 pub mod recall;
 pub mod recurrence;
+pub mod watcher;

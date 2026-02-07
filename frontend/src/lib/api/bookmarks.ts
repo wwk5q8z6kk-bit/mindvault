@@ -211,6 +211,22 @@ export async function setBookmarkRead(bookmarkId: string, read: boolean): Promis
 	return bookmark;
 }
 
+export async function updateBookmarkTags(bookmarkId: string, tags: string[]): Promise<Bookmark> {
+	const existing = await fetchJson<KnowledgeNode>(`/api/v1/nodes/${bookmarkId}`);
+	const updated = await fetchJson<KnowledgeNode>(`/api/v1/nodes/${bookmarkId}`, {
+		method: 'PUT',
+		body: JSON.stringify({
+			...existing,
+			tags: normalizeTagList(tags)
+		})
+	});
+	const bookmark = nodeToBookmark(updated);
+	if (!bookmark) {
+		throw new Error('Updated bookmark payload was invalid');
+	}
+	return bookmark;
+}
+
 export async function deleteBookmark(bookmarkId: string): Promise<void> {
 	await deleteNode(bookmarkId);
 }

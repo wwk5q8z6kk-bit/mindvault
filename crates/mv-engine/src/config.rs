@@ -7,10 +7,36 @@ pub struct EngineConfig {
     pub search: SearchConfig,
     pub graph: GraphConfig,
     pub ai: AiConfig,
+    pub llm: LlmConfig,
     pub linking: LinkingConfig,
     pub daily_notes: DailyNotesConfig,
     pub recurrence: RecurrenceConfig,
     pub encryption: EncryptionConfig,
+    pub watcher: WatcherConfig,
+}
+
+/// Configuration for the Watcher Agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatcherConfig {
+    /// Whether the watcher agent is enabled.
+    pub enabled: bool,
+    /// Interval between watcher cycles in seconds.
+    pub interval_secs: u64,
+    /// How far back to look for recently modified nodes (hours).
+    pub lookback_hours: u64,
+    /// Maximum nodes to scan per cycle.
+    pub max_nodes_per_cycle: usize,
+}
+
+impl Default for WatcherConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_secs: 300,
+            lookback_hours: 24,
+            max_nodes_per_cycle: 50,
+        }
+    }
 }
 
 /// Configuration for encryption at rest.
@@ -76,10 +102,12 @@ impl Default for EngineConfig {
             search: SearchConfig::default(),
             graph: GraphConfig::default(),
             ai: AiConfig::default(),
+            llm: LlmConfig::default(),
             linking: LinkingConfig::default(),
             daily_notes: DailyNotesConfig::default(),
             recurrence: RecurrenceConfig::default(),
             encryption: EncryptionConfig::default(),
+            watcher: WatcherConfig::default(),
         }
     }
 }
@@ -89,14 +117,17 @@ pub struct EmbeddingConfig {
     pub provider: String,
     pub model: String,
     pub dimensions: usize,
+    /// Base URL for OpenAI-compatible embedding APIs.
+    pub base_url: Option<String>,
 }
 
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
-            provider: "openai".into(),
-            model: "text-embedding-3-small".into(),
-            dimensions: 1536,
+            provider: "local".into(),
+            model: "bge-small-en-v1.5".into(),
+            dimensions: 384,
+            base_url: None,
         }
     }
 }
@@ -146,6 +177,8 @@ pub struct AiConfig {
     pub auto_tagging_max_total_tags: usize,
     pub auto_tagging_similarity_seed_limit: usize,
     pub auto_tagging_min_token_length: usize,
+    pub enrichment_enabled: bool,
+    pub enrichment_model: String,
 }
 
 impl Default for AiConfig {
@@ -156,6 +189,34 @@ impl Default for AiConfig {
             auto_tagging_max_total_tags: 12,
             auto_tagging_similarity_seed_limit: 8,
             auto_tagging_min_token_length: 4,
+            enrichment_enabled: false,
+            enrichment_model: "gpt-4o-mini".into(),
+        }
+    }
+}
+
+/// Configuration for the LLM provider used by assist/briefing endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmConfig {
+    pub enabled: bool,
+    pub auto_detect: bool,
+    pub base_url: String,
+    pub model: String,
+    pub max_tokens: u32,
+    pub temperature: f32,
+    pub timeout_secs: u64,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_detect: true,
+            base_url: "http://localhost:11434/v1".into(),
+            model: "llama3.2".into(),
+            max_tokens: 512,
+            temperature: 0.3,
+            timeout_secs: 30,
         }
     }
 }

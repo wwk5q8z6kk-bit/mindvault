@@ -154,3 +154,139 @@ message ChangeEvent {
   string timestamp = 3;
   optional KnowledgeNodeProto node = 4;
 }
+
+// ---------------------------------------------------------------------------
+// Keychain Service
+// ---------------------------------------------------------------------------
+
+service KeychainService {
+  rpc InitVault(InitVaultRequest) returns (InitVaultResponse);
+  rpc Unseal(UnsealRequest) returns (UnsealResponse);
+  rpc Seal(SealRequest) returns (SealResponse);
+  rpc GetVaultStatus(GetVaultStatusRequest) returns (KeychainStatusResponse);
+  rpc RotateKey(RotateKeyRequest) returns (RotateKeyResponse);
+  rpc StoreCredential(StoreCredentialRequest) returns (CredentialResponse);
+  rpc ReadCredential(ReadCredentialRequest) returns (ReadCredentialResponse);
+  rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse);
+  rpc DestroyCredential(DestroyCredentialRequest) returns (DestroyCredentialResponse);
+  rpc GenerateProof(GenerateProofRequest) returns (ZkProofResponse);
+  rpc VerifyProof(VerifyProofRequest) returns (VerifyProofResponse);
+}
+
+// --- Keychain Messages ---
+
+message InitVaultRequest {
+  string password = 1;
+  bool macos_bridge = 2;
+}
+
+message InitVaultResponse {
+  string status = 1;
+  uint64 key_epoch = 2;
+}
+
+message UnsealRequest {
+  optional string password = 1;
+  bool from_macos_keychain = 2;
+}
+
+message UnsealResponse {
+  string status = 1;
+}
+
+message SealRequest {}
+
+message SealResponse {
+  string status = 1;
+}
+
+message GetVaultStatusRequest {}
+
+message KeychainStatusResponse {
+  string status = 1;
+  string state = 2;
+  uint64 key_epoch = 3;
+}
+
+message RotateKeyRequest {
+  string new_password = 1;
+  uint32 grace_hours = 2;
+}
+
+message RotateKeyResponse {
+  string status = 1;
+  uint64 new_epoch = 2;
+}
+
+message StoreCredentialRequest {
+  string domain_id = 1;
+  string name = 2;
+  string kind = 3;
+  string value = 4;
+  repeated string tags = 5;
+  optional string expires_at = 6;
+}
+
+message CredentialResponse {
+  string id = 1;
+  string name = 2;
+  string kind = 3;
+  string domain_id = 4;
+  string state = 5;
+  string created_at = 6;
+}
+
+message ReadCredentialRequest {
+  string id = 1;
+  string subject = 2;
+}
+
+message ReadCredentialResponse {
+  string id = 1;
+  string name = 2;
+  string kind = 3;
+  string domain_id = 4;
+  string value = 5;
+  string state = 6;
+  string created_at = 7;
+  optional string expires_at = 8;
+}
+
+message ListCredentialsRequest {
+  optional string domain = 1;
+  optional string state = 2;
+  uint32 limit = 3;
+  uint32 offset = 4;
+}
+
+message ListCredentialsResponse {
+  repeated CredentialResponse credentials = 1;
+  uint64 total = 2;
+}
+
+message DestroyCredentialRequest {
+  string id = 1;
+}
+
+message DestroyCredentialResponse {
+  string status = 1;
+}
+
+message GenerateProofRequest {
+  string credential_id = 1;
+  string nonce = 2;
+}
+
+message ZkProofResponse {
+  string proof = 1;
+  string expires_at = 2;
+}
+
+message VerifyProofRequest {
+  string proof = 1;
+}
+
+message VerifyProofResponse {
+  bool valid = 1;
+  optional string credential_id = 2;
+}

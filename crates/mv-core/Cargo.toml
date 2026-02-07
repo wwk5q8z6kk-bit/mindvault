@@ -10,3 +10,6 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+keyring = "3.6"
+zeroize = { workspace = true }
+tracing = { workspace = true }

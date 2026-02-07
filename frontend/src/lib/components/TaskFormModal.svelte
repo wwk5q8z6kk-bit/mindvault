@@ -44,6 +44,29 @@
 	let dependencies: string[] = [];
 	let dependencyQuery = '';
 
+	// Subtasks
+	interface Subtask {
+		id: string;
+		title: string;
+		done: boolean;
+	}
+	let subtasks: Subtask[] = [];
+	let newSubtaskTitle = '';
+
+	function addSubtask() {
+		if (!newSubtaskTitle.trim()) return;
+		subtasks = [...subtasks, { id: crypto.randomUUID(), title: newSubtaskTitle.trim(), done: false }];
+		newSubtaskTitle = '';
+	}
+
+	function removeSubtask(id: string) {
+		subtasks = subtasks.filter((s) => s.id !== id);
+	}
+
+	function toggleSubtaskDone(id: string) {
+		subtasks = subtasks.map((s) => (s.id === id ? { ...s, done: !s.done } : s));
+	}
+
 	$: if (open) {
 		if (task) {
 			title = task.title;
@@ -57,6 +80,8 @@
 			recurrence = task.recurrence ?? '';
 			dependencies = [...(task.dependencies ?? [])];
 			dependencyQuery = '';
+			subtasks = [...((task.metadata?.subtasks as Subtask[] | undefined) ?? [])];
+			newSubtaskTitle = '';
 		} else {
 			title = '';
 			description = '';
@@ -69,6 +94,8 @@
 			recurrence = '';
 			dependencies = [];
 			dependencyQuery = '';
+			subtasks = [];
+			newSubtaskTitle = '';
 		}
 	}
 
@@ -170,7 +197,11 @@
 				.filter(Boolean),
 			assignee: assignee.trim() || null,
 			dependencies: normalizedDependencies,
-			recurrence: recurrence.trim() || null
+			recurrence: recurrence.trim() || null,
+			metadata: {
+				...(task?.metadata ?? {}),
+				subtasks: subtasks.length > 0 ? subtasks : undefined
+			}
 		};
 		dispatch('save', payload);
 	}
@@ -352,6 +383,61 @@
 						bind:value={recurrence}
 						placeholder="FREQ=WEEKLY;BYDAY=MO"
 					/>
+				</div>
+
+				<!-- Subtasks -->
+				<div>
+					<label class="text-xs uppercase tracking-wide text-slate-500">
+						Subtasks / Checklist
+					</label>
+					<div class="mt-2 space-y-1.5">
+						{#each subtasks as subtask (subtask.id)}
+							<div class="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+								<button
+									type="button"
+									class="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition {subtask.done
+										? 'border-emerald-500 bg-emerald-500/20 text-emerald-300'
+										: 'border-slate-600 hover:border-slate-500'}"
+									on:click={() => toggleSubtaskDone(subtask.id)}
+								>
+									{#if subtask.done}
+										<svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+										</svg>
+									{/if}
+								</button>
+								<span class="flex-1 text-xs {subtask.done ? 'text-slate-500 line-through' : 'text-slate-200'}">
+									{subtask.title}
+								</span>
+								<button
+									type="button"
+									class="rounded p-0.5 text-slate-500 hover:bg-red-500/20 hover:text-red-300"
+									on:click={() => removeSubtask(subtask.id)}
+								>
+									<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+									</svg>
+								</button>
+							</div>
+						{/each}
+					</div>
+					<div class="mt-2 flex gap-2">
+						<input
+							type="text"
+							bind:value={newSubtaskTitle}
+							placeholder="Add a subtask..."
+							class="flex-1 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-600"
+							on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addSubtask(); } }}
+						/>
+						<button
+							type="button"
+							class="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-400 hover:border-slate-600 hover:text-slate-300"
+							on:click={addSubtask}
+							disabled={!newSubtaskTitle.trim()}
+						>
+							Add
+						</button>
+					</div>
 				</div>
 
 				<div class="flex items-center justify-end gap-2">

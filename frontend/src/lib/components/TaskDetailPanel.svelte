@@ -8,13 +8,55 @@
 	export let dependentTasks: TaskRecord[] = [];
 	export let blockedReason: string | null = null;
 
+	interface Subtask {
+		id: string;
+		title: string;
+		done: boolean;
+	}
+
 	const dispatch = createEventDispatcher<{
 		edit: void;
 		complete: void;
 		statusChange: TaskStatus;
 		openTask: string;
 		togglePin: void;
+		subtasksUpdate: Subtask[];
 	}>();
+
+	// Subtask state
+	$: subtasks = ((task?.metadata?.subtasks as Subtask[] | undefined) ?? []);
+	$: subtaskProgress = subtasks.length > 0
+		? Math.round((subtasks.filter((s) => s.done).length / subtasks.length) * 100)
+		: 0;
+	let newSubtaskTitle = '';
+
+	function addSubtask() {
+		if (!newSubtaskTitle.trim()) return;
+		const updated: Subtask[] = [
+			...subtasks,
+			{ id: crypto.randomUUID(), title: newSubtaskTitle.trim(), done: false }
+		];
+		dispatch('subtasksUpdate', updated);
+		newSubtaskTitle = '';
+	}
+
+	function toggleSubtask(id: string) {
+		const updated = subtasks.map((s) => (s.id === id ? { ...s, done: !s.done } : s));
+		dispatch('subtasksUpdate', updated);
+	}
+
+	function deleteSubtask(id: string) {
+		const updated = subtasks.filter((s) => s.id !== id);
+		dispatch('subtasksUpdate', updated);
+	}
+
+	function moveSubtask(index: number, direction: 'up' | 'down') {
+		const newIndex = direction === 'up' ? index - 1 : index + 1;
+		if (newIndex < 0 || newIndex >= subtasks.length) return;
+		const updated = [...subtasks];
+		[updated[index], updated[newIndex]] = [updated[newIndex], updated[index]];
+		dispatch('subtasksUpdate', updated);
+	}
 
 	$: isPinned = task?.metadata?.pinned === true;
 
@@ -147,6 +189,96 @@
 			<div>
 				<p class="text-[10px] uppercase tracking-wide text-slate-500">Description</p>
 				<p class="mt-2 whitespace-pre-wrap text-slate-200">{task.description || '—'}</p>
+			</div>
+
+			<!-- Subtasks / Checklist -->
+			<div>
+				<div class="flex items-center justify-between">
+					<p class="text-[10px] uppercase tracking-wide text-slate-500">
+						Subtasks {#if subtasks.length > 0}<span class="text-slate-400">({subtasks.filter(s => s.done).length}/{subtasks.length})</span>{/if}
+					</p>
+					{#if subtasks.length > 0}
+						<div class="flex items-center gap-2">
+							<div class="h-1.5 w-20 rounded-full bg-slate-800">
+								<div
+									class="h-1.5 rounded-full transition-all {subtaskProgress === 100 ? 'bg-emerald-500' : 'bg-sky-500'}"
+									style="width: {subtaskProgress}%"
+								></div>
+							</div>
+							<span class="text-[10px] text-slate-500">{subtaskProgress}%</span>
+						</div>
+					{/if}
+				</div>
+				<div class="mt-3 space-y-1.5">
+					{#each subtasks as subtask, index (subtask.id)}
+						<div class="group flex items-center gap-2 rounded-lg border border-slate-800/60 bg-slate-900/40 px-3 py-2">
+							<button
+								class="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition {subtask.done
+									? 'border-emerald-500 bg-emerald-500/20 text-emerald-300'
+									: 'border-slate-600 hover:border-slate-500'}"
+								on:click={() => toggleSubtask(subtask.id)}
+								aria-label={subtask.done ? 'Mark incomplete' : 'Mark complete'}
+							>
+								{#if subtask.done}
+									<svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+									</svg>
+								{/if}
+							</button>
+							<span class="flex-1 text-xs {subtask.done ? 'text-slate-500 line-through' : 'text-slate-200'}">
+								{subtask.title}
+							</span>
+							<div class="hidden items-center gap-1 group-hover:flex">
+								{#if index > 0}
+									<button
+										class="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+										on:click={() => moveSubtask(index, 'up')}
+										aria-label="Move up"
+									>
+										<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+										</svg>
+									</button>
+								{/if}
+								{#if index < subtasks.length - 1}
+									<button
+										class="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+										on:click={() => moveSubtask(index, 'down')}
+										aria-label="Move down"
+									>
+										<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+										</svg>
+									</button>
+								{/if}
+								<button
+									class="rounded p-0.5 text-slate-500 hover:bg-red-500/20 hover:text-red-300"
+									on:click={() => deleteSubtask(subtask.id)}
+									aria-label="Delete subtask"
+								>
+									<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+									</svg>
+								</button>
+							</div>
+						</div>
+					{/each}
+				</div>
+				<form class="mt-2 flex gap-2" on:submit|preventDefault={addSubtask}>
+					<input
+						type="text"
+						bind:value={newSubtaskTitle}
+						placeholder="Add a subtask..."
+						class="flex-1 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-1.5 text-xs text-white placeholder-slate-600"
+					/>
+					<button
+						type="submit"
+						class="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:border-slate-600 hover:text-slate-300"
+						disabled={!newSubtaskTitle.trim()}
+					>
+						Add
+					</button>
+				</form>
 			</div>
 
 			<!-- Grid details -->

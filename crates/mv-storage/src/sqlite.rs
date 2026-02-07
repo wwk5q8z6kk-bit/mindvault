@@ -49,9 +49,15 @@ impl SqliteNodeStore {
             .conn
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
-        let migration_sql = include_str!("../../../migrations/001_initial.sql");
-        conn.execute_batch(migration_sql)
+
+        let migration_001 = include_str!("../../../migrations/001_initial.sql");
+        conn.execute_batch(migration_001)
             .map_err(|e| MvError::Migration(format!("migration 001 failed: {e}")))?;
+
+        let migration_003 = include_str!("../../../migrations/003_agentic.sql");
+        conn.execute_batch(migration_003)
+            .map_err(|e| MvError::Migration(format!("migration 003 failed: {e}")))?;
+
         Ok(())
     }
 
@@ -885,6 +891,330 @@ fn parse_json_vec<T: serde::de::DeserializeOwned>(
         }),
         None => Ok(Vec::new()),
     }
+}
+
+// ---------------------------------------------------------------------------
+// AgenticStore Implementation
+// ---------------------------------------------------------------------------
+
+use mv_core::{AgenticStore, CapturedIntent, ChronicleEntry, InsightType, IntentStatus, IntentType, ProactiveInsight};
+
+#[async_trait]
+impl AgenticStore for SqliteNodeStore {
+    async fn log_intent(&self, intent: &CapturedIntent) -> MvResult<()> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let params_json = serde_json::to_string(&intent.parameters)?;
+
+        conn.execute(
+            "INSERT INTO captured_intents (id, node_id, intent_type, confidence, parameters, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                intent.id.to_string(),
+                intent.node_id.to_string(),
+                intent.intent_type.as_str(),
+                intent.confidence as f64,
+                params_json,
+                intent.status.as_str(),
+                intent.created_at.to_rfc3339(),
+                intent.updated_at.map(|dt| dt.to_rfc3339()),
+            ],
+        )
+        .map_err(|e| MvError::Storage(format!("insert intent failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_intent(&self, id: Uuid) -> MvResult<Option<CapturedIntent>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, node_id, intent_type, confidence, parameters, status, created_at, updated_at
+                 FROM captured_intents WHERE id = ?1",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let result = stmt
+            .query_row(params![id.to_string()], row_to_captured_intent)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(result)
+    }
+
+    async fn list_intents(
+        &self,
+        node_id: Option<Uuid>,
+        status: Option<IntentStatus>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<CapturedIntent>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut sql = String::from(
+            "SELECT id, node_id, intent_type, confidence, parameters, status, created_at, updated_at
+             FROM captured_intents WHERE 1=1",
+        );
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut param_idx = 1;
+
+        if let Some(nid) = node_id {
+            sql.push_str(&format!(" AND node_id = ?{param_idx}"));
+            param_values.push(Box::new(nid.to_string()));
+            param_idx += 1;
+        }
+
+        if let Some(st) = status {
+            sql.push_str(&format!(" AND status = ?{param_idx}"));
+            param_values.push(Box::new(st.as_str().to_string()));
+            param_idx += 1;
+        }
+
+        sql.push_str(&format!(
+            " ORDER BY created_at DESC LIMIT ?{param_idx} OFFSET ?{}",
+            param_idx + 1
+        ));
+        param_values.push(Box::new(limit as i64));
+        param_values.push(Box::new(offset as i64));
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(params_refs.as_slice(), row_to_captured_intent)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut intents = Vec::new();
+        for row in rows {
+            intents.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(intents)
+    }
+
+    async fn update_intent_status(&self, id: Uuid, status: IntentStatus) -> MvResult<bool> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+        let affected = conn
+            .execute(
+                "UPDATE captured_intents SET status = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id.to_string(), status.as_str(), now],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn log_insight(&self, insight: &ProactiveInsight) -> MvResult<()> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let related_ids_json = serde_json::to_string(&insight.related_node_ids)?;
+
+        conn.execute(
+            "INSERT INTO proactive_insights (id, title, content, insight_type, related_node_ids, importance, created_at, dismissed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                insight.id.to_string(),
+                insight.title,
+                insight.content,
+                insight.insight_type.as_str(),
+                related_ids_json,
+                insight.importance as f64,
+                insight.created_at.to_rfc3339(),
+                insight.dismissed_at.map(|dt| dt.to_rfc3339()),
+            ],
+        )
+        .map_err(|e| MvError::Storage(format!("insert insight failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn list_insights(&self, limit: usize, offset: usize) -> MvResult<Vec<ProactiveInsight>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, title, content, insight_type, related_node_ids, importance, created_at, dismissed_at
+                 FROM proactive_insights
+                 WHERE dismissed_at IS NULL
+                 ORDER BY created_at DESC
+                 LIMIT ?1 OFFSET ?2",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![limit as i64, offset as i64], row_to_proactive_insight)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut insights = Vec::new();
+        for row in rows {
+            insights.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(insights)
+    }
+
+    async fn delete_insight(&self, id: Uuid) -> MvResult<bool> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+        let affected = conn
+            .execute(
+                "UPDATE proactive_insights SET dismissed_at = ?2 WHERE id = ?1 AND dismissed_at IS NULL",
+                params![id.to_string(), now],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn log_chronicle(&self, entry: &ChronicleEntry) -> MvResult<()> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+
+        conn.execute(
+            "INSERT INTO chronicle_entries (id, node_id, step_name, logic, input_snapshot, output_snapshot, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                entry.id.to_string(),
+                entry.node_id.map(|id| id.to_string()),
+                entry.step_name,
+                entry.logic,
+                entry.input_snapshot,
+                entry.output_snapshot,
+                entry.timestamp.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| MvError::Storage(format!("insert chronicle failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn list_chronicles(
+        &self,
+        node_id: Option<Uuid>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<ChronicleEntry>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(nid) = node_id {
+            (
+                "SELECT id, node_id, step_name, logic, input_snapshot, output_snapshot, timestamp
+                 FROM chronicle_entries WHERE node_id = ?1 ORDER BY timestamp DESC LIMIT ?2 OFFSET ?3".to_string(),
+                vec![
+                    Box::new(nid.to_string()),
+                    Box::new(limit as i64),
+                    Box::new(offset as i64),
+                ],
+            )
+        } else {
+            (
+                "SELECT id, node_id, step_name, logic, input_snapshot, output_snapshot, timestamp
+                 FROM chronicle_entries ORDER BY timestamp DESC LIMIT ?1 OFFSET ?2".to_string(),
+                vec![Box::new(limit as i64), Box::new(offset as i64)],
+            )
+        };
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_box.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(params_refs.as_slice(), row_to_chronicle_entry)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(entries)
+    }
+}
+
+fn row_to_captured_intent(row: &rusqlite::Row<'_>) -> rusqlite::Result<CapturedIntent> {
+    let id_str: String = row.get(0)?;
+    let node_id_str: String = row.get(1)?;
+    let intent_type_str: String = row.get(2)?;
+    let confidence: f64 = row.get(3)?;
+    let params_json: Option<String> = row.get(4)?;
+    let status_str: String = row.get(5)?;
+    let created_at: String = row.get(6)?;
+    let updated_at: Option<String> = row.get(7)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let node_id = parse_uuid_str(1, &node_id_str)?;
+    let intent_type: IntentType = intent_type_str.parse().unwrap_or(IntentType::Custom(intent_type_str));
+    let status: IntentStatus = status_str.parse().map_err(|e: String| {
+        rusqlite::Error::FromSqlConversionFailure(
+            5,
+            Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        )
+    })?;
+    let parameters: serde_json::Value = params_json
+        .map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::Null))
+        .unwrap_or(serde_json::Value::Null);
+
+    Ok(CapturedIntent {
+        id,
+        node_id,
+        intent_type,
+        confidence: confidence as f32,
+        parameters,
+        status,
+        created_at: parse_dt_strict(6, &created_at)?,
+        updated_at: parse_optional_dt_strict(7, updated_at)?,
+    })
+}
+
+fn row_to_proactive_insight(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProactiveInsight> {
+    let id_str: String = row.get(0)?;
+    let title: String = row.get(1)?;
+    let content: String = row.get(2)?;
+    let insight_type_str: String = row.get(3)?;
+    let related_ids_json: Option<String> = row.get(4)?;
+    let importance: f64 = row.get(5)?;
+    let created_at: String = row.get(6)?;
+    let dismissed_at: Option<String> = row.get(7)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let insight_type: InsightType = insight_type_str.parse().map_err(|e: String| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        )
+    })?;
+
+    let related_node_ids: Vec<Uuid> = related_ids_json
+        .map(|s| {
+            let strs: Vec<String> = serde_json::from_str(&s).unwrap_or_default();
+            strs.iter()
+                .filter_map(|id_str| Uuid::parse_str(id_str).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(ProactiveInsight {
+        id,
+        title,
+        content,
+        insight_type,
+        related_node_ids,
+        importance: importance as f32,
+        created_at: parse_dt_strict(6, &created_at)?,
+        dismissed_at: parse_optional_dt_strict(7, dismissed_at)?,
+    })
+}
+
+fn row_to_chronicle_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChronicleEntry> {
+    let id_str: String = row.get(0)?;
+    let node_id_str: Option<String> = row.get(1)?;
+    let step_name: String = row.get(2)?;
+    let logic: String = row.get(3)?;
+    let input_snapshot: Option<String> = row.get(4)?;
+    let output_snapshot: Option<String> = row.get(5)?;
+    let timestamp: String = row.get(6)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let node_id = node_id_str.map(|s| Uuid::parse_str(&s).ok()).flatten();
+
+    Ok(ChronicleEntry {
+        id,
+        node_id,
+        step_name,
+        logic,
+        input_snapshot,
+        output_snapshot,
+        timestamp: parse_dt_strict(6, &timestamp)?,
+    })
 }
 
 #[cfg(test)]

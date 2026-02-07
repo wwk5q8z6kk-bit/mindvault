@@ -457,6 +457,25 @@ export function buildDynamicActions(query: string, ctx: CommandContext): Command
 	const trimmed = raw.toLowerCase();
 	const actions: CommandAction[] = [];
 
+	const triageTopMatch = trimmed.match(/^(?:ai\s+)?triage(?:\s+inbox)?\s+top\s+(\d{1,2})$/);
+	if (triageTopMatch) {
+		const requested = Number.parseInt(triageTopMatch[1], 10);
+		if (Number.isFinite(requested)) {
+			const normalizedLimit = Math.min(10, Math.max(1, requested));
+			actions.push({
+				id: `ai-triage-inbox-top-${normalizedLimit}`,
+				title: `AI: Apply Top ${normalizedLimit} Inbox Triage`,
+				subtitle: 'Open Inbox, run AI triage, then apply top suggestions',
+				group: 'Inbox Automation',
+				keywords: ['ai', 'triage', 'inbox', 'top', String(normalizedLimit)],
+				handler: async (innerCtx) => {
+					await innerCtx.navigate('/inbox');
+					dispatchInboxTriageApplyTop(normalizedLimit);
+				}
+			});
+		}
+	}
+
 	if (trimmed.length === 0 || trimmed.includes('capture') || trimmed.includes('preset')) {
 		const presets = loadCapturePresets()
 			.filter((preset) => preset.enabled)

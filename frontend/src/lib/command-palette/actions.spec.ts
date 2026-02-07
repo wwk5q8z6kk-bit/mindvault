@@ -145,4 +145,26 @@ describe('command palette quick-capture presets', () => {
 		expect(navigations).toEqual(['/inbox']);
 		expect(applyEvents).toHaveLength(1);
 	});
+
+	it('builds dynamic triage-top action with explicit limit', async () => {
+		const applyEventDetails: Array<{ limit?: number } | undefined> = [];
+		window.addEventListener(INBOX_TRIAGE_APPLY_TOP_EVENT_NAME, (event) => {
+			const customEvent = event as CustomEvent<{ limit?: number }>;
+			applyEventDetails.push(customEvent.detail);
+		});
+
+		const navigations: string[] = [];
+		const actions = buildDynamicActions('triage top 7', makeContext('triage top 7'));
+		const dynamicAction = actions.find((action) => action.id === 'ai-triage-inbox-top-7');
+		expect(dynamicAction).toBeDefined();
+		await dynamicAction?.handler({
+			...makeContext('triage top 7'),
+			navigate: async (path: string) => {
+				navigations.push(path);
+			}
+		});
+
+		expect(navigations).toEqual(['/inbox']);
+		expect(applyEventDetails).toEqual([{ limit: 7 }]);
+	});
 });

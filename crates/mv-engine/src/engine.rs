@@ -5,6 +5,7 @@ use std::sync::Arc;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, NaiveDate, Utc};
+use mv_core::credentials::CredentialStore;
 use mv_core::*;
 use mv_graph::store::SqliteGraphStore;
 use mv_index::tantivy_index::TantivyFullTextIndex;
@@ -20,6 +21,7 @@ use crate::backlinks::{
     ResolvedContentReferenceTarget,
 };
 use crate::config::EngineConfig;
+use crate::llm::{self, LlmProvider};
 use crate::daily_notes::{daily_note_day_tag, daily_note_weekday_tag, render_daily_note_template};
 use crate::ingest::IngestPipeline;
 use crate::recall::RecallPipeline;
@@ -118,6 +120,10 @@ pub struct MindVaultEngine {
     pub fts: Arc<TantivyFullTextIndex>,
     pub graph: Arc<SqliteGraphStore>,
     pub config: EngineConfig,
+    pub credential_store: Arc<CredentialStore>,
+    pub keychain: Arc<crate::keychain::KeychainEngine>,
+    pub llm: Option<Arc<dyn LlmProvider>>,
+    pub proactive: Arc<crate::proactive::ProactiveEngine>,
     embedding_runtime_status: KnowledgeVaultIndexNoteEmbeddingProviderRuntimeStatus,
 }
 
@@ -128,7 +134,9 @@ impl MindVaultEngine {
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| MvError::Storage(format!("create data dir: {e}")))?;
 
-        let selection = select_embedding_provider(&config);
+        let credential_store = Arc::new(CredentialStore::new("mindvault"));
+
+        let selection = select_embedding_provider(&config, &credential_store);
 
         // Initialize unified store
         let mut store = UnifiedStore::open(&data_dir, selection.vector_dimensions).await?;
@@ -166,6 +174,28 @@ impl MindVaultEngine {
             config.clone(),
         );
 
+        let keychain_path = data_dir.join("keychain.sqlite");
+        let keychain_store = Arc::new(
+            mv_storage::keychain::SqliteKeychainStore::open(&keychain_path)
+                .map_err(|e| MvError::Storage(format!("open keychain db: {e}")))?,
+        );
+        let keychain = Arc::new(
+            crate::keychain::KeychainEngine::new(
+                keychain_store,
+                Arc::clone(&credential_store),
+            )
+            .await?,
+        );
+
+        // Initialize LLM provider (optional — heuristic fallback when disabled)
+        let llm_api_key = credential_store
+            .get_secret_string("MINDVAULT_LLM_API_KEY")
+            .or_else(|| credential_store.get_secret_string("OPENAI_API_KEY"));
+        let llm = llm::init_llm_provider(&config.llm, llm_api_key).await;
+
+        // Initialize proactive engine (will be wired to engine after construction)
+        let proactive = Arc::new(crate::proactive::ProactiveEngine::new());
+
         let engine = Self {
             ingest,
             recall,
@@ -173,11 +203,23 @@ impl MindVaultEngine {
             fts,
             graph,
             config,
+            credential_store,
+            keychain,
+            llm,
+            proactive,
             embedding_runtime_status: selection.runtime_status,
         };
 
         engine.ensure_default_permission_templates().await?;
 
+        Ok(engine)
+    }
+
+    /// Initialize the engine and return it wrapped in Arc, with proactive engine properly wired.
+    /// Use this when you need proactive features.
+    pub async fn init_arc(config: EngineConfig) -> MvResult<Arc<Self>> {
+        let engine = Arc::new(Self::init(config).await?);
+        engine.proactive.set_engine(Arc::clone(&engine));
         Ok(engine)
     }
 
@@ -1422,6 +1464,54 @@ impl MindVaultEngine {
 
         Ok(())
     }
+
+    // -------------------------------------------------------------------------
+    // Agentic Intelligence Methods
+    // -------------------------------------------------------------------------
+
+    /// List captured intents with optional filters.
+    pub async fn list_intents(
+        &self,
+        node_id: Option<Uuid>,
+        status: Option<IntentStatus>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<CapturedIntent>> {
+        self.store
+            .nodes
+            .list_intents(node_id, status, limit, offset)
+            .await
+    }
+
+    /// Update the status of an intent (apply/dismiss).
+    pub async fn update_intent_status(&self, id: Uuid, status: IntentStatus) -> MvResult<bool> {
+        self.store.nodes.update_intent_status(id, status).await
+    }
+
+    /// List proactive insights.
+    pub async fn list_insights(&self, limit: usize, offset: usize) -> MvResult<Vec<ProactiveInsight>> {
+        self.store.nodes.list_insights(limit, offset).await
+    }
+
+    /// Delete (dismiss) an insight.
+    pub async fn delete_insight(&self, id: Uuid) -> MvResult<bool> {
+        self.store.nodes.delete_insight(id).await
+    }
+
+    /// List chronicle entries with optional node filter.
+    pub async fn list_chronicles(
+        &self,
+        node_id: Option<Uuid>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<ChronicleEntry>> {
+        self.store.nodes.list_chronicles(node_id, limit, offset).await
+    }
+
+    /// Log a chronicle entry for transparency.
+    pub async fn log_chronicle(&self, entry: &ChronicleEntry) -> MvResult<()> {
+        self.store.nodes.log_chronicle(entry).await
+    }
 }
 
 fn is_daily_note(node: &KnowledgeNode) -> bool {
@@ -1474,7 +1564,7 @@ fn is_auto_backlink_relationship(rel: &Relationship) -> bool {
         .unwrap_or(false)
 }
 
-fn select_embedding_provider(config: &EngineConfig) -> EmbeddingProviderSelection {
+fn select_embedding_provider(config: &EngineConfig, credentials: &CredentialStore) -> EmbeddingProviderSelection {
     let provider = config.embedding.provider.trim().to_ascii_lowercase();
     let configured_model = config.embedding.model.clone();
     let configured_dimensions = config.embedding.dimensions;
@@ -1497,35 +1587,17 @@ fn select_embedding_provider(config: &EngineConfig) -> EmbeddingProviderSelectio
         };
 
     match provider.as_str() {
-        "openai" => match OpenAiEmbedder::from_env(
-            config.embedding.model.clone(),
-            config.embedding.dimensions,
-        ) {
-            Ok(embedder) => {
-                tracing::info!(
-                    provider = "openai",
-                    dimensions = config.embedding.dimensions,
-                    "mindvault_embedding_provider_initialized"
-                );
-                EmbeddingProviderSelection {
-                    embedder: Some(Arc::new(embedder)),
-                    vector_dimensions: config.embedding.dimensions,
-                    runtime_status: base_status(
-                        "openai",
-                        configured_model.clone(),
-                        config.embedding.dimensions,
-                        false,
-                        None,
-                    ),
-                }
-            }
-            Err(err) => {
-                let reason = format!("openai initialization failed: {err}");
-                tracing::warn!(
-                    error = %err,
-                    "mindvault_openai_embedder_unavailable_falling_back_to_noop"
-                );
-                EmbeddingProviderSelection {
+        "openai" => {
+            let base_url = config
+                .embedding
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com/v1".into());
+            let api_key = credentials.get_secret_string("OPENAI_API_KEY");
+            if api_key.is_none() && base_url.contains("api.openai.com") {
+                let reason = "OPENAI_API_KEY not found in any credential backend".to_string();
+                tracing::warn!("mindvault_openai_embedder_unavailable_falling_back_to_noop");
+                return EmbeddingProviderSelection {
                     embedder: None,
                     vector_dimensions: config.embedding.dimensions,
                     runtime_status: base_status(
@@ -1535,9 +1607,105 @@ fn select_embedding_provider(config: &EngineConfig) -> EmbeddingProviderSelectio
                         true,
                         Some(reason),
                     ),
-                }
+                };
             }
-        },
+            let embedder = OpenAiEmbedder::for_compatible(
+                base_url,
+                api_key,
+                config.embedding.model.clone(),
+                config.embedding.dimensions,
+            );
+            tracing::info!(
+                provider = "openai",
+                dimensions = config.embedding.dimensions,
+                "mindvault_embedding_provider_initialized"
+            );
+            EmbeddingProviderSelection {
+                embedder: Some(Arc::new(embedder)),
+                vector_dimensions: config.embedding.dimensions,
+                runtime_status: base_status(
+                    "openai",
+                    configured_model.clone(),
+                    config.embedding.dimensions,
+                    false,
+                    None,
+                ),
+            }
+        }
+        "openai-compatible" | "openai_compatible" => {
+            let base_url = config
+                .embedding
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:8080/v1".into());
+            let api_key = credentials
+                .get_secret_string("MINDVAULT_EMBEDDING_API_KEY")
+                .or_else(|| credentials.get_secret_string("OPENAI_API_KEY"));
+            let embedder = OpenAiEmbedder::for_compatible(
+                base_url.clone(),
+                api_key,
+                config.embedding.model.clone(),
+                config.embedding.dimensions,
+            );
+            tracing::info!(
+                provider = "openai-compatible",
+                base_url = %base_url,
+                model = %config.embedding.model,
+                dimensions = config.embedding.dimensions,
+                "mindvault_embedding_provider_initialized"
+            );
+            EmbeddingProviderSelection {
+                embedder: Some(Arc::new(embedder)),
+                vector_dimensions: config.embedding.dimensions,
+                runtime_status: base_status(
+                    "openai-compatible",
+                    configured_model.clone(),
+                    config.embedding.dimensions,
+                    false,
+                    None,
+                ),
+            }
+        }
+        "ollama" => {
+            let base_url = config
+                .embedding
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:11434/v1".into());
+            let model = if config.embedding.model.starts_with("text-embedding-") {
+                "nomic-embed-text".to_string()
+            } else {
+                config.embedding.model.clone()
+            };
+            let embedder = OpenAiEmbedder::for_ollama(
+                Some(base_url.clone()),
+                model.clone(),
+                config.embedding.dimensions,
+            );
+            tracing::info!(
+                provider = "ollama",
+                base_url = %base_url,
+                model = %model,
+                dimensions = config.embedding.dimensions,
+                "mindvault_embedding_provider_initialized"
+            );
+            let reason = if model != configured_model {
+                Some(format!("model '{configured_model}' auto-mapped to '{model}' for ollama"))
+            } else {
+                None
+            };
+            EmbeddingProviderSelection {
+                embedder: Some(Arc::new(embedder)),
+                vector_dimensions: config.embedding.dimensions,
+                runtime_status: base_status(
+                    "ollama",
+                    model,
+                    config.embedding.dimensions,
+                    false,
+                    reason,
+                ),
+            }
+        }
         "local_fastembed" | "fastembed" | "local" => {
             let local_model = default_local_model_if_needed(&config.embedding.model);
             match KnowledgeVaultIndexNoteEmbeddingFastembedLocalEmbedder::try_new(&local_model) {

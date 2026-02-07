@@ -362,6 +362,149 @@
 			.map(([tag]) => tag);
 	})();
 
+	// Bulk export functionality
+	type ExportFormat = 'markdown' | 'json' | 'html';
+	let showExportModal = false;
+	let exportFormat: ExportFormat = 'markdown';
+	let exportProgress = 0;
+	let exporting = false;
+
+	function getSelectedNotes(): NoteWithKind[] {
+		return notes.filter((n) => selectedNoteIds.has(n.id));
+	}
+
+	function generateMarkdownExport(notesToExport: NoteWithKind[]): string {
+		return notesToExport
+			.map((note) => {
+				const header = `# ${note.title ?? 'Untitled'}\n`;
+				const meta = [
+					`**Kind:** ${note.kind}`,
+					note.tags?.length ? `**Tags:** ${note.tags.join(', ')}` : null,
+					`**Created:** ${new Date(note.created_at).toLocaleString()}`,
+					`**Updated:** ${new Date(note.updated_at).toLocaleString()}`
+				]
+					.filter(Boolean)
+					.join('\n');
+				const content = note.markdown ?? '';
+				return `${header}\n${meta}\n\n---\n\n${content}`;
+			})
+			.join('\n\n---\n\n# \n\n');
+	}
+
+	function generateJsonExport(notesToExport: NoteWithKind[]): string {
+		const exportData = notesToExport.map((note) => ({
+			id: note.id,
+			title: note.title,
+			kind: note.kind,
+			content: note.markdown,
+			tags: note.tags,
+			pinned: note.pinned,
+			created_at: note.created_at,
+			updated_at: note.updated_at,
+			namespace: note.namespace
+		}));
+		return JSON.stringify(exportData, null, 2);
+	}
+
+	function generateHtmlExport(notesToExport: NoteWithKind[]): string {
+		const notesHtml = notesToExport
+			.map((note) => {
+				const title = note.title ?? 'Untitled';
+				const tags = note.tags?.map((t) => `<span class="tag">${t}</span>`).join('') ?? '';
+				const content = (note.markdown ?? '')
+					.replace(/&/g, '&amp;')
+					.replace(/</g, '&lt;')
+					.replace(/>/g, '&gt;')
+					.replace(/\n/g, '<br>');
+				return `
+					<article class="note">
+						<h2>${title}</h2>
+						<div class="meta">
+							<span class="kind">${note.kind}</span>
+							${tags}
+							<span class="date">${new Date(note.updated_at).toLocaleDateString()}</span>
+						</div>
+						<div class="content">${content}</div>
+					</article>
+				`;
+			})
+			.join('\n');
+
+		return `<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>MindVault Notes Export</title>
+	<style>
+		body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; background: #0f172a; color: #e2e8f0; }
+		h1 { color: #38bdf8; border-bottom: 1px solid #334155; padding-bottom: 1rem; }
+		.note { background: #1e293b; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; }
+		.note h2 { margin: 0 0 0.5rem; color: #f1f5f9; }
+		.meta { display: flex; gap: 0.5rem; flex-wrap: wrap; font-size: 0.75rem; color: #94a3b8; margin-bottom: 1rem; }
+		.kind { background: #7c3aed33; color: #c4b5fd; padding: 0.25rem 0.5rem; border-radius: 4px; }
+		.tag { background: #334155; padding: 0.25rem 0.5rem; border-radius: 4px; }
+		.content { white-space: pre-wrap; line-height: 1.6; }
+	</style>
+</head>
+<body>
+	<h1>MindVault Notes Export</h1>
+	<p style="color: #64748b; font-size: 0.875rem;">Exported ${notesToExport.length} note${notesToExport.length === 1 ? '' : 's'} on ${new Date().toLocaleString()}</p>
+	${notesHtml}
+</body>
+</html>`;
+	}
+
+	async function bulkExportNotes() {
+		if (selectedCount === 0) return;
+		exporting = true;
+		exportProgress = 0;
+
+		const notesToExport = getSelectedNotes();
+		let content: string;
+		let filename: string;
+		let mimeType: string;
+
+		const timestamp = new Date().toISOString().slice(0, 10);
+
+		switch (exportFormat) {
+			case 'markdown':
+				content = generateMarkdownExport(notesToExport);
+				filename = `mindvault-notes-${timestamp}.md`;
+				mimeType = 'text/markdown';
+				break;
+			case 'json':
+				content = generateJsonExport(notesToExport);
+				filename = `mindvault-notes-${timestamp}.json`;
+				mimeType = 'application/json';
+				break;
+			case 'html':
+				content = generateHtmlExport(notesToExport);
+				filename = `mindvault-notes-${timestamp}.html`;
+				mimeType = 'text/html';
+				break;
+		}
+
+		for (let i = 0; i <= 100; i += 20) {
+			exportProgress = i;
+			await new Promise((r) => setTimeout(r, 50));
+		}
+
+		const blob = new Blob([content], { type: mimeType });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = filename;
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		URL.revokeObjectURL(url);
+
+		exporting = false;
+		showExportModal = false;
+		pushToast(`Exported ${notesToExport.length} note${notesToExport.length === 1 ? '' : 's'}`, 'success');
+	}
+
 	function handleAttachmentEmbed(payload: { attachment: NodeAttachment; inlineUrl: string }) {
 		if (!selectedNote) return;
 		markdown = buildAttachmentEmbedMarkdown(markdown, payload.attachment, payload.inlineUrl);
@@ -629,6 +772,14 @@
 
 					{#if selectedCount > 0}
 						<span class="text-[11px] text-slate-500">|</span>
+
+						<button
+							class="rounded-lg border border-emerald-500/30 px-2 py-1 text-[11px] text-emerald-300 hover:bg-emerald-500/10"
+							on:click={() => (showExportModal = true)}
+							disabled={bulkProcessing}
+						>
+							Export ({selectedCount})
+						</button>
 
 						<button
 							class="rounded-lg border border-red-500/30 px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/10"
@@ -920,4 +1071,68 @@
 			}
 		}}
 	/>
+{/if}
+
+<!-- Export Modal -->
+{#if showExportModal}
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+		<div class="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-xl">
+			<h3 class="text-sm font-semibold text-white">Export Notes</h3>
+			<p class="mt-1 text-[11px] text-slate-400">
+				Export {selectedCount} selected note{selectedCount === 1 ? '' : 's'}
+			</p>
+
+			<div class="mt-4">
+				<label class="text-[10px] uppercase tracking-wide text-slate-500">Format</label>
+				<div class="mt-2 grid grid-cols-3 gap-2">
+					{#each [
+						{ value: 'markdown', label: 'Markdown', desc: '.md file' },
+						{ value: 'json', label: 'JSON', desc: 'Structured data' },
+						{ value: 'html', label: 'HTML', desc: 'Styled page' }
+					] as format}
+						<button
+							class="rounded-lg border px-3 py-2 text-left transition {exportFormat === format.value
+								? 'border-sky-500 bg-sky-500/10'
+								: 'border-slate-700 bg-slate-800/50 hover:border-slate-600'}"
+							on:click={() => (exportFormat = format.value as ExportFormat)}
+						>
+							<div class="text-xs font-medium {exportFormat === format.value ? 'text-sky-300' : 'text-slate-200'}">
+								{format.label}
+							</div>
+							<div class="text-[9px] text-slate-500">{format.desc}</div>
+						</button>
+					{/each}
+				</div>
+			</div>
+
+			{#if exporting}
+				<div class="mt-4">
+					<div class="h-2 w-full rounded-full bg-slate-800">
+						<div
+							class="h-full rounded-full bg-sky-500 transition-all"
+							style="width: {exportProgress}%"
+						></div>
+					</div>
+					<p class="mt-1 text-center text-[10px] text-slate-400">Preparing export...</p>
+				</div>
+			{/if}
+
+			<div class="mt-5 flex justify-end gap-2">
+				<button
+					class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+					on:click={() => (showExportModal = false)}
+					disabled={exporting}
+				>
+					Cancel
+				</button>
+				<button
+					class="rounded-lg bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+					on:click={bulkExportNotes}
+					disabled={exporting || selectedCount === 0}
+				>
+					{exporting ? 'Exporting...' : `Export ${selectedCount} Note${selectedCount === 1 ? '' : 's'}`}
+				</button>
+			</div>
+		</div>
+	</div>
 {/if}

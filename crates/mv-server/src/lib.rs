@@ -81,11 +81,18 @@ pub async fn start_server(
     let grpc_handle = tokio::spawn(async move {
         tracing::info!("gRPC API listening on {grpc_bind_host}:{grpc_port}");
         let addr = format!("{grpc_bind_host}:{grpc_port}").parse().unwrap();
-        let service = grpc::MindVaultGrpc::new(grpc_state);
+        let service = grpc::MindVaultGrpc::new(Arc::clone(&grpc_state));
+        let keychain_service = grpc::KeychainGrpc::new(grpc_state);
         tonic::transport::Server::builder()
             .add_service(
                 grpc::proto::mind_vault_service_server::MindVaultServiceServer::with_interceptor(
                     service,
+                    grpc::auth_interceptor,
+                ),
+            )
+            .add_service(
+                grpc::proto::keychain_service_server::KeychainServiceServer::with_interceptor(
+                    keychain_service,
                     grpc::auth_interceptor,
                 ),
             )

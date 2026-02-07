@@ -41,6 +41,12 @@ pub enum MvError {
 
     #[error("internal error: {0}")]
     Internal(String),
+
+    #[error("keychain error: {0}")]
+    Keychain(String),
+
+    #[error("vault sealed: unlock the vault before accessing credentials")]
+    VaultSealed,
 }
 
 pub type MvResult<T> = Result<T, MvError>;
