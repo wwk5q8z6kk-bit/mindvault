@@ -4,7 +4,13 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-pub async fn run(from: String, path: String, config_path: &str) -> Result<()> {
+pub async fn run(
+    from: String,
+    path: String,
+    namespace: Option<String>,
+    dry_run: bool,
+    config_path: &str,
+) -> Result<()> {
     let path = super::shellexpand(&path);
     let engine = super::load_engine(config_path).await?;
 
@@ -15,7 +21,10 @@ pub async fn run(from: String, path: String, config_path: &str) -> Result<()> {
         "text" | "txt" => import_text(&engine, &path).await,
         "json" => import_json(&engine, &path).await,
         "csv" => import_csv(&engine, &path).await,
-        "obsidian" => import_obsidian(&engine, &path).await,
+        "obsidian" => {
+            let ns = namespace.as_deref().unwrap_or("imported");
+            import_obsidian_vault(&engine, &path, ns, dry_run).await
+        }
         _ => {
             anyhow::bail!(
                 "unknown import format: {from}. Supported: claude-memory, markdown, markdown-dir, text, json, csv, obsidian"
@@ -313,99 +322,48 @@ async fn import_markdown_dir(
     Ok(())
 }
 
-/// Import from Obsidian vault.
-async fn import_obsidian(engine: &mv_engine::engine::MindVaultEngine, path: &str) -> Result<()> {
+/// Import from Obsidian vault using the engine-level importer.
+async fn import_obsidian_vault(
+    engine: &mv_engine::engine::MindVaultEngine,
+    path: &str,
+    namespace: &str,
+    dry_run: bool,
+) -> Result<()> {
     let vault_path = Path::new(path);
-    if !vault_path.is_dir() {
-        anyhow::bail!("Obsidian vault path is not a directory: {path}");
+
+    if dry_run {
+        println!("DRY RUN: Scanning Obsidian vault at: {path}");
+    } else {
+        println!("Importing Obsidian vault from: {path}");
     }
 
-    println!("Importing Obsidian vault from: {path}");
+    let stats =
+        mv_engine::import::obsidian::import_obsidian_vault(vault_path, namespace, engine, dry_run)
+            .await?;
 
-    let mut count = 0;
-    for entry in walkdir::WalkDir::new(path)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let file_path = entry.path();
-
-        // Skip hidden files and .obsidian directory
-        if file_path
-            .components()
-            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
-        {
-            continue;
-        }
-
-        if !file_path.is_file() {
-            continue;
-        }
-
-        let ext = file_path.extension().and_then(|e| e.to_str());
-        if ext != Some("md") {
-            continue;
-        }
-
-        let content = std::fs::read_to_string(file_path)?;
-        let filename = file_path
-            .file_stem()
-            .and_then(|f| f.to_str())
-            .unwrap_or("unknown");
-
-        // Extract folder as namespace
-        let namespace = file_path
-            .parent()
-            .and_then(|p| p.strip_prefix(path).ok())
-            .and_then(|p| p.to_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.replace('/', "."))
-            .unwrap_or_else(|| "obsidian".to_string());
-
-        // Parse YAML frontmatter
-        let (metadata, body) = parse_frontmatter(&content);
-
-        let title = metadata
-            .get("title")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-            .unwrap_or_else(|| filename.to_string());
-
-        let mut tags: Vec<String> = metadata
-            .get("tags")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Extract inline tags (#tag)
-        for word in body.split_whitespace() {
-            if word.starts_with('#') && word.len() > 1 {
-                let tag = word
-                    .trim_start_matches('#')
-                    .trim_end_matches(|c: char| !c.is_alphanumeric());
-                if !tag.is_empty() && !tags.contains(&tag.to_string()) {
-                    tags.push(tag.to_string());
-                }
-            }
-        }
-
-        tags.push("obsidian".to_string());
-
-        let node = KnowledgeNode::new(NodeKind::Fact, body)
-            .with_title(&title)
-            .with_namespace(&namespace)
-            .with_tags(tags)
-            .with_source(format!("import:obsidian:{}", file_path.display()));
-
-        engine.store_node(node).await?;
-        count += 1;
+    if dry_run {
+        println!("\n--- Dry Run Results ---");
+        println!("Files scanned:           {}", stats.files_scanned);
+        println!("Would create:            {}", stats.nodes_created);
+        println!("Would update:            {}", stats.nodes_updated);
+        println!("Already up to date:      {}", stats.nodes_skipped);
+        println!("Wikilink relationships:  {}", stats.relationships_created);
+    } else {
+        println!("\n--- Import Results ---");
+        println!("Files scanned:           {}", stats.files_scanned);
+        println!("Nodes created:           {}", stats.nodes_created);
+        println!("Nodes updated:           {}", stats.nodes_updated);
+        println!("Nodes skipped (up-to-date): {}", stats.nodes_skipped);
+        println!("Relationships created:   {}", stats.relationships_created);
     }
 
-    println!("Imported {count} notes from Obsidian vault");
+    if !stats.errors.is_empty() {
+        println!("\nErrors ({}):", stats.errors.len());
+        for err in &stats.errors {
+            println!("  - {err}");
+        }
+    }
+
     Ok(())
 }
 

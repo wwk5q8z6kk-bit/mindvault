@@ -6,6 +6,7 @@ pub mod export;
 pub mod graph;
 pub mod import;
 pub mod keychain;
+pub mod mcp;
 pub mod recall;
 pub mod search;
 pub mod secret;

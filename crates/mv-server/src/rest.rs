@@ -63,6 +63,10 @@ use node_versions::{
 };
 #[path = "rest/secrets.rs"]
 mod secrets;
+#[path = "rest/keychain.rs"]
+mod keychain;
+#[path = "rest/exchange.rs"]
+mod exchange;
 #[path = "rest/voice.rs"]
 mod voice;
 use voice::{is_audio_file, transcribe_audio, transcribe_audio_api, WhisperConfig};
@@ -245,6 +249,11 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(get_node_relationships),
         )
         .route("/api/v1/graph/neighbors/{id}", get(get_neighbors))
+        .route("/api/v1/exchange/proposals", get(exchange::list_proposals).post(exchange::submit_proposal))
+        .route("/api/v1/exchange/proposals/{id}", get(exchange::get_proposal))
+        .route("/api/v1/exchange/proposals/{id}/approve", post(exchange::approve_proposal))
+        .route("/api/v1/exchange/proposals/{id}/reject", post(exchange::reject_proposal))
+        .route("/api/v1/exchange/inbox/count", get(exchange::inbox_count))
         .route("/api/v1/secrets/status", get(secrets::secret_status))
         .route("/api/v1/secrets", post(secrets::set_secret))
         .route("/api/v1/secrets/{key}", delete(secrets::delete_secret))

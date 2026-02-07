@@ -7,6 +7,7 @@ members = [
     "crates/mv-graph",
     "crates/mv-engine",
     "crates/mv-server",
+    "crates/mv-mcp",
     "crates/mv-cli",
 ]
 
@@ -24,6 +25,7 @@ mv-index = { path = "crates/mv-index" }
 mv-graph = { path = "crates/mv-graph" }
 mv-engine = { path = "crates/mv-engine" }
 mv-server = { path = "crates/mv-server" }
+mv-mcp = { path = "crates/mv-mcp" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

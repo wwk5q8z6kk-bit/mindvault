@@ -100,6 +100,14 @@ enum Commands {
 
         /// Source path
         path: String,
+
+        /// Target namespace (default varies by format)
+        #[arg(long, short)]
+        namespace: Option<String>,
+
+        /// Show what would be imported without actually importing
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Server management
@@ -152,6 +160,9 @@ enum Commands {
         #[command(subcommand)]
         action: KeychainAction,
     },
+
+    /// Start the MCP (Model Context Protocol) server on stdio
+    Mcp,
 }
 
 #[derive(Subcommand)]
@@ -520,7 +531,9 @@ async fn main() -> Result<()> {
             }
         },
 
-        Commands::Import { from, path } => commands::import::run(from, path, &cli.config).await,
+        Commands::Import { from, path, namespace, dry_run } => {
+            commands::import::run(from, path, namespace, dry_run, &cli.config).await
+        }
 
         Commands::Server { action } => match action {
             ServerAction::Start {
@@ -685,5 +698,7 @@ async fn main() -> Result<()> {
                 commands::keychain::alerts(limit, &cli.config).await
             }
         },
+
+        Commands::Mcp => commands::mcp::run(&cli.config).await,
     }
 }

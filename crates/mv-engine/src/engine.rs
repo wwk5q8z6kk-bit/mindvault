@@ -1512,6 +1512,37 @@ impl MindVaultEngine {
     pub async fn log_chronicle(&self, entry: &ChronicleEntry) -> MvResult<()> {
         self.store.nodes.log_chronicle(entry).await
     }
+
+    // --- Exchange Inbox ---
+
+    pub async fn submit_proposal(&self, proposal: &Proposal) -> MvResult<()> {
+        self.store.nodes.submit_proposal(proposal).await
+    }
+
+    pub async fn get_proposal(&self, id: Uuid) -> MvResult<Option<Proposal>> {
+        self.store.nodes.get_proposal(id).await
+    }
+
+    pub async fn list_proposals(
+        &self,
+        state: Option<ProposalState>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<Proposal>> {
+        self.store.nodes.list_proposals(state, limit, offset).await
+    }
+
+    pub async fn resolve_proposal(&self, id: Uuid, state: ProposalState) -> MvResult<bool> {
+        self.store.nodes.resolve_proposal(id, state).await
+    }
+
+    pub async fn count_proposals(&self, state: Option<ProposalState>) -> MvResult<usize> {
+        self.store.nodes.count_proposals(state).await
+    }
+
+    pub async fn expire_proposals(&self, before: DateTime<Utc>) -> MvResult<usize> {
+        self.store.nodes.expire_proposals(before).await
+    }
 }
 
 fn is_daily_note(node: &KnowledgeNode) -> bool {

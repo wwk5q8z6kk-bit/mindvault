@@ -139,6 +139,29 @@ pub async fn show(config_path: &str) -> Result<()> {
         runtime.engine.encryption.argon2_parallelism
     );
 
+    println!("\n[llm]");
+    println!("  enabled = {}", runtime.engine.llm.enabled);
+    println!("  base_url = {}", runtime.engine.llm.base_url);
+    println!("  model = {}", runtime.engine.llm.model);
+    println!("  max_tokens = {}", runtime.engine.llm.max_tokens);
+    println!("  temperature = {}", runtime.engine.llm.temperature);
+    println!("  timeout_secs = {}", runtime.engine.llm.timeout_secs);
+
+    println!("\n[watcher]");
+    println!("  enabled = {}", runtime.engine.watcher.enabled);
+    println!(
+        "  interval_secs = {}",
+        runtime.engine.watcher.interval_secs
+    );
+    println!(
+        "  lookback_hours = {}",
+        runtime.engine.watcher.lookback_hours
+    );
+    println!(
+        "  max_nodes_per_cycle = {}",
+        runtime.engine.watcher.max_nodes_per_cycle
+    );
+
     Ok(())
 }
 

@@ -5,7 +5,6 @@ pub mod daily_notes;
 pub mod engine;
 #[cfg(feature = "wip")]
 pub mod enrichment;
-#[cfg(feature = "wip")]
 pub mod import;
 pub mod ingest;
 pub mod intent;

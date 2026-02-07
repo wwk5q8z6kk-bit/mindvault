@@ -58,6 +58,10 @@ impl SqliteNodeStore {
         conn.execute_batch(migration_003)
             .map_err(|e| MvError::Migration(format!("migration 003 failed: {e}")))?;
 
+        let migration_004 = include_str!("../../../migrations/004_exchange.sql");
+        conn.execute_batch(migration_004)
+            .map_err(|e| MvError::Migration(format!("migration 004 failed: {e}")))?;
+
         Ok(())
     }
 
@@ -523,6 +527,36 @@ impl NodeStore for SqliteNodeStore {
 }
 
 impl SqliteNodeStore {
+    /// Find a node by its `source` field (exact match).
+    /// Used for dedup during imports (e.g. Obsidian vault import).
+    pub async fn find_by_source(&self, source: &str) -> MvResult<Option<KnowledgeNode>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, title, content, source, namespace, importance,
+                 created_at, updated_at, last_accessed_at, access_count, version,
+                 expires_at, metadata_json FROM knowledge_nodes WHERE source = ?1 LIMIT 1",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let row = stmt
+            .query_row(params![source], Self::row_to_node)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        match row {
+            Some(mut node) => {
+                node.tags = Self::load_tags(&conn, node.id)?;
+                Ok(Some(node))
+            }
+            None => Ok(None),
+        }
+    }
+
     pub async fn insert_permission_template(&self, template: &PermissionTemplate) -> MvResult<()> {
         let conn = self
             .conn
@@ -1215,6 +1249,207 @@ fn row_to_chronicle_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chronicle
         output_snapshot,
         timestamp: parse_dt_strict(6, &timestamp)?,
     })
+}
+
+// ---------------------------------------------------------------------------
+// ExchangeStore Implementation
+// ---------------------------------------------------------------------------
+
+use mv_core::{ExchangeStore, Proposal, ProposalAction, ProposalSender, ProposalState};
+use chrono::DateTime;
+
+fn row_to_proposal(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
+    let id_str: String = row.get(0)?;
+    let node_id_str: Option<String> = row.get(1)?;
+    let target_node_id_str: Option<String> = row.get(2)?;
+    let sender_str: String = row.get(3)?;
+    let action_str: String = row.get(4)?;
+    let state_str: String = row.get(5)?;
+    let confidence: f64 = row.get(6)?;
+    let diff_preview: Option<String> = row.get(7)?;
+    let payload_json: Option<String> = row.get(8)?;
+    let created_at: String = row.get(9)?;
+    let updated_at: Option<String> = row.get(10)?;
+    let resolved_at: Option<String> = row.get(11)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let node_id = node_id_str
+        .map(|s| Uuid::parse_str(&s).ok())
+        .flatten();
+    let target_node_id = target_node_id_str
+        .map(|s| Uuid::parse_str(&s).ok())
+        .flatten();
+
+    let sender: ProposalSender = sender_str.parse().map_err(|e: String| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        )
+    })?;
+    let action: ProposalAction = action_str.parse().unwrap_or(ProposalAction::Custom(action_str));
+    let state: ProposalState = state_str.parse().map_err(|e: String| {
+        rusqlite::Error::FromSqlConversionFailure(
+            5,
+            Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        )
+    })?;
+
+    let payload: std::collections::HashMap<String, serde_json::Value> = payload_json
+        .map(|s| serde_json::from_str(&s).unwrap_or_default())
+        .unwrap_or_default();
+
+    Ok(Proposal {
+        id,
+        node_id,
+        target_node_id,
+        sender,
+        action,
+        state,
+        confidence: confidence as f32,
+        diff_preview,
+        payload,
+        created_at: parse_dt_strict(9, &created_at)?,
+        updated_at: parse_optional_dt_strict(10, updated_at)?,
+        resolved_at: parse_optional_dt_strict(11, resolved_at)?,
+    })
+}
+
+#[async_trait]
+impl ExchangeStore for SqliteNodeStore {
+    async fn submit_proposal(&self, proposal: &Proposal) -> MvResult<()> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let payload_json = serde_json::to_string(&proposal.payload)?;
+
+        conn.execute(
+            "INSERT INTO proposals (id, node_id, target_node_id, sender, action, state, confidence, diff_preview, payload, created_at, updated_at, resolved_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                proposal.id.to_string(),
+                proposal.node_id.map(|id| id.to_string()),
+                proposal.target_node_id.map(|id| id.to_string()),
+                proposal.sender.as_str(),
+                proposal.action.as_str(),
+                proposal.state.as_str(),
+                proposal.confidence as f64,
+                proposal.diff_preview,
+                payload_json,
+                proposal.created_at.to_rfc3339(),
+                proposal.updated_at.map(|dt| dt.to_rfc3339()),
+                proposal.resolved_at.map(|dt| dt.to_rfc3339()),
+            ],
+        )
+        .map_err(|e| MvError::Storage(format!("insert proposal failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_proposal(&self, id: Uuid) -> MvResult<Option<Proposal>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, node_id, target_node_id, sender, action, state, confidence, diff_preview, payload, created_at, updated_at, resolved_at
+                 FROM proposals WHERE id = ?1",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let result = stmt
+            .query_row(params![id.to_string()], row_to_proposal)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(result)
+    }
+
+    async fn list_proposals(
+        &self,
+        state: Option<ProposalState>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<Proposal>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut sql = String::from(
+            "SELECT id, node_id, target_node_id, sender, action, state, confidence, diff_preview, payload, created_at, updated_at, resolved_at
+             FROM proposals WHERE 1=1",
+        );
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut param_idx = 1;
+
+        if let Some(st) = state {
+            sql.push_str(&format!(" AND state = ?{param_idx}"));
+            param_values.push(Box::new(st.as_str().to_string()));
+            param_idx += 1;
+        }
+
+        sql.push_str(&format!(
+            " ORDER BY created_at DESC LIMIT ?{param_idx} OFFSET ?{}",
+            param_idx + 1
+        ));
+        param_values.push(Box::new(limit as i64));
+        param_values.push(Box::new(offset as i64));
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(params_refs.as_slice(), row_to_proposal)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut proposals = Vec::new();
+        for row in rows {
+            proposals.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(proposals)
+    }
+
+    async fn resolve_proposal(
+        &self,
+        id: Uuid,
+        state: ProposalState,
+    ) -> MvResult<bool> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+        let affected = conn
+            .execute(
+                "UPDATE proposals SET state = ?2, updated_at = ?3, resolved_at = ?3 WHERE id = ?1",
+                params![id.to_string(), state.as_str(), now],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn count_proposals(&self, state: Option<ProposalState>) -> MvResult<usize> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(st) = state {
+            (
+                "SELECT COUNT(*) FROM proposals WHERE state = ?1".to_string(),
+                vec![Box::new(st.as_str().to_string())],
+            )
+        } else {
+            ("SELECT COUNT(*) FROM proposals".to_string(), vec![])
+        };
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_box.iter().map(|p| p.as_ref()).collect();
+
+        let count: usize = conn
+            .query_row(&sql, params_refs.as_slice(), |row| row.get(0))
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(count)
+    }
+
+    async fn expire_proposals(&self, before: DateTime<Utc>) -> MvResult<usize> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+        let affected = conn
+            .execute(
+                "UPDATE proposals SET state = 'expired', updated_at = ?1, resolved_at = ?1 WHERE state = 'pending' AND created_at < ?2",
+                params![now, before.to_rfc3339()],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected)
+    }
 }
 
 #[cfg(test)]

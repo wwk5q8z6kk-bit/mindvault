@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::error::MvResult;
@@ -155,6 +156,28 @@ pub trait AgenticStore: Send + Sync {
 }
 
 fn _assert_agentic_store_object_safe(_: &dyn AgenticStore) {}
+
+/// Storage for exchange inbox proposals.
+#[async_trait]
+pub trait ExchangeStore: Send + Sync {
+    async fn submit_proposal(&self, proposal: &Proposal) -> MvResult<()>;
+    async fn get_proposal(&self, id: Uuid) -> MvResult<Option<Proposal>>;
+    async fn list_proposals(
+        &self,
+        state: Option<ProposalState>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<Proposal>>;
+    async fn resolve_proposal(
+        &self,
+        id: Uuid,
+        state: ProposalState,
+    ) -> MvResult<bool>;
+    async fn count_proposals(&self, state: Option<ProposalState>) -> MvResult<usize>;
+    async fn expire_proposals(&self, before: DateTime<Utc>) -> MvResult<usize>;
+}
+
+fn _assert_exchange_store_object_safe(_: &dyn ExchangeStore) {}
 
 // Legacy aliases for backward compatibility with proactive.rs
 pub trait InsightStore: AgenticStore {}

@@ -1,3 +1,5 @@
+pub mod exchange;
+pub use exchange::*;
 pub mod keychain;
 pub use keychain::*;
 
@@ -95,6 +97,7 @@ pub enum NodeKind {
     Bookmark,
     Template,
     SavedView,
+    Proposal,
 }
 
 impl NodeKind {
@@ -114,6 +117,7 @@ impl NodeKind {
             Self::Bookmark => "bookmark",
             Self::Template => "template",
             Self::SavedView => "saved_view",
+            Self::Proposal => "proposal",
         }
     }
 }
@@ -137,6 +141,7 @@ impl std::str::FromStr for NodeKind {
             "bookmark" => Ok(Self::Bookmark),
             "template" => Ok(Self::Template),
             "saved_view" => Ok(Self::SavedView),
+            "proposal" => Ok(Self::Proposal),
             _ => Err(format!("unknown node kind: {s}")),
         }
     }

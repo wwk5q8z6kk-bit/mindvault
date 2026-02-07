@@ -26,7 +26,8 @@
       "Bash(/tmp/check_exports.sh)",
       "Bash(wc:*)",
       "Bash(cargo check:*)",
-      "Bash(1)"
+      "Bash(1)",
+      "Bash(CARGO_TARGET_DIR=/tmp/mv-check cargo check:*)"
     ]
   },
   "enabledMcpjsonServers": [
