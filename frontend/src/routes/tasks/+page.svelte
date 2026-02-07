@@ -30,6 +30,9 @@
 	import type { SavedView } from '$lib/api/saved-views';
 	import { taskFilterFromSavedView } from '$lib/utils/saved-views';
 	import { setActiveSavedView } from '$lib/stores/saved-views';
+	import TaskPrioritizationModal from '$lib/components/TaskPrioritizationModal.svelte';
+
+	let showPrioritization = false;
 
 	let selectedTask: TaskRecord | null = null;
 	let isModalOpen = false;
@@ -381,12 +384,22 @@
 				<h2 class="text-lg font-semibold text-white">Tasks</h2>
 				<p class="text-xs text-slate-400">Total {$tasksStore.length} tasks</p>
 			</div>
-			<button
-				class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400"
-				on:click={openCreate}
-			>
-				New task
-			</button>
+			<div class="flex gap-2">
+				<button
+					class="rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-2 text-xs font-medium text-purple-300 hover:bg-purple-500/20"
+					on:click={() => (showPrioritization = true)}
+					title="AI Prioritize"
+				>
+					<span class="hidden sm:inline">AI Prioritize</span>
+					<span class="sm:hidden">AI</span>
+				</button>
+				<button
+					class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400"
+					on:click={openCreate}
+				>
+					New task
+				</button>
+			</div>
 		</div>
 
 		<div class="mt-4">
@@ -700,4 +713,10 @@
 	availableTasks={$tasksStore}
 	on:save={handleSave}
 	on:close={handleClose}
+/>
+
+<TaskPrioritizationModal
+	bind:open={showPrioritization}
+	on:close={() => (showPrioritization = false)}
+	on:applied={() => void loadTasks()}
 />
