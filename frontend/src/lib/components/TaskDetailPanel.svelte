@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { TaskRecord } from '$lib/db';
 	import type { TaskStatus } from '$lib/api/tasks';
+	import AttachmentsPanel from '$lib/components/AttachmentsPanel.svelte';
 	import { createEventDispatcher } from 'svelte';
 
 	export let task: TaskRecord | null = null;
@@ -380,6 +381,14 @@
 						<span class="text-xs text-slate-500">No labels</span>
 					{/if}
 				</div>
+			</div>
+
+			<div>
+				<AttachmentsPanel
+					nodeId={task.id}
+					title="Attachments"
+					description="Files linked to this task."
+				/>
 			</div>
 
 			<!-- Timestamps -->
