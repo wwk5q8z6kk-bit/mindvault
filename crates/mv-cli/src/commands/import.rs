@@ -13,16 +13,17 @@ pub async fn run(
 ) -> Result<()> {
     let path = super::shellexpand(&path);
     let engine = super::load_engine(config_path).await?;
+    let namespace = namespace.as_deref();
 
     match from.as_str() {
-        "claude-memory" => import_claude_memory(&engine, &path).await,
-        "markdown" | "md" => import_markdown(&engine, &path).await,
-        "markdown-dir" | "md-dir" => import_markdown_dir(&engine, &path).await,
-        "text" | "txt" => import_text(&engine, &path).await,
-        "json" => import_json(&engine, &path).await,
-        "csv" => import_csv(&engine, &path).await,
+        "claude-memory" => import_claude_memory(&engine, &path, namespace, dry_run).await,
+        "markdown" | "md" => import_markdown(&engine, &path, namespace, dry_run).await,
+        "markdown-dir" | "md-dir" => import_markdown_dir(&engine, &path, namespace, dry_run).await,
+        "text" | "txt" => import_text(&engine, &path, namespace, dry_run).await,
+        "json" => import_json(&engine, &path, namespace, dry_run).await,
+        "csv" => import_csv(&engine, &path, namespace, dry_run).await,
         "obsidian" => {
-            let ns = namespace.as_deref().unwrap_or("imported");
+            let ns = default_namespace(namespace);
             import_obsidian_vault(&engine, &path, ns, dry_run).await
         }
         _ => {
@@ -36,8 +37,11 @@ pub async fn run(
 async fn import_claude_memory(
     engine: &mv_engine::engine::MindVaultEngine,
     path: &str,
+    namespace: Option<&str>,
+    dry_run: bool,
 ) -> Result<()> {
     let content = std::fs::read_to_string(path)?;
+    let namespace = default_namespace(namespace);
     let mut count = 0;
 
     // Parse markdown sections as separate knowledge nodes
@@ -51,10 +55,12 @@ async fn import_claude_memory(
                 let node = KnowledgeNode::new(NodeKind::Fact, current_section.trim().to_string())
                     .with_title(&current_title)
                     .with_source(format!("import:claude-memory:{path}"))
-                    .with_namespace("imported")
+                    .with_namespace(namespace)
                     .with_tags(vec!["imported".into(), "claude-memory".into()]);
 
-                engine.store_node(node).await?;
+                if !dry_run {
+                    engine.store_node(node).await?;
+                }
                 count += 1;
             }
             current_title = line.trim_start_matches('#').trim().to_string();
@@ -70,54 +76,85 @@ async fn import_claude_memory(
         let node = KnowledgeNode::new(NodeKind::Fact, current_section.trim().to_string())
             .with_title(&current_title)
             .with_source(format!("import:claude-memory:{path}"))
-            .with_namespace("imported")
+            .with_namespace(namespace)
             .with_tags(vec!["imported".into(), "claude-memory".into()]);
 
-        engine.store_node(node).await?;
+        if !dry_run {
+            engine.store_node(node).await?;
+        }
         count += 1;
     }
 
-    println!("imported {count} nodes from Claude memory ({path})");
+    if dry_run {
+        println!("DRY RUN: would import {count} nodes from Claude memory ({path})");
+    } else {
+        println!("imported {count} nodes from Claude memory ({path})");
+    }
     Ok(())
 }
 
-async fn import_markdown(engine: &mv_engine::engine::MindVaultEngine, path: &str) -> Result<()> {
+async fn import_markdown(
+    engine: &mv_engine::engine::MindVaultEngine,
+    path: &str,
+    namespace: Option<&str>,
+    dry_run: bool,
+) -> Result<()> {
     let content = std::fs::read_to_string(path)?;
     let filename = std::path::Path::new(path)
         .file_name()
         .and_then(|f| f.to_str())
         .unwrap_or("unknown");
+    let namespace = default_namespace(namespace);
 
     let node = KnowledgeNode::new(NodeKind::Fact, content)
         .with_title(filename)
         .with_source(format!("import:markdown:{path}"))
-        .with_namespace("imported")
+        .with_namespace(namespace)
         .with_tags(vec!["imported".into(), "markdown".into()]);
 
-    let stored = engine.store_node(node).await?;
-    println!("imported: {} ({})", stored.id, filename);
+    if dry_run {
+        println!("DRY RUN: would import 1 Markdown node ({filename})");
+    } else {
+        let stored = engine.store_node(node).await?;
+        println!("imported: {} ({})", stored.id, filename);
+    }
     Ok(())
 }
 
-async fn import_text(engine: &mv_engine::engine::MindVaultEngine, path: &str) -> Result<()> {
+async fn import_text(
+    engine: &mv_engine::engine::MindVaultEngine,
+    path: &str,
+    namespace: Option<&str>,
+    dry_run: bool,
+) -> Result<()> {
     let content = std::fs::read_to_string(path)?;
     let filename = std::path::Path::new(path)
         .file_name()
         .and_then(|f| f.to_str())
         .unwrap_or("unknown");
+    let namespace = default_namespace(namespace);
 
     let node = KnowledgeNode::new(NodeKind::Observation, content)
         .with_title(filename)
         .with_source(format!("import:text:{path}"))
-        .with_namespace("imported");
+        .with_namespace(namespace);
 
-    let stored = engine.store_node(node).await?;
-    println!("imported: {} ({})", stored.id, filename);
+    if dry_run {
+        println!("DRY RUN: would import 1 text node ({filename})");
+    } else {
+        let stored = engine.store_node(node).await?;
+        println!("imported: {} ({})", stored.id, filename);
+    }
     Ok(())
 }
 
 /// Import from MindVault JSON export format.
-async fn import_json(engine: &mv_engine::engine::MindVaultEngine, path: &str) -> Result<()> {
+async fn import_json(
+    engine: &mv_engine::engine::MindVaultEngine,
+    path: &str,
+    namespace: Option<&str>,
+    dry_run: bool,
+) -> Result<()> {
     #[derive(Deserialize)]
     struct JsonExport {
         nodes: Vec<JsonNode>,
@@ -139,6 +176,11 @@ async fn import_json(engine: &mv_engine::engine::MindVaultEngine, path: &str) ->
     let content = std::fs::read_to_string(path).context("Failed to read JSON file")?;
     let export: JsonExport = serde_json::from_str(&content).context("Failed to parse JSON")?;
 
+    if dry_run {
+        println!("DRY RUN: would import {} nodes from JSON", export.nodes.len());
+        return Ok(());
+    }
+
     println!("Importing {} nodes from JSON...", export.nodes.len());
 
     let mut count = 0;
@@ -147,9 +189,15 @@ async fn import_json(engine: &mv_engine::engine::MindVaultEngine, path: &str) ->
         let source = json_node
             .source
             .unwrap_or_else(|| format!("import:json:{path}"));
+        let namespace_override = normalize_namespace_override(namespace);
+        let namespace = if json_node.namespace.trim().is_empty() {
+            namespace_override.unwrap_or("imported")
+        } else {
+            json_node.namespace.as_str()
+        };
 
         let mut node = KnowledgeNode::new(kind, json_node.content)
-            .with_namespace(&json_node.namespace)
+            .with_namespace(namespace)
             .with_importance(json_node.importance)
             .with_tags(json_node.tags)
             .with_source(source);
@@ -169,9 +217,15 @@ async fn import_json(engine: &mv_engine::engine::MindVaultEngine, path: &str) ->
 }
 
 /// Import from CSV format.
-async fn import_csv(engine: &mv_engine::engine::MindVaultEngine, path: &str) -> Result<()> {
+async fn import_csv(
+    engine: &mv_engine::engine::MindVaultEngine,
+    path: &str,
+    namespace: Option<&str>,
+    dry_run: bool,
+) -> Result<()> {
     let content = std::fs::read_to_string(path).context("Failed to read CSV file")?;
     let mut lines = content.lines();
+    let default_namespace = default_namespace(namespace).to_string();
 
     // Skip header
     let header = lines.next().context("CSV file is empty")?;
@@ -186,7 +240,11 @@ async fn import_csv(engine: &mv_engine::engine::MindVaultEngine, path: &str) -> 
     let tags_col = find_col("tags").unwrap_or(5);
     let content_col = find_col("content").unwrap_or(7);
 
-    println!("Importing from CSV...");
+    if dry_run {
+        println!("DRY RUN: scanning CSV ({path})");
+    } else {
+        println!("Importing from CSV...");
+    }
 
     let mut count = 0;
     for line in lines {
@@ -212,7 +270,7 @@ async fn import_csv(engine: &mv_engine::engine::MindVaultEngine, path: &str) -> 
             .get(namespace_col)
             .filter(|s| !s.is_empty())
             .cloned()
-            .unwrap_or_else(|| "imported".to_string());
+            .unwrap_or_else(|| default_namespace.clone());
         let importance: f64 = fields
             .get(importance_col)
             .and_then(|s| s.parse().ok())
@@ -221,6 +279,11 @@ async fn import_csv(engine: &mv_engine::engine::MindVaultEngine, path: &str) -> 
             .get(tags_col)
             .map(|s| s.split(';').map(|t| t.trim().to_string()).collect())
             .unwrap_or_default();
+
+        if dry_run {
+            count += 1;
+            continue;
+        }
 
         let mut node = KnowledgeNode::new(kind, content)
             .with_namespace(&namespace)
@@ -236,7 +299,11 @@ async fn import_csv(engine: &mv_engine::engine::MindVaultEngine, path: &str) -> 
         count += 1;
     }
 
-    println!("Imported {count} nodes from CSV");
+    if dry_run {
+        println!("DRY RUN: would import {count} nodes from CSV");
+    } else {
+        println!("Imported {count} nodes from CSV");
+    }
     Ok(())
 }
 
@@ -244,15 +311,23 @@ async fn import_csv(engine: &mv_engine::engine::MindVaultEngine, path: &str) -> 
 async fn import_markdown_dir(
     engine: &mv_engine::engine::MindVaultEngine,
     path: &str,
+    namespace: Option<&str>,
+    dry_run: bool,
 ) -> Result<()> {
     let dir_path = Path::new(path);
     if !dir_path.is_dir() {
         anyhow::bail!("Path is not a directory: {path}");
     }
 
-    println!("Importing Markdown files from: {path}");
+    if dry_run {
+        println!("DRY RUN: scanning Markdown files from: {path}");
+    } else {
+        println!("Importing Markdown files from: {path}");
+    }
 
     let mut count = 0;
+    let mut files_scanned = 0;
+    let base_namespace = normalize_namespace_override(namespace);
     for entry in walkdir::WalkDir::new(path)
         .follow_links(false)
         .into_iter()
@@ -268,6 +343,7 @@ async fn import_markdown_dir(
             continue;
         }
 
+        files_scanned += 1;
         let content = std::fs::read_to_string(file_path)?;
         let filename = file_path
             .file_stem()
@@ -275,13 +351,18 @@ async fn import_markdown_dir(
             .unwrap_or("unknown");
 
         // Extract namespace from subdirectory
-        let namespace = file_path
+        let relative_namespace = file_path
             .parent()
             .and_then(|p| p.strip_prefix(path).ok())
             .and_then(|p| p.to_str())
             .filter(|s| !s.is_empty())
-            .unwrap_or("imported")
-            .replace('/', ".");
+            .map(|s| s.replace('/', "."));
+        let namespace = match (base_namespace, relative_namespace) {
+            (Some(base), Some(rel)) => format!("{base}.{rel}"),
+            (Some(base), None) => base.to_string(),
+            (None, Some(rel)) => rel,
+            (None, None) => "imported".to_string(),
+        };
 
         // Parse YAML frontmatter if present
         let (metadata, body) = parse_frontmatter(&content);
@@ -314,11 +395,17 @@ async fn import_markdown_dir(
             .with_tags(tags)
             .with_source(format!("import:markdown-dir:{}", file_path.display()));
 
-        engine.store_node(node).await?;
+        if !dry_run {
+            engine.store_node(node).await?;
+        }
         count += 1;
     }
 
-    println!("Imported {count} Markdown files");
+    if dry_run {
+        println!("DRY RUN: scanned {files_scanned} files, would import {count} nodes");
+    } else {
+        println!("Imported {count} Markdown files");
+    }
     Ok(())
 }
 
@@ -460,4 +547,12 @@ fn parse_node_kind(kind: &str) -> NodeKind {
         "episode" => NodeKind::Event,
         _ => normalized.parse::<NodeKind>().unwrap_or(NodeKind::Fact),
     }
+}
+
+fn normalize_namespace_override(namespace: Option<&str>) -> Option<&str> {
+    namespace.filter(|value| !value.trim().is_empty())
+}
+
+fn default_namespace(namespace: Option<&str>) -> &str {
+    normalize_namespace_override(namespace).unwrap_or("imported")
 }

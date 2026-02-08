@@ -12,9 +12,13 @@ pub mod websocket;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use mv_core::ChronicleEntry;
 use mv_engine::config::EngineConfig;
 use mv_engine::engine::MindVaultEngine;
+use mv_engine::intent::IntentEngine;
+use mv_engine::watcher::WatcherAgent;
 use state::AppState;
+use uuid::Uuid;
 
 pub struct ServerConfig {
     pub bind_host: String,
@@ -51,11 +55,34 @@ pub async fn start_server(
     rest::init_observability();
 
     tracing::info!("initializing MindVault engine...");
-    let engine = MindVaultEngine::init(config.engine_config).await?;
+    let mut engine = MindVaultEngine::init(config.engine_config).await?;
+
+    // Create broadcast channel early so enrichment can use it
+    let (change_tx, _) = tokio::sync::broadcast::channel::<state::ChangeNotification>(256);
+
+    // Set up enrichment pipeline (before wrapping in Arc)
+    let enrichment_worker = engine.setup_enrichment(change_tx.clone());
+
     let engine = Arc::new(engine);
+    engine.proactive.set_engine(Arc::clone(&engine));
+
     ensure_today_daily_note_on_startup_best_effort(&engine).await;
     spawn_daily_note_scheduler(Arc::clone(&engine));
-    let state = Arc::new(AppState::new(engine));
+
+    // Spawn enrichment worker if enabled
+    if let Some(worker) = enrichment_worker {
+        tokio::spawn(worker.run());
+        tracing::info!("enrichment worker spawned");
+    }
+
+    // Shutdown broadcast for background agents
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+    // Spawn watcher agent
+    spawn_watcher_agent(Arc::clone(&engine), shutdown_tx.subscribe());
+
+    let state = Arc::new(AppState::new_with_change_tx(engine, change_tx));
+    spawn_agent_change_processor(Arc::clone(&state), shutdown_tx.subscribe());
     spawn_recurrence_and_reminder_scheduler(Arc::clone(&state));
 
     // REST + WebSocket server
@@ -158,10 +185,228 @@ pub async fn start_server(
         _ = grpc_handle => {},
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("shutting down...");
+            let _ = shutdown_tx.send(());
         }
     }
 
     Ok(())
+}
+
+fn spawn_watcher_agent(
+    engine: Arc<MindVaultEngine>,
+    shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) {
+    let watcher_config = engine.config.watcher.clone();
+    if !watcher_config.enabled {
+        tracing::info!("watcher agent disabled by config");
+        return;
+    }
+
+    let intent_engine = IntentEngine::new(Arc::clone(&engine.store));
+    let proactive_engine = Arc::clone(&engine.proactive);
+
+    let agent = Arc::new(WatcherAgent::new(
+        Arc::clone(&engine),
+        intent_engine,
+        proactive_engine,
+        watcher_config,
+    ));
+
+    tokio::spawn(async move {
+        agent.run_loop(shutdown_rx).await;
+    });
+
+    tracing::info!("watcher agent spawned");
+}
+
+fn spawn_agent_change_processor(
+    state: Arc<AppState>,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) {
+    if !state.engine.config.watcher.enabled {
+        tracing::info!("agent change processor disabled by config");
+        return;
+    }
+
+    let intent_engine = IntentEngine::new(Arc::clone(&state.engine.store));
+    let mut change_rx = state.change_tx.subscribe();
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    tracing::info!("agent change processor shutting down");
+                    break;
+                }
+                event = change_rx.recv() => {
+                    match event {
+                        Ok(notification) => {
+                            process_agent_change_notification(&state, &intent_engine, notification).await;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("agent change processor lagged by {n} events");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        }
+    });
+
+    tracing::info!("agent change processor spawned");
+}
+
+async fn process_agent_change_notification(
+    state: &Arc<AppState>,
+    intent_engine: &IntentEngine,
+    notification: state::ChangeNotification,
+) {
+    match notification.operation.as_str() {
+        "create" | "update" | "enriched" => {}
+        _ => return,
+    }
+
+    let node_id = match Uuid::parse_str(&notification.node_id) {
+        Ok(id) => id,
+        Err(err) => {
+            tracing::warn!(
+                node_id = notification.node_id,
+                error = %err,
+                "agent change processor received invalid node id"
+            );
+            return;
+        }
+    };
+
+    let node = match state.engine.get_node(node_id).await {
+        Ok(Some(node)) => node,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(node_id = %node_id, error = %err, "agent change processor failed to load node");
+            return;
+        }
+    };
+
+    let namespace = Some(node.namespace.clone());
+
+    if notification.operation == "enriched" {
+        state.notify_agent(state::AgentNotification::NodeEnriched {
+            node_id: node.id.to_string(),
+            namespace,
+        });
+        return;
+    }
+
+    let observed_entry = ChronicleEntry::new(
+        "agent_change_observed",
+        format!(
+            "Observed {} operation on node {}",
+            notification.operation, notification.node_id
+        ),
+    )
+    .with_node(node.id);
+
+    if let Err(err) = state.engine.log_chronicle(&observed_entry).await {
+        tracing::warn!(node_id = %node.id, error = %err, "failed to log agent change chronicle");
+    } else {
+        state.notify_agent(state::AgentNotification::Chronicle {
+            entry: observed_entry,
+            namespace: Some(node.namespace.clone()),
+        });
+    }
+
+    match intent_engine.extract_intents_and_store(&node).await {
+        Ok(intents) => {
+            for intent in intents {
+                state.notify_agent(state::AgentNotification::Intent {
+                    intent: intent.clone(),
+                    namespace: Some(node.namespace.clone()),
+                });
+
+                let entry = ChronicleEntry::new(
+                    "intent_detected",
+                    format!(
+                        "Detected {} intent with {:.0}% confidence",
+                        intent.intent_type,
+                        intent.confidence * 100.0
+                    ),
+                )
+                .with_node(node.id);
+                if let Err(err) = state.engine.log_chronicle(&entry).await {
+                    tracing::warn!(node_id = %node.id, error = %err, "failed to log intent chronicle");
+                } else {
+                    state.notify_agent(state::AgentNotification::Chronicle {
+                        entry,
+                        namespace: Some(node.namespace.clone()),
+                    });
+                }
+            }
+        }
+        Err(err) => {
+            tracing::warn!(node_id = %node.id, error = %err, "intent extraction failed");
+        }
+    }
+
+    match state
+        .engine
+        .proactive
+        .find_related_context(node.id, 5)
+        .await
+    {
+        Ok(related) => {
+            let nodes: Vec<state::AgentRelatedNode> = related
+                .into_iter()
+                .map(|related_node| state::AgentRelatedNode {
+                    id: related_node.id.to_string(),
+                    title: related_node.title.unwrap_or_else(|| "Untitled".to_string()),
+                    updated_at: related_node.temporal.updated_at.to_rfc3339(),
+                })
+                .collect();
+
+            if !nodes.is_empty() {
+                state.notify_agent(state::AgentNotification::RelatedContext {
+                    nodes,
+                    namespace: Some(node.namespace.clone()),
+                });
+            }
+        }
+        Err(err) => {
+            tracing::warn!(node_id = %node.id, error = %err, "related context discovery failed");
+        }
+    }
+
+    match state
+        .engine
+        .proactive
+        .generate_insights(node.namespace.clone())
+        .await
+    {
+        Ok(insights) => {
+            for insight in insights {
+                state.notify_agent(state::AgentNotification::InsightDiscovered {
+                    insight: insight.clone(),
+                    namespace: Some(node.namespace.clone()),
+                });
+
+                let entry = ChronicleEntry::new(
+                    "insight_generated",
+                    format!("{}: {}", insight.insight_type, insight.title),
+                )
+                .with_node(node.id);
+                if let Err(err) = state.engine.log_chronicle(&entry).await {
+                    tracing::warn!(node_id = %node.id, error = %err, "failed to log insight chronicle");
+                } else {
+                    state.notify_agent(state::AgentNotification::Chronicle {
+                        entry,
+                        namespace: Some(node.namespace.clone()),
+                    });
+                }
+            }
+        }
+        Err(err) => {
+            tracing::warn!(node_id = %node.id, error = %err, "proactive insight generation failed");
+        }
+    }
 }
 
 async fn ensure_today_daily_note_on_startup_best_effort(engine: &Arc<MindVaultEngine>) {

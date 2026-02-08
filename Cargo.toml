@@ -9,6 +9,7 @@ members = [
     "crates/mv-server",
     "crates/mv-mcp",
     "crates/mv-cli",
+    "crates/mv-plugin",
 ]
 
 [workspace.package]
@@ -26,6 +27,7 @@ mv-graph = { path = "crates/mv-graph" }
 mv-engine = { path = "crates/mv-engine" }
 mv-server = { path = "crates/mv-server" }
 mv-mcp = { path = "crates/mv-mcp" }
+mv-plugin = { path = "crates/mv-plugin" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -78,7 +80,10 @@ anyhow = "1"
 jsonwebtoken = "9"
 
 # HTTP client (for embeddings API)
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+
+# System / low-level
+libc = "0.2"
 
 # Misc
 async-trait = "0.1"

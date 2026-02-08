@@ -617,6 +617,8 @@ pub enum InsightType {
     Reminder,
     Cluster,
     General,
+    TemporalPattern,
+    KnowledgeGap,
 }
 
 impl InsightType {
@@ -629,6 +631,8 @@ impl InsightType {
             Self::Reminder => "reminder",
             Self::Cluster => "cluster",
             Self::General => "general",
+            Self::TemporalPattern => "temporal_pattern",
+            Self::KnowledgeGap => "knowledge_gap",
         }
     }
 }
@@ -645,6 +649,8 @@ impl std::str::FromStr for InsightType {
             "reminder" => Ok(Self::Reminder),
             "cluster" => Ok(Self::Cluster),
             "general" => Ok(Self::General),
+            "temporal_pattern" => Ok(Self::TemporalPattern),
+            "knowledge_gap" => Ok(Self::KnowledgeGap),
             _ => Err(format!("unknown insight type: {s}")),
         }
     }
@@ -657,7 +663,11 @@ impl std::fmt::Display for InsightType {
 }
 
 impl ProactiveInsight {
-    pub fn new(title: impl Into<String>, content: impl Into<String>, insight_type: InsightType) -> Self {
+    pub fn new(
+        title: impl Into<String>,
+        content: impl Into<String>,
+        insight_type: InsightType,
+    ) -> Self {
         Self {
             id: Uuid::now_v7(),
             title: title.into(),
@@ -719,6 +729,18 @@ impl ChronicleEntry {
         self.output_snapshot = output;
         self
     }
+}
+
+// ---------------------------------------------------------------------------
+// Change Notification (shared between engine and server)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeNotification {
+    pub node_id: String,
+    pub operation: String,
+    pub timestamp: String,
+    pub namespace: Option<String>,
 }
 
 #[cfg(test)]

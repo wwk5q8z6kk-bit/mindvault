@@ -1,6 +1,7 @@
-use std::sync::Arc;
 use mv_core::*;
 use mv_storage::unified::UnifiedStore;
+use std::collections::HashSet;
+use std::sync::Arc;
 
 /// The IntentEngine analyzes knowledge nodes to suggest autonomous actions.
 #[derive(Clone)]
@@ -14,25 +15,49 @@ impl IntentEngine {
     }
 
     /// Extract possible intents from a node and store them.
-    pub async fn extract_intents_and_store(&self, node: &KnowledgeNode) -> MvResult<Vec<CapturedIntent>> {
-        let mut intents = Vec::new();
+    pub async fn extract_intents_and_store(
+        &self,
+        node: &KnowledgeNode,
+    ) -> MvResult<Vec<CapturedIntent>> {
+        let mut detected = Vec::new();
 
         if let Some(intent) = self.detect_reminder_intent(node) {
-            intents.push(intent);
+            detected.push(intent);
         }
 
         if let Some(intent) = self.detect_task_intent(node) {
+            detected.push(intent);
+        }
+
+        detected.extend(self.detect_link_intents(node));
+        detected.extend(self.detect_tag_intents(node));
+
+        let existing_intents = self
+            .store
+            .nodes
+            .list_intents(Some(node.id), Some(IntentStatus::Suggested), 200, 0)
+            .await?;
+        let mut seen_signatures: HashSet<String> = existing_intents
+            .iter()
+            .map(Self::intent_signature)
+            .collect();
+
+        let mut intents = Vec::new();
+        for intent in detected {
+            let signature = Self::intent_signature(&intent);
+            if !seen_signatures.insert(signature) {
+                continue;
+            }
+            self.store.nodes.log_intent(&intent).await?;
             intents.push(intent);
         }
 
-        intents.extend(self.detect_link_intents(node));
-        intents.extend(self.detect_tag_intents(node));
-
-        for intent in &intents {
-            self.store.nodes.log_intent(intent).await?;
-        }
-
         Ok(intents)
+    }
+
+    fn intent_signature(intent: &CapturedIntent) -> String {
+        let params = serde_json::to_string(&intent.parameters).unwrap_or_default();
+        format!("{}|{params}", intent.intent_type)
     }
 
     /// Detect reminder-related intents using string matching
@@ -182,7 +207,9 @@ impl IntentEngine {
         let words: Vec<&str> = node.content.split_whitespace().collect();
         for word in words {
             if word.starts_with('#') && word.len() > 1 {
-                let tag = word[1..].trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+                let tag = word[1..]
+                    .trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase();
                 if tag.is_empty() {
                     continue;
                 }
@@ -192,8 +219,8 @@ impl IntentEngine {
                     continue;
                 }
 
-                let mut intent = CapturedIntent::new(node.id, IntentType::SuggestTag)
-                    .with_confidence(0.8);
+                let mut intent =
+                    CapturedIntent::new(node.id, IntentType::SuggestTag).with_confidence(0.8);
 
                 let mut params = serde_json::Map::new();
                 params.insert("tag".into(), tag.into());
@@ -238,11 +265,15 @@ mod tests {
 
         let node = make_node("Remind me to call John tomorrow");
         let intents = engine.analyze_node(&node);
-        assert!(intents.iter().any(|i| matches!(i.intent_type, IntentType::ScheduleReminder)));
+        assert!(intents
+            .iter()
+            .any(|i| matches!(i.intent_type, IntentType::ScheduleReminder)));
 
         let node = make_node("Don't forget to buy groceries");
         let intents = engine.analyze_node(&node);
-        assert!(intents.iter().any(|i| matches!(i.intent_type, IntentType::ScheduleReminder)));
+        assert!(intents
+            .iter()
+            .any(|i| matches!(i.intent_type, IntentType::ScheduleReminder)));
     }
 
     #[test]
@@ -252,11 +283,15 @@ mod tests {
 
         let node = make_node("- [ ] Complete the report");
         let intents = engine.analyze_node(&node);
-        assert!(intents.iter().any(|i| matches!(i.intent_type, IntentType::ExtractTask)));
+        assert!(intents
+            .iter()
+            .any(|i| matches!(i.intent_type, IntentType::ExtractTask)));
 
         let node = make_node("TODO: Fix the bug in login");
         let intents = engine.analyze_node(&node);
-        assert!(intents.iter().any(|i| matches!(i.intent_type, IntentType::ExtractTask)));
+        assert!(intents
+            .iter()
+            .any(|i| matches!(i.intent_type, IntentType::ExtractTask)));
     }
 
     #[test]
@@ -266,11 +301,15 @@ mod tests {
 
         let node = make_node("See [[Project Alpha]] for details");
         let intents = engine.analyze_node(&node);
-        assert!(intents.iter().any(|i| matches!(i.intent_type, IntentType::SuggestLink)));
+        assert!(intents
+            .iter()
+            .any(|i| matches!(i.intent_type, IntentType::SuggestLink)));
 
         let node = make_node("CC @john about this");
         let intents = engine.analyze_node(&node);
-        assert!(intents.iter().any(|i| matches!(i.intent_type, IntentType::LinkToProject)));
+        assert!(intents
+            .iter()
+            .any(|i| matches!(i.intent_type, IntentType::LinkToProject)));
     }
 
     #[test]
@@ -280,6 +319,32 @@ mod tests {
 
         let node = make_node("This is about #rust and #performance");
         let intents = engine.analyze_node(&node);
-        assert_eq!(intents.iter().filter(|i| matches!(i.intent_type, IntentType::SuggestTag)).count(), 2);
+        assert_eq!(
+            intents
+                .iter()
+                .filter(|i| matches!(i.intent_type, IntentType::SuggestTag))
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_extract_intents_deduplicates_existing_records() {
+        let store = Arc::new(mv_storage::unified::UnifiedStore::in_memory(384).unwrap());
+        let engine = IntentEngine::new(Arc::clone(&store));
+
+        let node = make_node("TODO: Fix bug #urgent");
+        let first = engine.extract_intents_and_store(&node).await.unwrap();
+        assert!(!first.is_empty());
+
+        let second = engine.extract_intents_and_store(&node).await.unwrap();
+        assert!(second.is_empty());
+
+        let stored = store
+            .nodes
+            .list_intents(Some(node.id), Some(IntentStatus::Suggested), 50, 0)
+            .await
+            .unwrap();
+        assert_eq!(stored.len(), first.len());
     }
 }

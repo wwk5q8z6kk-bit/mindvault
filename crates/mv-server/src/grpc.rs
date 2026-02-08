@@ -967,16 +967,25 @@ impl KeychainService for KeychainGrpc {
             .transpose()
             .map_err(|_| Status::invalid_argument("invalid domain UUID"))?;
 
-        let state_filter = req.state.as_deref().map(|s| {
-            s.parse::<mv_core::model::keychain::CredentialState>()
-                .map_err(|_| Status::invalid_argument("invalid state"))
-        }).transpose()?;
+        let state_filter = req
+            .state
+            .as_deref()
+            .map(|s| {
+                s.parse::<mv_core::model::keychain::CredentialState>()
+                    .map_err(|_| Status::invalid_argument("invalid state"))
+            })
+            .transpose()?;
 
         let creds = self
             .state
             .engine
             .keychain
-            .list_credentials(domain_id, state_filter, req.limit as usize, req.offset as usize)
+            .list_credentials(
+                domain_id,
+                state_filter,
+                req.limit as usize,
+                req.offset as usize,
+            )
             .await
             .map_err(map_keychain_status)?;
 

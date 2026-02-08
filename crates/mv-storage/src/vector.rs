@@ -214,7 +214,12 @@ pub struct OpenAiEmbedder {
 }
 
 impl OpenAiEmbedder {
-    pub fn new(base_url: String, api_key: Option<String>, model: String, dimensions: usize) -> Self {
+    pub fn new(
+        base_url: String,
+        api_key: Option<String>,
+        model: String,
+        dimensions: usize,
+    ) -> Self {
         Self {
             client: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -235,7 +240,12 @@ impl OpenAiEmbedder {
     }
 
     /// Create for any OpenAI-compatible API.
-    pub fn for_compatible(base_url: String, api_key: Option<String>, model: String, dimensions: usize) -> Self {
+    pub fn for_compatible(
+        base_url: String,
+        api_key: Option<String>,
+        model: String,
+        dimensions: usize,
+    ) -> Self {
         Self::new(base_url, api_key, model, dimensions)
     }
 }
@@ -322,13 +332,10 @@ impl Embedder for OpenAiEmbedder {
         }
 
         let url = format!("{}/embeddings", self.base_url);
-        let mut req_builder = self
-            .client
-            .post(&url)
-            .json(&EmbedRequest {
-                model: &self.model,
-                input: texts,
-            });
+        let mut req_builder = self.client.post(&url).json(&EmbedRequest {
+            model: &self.model,
+            input: texts,
+        });
         if let Some(ref key) = self.api_key {
             req_builder = req_builder.bearer_auth(key);
         }

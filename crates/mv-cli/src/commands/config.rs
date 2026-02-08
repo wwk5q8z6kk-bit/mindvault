@@ -149,10 +149,7 @@ pub async fn show(config_path: &str) -> Result<()> {
 
     println!("\n[watcher]");
     println!("  enabled = {}", runtime.engine.watcher.enabled);
-    println!(
-        "  interval_secs = {}",
-        runtime.engine.watcher.interval_secs
-    );
+    println!("  interval_secs = {}", runtime.engine.watcher.interval_secs);
     println!(
         "  lookback_hours = {}",
         runtime.engine.watcher.lookback_hours

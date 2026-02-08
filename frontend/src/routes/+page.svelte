@@ -4,17 +4,20 @@
 	import { tasksStore, loadTasks } from '$lib/stores/tasks';
 	import { notesStore, loadNotes } from '$lib/stores/notes';
 	import { shouldShowOnboarding } from '$lib/stores/onboarding';
-	import { listDueTasks } from '$lib/api/tasks';
-	import type { Task } from '$lib/api/tasks';
+	import { fetchBriefing, type BriefingResponse } from '$lib/api/briefing';
+	import AiBriefingWidget from '$lib/components/AiBriefingWidget.svelte';
+	import DueTasksWidget from '$lib/components/DueTasksWidget.svelte';
+	import HabitsWidget from '$lib/components/HabitsWidget.svelte';
 	import { onMount } from 'svelte';
 
 	let loaded = false;
+	let briefing: BriefingResponse | null = null;
+	let briefingLoading = true;
 
 	$: allTasks = $tasksStore;
 	$: inboxCount = allTasks.filter((t) => t.status === 'inbox').length;
 	$: inProgressCount = allTasks.filter((t) => t.status === 'in_progress').length;
 
-	let dueTodayTasks: Task[] = [];
 	let dueTodayCount = 0;
 	let overdueCount = 0;
 
@@ -23,12 +26,11 @@
 		const now = new Date();
 		const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 		const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-		dueTodayTasks = allTasks.filter((t) => {
+		dueTodayCount = allTasks.filter((t) => {
 			if (!t.due_at || t.status === 'done') return false;
 			const d = new Date(t.due_at);
 			return d >= todayStart && d < todayEnd;
-		});
-		dueTodayCount = dueTodayTasks.length;
+		}).length;
 		overdueCount = allTasks.filter((t) => {
 			if (!t.due_at || t.status === 'done') return false;
 			return new Date(t.due_at) < todayStart;
@@ -65,11 +67,6 @@
 		teal: 'bg-teal-500/20 text-teal-200'
 	};
 
-	function formatDueTime(due: string): string {
-		const d = new Date(due);
-		return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-	}
-
 	onMount(() => {
 		// Check if onboarding should be shown
 		const unsubscribe = shouldShowOnboarding.subscribe((show) => {
@@ -81,21 +78,16 @@
 		void (async () => {
 			await Promise.all([loadTasks(), loadNotes()]);
 
-			// Try to use the dedicated due-tasks API for accurate counts
+			// Try the briefing API for all dashboard data in one call
 			try {
-				const dueResponse = await listDueTasks({ include_overdue: true });
-				overdueCount = dueResponse.overdue_count;
-				dueTodayCount = dueResponse.due_today_count;
-				// Filter the tasks array for the "Due Today" list display
-				const now = new Date();
-				const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-				const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-				dueTodayTasks = dueResponse.tasks.filter((t) =>
-					t.due_at ? new Date(t.due_at) >= todayStart && new Date(t.due_at) < todayEnd : false
-				);
+				briefing = await fetchBriefing();
+				overdueCount = briefing.overdue.length;
+				dueTodayCount = briefing.due_today.length;
 			} catch {
-				// Offline or API unavailable - fall back to local filtering
+				// Offline or API unavailable — fall back to local filtering
 				computeDueStatsLocally();
+			} finally {
+				briefingLoading = false;
 			}
 
 			loaded = true;
@@ -106,6 +98,13 @@
 </script>
 
 <div class="mx-auto max-w-5xl space-y-6">
+	<!-- AI Briefing -->
+	<AiBriefingWidget
+		summary={briefing?.summary ?? ''}
+		date={briefing?.date ?? ''}
+		loading={briefingLoading}
+	/>
+
 	<!-- Stats row -->
 	<div class="grid grid-cols-2 gap-3 md:grid-cols-5">
 		<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
@@ -133,72 +132,25 @@
 	</div>
 
 	<div class="grid gap-6 lg:grid-cols-3">
-		<!-- Due Today -->
-		<div class="lg:col-span-2">
-			<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-				<div class="flex items-center justify-between">
-					<h3 class="text-sm font-semibold text-white">Due Today</h3>
-					<a
-						href={resolve('/tasks')}
-						class="text-[11px] text-sky-400 hover:text-sky-300"
-					>
-						View all tasks
-					</a>
-				</div>
-				<div class="mt-3 space-y-2">
-					{#if !loaded}
-						<p class="text-xs text-slate-500">Loading...</p>
-					{:else if dueTodayTasks.length === 0}
-						<p class="py-4 text-center text-xs text-slate-500">No tasks due today. Enjoy!</p>
-					{:else}
-						{#each dueTodayTasks as task (task.id)}
-							<a
-								href={resolve('/tasks')}
-								class="flex items-center justify-between rounded-lg border border-slate-800/60 px-3 py-2.5 transition hover:border-slate-700"
-							>
-								<div class="flex items-center gap-2.5 min-w-0">
-									<span
-										class="h-2 w-2 flex-shrink-0 rounded-full {task.priority <= 1
-											? 'bg-red-400'
-											: task.priority === 2
-												? 'bg-orange-400'
-												: task.priority === 3
-													? 'bg-yellow-400'
-													: 'bg-slate-500'}"
-									></span>
-									<span class="truncate text-xs font-medium text-white">{task.title}</span>
-								</div>
-								<div class="flex items-center gap-2 flex-shrink-0">
-									{#if task.due_at}
-										<span class="text-[10px] text-slate-500">{formatDueTime(task.due_at)}</span>
-									{/if}
-									<span
-										class="rounded-full px-2 py-0.5 text-[9px] uppercase tracking-wide {task.status === 'in_progress'
-											? 'bg-blue-500/20 text-blue-300'
-											: task.status === 'planned'
-												? 'bg-violet-500/20 text-violet-300'
-												: 'bg-slate-800 text-slate-400'}"
-									>
-										{task.status.replace('_', ' ')}
-									</span>
-								</div>
-							</a>
-						{/each}
-					{/if}
-				</div>
+		<!-- Due Today + Overdue + In Progress -->
+		<div class="lg:col-span-2 space-y-4">
+			<DueTasksWidget
+				tasks={briefing?.due_today ?? []}
+				title="Due Today"
+				loading={briefingLoading}
+			/>
 
-				{#if overdueCount > 0}
-					<div class="mt-3 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
-						<span class="text-[11px] text-red-300">
-							{overdueCount} overdue task{overdueCount > 1 ? 's' : ''} need attention
-						</span>
-					</div>
-				{/if}
-			</div>
+			{#if (briefing?.overdue ?? []).length > 0}
+				<DueTasksWidget
+					tasks={briefing?.overdue ?? []}
+					title="Overdue"
+					loading={briefingLoading}
+				/>
+			{/if}
 
 			<!-- In Progress -->
 			{#if inProgressCount > 0}
-				<div class="mt-4 rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+				<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
 					<h3 class="text-sm font-semibold text-white">In Progress</h3>
 					<div class="mt-3 space-y-2">
 						{#each allTasks.filter((t) => t.status === 'in_progress').slice(0, 5) as task (task.id)}
@@ -221,6 +173,12 @@
 
 		<!-- Right sidebar -->
 		<div class="space-y-4">
+			<!-- Habits -->
+			<HabitsWidget
+				habits={briefing?.habits_today ?? []}
+				loading={briefingLoading}
+			/>
+
 			<!-- Quick actions -->
 			<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
 				<h3 class="text-sm font-semibold text-white">Quick Actions</h3>

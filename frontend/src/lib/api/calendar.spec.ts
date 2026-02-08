@@ -41,7 +41,7 @@ describe('calendar api client', () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
 		expect(url).toBe(
-			`${API_BASE}/api/calendar/items?anchor=2026-02-09T00%3A00%3A00Z&view=day&include_tasks=false&namespace=ops`
+			`${API_BASE}/api/v1/calendar/items?date=2026-02-09&view=day&include_tasks=false&namespace=ops`
 		);
 	});
 });

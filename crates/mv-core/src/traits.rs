@@ -107,13 +107,21 @@ pub trait KeychainStore: Send + Sync {
 
     // --- Audit ---
     async fn append_audit_entry(&self, entry: &KeychainAuditEntry) -> MvResult<()>;
-    async fn list_audit_entries(&self, limit: usize, offset: usize) -> MvResult<Vec<KeychainAuditEntry>>;
+    async fn list_audit_entries(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<KeychainAuditEntry>>;
     async fn get_latest_audit_entry(&self) -> MvResult<Option<KeychainAuditEntry>>;
     async fn verify_audit_chain(&self) -> MvResult<bool>;
 
     // --- Breach Detection ---
     async fn record_access_pattern(&self, pattern: &AccessPattern) -> MvResult<()>;
-    async fn get_access_patterns(&self, credential_id: Uuid, limit: usize) -> MvResult<Vec<AccessPattern>>;
+    async fn get_access_patterns(
+        &self,
+        credential_id: Uuid,
+        limit: usize,
+    ) -> MvResult<Vec<AccessPattern>>;
     async fn insert_breach_alert(&self, alert: &BreachAlert) -> MvResult<()>;
     async fn list_breach_alerts(&self, limit: usize, offset: usize) -> MvResult<Vec<BreachAlert>>;
     async fn acknowledge_breach_alert(&self, id: Uuid) -> MvResult<()>;
@@ -121,6 +129,10 @@ pub trait KeychainStore: Send + Sync {
     // --- Tags ---
     async fn get_credential_tags(&self, credential_id: Uuid) -> MvResult<Vec<String>>;
     async fn save_credential_tags(&self, credential_id: Uuid, tags: &[String]) -> MvResult<()>;
+
+    // --- Lockout State ---
+    async fn set_lockout_state(&self, attempts: u32, locked_until: Option<String>) -> MvResult<()>;
+    async fn get_lockout_state(&self) -> MvResult<(u32, Option<String>)>;
 }
 
 fn _assert_keychain_store_object_safe(_: &dyn KeychainStore) {}
@@ -168,16 +180,111 @@ pub trait ExchangeStore: Send + Sync {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<Proposal>>;
-    async fn resolve_proposal(
-        &self,
-        id: Uuid,
-        state: ProposalState,
-    ) -> MvResult<bool>;
+    async fn resolve_proposal(&self, id: Uuid, state: ProposalState) -> MvResult<bool>;
     async fn count_proposals(&self, state: Option<ProposalState>) -> MvResult<usize>;
     async fn expire_proposals(&self, before: DateTime<Utc>) -> MvResult<usize>;
 }
 
 fn _assert_exchange_store_object_safe(_: &dyn ExchangeStore) {}
+
+/// Storage for relay safeguards: blocked senders, auto-approve rules, undo snapshots.
+#[async_trait]
+pub trait SafeguardStore: Send + Sync {
+    // Blocked senders
+    async fn add_blocked_sender(&self, sender: &BlockedSender) -> MvResult<()>;
+    async fn remove_blocked_sender(&self, id: Uuid) -> MvResult<bool>;
+    async fn list_blocked_senders(&self) -> MvResult<Vec<BlockedSender>>;
+    async fn is_sender_blocked(&self, sender_type: &str, sender_name: &str) -> MvResult<bool>;
+
+    // Auto-approve rules
+    async fn add_auto_approve_rule(&self, rule: &AutoApproveRule) -> MvResult<()>;
+    async fn remove_auto_approve_rule(&self, id: Uuid) -> MvResult<bool>;
+    async fn list_auto_approve_rules(&self) -> MvResult<Vec<AutoApproveRule>>;
+    async fn update_auto_approve_rule(&self, rule: &AutoApproveRule) -> MvResult<bool>;
+
+    // Undo snapshots
+    async fn save_undo_snapshot(&self, snapshot: &UndoSnapshot) -> MvResult<()>;
+    async fn get_undo_snapshot(&self, proposal_id: Uuid) -> MvResult<Option<UndoSnapshot>>;
+    async fn mark_undo_used(&self, id: Uuid) -> MvResult<bool>;
+    async fn cleanup_expired_snapshots(&self) -> MvResult<usize>;
+}
+
+fn _assert_safeguard_store_object_safe(_: &dyn SafeguardStore) {}
+
+/// Storage for agent feedback and confidence overrides (reflection / feedback loop).
+#[async_trait]
+pub trait FeedbackStore: Send + Sync {
+    async fn record_feedback(&self, fb: &AgentFeedback) -> MvResult<()>;
+    async fn list_feedback(
+        &self,
+        intent_type: Option<&str>,
+        limit: usize,
+    ) -> MvResult<Vec<AgentFeedback>>;
+    async fn get_acceptance_rate(&self, intent_type: &str) -> MvResult<(usize, usize)>;
+    async fn set_confidence_override(&self, override_: &ConfidenceOverride) -> MvResult<()>;
+    async fn get_confidence_override(
+        &self,
+        intent_type: &str,
+    ) -> MvResult<Option<ConfidenceOverride>>;
+    async fn list_confidence_overrides(&self) -> MvResult<Vec<ConfidenceOverride>>;
+}
+
+fn _assert_feedback_store_object_safe(_: &dyn FeedbackStore) {}
+
+/// Storage for autonomy rules and action logs (Phase 3.1 — Autonomy & Precision Controls).
+#[async_trait]
+pub trait AutonomyStore: Send + Sync {
+    async fn add_autonomy_rule(&self, rule: &AutonomyRule) -> MvResult<()>;
+    async fn get_autonomy_rule(&self, id: Uuid) -> MvResult<Option<AutonomyRule>>;
+    async fn list_autonomy_rules(&self) -> MvResult<Vec<AutonomyRule>>;
+    async fn update_autonomy_rule(&self, rule: &AutonomyRule) -> MvResult<bool>;
+    async fn delete_autonomy_rule(&self, id: Uuid) -> MvResult<bool>;
+    async fn log_autonomy_action(&self, log: &AutonomyActionLog) -> MvResult<()>;
+    async fn count_recent_actions(
+        &self,
+        rule_id: Option<Uuid>,
+        since: DateTime<Utc>,
+    ) -> MvResult<usize>;
+    async fn list_autonomy_action_log(&self, limit: usize) -> MvResult<Vec<AutonomyActionLog>>;
+}
+
+fn _assert_autonomy_store_object_safe(_: &dyn AutonomyStore) {}
+
+/// Storage for communication relay: contacts, channels, and messages.
+#[async_trait]
+pub trait RelayStore: Send + Sync {
+    // Contacts
+    async fn add_relay_contact(&self, contact: &RelayContact) -> MvResult<()>;
+    async fn get_relay_contact(&self, id: Uuid) -> MvResult<Option<RelayContact>>;
+    async fn list_relay_contacts(&self) -> MvResult<Vec<RelayContact>>;
+    async fn update_relay_contact(&self, contact: &RelayContact) -> MvResult<bool>;
+    async fn delete_relay_contact(&self, id: Uuid) -> MvResult<bool>;
+
+    // Channels
+    async fn add_relay_channel(&self, channel: &RelayChannel) -> MvResult<()>;
+    async fn get_relay_channel(&self, id: Uuid) -> MvResult<Option<RelayChannel>>;
+    async fn list_relay_channels(&self) -> MvResult<Vec<RelayChannel>>;
+    async fn delete_relay_channel(&self, id: Uuid) -> MvResult<bool>;
+
+    // Messages
+    async fn add_relay_message(&self, message: &RelayMessage) -> MvResult<()>;
+    async fn get_relay_message(&self, id: Uuid) -> MvResult<Option<RelayMessage>>;
+    async fn list_relay_messages(
+        &self,
+        channel_id: Uuid,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<RelayMessage>>;
+    async fn update_message_status(&self, id: Uuid, status: MessageStatus) -> MvResult<bool>;
+    async fn list_thread_messages(
+        &self,
+        thread_id: Uuid,
+        limit: usize,
+    ) -> MvResult<Vec<RelayMessage>>;
+    async fn count_unread_messages(&self, channel_id: Option<Uuid>) -> MvResult<usize>;
+}
+
+fn _assert_relay_store_object_safe(_: &dyn RelayStore) {}
 
 // Legacy aliases for backward compatibility with proactive.rs
 pub trait InsightStore: AgenticStore {}

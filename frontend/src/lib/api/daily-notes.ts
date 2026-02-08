@@ -17,9 +17,10 @@ export async function listDailyNotes(limit = 30): Promise<Note[]> {
 }
 
 /** Ensure a daily note exists for the given date (defaults to today). */
-export async function ensureDailyNote(date?: string): Promise<{ note: Note; created: boolean }> {
+export async function ensureDailyNote(date?: string, namespace?: string): Promise<{ note: Note; created: boolean }> {
 	const body: Record<string, string> = {};
 	if (date) body.date = date;
+	if (namespace) body.namespace = namespace;
 	const res = await fetchJson<DailyNoteEnsureResponse>('/api/v1/daily-notes/ensure', {
 		method: 'POST',
 		body: JSON.stringify(body)

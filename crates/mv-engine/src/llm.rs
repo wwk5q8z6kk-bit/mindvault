@@ -180,9 +180,7 @@ impl LlmProvider for OpenAiCompatibleLlm {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(LlmError::RequestFailed(format!(
-                "HTTP {status}: {body}"
-            )));
+            return Err(LlmError::RequestFailed(format!("HTTP {status}: {body}")));
         }
 
         let chat_resp: ChatCompletionResponse = response
@@ -220,53 +218,53 @@ impl LlmProvider for OpenAiCompatibleLlm {
 
 /// Tries each provider in order until one succeeds.
 pub struct FallbackLlmProvider {
-	providers: Vec<Arc<dyn LlmProvider>>,
-	name: String,
+    providers: Vec<Arc<dyn LlmProvider>>,
+    name: String,
 }
 
 impl FallbackLlmProvider {
-	pub fn new(providers: Vec<Arc<dyn LlmProvider>>) -> Self {
-		let name = providers
-			.iter()
-			.map(|p| p.name())
-			.collect::<Vec<_>>()
-			.join(" -> ");
-		Self { providers, name }
-	}
+    pub fn new(providers: Vec<Arc<dyn LlmProvider>>) -> Self {
+        let name = providers
+            .iter()
+            .map(|p| p.name())
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        Self { providers, name }
+    }
 }
 
 #[async_trait::async_trait]
 impl LlmProvider for FallbackLlmProvider {
-	async fn complete(
-		&self,
-		messages: &[ChatMessage],
-		params: &CompletionParams,
-	) -> Result<String, LlmError> {
-		let mut last_err = LlmError::NotConfigured;
-		for provider in &self.providers {
-			match provider.complete(messages, params).await {
-				Ok(result) => return Ok(result),
-				Err(e) => {
-					info!(provider = provider.name(), error = %e, "LLM provider failed, trying next");
-					last_err = e;
-				}
-			}
-		}
-		Err(last_err)
-	}
+    async fn complete(
+        &self,
+        messages: &[ChatMessage],
+        params: &CompletionParams,
+    ) -> Result<String, LlmError> {
+        let mut last_err = LlmError::NotConfigured;
+        for provider in &self.providers {
+            match provider.complete(messages, params).await {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    info!(provider = provider.name(), error = %e, "LLM provider failed, trying next");
+                    last_err = e;
+                }
+            }
+        }
+        Err(last_err)
+    }
 
-	fn name(&self) -> &str {
-		&self.name
-	}
+    fn name(&self) -> &str {
+        &self.name
+    }
 
-	async fn is_available(&self) -> bool {
-		for provider in &self.providers {
-			if provider.is_available().await {
-				return true;
-			}
-		}
-		false
-	}
+    async fn is_available(&self) -> bool {
+        for provider in &self.providers {
+            if provider.is_available().await {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -343,13 +341,17 @@ pub async fn llm_action_items(
         )),
     ];
 
-    let result = llm.complete(&messages, &CompletionParams::default()).await?;
+    let result = llm
+        .complete(&messages, &CompletionParams::default())
+        .await?;
 
     let items: Vec<String> = result
         .lines()
         .map(|line| {
             line.trim()
-                .trim_start_matches(|c: char| c == '-' || c == '*' || c == '•' || c.is_ascii_digit())
+                .trim_start_matches(|c: char| {
+                    c == '-' || c == '*' || c == '•' || c.is_ascii_digit()
+                })
                 .trim_start_matches('.')
                 .trim_start_matches(')')
                 .trim()
@@ -363,6 +365,83 @@ pub async fn llm_action_items(
         Err(LlmError::ParseError("no action items extracted".into()))
     } else {
         Ok(items)
+    }
+}
+
+/// Generate completion suggestions using the LLM.
+pub async fn llm_completion_suggestions(
+    llm: &dyn LlmProvider,
+    input: &str,
+    context_snippets: &[String],
+    limit: usize,
+) -> Result<Vec<String>, LlmError> {
+    let context = if context_snippets.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nRelevant context:\n{}",
+            context_snippets
+                .iter()
+                .take(6)
+                .enumerate()
+                .map(|(i, s)| format!("{}. {}", i + 1, s))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+
+    let messages = vec![
+        ChatMessage::system(
+            "You are a writing completion assistant for a personal knowledge management system. \
+             Propose concise continuation suggestions. \
+             Return ONLY the suggestions, one per line, no numbering or bullets. \
+             Keep each suggestion under 200 characters.",
+        ),
+        ChatMessage::user(format!(
+            "Provide up to {limit} completion suggestions for:\n\n{input}{context}"
+        )),
+    ];
+
+    let result = llm
+        .complete(&messages, &CompletionParams::default())
+        .await?;
+
+    let mut seen = std::collections::HashSet::new();
+    let suggestions: Vec<String> = result
+        .lines()
+        .map(|line| {
+            line.trim()
+                .trim_start_matches(|c: char| c == '-' || c == '*' || c == '•')
+                .trim()
+                .trim_start_matches(|c: char| c.is_ascii_digit())
+                .trim_start_matches(|c| c == '.' || c == ')')
+                .trim()
+                .to_string()
+        })
+        .filter(|line| !line.is_empty())
+        .filter(|line| {
+            let key = line.to_ascii_lowercase();
+            if seen.contains(&key) {
+                false
+            } else {
+                seen.insert(key);
+                true
+            }
+        })
+        .map(|line| {
+            if line.len() > 200 {
+                line[..200].to_string()
+            } else {
+                line
+            }
+        })
+        .take(limit)
+        .collect();
+
+    if suggestions.is_empty() {
+        Err(LlmError::ParseError("no completion suggestions extracted".into()))
+    } else {
+        Ok(suggestions)
     }
 }
 
@@ -467,20 +546,20 @@ pub async fn llm_briefing_summary(
 
 /// Probe local Ollama for availability.
 pub async fn probe_ollama(base_url: &str, timeout_secs: u64) -> bool {
-	let client = reqwest::Client::builder()
-		.timeout(Duration::from_secs(timeout_secs.min(5)))
-		.build()
-		.unwrap_or_default();
-	let url = format!("{}/models", base_url.trim_end_matches('/'));
-	match client
-		.get(&url)
-		.timeout(Duration::from_secs(3))
-		.send()
-		.await
-	{
-		Ok(resp) => resp.status().is_success(),
-		Err(_) => false,
-	}
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs.min(5)))
+        .build()
+        .unwrap_or_default();
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    match client
+        .get(&url)
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+    {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
 }
 
 /// Initialize the LLM provider from config. Returns None if no provider available.
@@ -488,62 +567,62 @@ pub async fn probe_ollama(base_url: &str, timeout_secs: u64) -> bool {
 /// When `auto_detect` is enabled, probes for local Ollama and builds a fallback
 /// chain of available providers.
 pub async fn init_llm_provider(
-	config: &LlmConfig,
-	api_key: Option<String>,
+    config: &LlmConfig,
+    api_key: Option<String>,
 ) -> Option<Arc<dyn LlmProvider>> {
-	let mut providers: Vec<Arc<dyn LlmProvider>> = Vec::new();
+    let mut providers: Vec<Arc<dyn LlmProvider>> = Vec::new();
 
-	// If explicitly enabled, use configured provider
-	if config.enabled {
-		let provider = OpenAiCompatibleLlm::from_config(config, api_key.clone());
-		info!(
-			provider = "openai-compatible",
-			base_url = %config.base_url,
-			model = %config.model,
-			"LLM provider initialized (explicit)"
-		);
-		providers.push(Arc::new(provider));
-	}
+    // If explicitly enabled, use configured provider
+    if config.enabled {
+        let provider = OpenAiCompatibleLlm::from_config(config, api_key.clone());
+        info!(
+            provider = "openai-compatible",
+            base_url = %config.base_url,
+            model = %config.model,
+            "LLM provider initialized (explicit)"
+        );
+        providers.push(Arc::new(provider));
+    }
 
-	// Auto-detect local Ollama if enabled
-	if config.auto_detect && !config.enabled {
-		let ollama_url = "http://localhost:11434/v1";
-		if probe_ollama(ollama_url, config.timeout_secs).await {
-			let ollama_config = LlmConfig {
-				enabled: true,
-				base_url: ollama_url.into(),
-				model: config.model.clone(),
-				..config.clone()
-			};
-			let provider = OpenAiCompatibleLlm::from_config(&ollama_config, None);
-			info!("Auto-detected local Ollama at {}", ollama_url);
-			providers.push(Arc::new(provider));
-		}
-	}
+    // Auto-detect local Ollama if enabled
+    if config.auto_detect && !config.enabled {
+        let ollama_url = "http://localhost:11434/v1";
+        if probe_ollama(ollama_url, config.timeout_secs).await {
+            let ollama_config = LlmConfig {
+                enabled: true,
+                base_url: ollama_url.into(),
+                model: config.model.clone(),
+                ..config.clone()
+            };
+            let provider = OpenAiCompatibleLlm::from_config(&ollama_config, None);
+            info!("Auto-detected local Ollama at {}", ollama_url);
+            providers.push(Arc::new(provider));
+        }
+    }
 
-	// Add OpenAI as fallback if API key present and not already the primary
-	if let Some(key) = api_key {
-		if !config.enabled || config.base_url != "https://api.openai.com/v1" {
-			let openai_config = LlmConfig {
-				enabled: true,
-				base_url: "https://api.openai.com/v1".into(),
-				model: "gpt-4o-mini".into(),
-				..config.clone()
-			};
-			let provider = OpenAiCompatibleLlm::from_config(&openai_config, Some(key));
-			info!("Added OpenAI as fallback LLM provider");
-			providers.push(Arc::new(provider));
-		}
-	}
+    // Add OpenAI as fallback if API key present and not already the primary
+    if let Some(key) = api_key {
+        if !config.enabled || config.base_url != "https://api.openai.com/v1" {
+            let openai_config = LlmConfig {
+                enabled: true,
+                base_url: "https://api.openai.com/v1".into(),
+                model: "gpt-4o-mini".into(),
+                ..config.clone()
+            };
+            let provider = OpenAiCompatibleLlm::from_config(&openai_config, Some(key));
+            info!("Added OpenAI as fallback LLM provider");
+            providers.push(Arc::new(provider));
+        }
+    }
 
-	match providers.len() {
-		0 => {
-			info!("LLM provider disabled — using heuristic fallback for assist/briefing");
-			None
-		}
-		1 => Some(providers.remove(0)),
-		_ => Some(Arc::new(FallbackLlmProvider::new(providers))),
-	}
+    match providers.len() {
+        0 => {
+            info!("LLM provider disabled — using heuristic fallback for assist/briefing");
+            None
+        }
+        1 => Some(providers.remove(0)),
+        _ => Some(Arc::new(FallbackLlmProvider::new(providers))),
+    }
 }
 
 /// Extract context snippets from search results for LLM prompts.

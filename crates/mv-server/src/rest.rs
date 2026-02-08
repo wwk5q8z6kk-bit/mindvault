@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 use mv_core::*;
 use mv_engine::engine::{PrioritizedTask, TaskPrioritizationOptions};
+use mv_engine::llm;
 use mv_engine::recurrence::{
     parse_optional_metadata_bool, parse_optional_metadata_datetime, TASK_COMPLETED_AT_METADATA_KEY,
     TASK_COMPLETED_METADATA_KEY, TASK_DUE_AT_METADATA_KEY, TASK_REMINDER_SENT_AT_METADATA_KEY,
@@ -61,15 +62,29 @@ use node_versions::{
     push_node_version_snapshot, set_node_versions_in_metadata, NodeVersionDetailResponse,
     NodeVersionSummary,
 };
-#[path = "rest/secrets.rs"]
-mod secrets;
-#[path = "rest/keychain.rs"]
-mod keychain;
+#[path = "rest/autonomy.rs"]
+mod autonomy;
 #[path = "rest/exchange.rs"]
 mod exchange;
+#[path = "rest/feedback.rs"]
+mod feedback;
+#[path = "rest/keychain.rs"]
+mod keychain;
+#[path = "rest/relay.rs"]
+mod relay;
+#[path = "rest/safeguards.rs"]
+mod safeguards;
+#[path = "rest/secrets.rs"]
+mod secrets;
 #[path = "rest/voice.rs"]
 mod voice;
 use voice::{is_audio_file, transcribe_audio, transcribe_audio_api, WhisperConfig};
+#[path = "rest/federation.rs"]
+mod federation;
+#[path = "rest/plugins.rs"]
+mod plugins;
+#[path = "rest/sync.rs"]
+mod sync;
 
 use crate::audit::{audit_middleware, list_audit_entries, AuditConfig, AuditEntry, AuditLogger};
 use crate::auth::{
@@ -124,9 +139,77 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/agent/intents/{id}/apply", post(apply_intent))
         .route("/api/v1/agent/intents/{id}/dismiss", post(dismiss_intent))
         .route("/api/v1/agent/models", get(list_models))
+        .route("/api/v1/agent/watcher/status", get(watcher_status))
+        .route("/api/v1/agent/insights", get(list_agent_insights))
         .route("/api/v1/proactive/insights", get(list_insights))
         .route("/api/v1/proactive/insights/{id}", delete(delete_insight))
-        .route("/api/v1/proactive/generate", post(generate_insights));
+        .route("/api/v1/proactive/generate", post(generate_insights))
+        .route("/api/v1/insights/topic", get(insight_topic_analysis))
+        .route(
+            "/api/v1/insights/temporal-patterns",
+            get(insight_temporal_patterns),
+        )
+        .route("/api/v1/insights/gaps", get(insight_knowledge_gaps))
+        .route("/api/v1/insights/concept-map", get(insight_concept_map))
+        .route(
+            "/api/v1/insights/cross-namespace",
+            get(insight_cross_namespace),
+        )
+        .route(
+            "/api/v1/agent/feedback",
+            post(feedback::record_feedback).get(feedback::list_feedback),
+        )
+        .route(
+            "/api/v1/agent/reflection/stats",
+            get(feedback::reflection_stats),
+        )
+        .route(
+            "/api/v1/agent/reflection/calibrate",
+            post(feedback::calibrate),
+        )
+        .route(
+            "/api/v1/agent/confidence-overrides",
+            get(feedback::list_confidence_overrides),
+        )
+        .route(
+            "/api/v1/agent/confidence-overrides/{type}",
+            put(feedback::set_confidence_override),
+        )
+        .route(
+            "/api/v1/autonomy/rules",
+            get(autonomy::list_rules).post(autonomy::create_rule),
+        )
+        .route(
+            "/api/v1/autonomy/rules/{id}",
+            get(autonomy::get_rule)
+                .put(autonomy::update_rule)
+                .delete(autonomy::delete_rule),
+        )
+        .route(
+            "/api/v1/autonomy/action-log",
+            get(autonomy::list_action_log),
+        )
+        .route(
+            "/api/v1/autonomy/evaluate",
+            post(autonomy::evaluate),
+        )
+        .route(
+            "/api/v1/exchange/proposals",
+            get(exchange::list_proposals).post(exchange::submit_proposal),
+        )
+        .route(
+            "/api/v1/exchange/proposals/{id}",
+            get(exchange::get_proposal),
+        )
+        .route(
+            "/api/v1/exchange/proposals/{id}/approve",
+            post(exchange::approve_proposal),
+        )
+        .route(
+            "/api/v1/exchange/proposals/{id}/reject",
+            post(exchange::reject_proposal),
+        )
+        .route("/api/v1/exchange/inbox/count", get(exchange::inbox_count));
 
     let router = router
         .route("/api/v1/tasks/prioritize", post(prioritize_tasks))
@@ -249,14 +332,154 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(get_node_relationships),
         )
         .route("/api/v1/graph/neighbors/{id}", get(get_neighbors))
-        .route("/api/v1/exchange/proposals", get(exchange::list_proposals).post(exchange::submit_proposal))
-        .route("/api/v1/exchange/proposals/{id}", get(exchange::get_proposal))
-        .route("/api/v1/exchange/proposals/{id}/approve", post(exchange::approve_proposal))
-        .route("/api/v1/exchange/proposals/{id}/reject", post(exchange::reject_proposal))
-        .route("/api/v1/exchange/inbox/count", get(exchange::inbox_count))
+        .route(
+            "/api/v1/exchange/blocked-senders",
+            get(safeguards::list_blocked_senders).post(safeguards::add_blocked_sender),
+        )
+        .route(
+            "/api/v1/exchange/blocked-senders/{id}",
+            delete(safeguards::remove_blocked_sender),
+        )
+        .route(
+            "/api/v1/exchange/auto-approve-rules",
+            get(safeguards::list_auto_approve_rules).post(safeguards::add_auto_approve_rule),
+        )
+        .route(
+            "/api/v1/exchange/auto-approve-rules/{id}",
+            put(safeguards::update_auto_approve_rule).delete(safeguards::remove_auto_approve_rule),
+        )
+        .route(
+            "/api/v1/exchange/proposals/{id}/undo",
+            post(safeguards::undo_proposal),
+        )
         .route("/api/v1/secrets/status", get(secrets::secret_status))
         .route("/api/v1/secrets", post(secrets::set_secret))
         .route("/api/v1/secrets/{key}", delete(secrets::delete_secret))
+        // --- Sovereign Keychain ---
+        .route("/api/v1/keychain/init", post(keychain::init_vault))
+        .route("/api/v1/keychain/unseal", post(keychain::unseal_vault))
+        .route("/api/v1/keychain/seal", post(keychain::seal_vault))
+        .route("/api/v1/keychain/status", get(keychain::vault_status))
+        .route("/api/v1/keychain/rotate", post(keychain::rotate_key))
+        .route("/api/v1/keychain/epochs", get(keychain::list_epochs))
+        .route(
+            "/api/v1/keychain/domains",
+            post(keychain::create_domain).get(keychain::list_domains),
+        )
+        .route(
+            "/api/v1/keychain/domains/{id}",
+            delete(keychain::revoke_domain),
+        )
+        .route(
+            "/api/v1/keychain/credentials",
+            post(keychain::store_credential).get(keychain::list_credentials),
+        )
+        .route(
+            "/api/v1/keychain/credentials/{id}",
+            get(keychain::read_credential)
+                .put(keychain::update_credential)
+                .delete(keychain::destroy_credential),
+        )
+        .route(
+            "/api/v1/keychain/credentials/{id}/archive",
+            post(keychain::archive_credential),
+        )
+        .route(
+            "/api/v1/keychain/delegations",
+            post(keychain::create_delegation).get(keychain::list_delegations),
+        )
+        .route(
+            "/api/v1/keychain/delegations/{id}",
+            delete(keychain::revoke_delegation),
+        )
+        .route(
+            "/api/v1/keychain/delegations/{id}/sub-delegate",
+            post(keychain::sub_delegate),
+        )
+        .route(
+            "/api/v1/keychain/proof/generate",
+            post(keychain::generate_proof),
+        )
+        .route(
+            "/api/v1/keychain/proof/verify",
+            post(keychain::verify_proof),
+        )
+        .route("/api/v1/keychain/audit", get(keychain::list_audit))
+        .route(
+            "/api/v1/keychain/audit/verify",
+            post(keychain::verify_audit_integrity),
+        )
+        .route("/api/v1/keychain/alerts", get(keychain::list_alerts))
+        .route(
+            "/api/v1/keychain/alerts/{id}/acknowledge",
+            post(keychain::acknowledge_alert),
+        )
+        .route(
+            "/api/v1/keychain/lifecycle/run",
+            post(keychain::run_lifecycle),
+        )
+        .route("/api/v1/keychain/backup", post(keychain::backup_vault))
+        .route("/api/v1/keychain/restore", post(keychain::restore_vault))
+        .route(
+            "/api/v1/relay/contacts",
+            get(relay::list_contacts).post(relay::create_contact),
+        )
+        .route(
+            "/api/v1/relay/contacts/{id}",
+            get(relay::get_contact)
+                .put(relay::update_contact)
+                .delete(relay::delete_contact),
+        )
+        .route(
+            "/api/v1/relay/channels",
+            get(relay::list_channels).post(relay::create_channel),
+        )
+        .route("/api/v1/relay/channels/{id}", delete(relay::delete_channel))
+        .route(
+            "/api/v1/relay/channels/{id}/messages",
+            get(relay::list_messages).post(relay::send_message),
+        )
+        .route(
+            "/api/v1/relay/channels/{id}/inbound",
+            post(relay::receive_message),
+        )
+        .route("/api/v1/relay/messages/{id}/read", post(relay::mark_read))
+        .route(
+            "/api/v1/relay/messages/{id}/status",
+            post(relay::update_message_status),
+        )
+        .route("/api/v1/relay/unread", get(relay::unread_count))
+        .route("/api/v1/multimodal/status", get(multimodal_status))
+        // --- Device Sync ---
+        .route("/api/v1/sync/export", post(sync::sync_export))
+        .route("/api/v1/sync/import", post(sync::sync_import))
+        .route("/api/v1/sync/status", get(sync::sync_status))
+        // --- Plugin System ---
+        .route("/api/v1/plugins", get(plugins::list_plugins))
+        .route("/api/v1/plugins/hooks", get(plugins::list_hook_points))
+        // --- Federation ---
+        .route(
+            "/api/v1/federation/peers",
+            get(federation::list_peers).post(federation::add_peer),
+        )
+        .route(
+            "/api/v1/federation/peers/{id}",
+            delete(federation::remove_peer),
+        )
+        .route(
+            "/api/v1/federation/peers/{id}/health",
+            get(federation::peer_health),
+        )
+        .route(
+            "/api/v1/federation/query",
+            post(federation::federated_query),
+        )
+        // --- Provenance & Observability ---
+        .route("/api/v1/metrics/snapshot", get(metrics_snapshot))
+        .route("/api/v1/metrics/summary", get(metrics_summary))
+        .route("/api/v1/provenance/audit", get(provenance_audit))
+        // --- Performance Diagnostics ---
+        .route("/api/v1/diagnostics/health", get(diagnostics_health))
         .route("/api/v1/audit", get(list_audit_logs))
         .route("/metrics", get(metrics_handler))
         .route("/api/openapi.json", get(openapi_spec_handler))
@@ -1551,7 +1774,7 @@ fn map_mv_error(err: MvError) -> (StatusCode, String) {
     }
 }
 
-fn map_namespace_quota_error(err: NamespaceQuotaError) -> (StatusCode, String) {
+pub(crate) fn map_namespace_quota_error(err: NamespaceQuotaError) -> (StatusCode, String) {
     match err {
         NamespaceQuotaError::Exceeded {
             namespace,
@@ -4796,6 +5019,17 @@ async fn embedding_diagnostics(
     }))
 }
 
+async fn multimodal_status(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    Ok(Json(serde_json::json!({
+        "supported_types": state.engine.multimodal.supported_types(),
+        "processors": state.engine.multimodal.status()
+    })))
+}
+
 async fn assist_completion(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
@@ -4821,7 +5055,48 @@ async fn assist_completion(
     };
 
     let results = state.engine.recall(&query).await.map_err(map_mv_error)?;
-    let suggestions = generate_completion_suggestions(&req.text, &results, suggestion_limit);
+    let context_snippets = llm::extract_context_snippets(&results, 6);
+    let mut suggestions: Vec<String> = Vec::new();
+    let mut strategy = "retrieval_heuristic_v1".to_string();
+
+    if let Some(ref llm_provider) = state.engine.llm {
+        match llm::llm_completion_suggestions(
+            llm_provider.as_ref(),
+            &req.text,
+            &context_snippets,
+            suggestion_limit,
+        )
+        .await
+        {
+            Ok(mut llm_suggestions) => {
+                if !llm_suggestions.is_empty() {
+                    strategy = "llm_completion_v1".to_string();
+                    suggestions.append(&mut llm_suggestions);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("LLM completion failed, falling back to heuristic: {e}");
+            }
+        }
+    }
+
+    if suggestions.is_empty() {
+        suggestions = generate_completion_suggestions(&req.text, &results, suggestion_limit);
+    } else if suggestions.len() < suggestion_limit {
+        let mut fallback =
+            generate_completion_suggestions(&req.text, &results, suggestion_limit);
+        let mut seen: std::collections::HashSet<String> =
+            suggestions.iter().map(|s| s.to_ascii_lowercase()).collect();
+        for item in fallback.drain(..) {
+            if suggestions.len() >= suggestion_limit {
+                break;
+            }
+            let key = item.to_ascii_lowercase();
+            if seen.insert(key) {
+                suggestions.push(item);
+            }
+        }
+    }
     let sources = collect_completion_sources(&results, 5)
         .into_iter()
         .map(|source| AssistSuggestionSourceDto {
@@ -4836,7 +5111,7 @@ async fn assist_completion(
         suggestions,
         sources,
         source_nodes: results.len(),
-        strategy: "retrieval_heuristic_v1".to_string(),
+        strategy,
     }))
 }
 
@@ -4953,23 +5228,65 @@ async fn assist_transform(
     };
 
     let results = state.engine.recall(&query).await.map_err(map_mv_error)?;
-    let transformed_text = match mode {
-        AssistTransformMode::Summarize => {
-            generate_summary_transform(&req.text, &results, transform_limit.min(6))
+    let context_snippets = llm::extract_context_snippets(&results, 6);
+
+    // Try LLM-powered transform first, fall back to heuristic
+    if let Some(ref llm_provider) = state.engine.llm {
+        let llm_result = match mode {
+            AssistTransformMode::Summarize => {
+                llm::llm_summarize(
+                    llm_provider.as_ref(),
+                    &req.text,
+                    &context_snippets,
+                    transform_limit.min(6),
+                )
+                .await
+            }
+            AssistTransformMode::ActionItems => {
+                match llm::llm_action_items(
+                    llm_provider.as_ref(),
+                    &req.text,
+                    &context_snippets,
+                    transform_limit.min(8),
+                )
+                .await
+                {
+                    Ok(items) => Ok(items
+                        .into_iter()
+                        .map(|item| format!("- [ ] {item}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")),
+                    Err(e) => Err(e),
+                }
+            }
+            AssistTransformMode::Refine => {
+                llm::llm_refine(
+                    llm_provider.as_ref(),
+                    &req.text,
+                    &context_snippets,
+                    transform_limit.min(6),
+                )
+                .await
+            }
+        };
+
+        match llm_result {
+            Ok(text) => {
+                return Ok(Json(AssistTransformResponse {
+                    transformed_text: text,
+                    mode: mode.as_str().to_string(),
+                    source_nodes: results.len(),
+                    strategy: "llm_transform_v1".to_string(),
+                }));
+            }
+            Err(e) => {
+                tracing::warn!("LLM transform failed, falling back to heuristic: {e}");
+            }
         }
-        AssistTransformMode::ActionItems => {
-            let items =
-                generate_action_items_transform(&req.text, &results, transform_limit.min(8));
-            items
-                .into_iter()
-                .map(|item| format!("- [ ] {item}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-        AssistTransformMode::Refine => {
-            generate_refine_transform(&req.text, &results, transform_limit.min(6))
-        }
-    };
+    }
+
+    // Heuristic fallback
+    let transformed_text = heuristic_transform(&mode, &req.text, &results, transform_limit);
 
     Ok(Json(AssistTransformResponse {
         transformed_text,
@@ -4977,6 +5294,26 @@ async fn assist_transform(
         source_nodes: results.len(),
         strategy: "retrieval_transform_v1".to_string(),
     }))
+}
+
+fn heuristic_transform(
+    mode: &AssistTransformMode,
+    text: &str,
+    results: &[SearchResult],
+    limit: usize,
+) -> String {
+    match mode {
+        AssistTransformMode::Summarize => generate_summary_transform(text, results, limit.min(6)),
+        AssistTransformMode::ActionItems => {
+            let items = generate_action_items_transform(text, results, limit.min(8));
+            items
+                .into_iter()
+                .map(|item| format!("- [ ] {item}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        AssistTransformMode::Refine => generate_refine_transform(text, results, limit.min(6)),
+    }
 }
 
 async fn list_daily_notes(
@@ -5524,11 +5861,71 @@ async fn daily_briefing(
     let habits_done = habits_today.iter().filter(|h| h.completed_today).count();
     let habits_total = habits_today.len();
 
-    let summary = format!(
+    let task_titles: Vec<String> = due_today.iter().map(|t| t.title.clone()).collect();
+    let note_titles: Vec<String> = recent_notes.iter().map(|n| n.title.clone()).collect();
+
+    // Try LLM-generated briefing summary, fall back to template
+    let summary = if let Some(ref llm_provider) = state.engine.llm {
+        match llm::llm_briefing_summary(
+            llm_provider.as_ref(),
+            due_today_count,
+            overdue_count,
+            in_progress_count,
+            habits_done,
+            habits_total,
+            &task_titles,
+            &note_titles,
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("LLM briefing failed, using template: {e}");
+                briefing_template_summary(
+                    now.hour(),
+                    due_today_count,
+                    overdue_count,
+                    in_progress_count,
+                    habits_done,
+                    habits_total,
+                )
+            }
+        }
+    } else {
+        briefing_template_summary(
+            now.hour(),
+            due_today_count,
+            overdue_count,
+            in_progress_count,
+            habits_done,
+            habits_total,
+        )
+    };
+
+    Ok(Json(BriefingResponse {
+        date: today.format("%Y-%m-%d").to_string(),
+        due_today,
+        overdue,
+        in_progress,
+        habits_today,
+        recent_notes,
+        summary,
+    }))
+}
+
+fn briefing_template_summary(
+    hour: u32,
+    due_today_count: usize,
+    overdue_count: usize,
+    in_progress_count: usize,
+    habits_done: usize,
+    habits_total: usize,
+) -> String {
+    format!(
         "Good {}! You have {} task{} due today{}, {} in progress. {}/{} habits completed.",
-        if now.hour() < 12 {
+        if hour < 12 {
             "morning"
-        } else if now.hour() < 17 {
+        } else if hour < 17 {
             "afternoon"
         } else {
             "evening"
@@ -5543,17 +5940,7 @@ async fn daily_briefing(
         in_progress_count,
         habits_done,
         habits_total
-    );
-
-    Ok(Json(BriefingResponse {
-        date: today.format("%Y-%m-%d").to_string(),
-        due_today,
-        overdue,
-        in_progress,
-        habits_today,
-        recent_notes,
-        summary,
-    }))
+    )
 }
 
 #[derive(Deserialize)]
@@ -5651,21 +6038,31 @@ async fn apply_intent(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<StatusCode, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     authorize_write(&auth)?;
     let uuid = Uuid::parse_str(&id)
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid intent id".to_string()))?;
 
-    let ok = state
-        .engine
-        .update_intent_status(uuid, IntentStatus::Applied)
-        .await
-        .map_err(map_mv_error)?;
-    if ok {
-        Ok(StatusCode::OK)
-    } else {
-        Err((StatusCode::NOT_FOUND, "intent not found".to_string()))
-    }
+    // Execute the intent action (not just update status)
+    let result = state.engine.apply_intent(uuid).await.map_err(map_mv_error)?;
+
+    // Log to chronicle
+    let entry = mv_core::ChronicleEntry::new(
+        "intent_applied",
+        format!(
+            "Intent {} applied: {}",
+            uuid,
+            if result.success { "success" } else { "failed" }
+        ),
+    );
+    let _ = state.engine.log_chronicle(&entry).await;
+
+    Ok(Json(serde_json::json!({
+        "success": result.success,
+        "message": result.message,
+        "created_node_id": result.created_node_id.map(|id| id.to_string()),
+        "modified_node_id": result.modified_node_id.map(|id| id.to_string()),
+    })))
 }
 
 /// POST /api/v1/agent/intents/{id}/dismiss
@@ -5742,7 +6139,10 @@ async fn generate_insights(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<ProactiveInsight>>, (StatusCode, String)> {
     authorize_write(&auth)?;
-    let namespace = auth.namespace.clone().unwrap_or_else(|| "default".to_string());
+    let namespace = auth
+        .namespace
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
 
     let insights = state
         .engine
@@ -5754,10 +6154,153 @@ async fn generate_insights(
     Ok(Json(insights))
 }
 
+// ---------------------------------------------------------------------------
+// Semantic Insight Engine endpoints (Phase 3.3)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct TopicAnalysisQuery {
+    topic: String,
+    namespace: Option<String>,
+}
+
+/// GET /api/v1/insights/topic
+async fn insight_topic_analysis(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<TopicAnalysisQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let ns = params.namespace.or_else(|| auth.namespace.clone());
+
+    let insight = state
+        .engine
+        .proactive
+        .analyze_topic_with_llm(&params.topic, ns.as_deref())
+        .await
+        .map_err(map_mv_error)?;
+
+    Ok(Json(serde_json::json!({ "insight": insight })))
+}
+
+#[derive(Deserialize)]
+struct TemporalPatternsQuery {
+    namespace: Option<String>,
+    days_back: Option<u32>,
+}
+
+/// GET /api/v1/insights/temporal-patterns
+async fn insight_temporal_patterns(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<TemporalPatternsQuery>,
+) -> Result<Json<Vec<ProactiveInsight>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let ns = params.namespace.or_else(|| auth.namespace.clone());
+    let days_back = params.days_back.unwrap_or(30);
+
+    let insights = state
+        .engine
+        .proactive
+        .detect_temporal_patterns(ns.as_deref(), days_back)
+        .await
+        .map_err(map_mv_error)?;
+
+    Ok(Json(insights))
+}
+
+#[derive(Deserialize)]
+struct KnowledgeGapsQuery {
+    namespace: Option<String>,
+}
+
+/// GET /api/v1/insights/gaps
+async fn insight_knowledge_gaps(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<KnowledgeGapsQuery>,
+) -> Result<Json<Vec<ProactiveInsight>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let ns = params.namespace.or_else(|| auth.namespace.clone());
+
+    let insights = state
+        .engine
+        .proactive
+        .find_knowledge_gaps(ns.as_deref())
+        .await
+        .map_err(map_mv_error)?;
+
+    Ok(Json(insights))
+}
+
+#[derive(Deserialize)]
+struct ConceptMapQuery {
+    namespace: Option<String>,
+    max_clusters: Option<usize>,
+}
+
+/// GET /api/v1/insights/concept-map
+async fn insight_concept_map(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ConceptMapQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let ns = params.namespace.or_else(|| auth.namespace.clone());
+    let max_clusters = params.max_clusters.unwrap_or(10);
+
+    let map = state
+        .engine
+        .proactive
+        .generate_concept_map(ns.as_deref(), max_clusters)
+        .await
+        .map_err(map_mv_error)?;
+
+    Ok(Json(map))
+}
+
+#[derive(Deserialize)]
+struct CrossNamespaceQuery {
+    namespaces: String,
+    min_overlap: Option<usize>,
+}
+
+/// GET /api/v1/insights/cross-namespace
+async fn insight_cross_namespace(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<CrossNamespaceQuery>,
+) -> Result<Json<Vec<ProactiveInsight>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let namespaces: Vec<String> = params
+        .namespaces
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let min_overlap = params.min_overlap.unwrap_or(2);
+
+    if namespaces.len() < 2 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "at least 2 namespaces required (comma-separated)".to_string(),
+        ));
+    }
+
+    let insights = state
+        .engine
+        .proactive
+        .cross_namespace_concepts(&namespaces, min_overlap)
+        .await
+        .map_err(map_mv_error)?;
+
+    Ok(Json(insights))
+}
+
 /// GET /api/v1/agent/models
 async fn list_models(
     Extension(auth): Extension<AuthContext>,
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     authorize_read(&auth)?;
     // Return a simple placeholder for now - full model registry can be added later
@@ -5846,6 +6389,44 @@ async fn get_agent_context(
         executive_summary: summary,
         related_nodes,
     }))
+}
+
+/// GET /api/v1/agent/watcher/status
+async fn watcher_status(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let config = &state.engine.config.watcher;
+    Ok(Json(serde_json::json!({
+        "enabled": config.enabled,
+        "interval_secs": config.interval_secs,
+        "lookback_hours": config.lookback_hours,
+        "max_nodes_per_cycle": config.max_nodes_per_cycle,
+    })))
+}
+
+/// GET /api/v1/agent/insights
+async fn list_agent_insights(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListInsightsQuery>,
+) -> Result<Json<Vec<mv_core::ProactiveInsight>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let namespace = scoped_namespace(&auth, params.namespace)?;
+    let ns = namespace.unwrap_or_else(|| "default".to_string());
+    let insights = state
+        .engine
+        .proactive
+        .generate_insights(ns)
+        .await
+        .map_err(map_mv_error)?;
+    Ok(Json(insights))
+}
+
+#[derive(Deserialize)]
+struct ListInsightsQuery {
+    namespace: Option<String>,
 }
 
 async fn prioritize_tasks(
@@ -6592,7 +7173,11 @@ async fn list_attachments_index(
     sort_attachment_index_items(&mut items, sort.as_str());
     let total = items.len();
     let end = offset.saturating_add(limit).min(total);
-    let slice = if offset >= total { Vec::new() } else { items[offset..end].to_vec() };
+    let slice = if offset >= total {
+        Vec::new()
+    } else {
+        items[offset..end].to_vec()
+    };
     let has_more = offset.saturating_add(limit) < total;
 
     Ok(Json(AttachmentIndexPagedResponse {
@@ -10269,6 +10854,106 @@ async fn get_neighbors(
     }
 
     Ok(Json(visible_neighbors))
+}
+
+// ---------------------------------------------------------------------------
+// Provenance & Observability (Phase 4.3) + Performance Diagnostics (Phase 4.4)
+// ---------------------------------------------------------------------------
+
+/// GET /api/v1/metrics/snapshot — Get current metrics snapshot.
+async fn metrics_snapshot(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let snapshot = state.engine.metrics.snapshot().await;
+    Ok(Json(snapshot))
+}
+
+/// GET /api/v1/metrics/summary — Get overall system summary.
+async fn metrics_summary(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+
+    // Gather basic stats from the store
+    let filters = mv_core::QueryFilters::default();
+    let total_nodes = state.engine.store.nodes.count(&filters).await.unwrap_or(0);
+
+    let pending_proposals = state
+        .engine
+        .store
+        .nodes
+        .count_proposals(Some(mv_core::ProposalState::Pending))
+        .await
+        .unwrap_or(0);
+
+    Ok(Json(serde_json::json!({
+        "total_nodes": total_nodes,
+        "active_proposals": pending_proposals,
+        "uptime_seconds": state.engine.metrics.uptime_seconds(),
+        "counters": state.engine.metrics.get_counters().await,
+        "gauges": state.engine.metrics.get_gauges().await,
+    })))
+}
+
+/// GET /api/v1/provenance/audit — Get recent audit/chronicle entries.
+async fn provenance_audit(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Vec<mv_core::ChronicleEntry>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let limit: usize = params
+        .get("limit")
+        .and_then(|l| l.parse().ok())
+        .unwrap_or(50);
+    let entries = state
+        .engine
+        .store
+        .nodes
+        .list_chronicles(None, limit, 0)
+        .await
+        .map_err(map_mv_error)?;
+    Ok(Json(entries))
+}
+
+/// GET /api/v1/diagnostics/health — Health check with performance info.
+async fn diagnostics_health(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+
+    let start = std::time::Instant::now();
+
+    // Quick database ping
+    let db_ok = state
+        .engine
+        .store
+        .nodes
+        .count(&mv_core::QueryFilters::default())
+        .await
+        .is_ok();
+    let db_latency_ms = start.elapsed().as_millis();
+
+    // Record the health check latency
+    state
+        .engine
+        .metrics
+        .record_histogram("health_check_latency_ms", db_latency_ms as f64)
+        .await;
+
+    Ok(Json(serde_json::json!({
+        "status": if db_ok { "healthy" } else { "degraded" },
+        "database": {
+            "status": if db_ok { "ok" } else { "error" },
+            "latency_ms": db_latency_ms,
+        },
+        "uptime_seconds": state.engine.metrics.uptime_seconds(),
+        "version": env!("CARGO_PKG_VERSION"),
+    })))
 }
 
 #[cfg(test)]

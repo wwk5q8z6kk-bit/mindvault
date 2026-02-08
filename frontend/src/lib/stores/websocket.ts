@@ -5,6 +5,7 @@ import { notesStore } from '$lib/stores/notes';
 import { db } from '$lib/db';
 import { pushToast } from '$lib/stores/toast';
 import { nodeToTask, nodeToNote } from '$lib/api/mappers';
+import { getNode } from '$lib/api/nodes';
 import type { KnowledgeNode } from '$lib/api/types';
 
 export type WsStatus = 'connected' | 'connecting' | 'disconnected';
@@ -22,32 +23,81 @@ function getWsUrl(path: string): string {
 	return `${base}${path}`;
 }
 
-function handleChangeMessage(data: { type: string; node: KnowledgeNode }) {
-	const { type, node } = data;
+function removeNodeFromCaches(nodeId: string) {
+	db.tasks.delete(nodeId);
+	db.notes.delete(nodeId);
+	tasksStore.update(items => items.filter(t => t.id !== nodeId));
+	notesStore.update(items => items.filter(n => n.id !== nodeId));
+}
+
+function upsertNodeInCaches(node: KnowledgeNode, operation: 'create' | 'update' | 'enriched') {
 	if (node.kind === 'task') {
 		const task = nodeToTask(node);
-		if (type === 'node_created') {
-			db.tasks.put(task);
+		db.tasks.put(task);
+		if (operation === 'create') {
 			tasksStore.update(items => [task, ...items.filter(t => t.id !== task.id)]);
-		} else if (type === 'node_updated') {
-			db.tasks.put(task);
+		} else {
 			tasksStore.update(items => items.map(t => t.id === task.id ? task : t));
-		} else if (type === 'node_deleted') {
-			db.tasks.delete(node.id);
-			tasksStore.update(items => items.filter(t => t.id !== node.id));
 		}
-	} else if (node.kind === 'fact') {
+		return;
+	}
+
+	if (node.kind === 'fact') {
 		const note = nodeToNote(node);
-		if (type === 'node_created') {
-			db.notes.put(note);
+		db.notes.put(note);
+		if (operation === 'create') {
 			notesStore.update(items => [note, ...items.filter(n => n.id !== note.id)]);
-		} else if (type === 'node_updated') {
-			db.notes.put(note);
+		} else {
 			notesStore.update(items => items.map(n => n.id === note.id ? note : n));
-		} else if (type === 'node_deleted') {
-			db.notes.delete(node.id);
-			notesStore.update(items => items.filter(n => n.id !== node.id));
 		}
+	}
+}
+
+async function handleChangeMessage(data: unknown) {
+	const payload = data as {
+		type?: string;
+		node?: KnowledgeNode;
+		node_id?: string;
+		operation?: string;
+	};
+
+	if (!payload || typeof payload.type !== 'string') return;
+
+	// Legacy format: { type: "node_created|node_updated|node_deleted", node: {...} }
+	if (payload.node) {
+		if (payload.type === 'node_deleted') {
+			removeNodeFromCaches(payload.node.id);
+			return;
+		}
+		if (payload.type === 'node_created') {
+			upsertNodeInCaches(payload.node, 'create');
+			return;
+		}
+		if (payload.type === 'node_updated') {
+			upsertNodeInCaches(payload.node, 'update');
+			return;
+		}
+	}
+
+	// Current backend format: { type: "change", operation, node_id }
+	if (payload.type !== 'change' || typeof payload.node_id !== 'string') {
+		return;
+	}
+
+	const operation = (payload.operation ?? '').toLowerCase();
+	if (operation === 'delete') {
+		removeNodeFromCaches(payload.node_id);
+		return;
+	}
+	if (operation !== 'create' && operation !== 'update' && operation !== 'enriched') {
+		return;
+	}
+
+	try {
+		const node = await getNode(payload.node_id);
+		upsertNodeInCaches(node, operation as 'create' | 'update' | 'enriched');
+	} catch {
+		// Ignore transient races where node was removed between event and fetch.
 	}
 }
 
@@ -66,7 +116,7 @@ function connectChanges() {
 		changesWs.onmessage = (event) => {
 			try {
 				const data = JSON.parse(event.data);
-				handleChangeMessage(data);
+				void handleChangeMessage(data);
 			} catch { /* ignore parse errors */ }
 		};
 

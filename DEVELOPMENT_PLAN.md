@@ -45,7 +45,7 @@ Create a communication network that feels and functions like everyday messaging 
 7. Explainable and reviewable — injected context shows sources, confidence, and is always reversible.
 
 ## Core Architecture: Sovereign Vault Foundation
-**Details**: Encrypted local database with hybrid retrieval (vectors + full-text + graph), rich node metadata, automatic backlinks, version history, and provenance tracking. All external input (human or agent) arrives as proposals in a dedicated Exchange Inbox layer; only the owner can review and merge. The Natural Relay System integrates as a deferral and registration mechanism for communication.
+**Details**: Encrypted local database with hybrid retrieval (vectors + full-text + graph), rich node metadata, automatic backlinks, and provenance tracking. All external input (human or agent) arrives as proposals in a dedicated Exchange Inbox layer; only the owner can review and merge. The Natural Relay System integrates as a deferral and registration mechanism for communication.
 
 **Core Design Tenets**:
 - Single-owner, canonical vault — no shared state.
@@ -62,16 +62,15 @@ Create a communication network that feels and functions like everyday messaging 
 - Learning mode toggle: optional prompts to suggest tags after key exchanges.
 - Export/import: JSON and open formats for rules, preferences, and selected vault items.
 - Conflict detection: flags contradictory updates for owner confirmation.
-- Version control: immutable history, diff previews, and rollback per node.
 - Data lifecycle controls: retention policies, secure deletion, encrypted backups, and integrity checks.
 
 ## Communication Network Layer (Natural Relay System)
 - Supports channels, direct messages, group chats — text and voice notes.
 - Default relay flow:
   1. Sender transmits message or voice note.
-  2. Delivered to recipient’s vault for context check.
-  3. High-confidence match + permitted autonomy → clean answer/summary with confirm/edit step.
-  4. No match / low confidence / autonomy off → notify with short preview; prompt to play, reply, ignore, etc.
+  2. Delivered to recipient's vault for context check.
+  3. High-confidence match + permitted autonomy -> clean answer/summary with confirm/edit step.
+  4. No match / low confidence / autonomy off -> notify with short preview; prompt to play, reply, ignore, etc.
   5. Recipient action completes the exchange.
   6. Full thread (original + reply + summary) registered in both vaults.
 - Voice handling: transcription and summary on demand; playback user-initiated unless high-confidence autonomy active.
@@ -84,7 +83,7 @@ Create a communication network that feels and functions like everyday messaging 
 - Confidence gate: autonomous reply only at very high certainty (user-adjustable).
 - Toggles: global, domain-specific (projects, scheduling, personal), contact-specific.
 - Policy engine: conditional rules by time, channel, and context; explicit approval required for new scopes.
-- Per-contact presets: quick templates (e.g., “Family – schedule only”, “Work team – relay only”, “Everyone else – full deferral”).
+- Per-contact presets: quick templates (e.g., "Family -- schedule only", "Work team -- relay only", "Everyone else -- full deferral").
 - Snooze/quiet hours: temporary muting globally or per contact.
 - Fallback: always defer to direct relay + user prompt when in doubt.
 
@@ -96,7 +95,7 @@ Create a communication network that feels and functions like everyday messaging 
 - Optional digest: summary of recent registrations, autonomous actions, and queries.
 
 ## Collaboration & Interoperability
-- Bounded sharing: owner approves exact query scopes (e.g., “schedule only”, “project status only”).
+- Bounded sharing: owner approves exact query scopes (e.g., "schedule only", "project status only").
 - Plug into existing surfaces: Slack, Discord, email, voice apps — acts as intelligent relay layer.
 - Easy onboarding: begins as plain messaging/voice; intelligence enabled gradually via configuration.
 
@@ -112,16 +111,16 @@ Create a communication network that feels and functions like everyday messaging 
 - Ignore/block sender: one-tap action on deferral prompts.
 
 ## High-Priority Enhancements: Proactive Agentic Intelligence
-1. **Proactive Local Agent Monitoring & Suggestion Engine**  
+1. **Proactive Local Agent Monitoring & Suggestion Engine**
    Lightweight watcher (local SLM) scans vault changes and proposes actions/insights via Inbox.
 
-2. **Self-Improving / Reflection Loop for Agents**  
+2. **Self-Improving / Reflection Loop for Agents**
    Logs merge/reject feedback to personalize future proposals (local fine-tuning).
 
-3. **Semantic Insight Engine**  
+3. **Semantic Insight Engine**
    Advanced hybrid retrieval + local LLM for conceptual links and insight proposals.
 
-4. **Multi-Modal Local Processing**  
+4. **Multi-Modal Local Processing**
    Native embedding and reasoning over images, audio, PDFs (CLIP, Whisper-local, etc.).
 
 ## Medium/Lower-Priority Enhancements
@@ -132,7 +131,7 @@ Create a communication network that feels and functions like everyday messaging 
 ## Key Architectural Components (Implementation Focus)
 1. **Vault Core** — SQLite + LanceDB + Tantivy; encrypted; rich nodes; hybrid retrieval.
 2. **Exchange Layer** — Inbox for proposals; modular primitives (reminders, artifacts, queries, context handoffs); extended for relay deferrals.
-3. **Protocols** — MCP (tool access), ACP (messaging), A2A-lite (agent handoff).
+3. **Protocols** — MCP (primary agent protocol) plus REST/gRPC/WebSocket/UDS for clients; additional protocols deferred until demand.
 4. **Interfaces** — REST/gRPC/WebSocket/CLI; Tauri desktop/mobile; visual inbox with diff previews.
 5. **Security & Observability** — Encryption at rest; provenance logging; rate limiting; metrics.
 6. **Policy & Governance Layer** — Rule engine, consent logs, and review workflows.
@@ -147,20 +146,115 @@ MindVault stands apart by combining absolute sovereignty, native agent interop, 
 - Maintain backward-compatible migrations with export-first safety.
 - Validate relay, deferral, and proposal flows with repeatable test scenarios.
 
-## Prioritized Development Approach
-Execute in clear sequential phases:
+---
 
-**Phase 1: Sovereign Foundation + Relay MVP**  
-Complete encryption, provenance, logging, basic vault, and core relay (deferral + registration).
+## Implementation Status (as of Feb 2026)
 
-**Phase 2: Modular Primitives + Agent Basics**  
-Implement exchange crates, relay safeguards (block/undo/presets/offline), local embeddings, proactive watcher.
+### Architecture Summary
 
-**Phase 3: Interoperability & Enhancements**  
-Add protocols/adapters, self-improvement, semantic/multi-modal capabilities, Tauri UI polish, relay refinements (snooze/logs/conflicts/voice).
+| Crate | Purpose | Status |
+|-------|---------|--------|
+| `mv-core` | Models, traits, error types | Complete |
+| `mv-storage` | SQLite + LanceDB + Tantivy + Keychain storage | Complete |
+| `mv-engine` | Orchestrator: 13 subsystems | Complete |
+| `mv-server` | REST (90+ endpoints) + gRPC + WebSocket + UDS | Complete |
+| `mv-mcp` | MCP server (stdio transport, scoped access) | Complete |
+| `mv-plugin` | WASM plugin framework (hooks, manifest, registry) | Complete (wired to REST) |
+| `mv-cli` | CLI with 15+ subcommands | Complete |
 
-**Phase 4: Ecosystem & Polish**  
-Plugin system, community module support, benchmarking, performance tuning.
+### Engine Subsystems (all wired on `MindVaultEngine`)
+
+| Subsystem | Module | Status | REST Routes |
+|-----------|--------|--------|-------------|
+| Ingest Pipeline | `ingest.rs` | Complete | /api/v1/nodes |
+| Recall Pipeline | `recall.rs` | Complete | /api/v1/recall, /api/v1/search |
+| Keychain Engine | `keychain.rs` | Complete | 23 endpoints |
+| Proactive Engine | `proactive.rs` | Complete | /api/v1/proactive/* |
+| Enrichment Pipeline | `enrichment.rs` | Complete | Spawned at startup |
+| Reflection Engine | `reflection.rs` | Complete | /api/v1/agent/feedback |
+| Autonomy Gate | `autonomy.rs` | Complete | /api/v1/autonomy/* |
+| Relay Engine | `relay.rs` | Complete | /api/v1/relay/* |
+| MultiModal Pipeline | `multimodal/` | Complete (audio/image/pdf) | /api/v1/multimodal/status |
+| Sync Engine | `sync/` | Complete | /api/v1/sync/* |
+| Federation Engine | `federation.rs` | Complete (REST transport) | /api/v1/federation/* |
+| Metrics Collector | `metrics_collector.rs` | Complete | /api/v1/metrics/* |
+| Intent Executor | `intent_executor.rs` | Complete | On-demand via apply_intent() |
+
+### Storage Traits Implemented (SqliteNodeStore)
+
+NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyStore, RelayStore, KeychainStore
+
+### Migrations
+
+| # | File | Status |
+|---|------|--------|
+| 001 | Core schema | Applied |
+| 002 | Keychain | Applied |
+| 003 | Agentic (intents, insights, chronicle) | Applied |
+| 004 | Exchange (proposals) | Applied |
+| 005 | Relay safeguards | Ready |
+| 006 | Feedback (agent feedback, confidence overrides) | Ready |
+| 007 | Autonomy (rules, action log) | Ready |
+| 008 | Relay (contacts, channels, messages) | Ready |
+| 009 | Keychain security (brute-force, HMAC) | Ready |
+
+### Frontend Components (SvelteKit + Tauri)
+
+| Component | Status | Purpose |
+|-----------|--------|---------|
+| AgentStream.svelte | Complete | Live agent activity WebSocket consumer |
+| AiBriefingWidget.svelte | Complete | Daily briefing display |
+| AttachmentsPanel.svelte | Complete | File management with preview |
+| DueTasksWidget.svelte | Complete | Due/overdue task widget |
+| FavoritesBar.svelte | Complete | Pinned items bar |
+| HabitsWidget.svelte | Complete | Habit tracking |
+| InsightsDashboard.svelte | Complete | AI-generated insights |
+| IntentInbox.svelte | Complete | Autonomous suggestion queue |
+| RecentNotesWidget.svelte | Complete | Recent notes list |
+| TheChronicle.svelte | Complete | Agent reasoning log |
+| WhatsNextWidget.svelte | Complete | AI task prioritization |
+| Stats page (/stats) | Complete | Productivity dashboard |
+| Selection store | Complete | Multi-select infrastructure |
+
+---
+
+## Remaining Work
+
+### Phase 3: Interoperability & Enhancements
+**Status:** Near-complete (only adapters remaining)
+
+Backend:
+- [x] Implement MCP server (tools/resources) with scoped access
+- [x] Build relay engine (contacts, channels, messages, blocking)
+- [x] Build autonomy gate (rules, quiet hours, rate limiting)
+- [x] Build reflection engine (feedback, confidence adjustment)
+- [x] Build sync engine (vector clocks, snapshot export/import)
+- [x] Build federation engine (peer management)
+- [x] Build metrics collector
+- [x] Build encrypted backup/restore
+- [x] Add migration tools (Markdown/Obsidian/CSV) with dry-run
+- [x] Implement multi-modal audio backend (Whisper transcription)
+- [x] Implement multi-modal image backend (metadata extraction + dimension parsing)
+- [x] Implement multi-modal PDF text extraction (pdftotext + OCR)
+- [x] Complete federation query transport (REST-based, parallel peer queries)
+- [ ] Expand adapters (Slack/Discord/email)
+
+Frontend:
+- [x] Build relay chat page (/relay) with contacts, channels, messages
+- [x] Build autonomy settings UI (/autonomy)
+- [x] Build federation peers management UI (/federation)
+- [x] Build sync status/export/import page (/sync)
+- [x] Build provenance/metrics dashboard (/provenance)
+
+### Phase 4: Ecosystem & Polish
+**Status:** In progress
+
+- [x] Define plugin framework (hooks, manifest, registry)
+- [x] Wire plugin registry to REST endpoints
+- [x] Build plugin management UI (/plugins)
+- [ ] Performance profiling + optimization pass (10K/100K/1M node benchmarks)
+- [ ] Documentation, onboarding, and migration polish
+- [ ] Community module support and marketplace considerations
 
 ## Conclusion
 MindVault is a sovereign personal intelligence framework: a private canonical vault enhanced by natural communication relay and proactive local agents. It respects cognitive clarity, human control, and privacy while harnessing agentic potential through bounded, owner-mediated interactions. Build the sovereign foundation and relay integration first to establish trust and daily utility, then layer proactive intelligence for deeper differentiation. This is a system designed for long-term personal augmentation in a privacy-first world.

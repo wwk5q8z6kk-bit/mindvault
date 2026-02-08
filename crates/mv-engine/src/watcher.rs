@@ -90,20 +90,24 @@ impl WatcherAgent {
                     }
                 }
                 Err(e) => {
-                    report.errors.push(format!("Intent detection failed for {}: {}", node.id, e));
+                    report
+                        .errors
+                        .push(format!("Intent detection failed for {}: {}", node.id, e));
                 }
             }
         }
 
         // 3. Run insight generation (namespace-level analysis)
         // Get unique namespaces from scanned nodes
-        let namespaces: std::collections::HashSet<_> = recent_nodes
-            .iter()
-            .map(|n| n.namespace.clone())
-            .collect();
+        let namespaces: std::collections::HashSet<_> =
+            recent_nodes.iter().map(|n| n.namespace.clone()).collect();
 
         for namespace in namespaces {
-            match self.proactive_engine.generate_insights(namespace.clone()).await {
+            match self
+                .proactive_engine
+                .generate_insights(namespace.clone())
+                .await
+            {
                 Ok(insights) => {
                     report.insights_generated += insights.len();
 

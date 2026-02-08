@@ -101,7 +101,7 @@ export async function fetchAgentContext(basisNodeId?: string) {
     const params = new URLSearchParams();
     if (basisNodeId) params.set('basis_node_id', basisNodeId);
     const query = params.toString();
-    const url = query ? `/api/agent/context?${query}` : '/api/agent/context';
+    const url = query ? `/api/v1/agent/context?${query}` : '/api/v1/agent/context';
 
     try {
         const data = await fetchJson<AgentContextResponse>(url);
@@ -120,33 +120,35 @@ export async function fetchIntents(nodeId?: string, status?: IntentStatus) {
     const params = new URLSearchParams();
     if (nodeId) params.set('node_id', nodeId);
     if (status) params.set('status', status);
-    const data = await fetchJson<CapturedIntent[]>(`/api/agent/intents?${params.toString()}`);
+    const query = params.toString();
+    const url = query ? `/api/v1/agent/intents?${query}` : '/api/v1/agent/intents';
+    const data = await fetchJson<CapturedIntent[]>(url);
     intents.set(data);
     return data;
 }
 
 export async function applyIntent(id: string) {
-    await fetchJson(`/api/agent/intents/${id}/apply`, { method: 'POST' });
+    await fetchJson(`/api/v1/agent/intents/${id}/apply`, { method: 'POST' });
     intents.update(list => list.filter(i => i.id !== id));
 }
 
 export async function dismissIntent(id: string) {
-    await fetchJson(`/api/agent/intents/${id}/dismiss`, { method: 'POST' });
+    await fetchJson(`/api/v1/agent/intents/${id}/dismiss`, { method: 'POST' });
     intents.update(list => list.filter(i => i.id !== id));
 }
 
 export async function fetchInsights() {
-    const data = await fetchJson<ProactiveInsight[]>('/api/proactive/insights');
+    const data = await fetchJson<ProactiveInsight[]>('/api/v1/proactive/insights');
     insights.set(data);
     return data;
 }
 
 export async function generateInsights() {
-    const data = await fetchJson<ProactiveInsight[]>('/api/proactive/generate', { method: 'POST' });
+    const data = await fetchJson<ProactiveInsight[]>('/api/v1/proactive/generate', { method: 'POST' });
     insights.update(list => [...data, ...list]);
     return data;
 }
 
 export async function fetchAiModels() {
-    return await fetchJson<ModelRegistry>('/api/agent/models');
+    return await fetchJson<ModelRegistry>('/api/v1/agent/models');
 }

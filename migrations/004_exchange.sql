@@ -17,3 +17,5 @@ CREATE TABLE IF NOT EXISTS proposals (
 CREATE INDEX IF NOT EXISTS idx_proposals_state ON proposals(state);
 CREATE INDEX IF NOT EXISTS idx_proposals_created_at ON proposals(created_at);
 CREATE INDEX IF NOT EXISTS idx_proposals_sender ON proposals(sender);
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (4, datetime('now'));

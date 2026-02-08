@@ -21,9 +21,9 @@ use crate::backlinks::{
     ResolvedContentReferenceTarget,
 };
 use crate::config::EngineConfig;
-use crate::llm::{self, LlmProvider};
 use crate::daily_notes::{daily_note_day_tag, daily_note_weekday_tag, render_daily_note_template};
 use crate::ingest::IngestPipeline;
+use crate::llm::{self, LlmProvider};
 use crate::recall::RecallPipeline;
 use crate::recurrence::{
     collect_due_occurrences, parse_optional_metadata_bool, parse_optional_metadata_datetime,
@@ -124,6 +124,14 @@ pub struct MindVaultEngine {
     pub keychain: Arc<crate::keychain::KeychainEngine>,
     pub llm: Option<Arc<dyn LlmProvider>>,
     pub proactive: Arc<crate::proactive::ProactiveEngine>,
+    pub enrichment: Option<crate::enrichment::EnrichmentPipeline>,
+    pub reflection: crate::reflection::ReflectionEngine,
+    pub autonomy: crate::autonomy::AutonomyGate,
+    pub relay: crate::relay::RelayEngine,
+    pub multimodal: crate::multimodal::MultiModalPipeline,
+    pub sync: crate::sync::SyncEngine,
+    pub federation: crate::federation::FederationEngine,
+    pub metrics: crate::metrics_collector::MetricsCollector,
     embedding_runtime_status: KnowledgeVaultIndexNoteEmbeddingProviderRuntimeStatus,
 }
 
@@ -134,7 +142,38 @@ impl MindVaultEngine {
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| MvError::Storage(format!("create data dir: {e}")))?;
 
-        let credential_store = Arc::new(CredentialStore::new("mindvault"));
+        // Base credential store (OS keyring + env) for KeychainEngine's macOS bridge
+        let bridge_cred_store = Arc::new(CredentialStore::new("mindvault"));
+
+        // Initialize keychain engine
+        let keychain_path = data_dir.join("keychain.sqlite");
+        let keychain_store: Arc<dyn mv_core::traits::KeychainStore> = Arc::new(
+            mv_storage::keychain::SqliteKeychainStore::open(&keychain_path)
+                .map_err(|e| MvError::Storage(format!("open keychain db: {e}")))?,
+        );
+        let keychain = Arc::new(
+            crate::keychain::KeychainEngine::new(
+                keychain_store,
+                Arc::clone(&bridge_cred_store),
+                None,
+                Some(keychain_path.clone()),
+            )
+            .await?,
+        );
+
+        // Build the main credential store with Sovereign Keychain as highest-priority backend.
+        // Resolution chain: Sovereign Keychain → OS Keyring → Environment Variables.
+        let credential_store = {
+            let mut store = CredentialStore::new("mindvault");
+            store.insert_backend(
+                0,
+                Box::new(crate::keychain_backend::KeychainBackend::new(
+                    Arc::clone(&keychain),
+                    tokio::runtime::Handle::current(),
+                )),
+            );
+            Arc::new(store)
+        };
 
         let selection = select_embedding_provider(&config, &credential_store);
 
@@ -174,19 +213,6 @@ impl MindVaultEngine {
             config.clone(),
         );
 
-        let keychain_path = data_dir.join("keychain.sqlite");
-        let keychain_store = Arc::new(
-            mv_storage::keychain::SqliteKeychainStore::open(&keychain_path)
-                .map_err(|e| MvError::Storage(format!("open keychain db: {e}")))?,
-        );
-        let keychain = Arc::new(
-            crate::keychain::KeychainEngine::new(
-                keychain_store,
-                Arc::clone(&credential_store),
-            )
-            .await?,
-        );
-
         // Initialize LLM provider (optional — heuristic fallback when disabled)
         let llm_api_key = credential_store
             .get_secret_string("MINDVAULT_LLM_API_KEY")
@@ -195,6 +221,12 @@ impl MindVaultEngine {
 
         // Initialize proactive engine (will be wired to engine after construction)
         let proactive = Arc::new(crate::proactive::ProactiveEngine::new());
+
+        let reflection = crate::reflection::ReflectionEngine::new(Arc::clone(&store));
+        let autonomy = crate::autonomy::AutonomyGate::new(Arc::clone(&store));
+        let relay = crate::relay::RelayEngine::new(Arc::clone(&store));
+        let federation = crate::federation::FederationEngine::new(Arc::clone(&store));
+        let sync = crate::sync::SyncEngine::new(Arc::clone(&store), Uuid::now_v7().to_string());
 
         let engine = Self {
             ingest,
@@ -207,6 +239,20 @@ impl MindVaultEngine {
             keychain,
             llm,
             proactive,
+            enrichment: None,
+            reflection,
+            autonomy,
+            relay,
+            sync,
+            federation,
+            multimodal: {
+                let mut pipeline = crate::multimodal::MultiModalPipeline::new();
+                pipeline.register(Box::new(crate::multimodal::audio::AudioProcessor::new()));
+                pipeline.register(Box::new(crate::multimodal::image::ImageProcessor::new()));
+                pipeline.register(Box::new(crate::multimodal::pdf::PdfProcessor::new()));
+                pipeline
+            },
+            metrics: crate::metrics_collector::MetricsCollector::new(),
             embedding_runtime_status: selection.runtime_status,
         };
 
@@ -221,6 +267,28 @@ impl MindVaultEngine {
         let engine = Arc::new(Self::init(config).await?);
         engine.proactive.set_engine(Arc::clone(&engine));
         Ok(engine)
+    }
+
+    /// Set up the enrichment pipeline. Returns the worker that should be spawned.
+    /// Must be called after `init_arc()` and before using enrichment features.
+    pub fn setup_enrichment(
+        &mut self,
+        change_tx: tokio::sync::broadcast::Sender<mv_core::ChangeNotification>,
+    ) -> Option<crate::enrichment::EnrichmentWorker> {
+        if !self.config.ai.enrichment_enabled {
+            tracing::info!("enrichment pipeline disabled by config");
+            return None;
+        }
+
+        let (pipeline, worker) = crate::enrichment::EnrichmentPipeline::new(
+            Arc::clone(&self.store),
+            self.config.ai.clone(),
+            self.llm.clone(),
+            change_tx,
+        );
+        self.enrichment = Some(pipeline);
+        tracing::info!("enrichment pipeline initialized");
+        Some(worker)
     }
 
     async fn ensure_default_permission_templates(&self) -> MvResult<()> {
@@ -1488,8 +1556,45 @@ impl MindVaultEngine {
         self.store.nodes.update_intent_status(id, status).await
     }
 
+    /// Get a single intent by ID.
+    pub async fn get_intent(&self, id: Uuid) -> MvResult<Option<CapturedIntent>> {
+        self.store.nodes.get_intent(id).await
+    }
+
+    /// Apply an intent: execute the action and mark as applied.
+    pub async fn apply_intent(
+        self: &Arc<Self>,
+        id: Uuid,
+    ) -> MvResult<crate::intent_executor::ExecutionResult> {
+        // Get the intent
+        let intent = self
+            .store
+            .nodes
+            .get_intent(id)
+            .await?
+            .ok_or_else(|| MvError::InvalidInput(format!("Intent {} not found", id)))?;
+
+        // Execute the intent
+        let executor = crate::intent_executor::IntentExecutor::new(Arc::clone(self));
+        let result = executor.execute(&intent).await?;
+
+        // If execution succeeded, mark as applied
+        if result.success {
+            self.store
+                .nodes
+                .update_intent_status(id, IntentStatus::Applied)
+                .await?;
+        }
+
+        Ok(result)
+    }
+
     /// List proactive insights.
-    pub async fn list_insights(&self, limit: usize, offset: usize) -> MvResult<Vec<ProactiveInsight>> {
+    pub async fn list_insights(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<ProactiveInsight>> {
         self.store.nodes.list_insights(limit, offset).await
     }
 
@@ -1505,7 +1610,10 @@ impl MindVaultEngine {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<ChronicleEntry>> {
-        self.store.nodes.list_chronicles(node_id, limit, offset).await
+        self.store
+            .nodes
+            .list_chronicles(node_id, limit, offset)
+            .await
     }
 
     /// Log a chronicle entry for transparency.
@@ -1595,7 +1703,10 @@ fn is_auto_backlink_relationship(rel: &Relationship) -> bool {
         .unwrap_or(false)
 }
 
-fn select_embedding_provider(config: &EngineConfig, credentials: &CredentialStore) -> EmbeddingProviderSelection {
+fn select_embedding_provider(
+    config: &EngineConfig,
+    credentials: &CredentialStore,
+) -> EmbeddingProviderSelection {
     let provider = config.embedding.provider.trim().to_ascii_lowercase();
     let configured_model = config.embedding.model.clone();
     let configured_dimensions = config.embedding.dimensions;
@@ -1721,7 +1832,9 @@ fn select_embedding_provider(config: &EngineConfig, credentials: &CredentialStor
                 "mindvault_embedding_provider_initialized"
             );
             let reason = if model != configured_model {
-                Some(format!("model '{configured_model}' auto-mapped to '{model}' for ollama"))
+                Some(format!(
+                    "model '{configured_model}' auto-mapped to '{model}' for ollama"
+                ))
             } else {
                 None
             };

@@ -506,15 +506,18 @@
 						</div>
 						<div class="flex items-center gap-1">
 							<span class="text-[10px] text-slate-500">{countBookmarksInFolder(folder.id)}</span>
-							<button
+							<span
+								role="button"
+								tabindex="0"
 								class="hidden rounded p-0.5 text-slate-600 hover:bg-red-500/20 hover:text-red-300 group-hover:block"
 								on:click|stopPropagation={() => deleteFolder(folder.id)}
+								on:keydown|stopPropagation={(e) => { if (e.key === 'Enter' || e.key === ' ') deleteFolder(folder.id); }}
 								title="Delete folder"
 							>
 								<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
 								</svg>
-							</button>
+							</span>
 						</div>
 					</button>
 				{/each}
@@ -726,22 +729,21 @@
 							{#if bookmark.excerpt}
 								<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">{bookmark.excerpt}</p>
 							{/if}
-							{@const visibleTags = bookmark.tags.filter(t => !t.startsWith(FOLDER_PREFIX))}
-							{@const bookmarkFolderId = getBookmarkFolderId(bookmark)}
-							{@const bookmarkFolder = bookmarkFolderId ? folders.find(f => f.id === bookmarkFolderId) : null}
-							{#if bookmarkFolder}
+							{#each folders.filter(f => f.id === getBookmarkFolderId(bookmark)) as bookmarkFolder (bookmarkFolder.id)}
 								<div class="mt-1 flex items-center gap-1">
 									<span class="h-1.5 w-1.5 rounded-full bg-{bookmarkFolder.color}-400"></span>
 									<span class="text-[9px] text-{bookmarkFolder.color}-300">{bookmarkFolder.name}</span>
 								</div>
-							{/if}
-							{#if visibleTags.length > 0}
-								<div class="mt-1.5 flex flex-wrap gap-1">
-									{#each visibleTags as tag}
-										<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-400">{tag}</span>
-									{/each}
-								</div>
-							{/if}
+							{/each}
+							{#each [bookmark.tags.filter(t => !t.startsWith(FOLDER_PREFIX))] as visibleTags}
+								{#if visibleTags.length > 0}
+									<div class="mt-1.5 flex flex-wrap gap-1">
+										{#each visibleTags as tag}
+											<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-400">{tag}</span>
+										{/each}
+									</div>
+								{/if}
+							{/each}
 						</div>
 						<div class="flex items-center gap-2">
 							<span class="text-[9px] text-slate-600">{relativeTime(bookmark.created_at)}</span>

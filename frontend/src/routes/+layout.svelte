@@ -37,6 +37,7 @@
 		{ label: 'Notes', href: '/notes' },
 		{ label: 'Voice', href: '/voice' },
 		{ label: 'Chat', href: '/chat' },
+		{ label: 'Relay', href: '/relay' },
 		{ label: 'Inbox', href: '/inbox' },
 		{ label: 'Templates', href: '/templates' },
 		{ label: 'Daily', href: '/daily' },
@@ -52,6 +53,11 @@
 		{ label: 'Canvas', href: '/canvas' },
 		{ label: 'PDF', href: '/pdf' },
 		{ label: 'Trash', href: '/trash' },
+		{ label: 'Autonomy', href: '/autonomy' },
+		{ label: 'Federation', href: '/federation' },
+		{ label: 'Sync', href: '/sync' },
+		{ label: 'Plugins', href: '/plugins' },
+		{ label: 'Provenance', href: '/provenance' },
 		{ label: 'Profiles', href: '/settings/profiles' },
 		{ label: 'Settings', href: '/settings' }
 	];
@@ -91,6 +97,11 @@
 			href: '/chat',
 			title: 'AI Chat',
 			subtitle: 'Ask questions and get answers grounded in your knowledge base.'
+		},
+		{
+			href: '/relay',
+			title: 'Communication Relay',
+			subtitle: 'Sovereign messaging with contacts — vault-registered, context-aware.'
 		},
 		{
 			href: '/inbox',
@@ -168,9 +179,39 @@
 			subtitle: 'Recover deleted tasks and notes or remove them permanently.'
 		},
 		{
+			href: '/autonomy',
+			title: 'Autonomy Controls',
+			subtitle: 'Configure when agents act autonomously vs. defer to your approval.'
+		},
+		{
+			href: '/federation',
+			title: 'Federation',
+			subtitle: 'Connect with trusted peer vaults for read-only knowledge queries.'
+		},
+		{
+			href: '/sync',
+			title: 'Device Sync',
+			subtitle: 'Export and import vault snapshots for offline synchronization.'
+		},
+		{
+			href: '/plugins',
+			title: 'Plugins',
+			subtitle: 'Manage WASM-sandboxed extensions that hook into vault events.'
+		},
+		{
+			href: '/provenance',
+			title: 'Provenance & Observability',
+			subtitle: 'Audit trail, agent metrics, and transparency logs.'
+		},
+		{
 			href: '/settings/profiles',
 			title: 'Profiles & Access Keys',
 			subtitle: 'Manage API access keys and permission templates.'
+		},
+		{
+			href: '/settings/keychain',
+			title: 'Sovereign Keychain',
+			subtitle: 'Vault & credential management'
 		},
 		{
 			href: '/settings',

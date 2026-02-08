@@ -41,8 +41,11 @@ export async function loadNotes(): Promise<void> {
 	}
 }
 
-export async function createNoteOptimistic(markdown: string, title?: string): Promise<Note> {
-	const created = await createNote(markdown, title);
+export async function createNoteOptimistic(markdown: string, title?: string, opts?: { namespace?: string; tags?: string[] }): Promise<Note> {
+	const payload = opts
+		? { title: title ?? 'Untitled', markdown, namespace: opts.namespace, tags: opts.tags }
+		: markdown;
+	const created = await createNote(payload, opts ? undefined : title);
 	await db.notes.put(created);
 	notesStore.update((items) => [created, ...items]);
 	return created;

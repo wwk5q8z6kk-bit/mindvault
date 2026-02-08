@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::voice::{is_audio_file, transcribe_audio, TranscriptionError, WhisperConfig};
+use mv_engine::multimodal::image::{clip_tags_from_bytes, ClipTag};
 
 #[derive(Debug, Clone)]
 pub struct AttachmentTextExtractionOutcome {
@@ -94,18 +95,56 @@ fn extract_attachment_search_text_with_tools(
     }
 
     if is_image_attachment(file_name, content_type) {
-        return match extract_image_ocr_text(file_name, bytes, max_chars, tools) {
-            Ok(text) => finalize_extraction_outcome("indexed_ocr", text),
-            Err(ExternalExtractionError::ToolMissing) => AttachmentTextExtractionOutcome {
-                status: "tool_missing".to_string(),
-                extracted_text: None,
-                extracted_chars: 0,
-            },
-            Err(ExternalExtractionError::Failed) => AttachmentTextExtractionOutcome {
-                status: "extraction_failed".to_string(),
-                extracted_text: None,
-                extracted_chars: 0,
-            },
+        let ocr_result = extract_image_ocr_text(file_name, bytes, max_chars, tools);
+        let clip_tags = clip_tags_from_bytes(bytes).unwrap_or_default();
+        let clip_text = format_clip_tags_text(&clip_tags);
+
+        let mut text_parts = Vec::new();
+        let mut status = None;
+        let mut ocr_error: Option<ExternalExtractionError> = None;
+
+        match ocr_result {
+            Ok(text) => {
+                if !text.is_empty() {
+                    text_parts.push(text);
+                    status = Some("indexed_ocr");
+                }
+            }
+            Err(err) => {
+                ocr_error = Some(err);
+            }
+        }
+
+        if let Some(tag_text) = clip_text {
+            text_parts.push(tag_text);
+            if status.is_none() {
+                status = Some("indexed_image_tags");
+            }
+        }
+
+        if let Some(status) = status {
+            return finalize_extraction_outcome(status, text_parts.join("\n"));
+        }
+
+        if let Some(err) = ocr_error {
+            return match err {
+                ExternalExtractionError::ToolMissing => AttachmentTextExtractionOutcome {
+                    status: "tool_missing".to_string(),
+                    extracted_text: None,
+                    extracted_chars: 0,
+                },
+                ExternalExtractionError::Failed => AttachmentTextExtractionOutcome {
+                    status: "extraction_failed".to_string(),
+                    extracted_text: None,
+                    extracted_chars: 0,
+                },
+            };
+        }
+
+        return AttachmentTextExtractionOutcome {
+            status: "empty".to_string(),
+            extracted_text: None,
+            extracted_chars: 0,
         };
     }
 
@@ -425,6 +464,19 @@ fn extract_image_ocr_text(
     let _ = std::fs::remove_file(&output_txt_path);
 
     extraction_result
+}
+
+fn format_clip_tags_text(tags: &[ClipTag]) -> Option<String> {
+    if tags.is_empty() {
+        return None;
+    }
+
+    let labels = tags
+        .iter()
+        .map(|tag| tag.label.as_str())
+        .collect::<Vec<_>>();
+
+    Some(format!("Image labels: {}", labels.join(", ")))
 }
 
 fn temp_file_path(suffix: &str) -> PathBuf {

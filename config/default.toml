@@ -13,14 +13,34 @@ tantivy_path = "~/.mindvault/data/tantivy"
 blobs_path = "~/.mindvault/data/blobs"
 
 [embedding]
-provider = "openai"
-model = "text-embedding-3-small"
-dimensions = 1536
-# api_key loaded from OPENAI_API_KEY env var
+provider = "local_fastembed"
+model = "bge-small-en-v1.5"
+dimensions = 384
 # local provider options:
 # - provider = "local_fastembed"
 # - model = "bge-small-en-v1.5" (or "all-minilm-l6-v2")
 # - build with cargo feature: --features local-embeddings
+#
+# openai provider options:
+# - provider = "openai"
+# - model = "text-embedding-3-small"
+# - dimensions = 1536
+# - api_key loaded from OPENAI_API_KEY env var
+
+[llm]
+enabled = false
+auto_detect = true
+base_url = "http://localhost:11434/v1"
+model = "llama3.2"
+max_tokens = 512
+temperature = 0.3
+timeout_secs = 30
+
+[watcher]
+enabled = true
+interval_secs = 300
+lookback_hours = 24
+max_nodes_per_cycle = 50
 
 [search]
 default_limit = 10

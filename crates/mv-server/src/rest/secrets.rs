@@ -52,9 +52,7 @@ fn err_json(msg: impl ToString) -> Json<ErrorBody> {
 }
 
 /// GET /api/v1/secrets/status
-pub async fn secret_status(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn secret_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let statuses = state.engine.credential_store.status();
     let backends: Vec<BackendStatusDto> = statuses
         .into_iter()
@@ -73,7 +71,11 @@ pub async fn set_secret(
     Json(req): Json<SetSecretRequest>,
 ) -> impl IntoResponse {
     if req.key.is_empty() || req.value.is_empty() {
-        return (StatusCode::BAD_REQUEST, err_json("key and value are required")).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            err_json("key and value are required"),
+        )
+            .into_response();
     }
 
     match state.engine.credential_store.set(&req.key, &req.value) {

@@ -68,8 +68,8 @@ Environment overrides are supported, including:
 
 MindVault supports:
 
-1. `openai` (remote API; requires `OPENAI_API_KEY`)
-2. `local_fastembed` (local ONNX inference; compile-time optional)
+1. `local_fastembed` (local ONNX inference; compile-time optional)
+2. `openai` (remote API; requires `OPENAI_API_KEY`)
 
 To run with local embeddings enabled, build/run with:
 
@@ -87,7 +87,22 @@ Recommended local models:
 If `local_fastembed` is enabled with an OpenAI-style model name (e.g. `text-embedding-3-small`),
 MindVault auto-falls back to `bge-small-en-v1.5`.
 
-If the binary is built without `local-embeddings`, selecting `local_fastembed` falls back to no-op embeddings with a startup warning.
+The default config uses `local_fastembed`. If the binary is built without `local-embeddings`, selecting `local_fastembed` falls back to no-op embeddings with a startup warning.
+
+## Offline-First Mode
+
+MindVault stores data locally and binds to `127.0.0.1` by default. To keep deployments fully offline:
+
+- Set `[embedding] provider = "local_fastembed"` and build with `--features local-embeddings`.
+- Avoid configuring external endpoints (OpenAI-compatible base URLs, audit webhooks).
+- Keep services bound to localhost unless you explicitly need LAN access.
+
+Encryption at rest is optional; enable it with `MINDVAULT_ENCRYPTION_ENABLED=true` or `[encryption] enabled = true`.
+Audit logging is optional; enable it with `MINDVAULT_AUDIT_ENABLED=true`.
+
+## Data Lifecycle Controls
+
+MindVault includes data lifecycle tuning in `[lifecycle]` (see `config/default.toml`) for decay and consolidation behavior. For keychain data, lifecycle runs can be triggered via `POST /api/v1/keychain/lifecycle/run` (admin-only).
 
 ## Authentication
 
@@ -165,6 +180,53 @@ MindVault can auto-create and maintain `references` relationships from content r
 - Matching is namespace-scoped and title-based (case/whitespace normalized), with UUID targets also supported
 
 This is controlled via `[linking]` config and matching `MINDVAULT_LINKING_*` environment variables.
+
+## LLM Providers (Optional)
+
+MindVault uses OpenAI-compatible chat completion APIs for assist/briefing features. Configure `[llm]` in `config.toml` (disabled by default):
+
+```toml
+[llm]
+enabled = true
+base_url = "http://localhost:11434/v1"
+model = "llama3.2"
+```
+
+For remote providers, set `base_url` to the API endpoint and supply `MINDVAULT_LLM_API_KEY` (or `OPENAI_API_KEY`). If no provider is available, MindVault falls back to heuristic outputs.
+
+## Watcher Agent (Proactive Monitoring)
+
+MindVault ships with a local watcher agent that scans recent vault activity, detects intents, and generates insight proposals:
+
+- Configure in `[watcher]` (see `config/default.toml`).
+- Default behavior: enabled, runs every 300s, scans the last 24h with a 50-node cap.
+- Status endpoint: `GET /api/v1/agent/watcher/status`.
+- Disable with `[watcher] enabled = false` if you want a fully manual workflow.
+
+## Autonomy Rules (Policy Engine)
+
+Autonomy rules control when agentic actions can auto-apply vs defer:
+
+- Manage rules: `GET/POST /api/v1/autonomy/rules`, `GET/PUT/DELETE /api/v1/autonomy/rules/{id}`.
+- Evaluate decisions: `POST /api/v1/autonomy/evaluate`.
+- Rule types: `global`, `domain`, `contact`, `tag` with cascading priority.
+- Controls: confidence threshold, quiet hours, max actions per hour, allow/deny intent types.
+
+Feedback is captured through the reflection endpoints:
+
+- `POST /api/v1/agent/feedback` (record apply/dismiss)
+- `GET /api/v1/agent/reflection/stats`
+- `POST /api/v1/agent/reflection/calibrate`
+
+## MCP Server (Agent Interop)
+
+MindVault ships an MCP (Model Context Protocol) server over stdio for local agent access:
+
+- Start: `mindvault mcp --access-key <token>`
+- Env: `MINDVAULT_MCP_ACCESS_KEY` (scoped access key from permission templates)
+- Read-only fallback: `--allow-unscoped` or `MINDVAULT_MCP_ALLOW_UNSCOPED=true`
+
+MCP tools are scoped to the access key’s namespace/tags/kinds. Write operations always submit proposals for owner approval (no direct writes).
 
 ## AI Writing Assist
 

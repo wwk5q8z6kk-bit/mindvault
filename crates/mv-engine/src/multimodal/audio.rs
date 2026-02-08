@@ -1,0 +1,269 @@
+//! Audio processing via Whisper transcription.
+//!
+//! Tries local Whisper CLI first, falls back to OpenAI Whisper API.
+//! Integrates with the multimodal pipeline trait for automatic processing
+//! of audio attachments during enrichment.
+
+use async_trait::async_trait;
+use mv_core::{KnowledgeNode, MvResult};
+use std::path::Path;
+use std::process::Command;
+
+use super::{ModalityProcessor, ModalityStatus, ProcessingResult};
+
+/// Audio processor that transcribes audio files using Whisper.
+pub struct AudioProcessor {
+    whisper_bin: String,
+    whisper_model: String,
+    language: Option<String>,
+    api_key: Option<String>,
+    local_available: bool,
+}
+
+impl AudioProcessor {
+    pub fn new() -> Self {
+        let whisper_bin = std::env::var("MINDVAULT_WHISPER_BIN")
+            .unwrap_or_else(|_| "whisper".to_string());
+
+        let whisper_model = std::env::var("MINDVAULT_WHISPER_MODEL")
+            .unwrap_or_else(|_| "base".to_string());
+
+        let language = std::env::var("MINDVAULT_WHISPER_LANG").ok();
+
+        let api_key = std::env::var("OPENAI_API_KEY").ok();
+
+        let local_available = Command::new(&whisper_bin)
+            .arg("--help")
+            .output()
+            .is_ok();
+
+        if local_available {
+            tracing::info!(bin = %whisper_bin, model = %whisper_model, "Local Whisper available for audio processing");
+        } else if api_key.is_some() {
+            tracing::info!("Whisper API fallback available for audio processing");
+        } else {
+            tracing::warn!("No Whisper backend available — audio processing will produce placeholder text");
+        }
+
+        Self {
+            whisper_bin,
+            whisper_model,
+            language,
+            api_key,
+            local_available,
+        }
+    }
+
+    /// Transcribe using local Whisper CLI.
+    fn transcribe_local(&self, file_path: &str) -> Result<String, String> {
+        let temp_dir = std::env::temp_dir();
+        let stem = Path::new(file_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("audio");
+
+        let mut cmd = Command::new(&self.whisper_bin);
+        cmd.arg(file_path)
+            .arg("--model")
+            .arg(&self.whisper_model)
+            .arg("--output_format")
+            .arg("txt")
+            .arg("--output_dir")
+            .arg(&temp_dir);
+
+        if let Some(ref lang) = self.language {
+            cmd.arg("--language").arg(lang);
+        }
+
+        let output = cmd
+            .output()
+            .map_err(|e| format!("failed to run whisper: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("whisper failed: {stderr}"));
+        }
+
+        // Whisper outputs {stem}.txt in the output dir
+        let txt_path = temp_dir.join(format!("{stem}.txt"));
+        let text = std::fs::read_to_string(&txt_path).unwrap_or_default();
+        let _ = std::fs::remove_file(&txt_path);
+
+        Ok(text.trim().to_string())
+    }
+
+    /// Transcribe using OpenAI Whisper API via manual multipart form.
+    async fn transcribe_api(&self, file_path: &str) -> Result<String, String> {
+        let api_key = self
+            .api_key
+            .as_deref()
+            .ok_or("no OpenAI API key configured")?;
+
+        let file_bytes = std::fs::read(file_path)
+            .map_err(|e| format!("failed to read audio file: {e}"))?;
+
+        let file_name = Path::new(file_path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("audio.wav");
+
+        let ext = Path::new(file_path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("wav");
+
+        let mime = match ext {
+            "mp3" | "mpeg" => "audio/mpeg",
+            "ogg" => "audio/ogg",
+            "flac" => "audio/flac",
+            "m4a" => "audio/m4a",
+            "webm" => "audio/webm",
+            _ => "audio/wav",
+        };
+
+        // Build multipart form manually (reqwest multipart feature not enabled)
+        let boundary = format!("----MindVaultBoundary{}", uuid::Uuid::now_v7());
+        let mut body = Vec::new();
+
+        // Model field
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(b"Content-Disposition: form-data; name=\"model\"\r\n\r\n");
+        body.extend_from_slice(b"whisper-1\r\n");
+
+        // File field
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!(
+                "Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(format!("Content-Type: {mime}\r\n\r\n").as_bytes());
+        body.extend_from_slice(&file_bytes);
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post("https://api.openai.com/v1/audio/transcriptions")
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header(
+                "Content-Type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| format!("API request failed: {e}"))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!("Whisper API error {status}: {body}"));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct ApiResponse {
+            text: String,
+        }
+
+        let result = response
+            .json::<ApiResponse>()
+            .await
+            .map_err(|e| format!("failed to parse API response: {e}"))?;
+
+        Ok(result.text)
+    }
+}
+
+#[async_trait]
+impl ModalityProcessor for AudioProcessor {
+    fn name(&self) -> &'static str {
+        "audio"
+    }
+
+    fn handles(&self) -> &[&str] {
+        &[
+            "audio/wav",
+            "audio/mp3",
+            "audio/ogg",
+            "audio/webm",
+            "audio/mpeg",
+            "audio/flac",
+            "audio/m4a",
+            "audio/x-wav",
+        ]
+    }
+
+    fn status(&self) -> ModalityStatus {
+        let available = self.local_available || self.api_key.is_some();
+        let mut status = ModalityStatus::new(self.name(), available, self.handles())
+            .with_detail("whisper_bin", serde_json::json!(self.whisper_bin))
+            .with_detail("whisper_model", serde_json::json!(self.whisper_model))
+            .with_detail("local_available", serde_json::json!(self.local_available))
+            .with_detail("api_fallback_available", serde_json::json!(self.api_key.is_some()));
+
+        if let Some(lang) = &self.language {
+            status = status.with_detail("language", serde_json::json!(lang));
+        }
+
+        if !available {
+            status = status.with_note("No Whisper backend available");
+        }
+
+        status
+    }
+
+    async fn process(&self, file_path: &str, _node: &KnowledgeNode) -> MvResult<ProcessingResult> {
+        tracing::info!(file_path, "Processing audio file");
+
+        // Try local Whisper first, then API fallback
+        let transcript = if self.local_available {
+            match self.transcribe_local(file_path) {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Local Whisper failed, trying API fallback");
+                    self.transcribe_api(file_path)
+                        .await
+                        .unwrap_or_else(|e2| {
+                            tracing::warn!(error = %e2, "API fallback also failed");
+                            format!("[Audio file: {} - transcription failed]", file_path)
+                        })
+                }
+            }
+        } else if self.api_key.is_some() {
+            self.transcribe_api(file_path)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Whisper API transcription failed");
+                    format!("[Audio file: {} - transcription failed]", file_path)
+                })
+        } else {
+            format!("[Audio file: {} - no Whisper backend available]", file_path)
+        };
+
+        let is_transcribed = !transcript.starts_with("[Audio file:");
+        let word_count = transcript.split_whitespace().count();
+
+        let mut result = ProcessingResult::new(transcript)
+            .with_tag("audio".to_string());
+
+        if is_transcribed {
+            result = result.with_tag("transcribed".to_string());
+            result
+                .metadata
+                .insert("word_count".to_string(), serde_json::json!(word_count));
+        }
+
+        // Estimate duration from file size (rough: ~16KB/sec for compressed audio)
+        if let Ok(meta) = std::fs::metadata(file_path) {
+            let estimated_secs = meta.len() as f64 / 16_000.0;
+            result.metadata.insert(
+                "estimated_duration_secs".to_string(),
+                serde_json::json!(estimated_secs.round() as u64),
+            );
+        }
+
+        Ok(result)
+    }
+}

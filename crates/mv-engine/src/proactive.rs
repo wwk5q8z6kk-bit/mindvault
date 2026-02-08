@@ -1,7 +1,10 @@
 use crate::engine::MindVaultEngine;
-use chrono::{Duration, Utc};
-use mv_core::{AgenticStore, InsightType, KnowledgeNode, MemoryQuery, MvResult, ProactiveInsight, QueryFilters};
-use std::collections::HashMap;
+use crate::llm::{ChatMessage, CompletionParams};
+use chrono::{Datelike, Duration, Utc};
+use mv_core::{
+    AgenticStore, InsightType, KnowledgeNode, MemoryQuery, MvResult, ProactiveInsight, QueryFilters,
+};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 use uuid::Uuid;
 
@@ -107,34 +110,65 @@ impl ProactiveEngine {
     /// Generate new proactive insights based on vault patterns.
     pub async fn generate_insights(&self, namespace: String) -> MvResult<Vec<ProactiveInsight>> {
         let engine = self.engine();
-        let mut insights = Vec::new();
+        let mut detected = Vec::new();
 
         // Pattern 1: Recent activity clustering
         if let Some(insight) = self.detect_activity_cluster(&engine, &namespace).await? {
-            insights.push(insight);
+            detected.push(insight);
         }
 
         // Pattern 2: Stale nodes that might need attention
         if let Some(insight) = self.detect_stale_nodes(&engine, &namespace).await? {
-            insights.push(insight);
+            detected.push(insight);
         }
 
         // Pattern 3: Trending topics (tags/keywords appearing frequently)
         if let Some(insight) = self.detect_trending_topics(&engine, &namespace).await? {
-            insights.push(insight);
+            detected.push(insight);
         }
 
         // Pattern 4: Connection opportunities (nodes with similar content but no links)
-        if let Some(insight) = self.detect_connection_opportunities(&engine, &namespace).await? {
+        if let Some(insight) = self
+            .detect_connection_opportunities(&engine, &namespace)
+            .await?
+        {
+            detected.push(insight);
+        }
+
+        let existing = engine.store.nodes.list_insights(200, 0).await?;
+        let mut seen_signatures: HashSet<String> = existing
+            .iter()
+            .filter(|insight| insight.dismissed_at.is_none())
+            .map(Self::insight_signature)
+            .collect();
+
+        let mut insights = Vec::new();
+        for insight in detected {
+            let signature = Self::insight_signature(&insight);
+            if !seen_signatures.insert(signature) {
+                continue;
+            }
+            engine.store.nodes.log_insight(&insight).await?;
             insights.push(insight);
         }
 
-        // Store generated insights
-        for insight in &insights {
-            engine.store.nodes.log_insight(insight).await?;
-        }
-
         Ok(insights)
+    }
+
+    fn insight_signature(insight: &ProactiveInsight) -> String {
+        let mut related_node_ids: Vec<String> = insight
+            .related_node_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
+        related_node_ids.sort_unstable();
+        format!(
+            "{}|{}|{}|{}",
+            insight.insight_type,
+            insight.title,
+            insight.content,
+            related_node_ids.join(",")
+        )
     }
 
     /// Detect clusters of recent activity
@@ -203,8 +237,8 @@ impl ProactiveEngine {
         let stale_nodes: Vec<_> = nodes
             .into_iter()
             .filter(|n| {
-                n.temporal.last_accessed_at < stale_threshold
-                    && n.importance >= 0.5 // Only care about important nodes
+                n.temporal.last_accessed_at < stale_threshold && n.importance >= 0.5
+                // Only care about important nodes
             })
             .take(5)
             .collect();
@@ -355,6 +389,324 @@ impl ProactiveEngine {
         .with_importance(0.65);
 
         Ok(Some(insight))
+    }
+
+    // -----------------------------------------------------------------------
+    // Semantic Insight Engine (Phase 3.3)
+    // -----------------------------------------------------------------------
+
+    /// Use LLM to generate deeper analysis of a topic area.
+    /// Returns a structured insight with LLM-generated content.
+    pub async fn analyze_topic_with_llm(
+        &self,
+        topic: &str,
+        namespace: Option<&str>,
+    ) -> MvResult<Option<ProactiveInsight>> {
+        let engine = self.engine();
+
+        // Search for related nodes
+        let mut query = MemoryQuery::new(topic.to_string()).with_limit(20);
+        if let Some(ns) = namespace {
+            query = query.with_namespace(ns.to_string());
+        }
+        let results = engine.recall(&query).await?;
+        if results.is_empty() {
+            return Ok(None);
+        }
+
+        // Build context from top results
+        let context: String = results
+            .iter()
+            .take(10)
+            .map(|r| {
+                format!(
+                    "- [{}] {}",
+                    r.node.kind,
+                    r.node.content.chars().take(200).collect::<String>()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Try LLM analysis if available
+        if let Some(ref llm) = engine.llm {
+            let messages = vec![
+                ChatMessage::system(
+                    "You are an analytical assistant for a personal knowledge vault. \
+                     Provide structured analysis that is concise and actionable.",
+                ),
+                ChatMessage::user(format!(
+                    "Analyze these knowledge entries about '{topic}' and provide:\n\
+                     1. Key themes and patterns\n\
+                     2. Potential gaps or missing information\n\
+                     3. Suggested connections between ideas\n\
+                     Keep your analysis concise (3-5 bullet points per section).\n\n\
+                     Entries:\n{context}"
+                )),
+            ];
+
+            match llm.complete(&messages, &CompletionParams::default()).await {
+                Ok(analysis) => {
+                    let insight = ProactiveInsight::new(
+                        format!("Deep analysis: {topic}"),
+                        analysis,
+                        InsightType::Cluster,
+                    )
+                    .with_importance(0.7);
+                    return Ok(Some(insight));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "LLM analysis failed, falling back to heuristic");
+                }
+            }
+        }
+
+        // Fallback: heuristic summary
+        let result_nodes: Vec<&KnowledgeNode> = results.iter().map(|r| &r.node).collect();
+        let summary = format!(
+            "Found {} entries related to '{}'. Top tags: {}",
+            results.len(),
+            topic,
+            self.extract_top_tags(&result_nodes, 5).join(", ")
+        );
+        let insight = ProactiveInsight::new(
+            format!("Topic overview: {topic}"),
+            summary,
+            InsightType::Cluster,
+        )
+        .with_importance(0.4);
+        Ok(Some(insight))
+    }
+
+    /// Detect temporal patterns: recurring themes by day of week.
+    pub async fn detect_temporal_patterns(
+        &self,
+        namespace: Option<&str>,
+        days_back: u32,
+    ) -> MvResult<Vec<ProactiveInsight>> {
+        let engine = self.engine();
+        let cutoff = Utc::now() - Duration::days(days_back as i64);
+
+        let filters = QueryFilters {
+            namespace: namespace.map(|s| s.to_string()),
+            ..Default::default()
+        };
+        let nodes = engine.list_nodes(&filters, 500, 0).await?;
+
+        // Group tags by day of week
+        let mut day_tags: HashMap<u32, HashMap<String, usize>> = HashMap::new();
+        for node in &nodes {
+            if node.temporal.created_at < cutoff {
+                continue;
+            }
+            let weekday = node.temporal.created_at.weekday().num_days_from_monday();
+            let tag_counts = day_tags.entry(weekday).or_default();
+            for tag in &node.tags {
+                *tag_counts.entry(tag.clone()).or_insert(0) += 1;
+            }
+        }
+
+        let day_names = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ];
+        let mut insights = Vec::new();
+
+        for (day, tags) in &day_tags {
+            let mut sorted: Vec<_> = tags.iter().collect();
+            sorted.sort_by(|a, b| b.1.cmp(a.1));
+            let top: Vec<_> = sorted
+                .iter()
+                .take(3)
+                .map(|(t, c)| format!("{t} ({c}x)"))
+                .collect();
+
+            if !top.is_empty() && sorted[0].1 >= &3 {
+                let day_name = day_names.get(*day as usize).unwrap_or(&"Unknown");
+                let insight = ProactiveInsight::new(
+                    format!("{day_name} pattern detected"),
+                    format!(
+                        "You tend to work on these topics on {day_name}s: {}",
+                        top.join(", ")
+                    ),
+                    InsightType::TemporalPattern,
+                )
+                .with_importance(0.5);
+                insights.push(insight);
+            }
+        }
+
+        Ok(insights)
+    }
+
+    /// Gap analysis: find topics with questions but no answers.
+    pub async fn find_knowledge_gaps(
+        &self,
+        namespace: Option<&str>,
+    ) -> MvResult<Vec<ProactiveInsight>> {
+        let engine = self.engine();
+
+        let filters = QueryFilters {
+            namespace: namespace.map(|s| s.to_string()),
+            ..Default::default()
+        };
+        let nodes = engine.list_nodes(&filters, 1000, 0).await?;
+
+        // Find nodes containing questions (heuristic: content contains "?")
+        let question_nodes: Vec<_> = nodes.iter().filter(|n| n.content.contains('?')).collect();
+
+        let mut insights = Vec::new();
+        for q_node in question_nodes.iter().take(10) {
+            // Check if any other node seems to answer this question
+            let q_text: String = q_node.content.chars().take(100).collect();
+            let mut query = MemoryQuery::new(q_text.clone()).with_limit(5);
+            if let Some(ns) = namespace {
+                query = query.with_namespace(ns.to_string());
+            }
+            let related = engine.recall(&query).await?;
+
+            // If the only close match is the question itself, it's a gap
+            let answers: Vec<_> = related
+                .iter()
+                .filter(|r| r.node.id != q_node.id && !r.node.content.contains('?'))
+                .collect();
+
+            if answers.is_empty() {
+                let insight = ProactiveInsight::new(
+                    "Unanswered question",
+                    format!("No answer found for: {}", q_text),
+                    InsightType::KnowledgeGap,
+                )
+                .with_related_nodes(vec![q_node.id])
+                .with_importance(0.6);
+                insights.push(insight);
+            }
+        }
+
+        Ok(insights)
+    }
+
+    /// Generate a conceptual map: nodes grouped by topic clusters.
+    pub async fn generate_concept_map(
+        &self,
+        namespace: Option<&str>,
+        max_clusters: usize,
+    ) -> MvResult<serde_json::Value> {
+        let engine = self.engine();
+
+        let filters = QueryFilters {
+            namespace: namespace.map(|s| s.to_string()),
+            ..Default::default()
+        };
+        let nodes = engine.list_nodes(&filters, 200, 0).await?;
+
+        // Build tag-based clusters
+        let mut tag_clusters: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+        for node in &nodes {
+            let primary_tag = node
+                .tags
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "untagged".to_string());
+            let entry = serde_json::json!({
+                "id": node.id.to_string(),
+                "kind": node.kind.to_string(),
+                "title": node.title,
+                "tags": node.tags,
+            });
+            tag_clusters.entry(primary_tag).or_default().push(entry);
+        }
+
+        // Sort clusters by size and take top N
+        let mut sorted_clusters: Vec<_> = tag_clusters.into_iter().collect();
+        sorted_clusters.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        sorted_clusters.truncate(max_clusters);
+
+        let clusters: Vec<serde_json::Value> = sorted_clusters
+            .into_iter()
+            .map(|(tag, nodes)| {
+                serde_json::json!({
+                    "topic": tag,
+                    "count": nodes.len(),
+                    "nodes": nodes,
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "clusters": clusters,
+            "total_nodes": nodes.len(),
+            "generated_at": Utc::now().to_rfc3339(),
+        }))
+    }
+
+    /// Cross-namespace concept mapping: find shared themes across namespaces.
+    pub async fn cross_namespace_concepts(
+        &self,
+        namespaces: &[String],
+        min_overlap: usize,
+    ) -> MvResult<Vec<ProactiveInsight>> {
+        let engine = self.engine();
+        let mut ns_tags: HashMap<String, HashMap<String, usize>> = HashMap::new();
+
+        for ns in namespaces {
+            let filters = QueryFilters {
+                namespace: Some(ns.clone()),
+                ..Default::default()
+            };
+            let nodes = engine.list_nodes(&filters, 500, 0).await?;
+            let tag_counts = ns_tags.entry(ns.clone()).or_default();
+            for node in &nodes {
+                for tag in &node.tags {
+                    *tag_counts.entry(tag.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // Find tags that appear in multiple namespaces
+        let mut shared: HashMap<String, Vec<String>> = HashMap::new();
+        for (ns, tags) in &ns_tags {
+            for tag in tags.keys() {
+                shared.entry(tag.clone()).or_default().push(ns.clone());
+            }
+        }
+
+        let mut insights = Vec::new();
+        for (tag, present_in) in shared {
+            if present_in.len() >= min_overlap {
+                let insight = ProactiveInsight::new(
+                    format!("Cross-namespace theme: {tag}"),
+                    format!(
+                        "The topic '{}' appears across namespaces: {}",
+                        tag,
+                        present_in.join(", ")
+                    ),
+                    InsightType::Connection,
+                )
+                .with_importance(0.6);
+                insights.push(insight);
+            }
+        }
+
+        Ok(insights)
+    }
+
+    /// Helper: extract top tags from a slice of nodes.
+    fn extract_top_tags(&self, nodes: &[&KnowledgeNode], limit: usize) -> Vec<String> {
+        let mut tag_counts: HashMap<String, usize> = HashMap::new();
+        for node in nodes {
+            for tag in &node.tags {
+                *tag_counts.entry(tag.clone()).or_insert(0) += 1;
+            }
+        }
+        let mut sorted: Vec<_> = tag_counts.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.into_iter().take(limit).map(|(t, _)| t).collect()
     }
 }
 

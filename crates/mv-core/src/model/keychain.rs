@@ -301,6 +301,8 @@ pub enum KeychainAuditAction {
     KeyRotated,
     ZkProofGenerated,
     ZkProofVerified,
+    ProofGenerated,
+    ProofVerified,
     BreachDetected,
     LifecycleTransition,
 }
@@ -325,6 +327,8 @@ impl KeychainAuditAction {
             Self::KeyRotated => "key_rotated",
             Self::ZkProofGenerated => "zk_proof_generated",
             Self::ZkProofVerified => "zk_proof_verified",
+            Self::ProofGenerated => "proof_generated",
+            Self::ProofVerified => "proof_verified",
             Self::BreachDetected => "breach_detected",
             Self::LifecycleTransition => "lifecycle_transition",
         }
@@ -353,6 +357,8 @@ impl std::str::FromStr for KeychainAuditAction {
             "key_rotated" => Ok(Self::KeyRotated),
             "zk_proof_generated" => Ok(Self::ZkProofGenerated),
             "zk_proof_verified" => Ok(Self::ZkProofVerified),
+            "proof_generated" => Ok(Self::ProofGenerated),
+            "proof_verified" => Ok(Self::ProofVerified),
             "breach_detected" => Ok(Self::BreachDetected),
             "lifecycle_transition" => Ok(Self::LifecycleTransition),
             _ => Err(format!("unknown keychain audit action: {s}")),
@@ -378,6 +384,7 @@ pub struct KeychainAuditEntry {
     pub previous_hash: Option<String>,
     pub timestamp: DateTime<Utc>,
     pub source_ip: Option<String>,
+    pub signature: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -494,13 +501,16 @@ pub struct BreachAlert {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ZkAccessProof {
+pub struct AccessProof {
     pub credential_id: Uuid,
     pub challenge_nonce: String,
     pub proof: String,
     pub generated_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
+
+/// Type alias for backward compatibility.
+pub type ZkAccessProof = AccessProof;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -512,7 +522,11 @@ mod tests {
 
     #[test]
     fn vault_state_roundtrip() {
-        for state in [VaultState::Uninitialized, VaultState::Sealed, VaultState::Unsealed] {
+        for state in [
+            VaultState::Uninitialized,
+            VaultState::Sealed,
+            VaultState::Unsealed,
+        ] {
             let s = state.as_str();
             let parsed: VaultState = s.parse().unwrap();
             assert_eq!(parsed, state);

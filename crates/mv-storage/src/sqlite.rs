@@ -62,6 +62,22 @@ impl SqliteNodeStore {
         conn.execute_batch(migration_004)
             .map_err(|e| MvError::Migration(format!("migration 004 failed: {e}")))?;
 
+        let migration_005 = include_str!("../../../migrations/005_relay_safeguards.sql");
+        conn.execute_batch(migration_005)
+            .map_err(|e| MvError::Migration(format!("migration 005 failed: {e}")))?;
+
+        let migration_006 = include_str!("../../../migrations/006_feedback.sql");
+        conn.execute_batch(migration_006)
+            .map_err(|e| MvError::Migration(format!("migration 006 failed: {e}")))?;
+
+        let migration_007 = include_str!("../../../migrations/007_autonomy.sql");
+        conn.execute_batch(migration_007)
+            .map_err(|e| MvError::Migration(format!("migration 007 failed: {e}")))?;
+
+        let migration_008 = include_str!("../../../migrations/008_relay.sql");
+        conn.execute_batch(migration_008)
+            .map_err(|e| MvError::Migration(format!("migration 008 failed: {e}")))?;
+
         Ok(())
     }
 
@@ -931,12 +947,18 @@ fn parse_json_vec<T: serde::de::DeserializeOwned>(
 // AgenticStore Implementation
 // ---------------------------------------------------------------------------
 
-use mv_core::{AgenticStore, CapturedIntent, ChronicleEntry, InsightType, IntentStatus, IntentType, ProactiveInsight};
+use mv_core::{
+    AgenticStore, CapturedIntent, ChronicleEntry, InsightType, IntentStatus, IntentType,
+    ProactiveInsight,
+};
 
 #[async_trait]
 impl AgenticStore for SqliteNodeStore {
     async fn log_intent(&self, intent: &CapturedIntent) -> MvResult<()> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let params_json = serde_json::to_string(&intent.parameters)?;
 
         conn.execute(
@@ -958,7 +980,10 @@ impl AgenticStore for SqliteNodeStore {
     }
 
     async fn get_intent(&self, id: Uuid) -> MvResult<Option<CapturedIntent>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, node_id, intent_type, confidence, parameters, status, created_at, updated_at
@@ -980,7 +1005,10 @@ impl AgenticStore for SqliteNodeStore {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<CapturedIntent>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
 
         let mut sql = String::from(
             "SELECT id, node_id, intent_type, confidence, parameters, status, created_at, updated_at
@@ -1011,7 +1039,9 @@ impl AgenticStore for SqliteNodeStore {
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
 
-        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let rows = stmt
             .query_map(params_refs.as_slice(), row_to_captured_intent)
             .map_err(|e| MvError::Storage(e.to_string()))?;
@@ -1024,7 +1054,10 @@ impl AgenticStore for SqliteNodeStore {
     }
 
     async fn update_intent_status(&self, id: Uuid, status: IntentStatus) -> MvResult<bool> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
         let affected = conn
             .execute(
@@ -1036,7 +1069,10 @@ impl AgenticStore for SqliteNodeStore {
     }
 
     async fn log_insight(&self, insight: &ProactiveInsight) -> MvResult<()> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let related_ids_json = serde_json::to_string(&insight.related_node_ids)?;
 
         conn.execute(
@@ -1058,7 +1094,10 @@ impl AgenticStore for SqliteNodeStore {
     }
 
     async fn list_insights(&self, limit: usize, offset: usize) -> MvResult<Vec<ProactiveInsight>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, title, content, insight_type, related_node_ids, importance, created_at, dismissed_at
@@ -1070,7 +1109,10 @@ impl AgenticStore for SqliteNodeStore {
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
         let rows = stmt
-            .query_map(params![limit as i64, offset as i64], row_to_proactive_insight)
+            .query_map(
+                params![limit as i64, offset as i64],
+                row_to_proactive_insight,
+            )
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
         let mut insights = Vec::new();
@@ -1081,7 +1123,10 @@ impl AgenticStore for SqliteNodeStore {
     }
 
     async fn delete_insight(&self, id: Uuid) -> MvResult<bool> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
         let affected = conn
             .execute(
@@ -1093,7 +1138,10 @@ impl AgenticStore for SqliteNodeStore {
     }
 
     async fn log_chronicle(&self, entry: &ChronicleEntry) -> MvResult<()> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
 
         conn.execute(
             "INSERT INTO chronicle_entries (id, node_id, step_name, logic, input_snapshot, output_snapshot, timestamp)
@@ -1118,9 +1166,14 @@ impl AgenticStore for SqliteNodeStore {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<ChronicleEntry>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
 
-        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(nid) = node_id {
+        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(nid) =
+            node_id
+        {
             (
                 "SELECT id, node_id, step_name, logic, input_snapshot, output_snapshot, timestamp
                  FROM chronicle_entries WHERE node_id = ?1 ORDER BY timestamp DESC LIMIT ?2 OFFSET ?3".to_string(),
@@ -1133,13 +1186,17 @@ impl AgenticStore for SqliteNodeStore {
         } else {
             (
                 "SELECT id, node_id, step_name, logic, input_snapshot, output_snapshot, timestamp
-                 FROM chronicle_entries ORDER BY timestamp DESC LIMIT ?1 OFFSET ?2".to_string(),
+                 FROM chronicle_entries ORDER BY timestamp DESC LIMIT ?1 OFFSET ?2"
+                    .to_string(),
                 vec![Box::new(limit as i64), Box::new(offset as i64)],
             )
         };
 
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_box.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_box.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let rows = stmt
             .query_map(params_refs.as_slice(), row_to_chronicle_entry)
             .map_err(|e| MvError::Storage(e.to_string()))?;
@@ -1164,7 +1221,9 @@ fn row_to_captured_intent(row: &rusqlite::Row<'_>) -> rusqlite::Result<CapturedI
 
     let id = parse_uuid_str(0, &id_str)?;
     let node_id = parse_uuid_str(1, &node_id_str)?;
-    let intent_type: IntentType = intent_type_str.parse().unwrap_or(IntentType::Custom(intent_type_str));
+    let intent_type: IntentType = intent_type_str
+        .parse()
+        .unwrap_or(IntentType::Custom(intent_type_str));
     let status: IntentStatus = status_str.parse().map_err(|e: String| {
         rusqlite::Error::FromSqlConversionFailure(
             5,
@@ -1255,8 +1314,8 @@ fn row_to_chronicle_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chronicle
 // ExchangeStore Implementation
 // ---------------------------------------------------------------------------
 
-use mv_core::{ExchangeStore, Proposal, ProposalAction, ProposalSender, ProposalState};
 use chrono::DateTime;
+use mv_core::{ExchangeStore, Proposal, ProposalAction, ProposalSender, ProposalState};
 
 fn row_to_proposal(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
     let id_str: String = row.get(0)?;
@@ -1273,9 +1332,7 @@ fn row_to_proposal(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
     let resolved_at: Option<String> = row.get(11)?;
 
     let id = parse_uuid_str(0, &id_str)?;
-    let node_id = node_id_str
-        .map(|s| Uuid::parse_str(&s).ok())
-        .flatten();
+    let node_id = node_id_str.map(|s| Uuid::parse_str(&s).ok()).flatten();
     let target_node_id = target_node_id_str
         .map(|s| Uuid::parse_str(&s).ok())
         .flatten();
@@ -1287,7 +1344,9 @@ fn row_to_proposal(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
             Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
         )
     })?;
-    let action: ProposalAction = action_str.parse().unwrap_or(ProposalAction::Custom(action_str));
+    let action: ProposalAction = action_str
+        .parse()
+        .unwrap_or(ProposalAction::Custom(action_str));
     let state: ProposalState = state_str.parse().map_err(|e: String| {
         rusqlite::Error::FromSqlConversionFailure(
             5,
@@ -1319,7 +1378,10 @@ fn row_to_proposal(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
 #[async_trait]
 impl ExchangeStore for SqliteNodeStore {
     async fn submit_proposal(&self, proposal: &Proposal) -> MvResult<()> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let payload_json = serde_json::to_string(&proposal.payload)?;
 
         conn.execute(
@@ -1345,7 +1407,10 @@ impl ExchangeStore for SqliteNodeStore {
     }
 
     async fn get_proposal(&self, id: Uuid) -> MvResult<Option<Proposal>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, node_id, target_node_id, sender, action, state, confidence, diff_preview, payload, created_at, updated_at, resolved_at
@@ -1366,7 +1431,10 @@ impl ExchangeStore for SqliteNodeStore {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<Proposal>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
 
         let mut sql = String::from(
             "SELECT id, node_id, target_node_id, sender, action, state, confidence, diff_preview, payload, created_at, updated_at, resolved_at
@@ -1391,7 +1459,9 @@ impl ExchangeStore for SqliteNodeStore {
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
 
-        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let rows = stmt
             .query_map(params_refs.as_slice(), row_to_proposal)
             .map_err(|e| MvError::Storage(e.to_string()))?;
@@ -1403,12 +1473,11 @@ impl ExchangeStore for SqliteNodeStore {
         Ok(proposals)
     }
 
-    async fn resolve_proposal(
-        &self,
-        id: Uuid,
-        state: ProposalState,
-    ) -> MvResult<bool> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+    async fn resolve_proposal(&self, id: Uuid, state: ProposalState) -> MvResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
         let affected = conn
             .execute(
@@ -1420,18 +1489,23 @@ impl ExchangeStore for SqliteNodeStore {
     }
 
     async fn count_proposals(&self, state: Option<ProposalState>) -> MvResult<usize> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
 
-        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(st) = state {
-            (
-                "SELECT COUNT(*) FROM proposals WHERE state = ?1".to_string(),
-                vec![Box::new(st.as_str().to_string())],
-            )
-        } else {
-            ("SELECT COUNT(*) FROM proposals".to_string(), vec![])
-        };
+        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            if let Some(st) = state {
+                (
+                    "SELECT COUNT(*) FROM proposals WHERE state = ?1".to_string(),
+                    vec![Box::new(st.as_str().to_string())],
+                )
+            } else {
+                ("SELECT COUNT(*) FROM proposals".to_string(), vec![])
+            };
 
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_box.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_box.iter().map(|p| p.as_ref()).collect();
 
         let count: usize = conn
             .query_row(&sql, params_refs.as_slice(), |row| row.get(0))
@@ -1440,7 +1514,10 @@ impl ExchangeStore for SqliteNodeStore {
     }
 
     async fn expire_proposals(&self, before: DateTime<Utc>) -> MvResult<usize> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
         let affected = conn
             .execute(
@@ -1449,6 +1526,1332 @@ impl ExchangeStore for SqliteNodeStore {
             )
             .map_err(|e| MvError::Storage(e.to_string()))?;
         Ok(affected)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SafeguardStore Implementation
+// ---------------------------------------------------------------------------
+
+use mv_core::{AutoApproveRule, BlockedSender, SafeguardStore, UndoSnapshot};
+
+fn row_to_blocked_sender(row: &rusqlite::Row<'_>) -> rusqlite::Result<BlockedSender> {
+    let id_str: String = row.get(0)?;
+    let sender_type: String = row.get(1)?;
+    let sender_pattern: String = row.get(2)?;
+    let reason: Option<String> = row.get(3)?;
+    let blocked_at: String = row.get(4)?;
+    let expires_at: Option<String> = row.get(5)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+
+    Ok(BlockedSender {
+        id,
+        sender_type,
+        sender_pattern,
+        reason,
+        blocked_at: parse_dt_strict(4, &blocked_at)?,
+        expires_at: parse_optional_dt_strict(5, expires_at)?,
+    })
+}
+
+fn row_to_auto_approve_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutoApproveRule> {
+    let id_str: String = row.get(0)?;
+    let name: String = row.get(1)?;
+    let sender_pattern: Option<String> = row.get(2)?;
+    let action_types_csv: Option<String> = row.get(3)?;
+    let min_confidence: f64 = row.get(4)?;
+    let enabled: bool = row.get(5)?;
+    let created_at: String = row.get(6)?;
+    let updated_at: Option<String> = row.get(7)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let action_types: Vec<String> = action_types_csv
+        .map(|csv| {
+            csv.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(AutoApproveRule {
+        id,
+        name,
+        sender_pattern,
+        action_types,
+        min_confidence: min_confidence as f32,
+        enabled,
+        created_at: parse_dt_strict(6, &created_at)?,
+        updated_at: parse_optional_dt_strict(7, updated_at)?,
+    })
+}
+
+fn row_to_undo_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<UndoSnapshot> {
+    let id_str: String = row.get(0)?;
+    let proposal_id_str: String = row.get(1)?;
+    let snapshot_data_str: String = row.get(2)?;
+    let created_at: String = row.get(3)?;
+    let expires_at: String = row.get(4)?;
+    let used: bool = row.get(5)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let proposal_id = parse_uuid_str(1, &proposal_id_str)?;
+    let snapshot_data: serde_json::Value =
+        serde_json::from_str(&snapshot_data_str).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                2,
+                Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e.to_string(),
+                )),
+            )
+        })?;
+
+    Ok(UndoSnapshot {
+        id,
+        proposal_id,
+        snapshot_data,
+        created_at: parse_dt_strict(3, &created_at)?,
+        expires_at: parse_dt_strict(4, &expires_at)?,
+        used,
+    })
+}
+
+/// Simple glob matching: supports `*` (match all), `prefix*`, and exact match.
+fn safeguard_glob_match(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if pattern.ends_with('*') {
+        value.starts_with(&pattern[..pattern.len() - 1])
+    } else {
+        pattern == value
+    }
+}
+
+#[async_trait]
+impl SafeguardStore for SqliteNodeStore {
+    async fn add_blocked_sender(&self, sender: &BlockedSender) -> MvResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+			"INSERT INTO blocked_senders (id, sender_type, sender_pattern, reason, blocked_at, expires_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+			params![
+				sender.id.to_string(),
+				sender.sender_type,
+				sender.sender_pattern,
+				sender.reason,
+				sender.blocked_at.to_rfc3339(),
+				sender.expires_at.map(|dt| dt.to_rfc3339()),
+			],
+		)
+		.map_err(|e| MvError::Storage(format!("insert blocked_sender failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn remove_blocked_sender(&self, id: Uuid) -> MvResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let affected = conn
+            .execute(
+                "DELETE FROM blocked_senders WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn list_blocked_senders(&self) -> MvResult<Vec<BlockedSender>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, sender_type, sender_pattern, reason, blocked_at, expires_at
+				 FROM blocked_senders ORDER BY blocked_at DESC",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], row_to_blocked_sender)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
+    async fn is_sender_blocked(&self, sender_type: &str, sender_name: &str) -> MvResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+
+        // Fetch all active rules for this sender_type (not expired)
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, sender_type, sender_pattern, reason, blocked_at, expires_at
+				 FROM blocked_senders
+				 WHERE sender_type = ?1 AND (expires_at IS NULL OR expires_at > ?2)",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![sender_type, now], row_to_blocked_sender)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        for row in rows {
+            let blocked = row.map_err(|e| MvError::Storage(e.to_string()))?;
+            if safeguard_glob_match(&blocked.sender_pattern, sender_name) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    async fn add_auto_approve_rule(&self, rule: &AutoApproveRule) -> MvResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let action_types_csv = if rule.action_types.is_empty() {
+            None
+        } else {
+            Some(rule.action_types.join(","))
+        };
+
+        conn.execute(
+			"INSERT INTO auto_approve_rules (id, name, sender_pattern, action_types, min_confidence, enabled, created_at, updated_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+			params![
+				rule.id.to_string(),
+				rule.name,
+				rule.sender_pattern,
+				action_types_csv,
+				rule.min_confidence as f64,
+				rule.enabled,
+				rule.created_at.to_rfc3339(),
+				rule.updated_at.map(|dt| dt.to_rfc3339()),
+			],
+		)
+		.map_err(|e| MvError::Storage(format!("insert auto_approve_rule failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn remove_auto_approve_rule(&self, id: Uuid) -> MvResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let affected = conn
+            .execute(
+                "DELETE FROM auto_approve_rules WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn list_auto_approve_rules(&self) -> MvResult<Vec<AutoApproveRule>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+			.prepare(
+				"SELECT id, name, sender_pattern, action_types, min_confidence, enabled, created_at, updated_at
+				 FROM auto_approve_rules ORDER BY created_at DESC",
+			)
+			.map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], row_to_auto_approve_rule)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
+    async fn update_auto_approve_rule(&self, rule: &AutoApproveRule) -> MvResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let action_types_csv = if rule.action_types.is_empty() {
+            None
+        } else {
+            Some(rule.action_types.join(","))
+        };
+        let now = Utc::now().to_rfc3339();
+
+        let affected = conn
+			.execute(
+				"UPDATE auto_approve_rules SET name = ?2, sender_pattern = ?3, action_types = ?4, min_confidence = ?5, enabled = ?6, updated_at = ?7 WHERE id = ?1",
+				params![
+					rule.id.to_string(),
+					rule.name,
+					rule.sender_pattern,
+					action_types_csv,
+					rule.min_confidence as f64,
+					rule.enabled,
+					now,
+				],
+			)
+			.map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn save_undo_snapshot(&self, snapshot: &UndoSnapshot) -> MvResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let snapshot_json = serde_json::to_string(&snapshot.snapshot_data)?;
+
+        conn.execute(
+			"INSERT INTO proposal_undo_snapshots (id, proposal_id, snapshot_data, created_at, expires_at, used)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+			params![
+				snapshot.id.to_string(),
+				snapshot.proposal_id.to_string(),
+				snapshot_json,
+				snapshot.created_at.to_rfc3339(),
+				snapshot.expires_at.to_rfc3339(),
+				snapshot.used,
+			],
+		)
+		.map_err(|e| MvError::Storage(format!("insert undo_snapshot failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_undo_snapshot(&self, proposal_id: Uuid) -> MvResult<Option<UndoSnapshot>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, proposal_id, snapshot_data, created_at, expires_at, used
+				 FROM proposal_undo_snapshots WHERE proposal_id = ?1",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let result = stmt
+            .query_row(params![proposal_id.to_string()], row_to_undo_snapshot)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(result)
+    }
+
+    async fn mark_undo_used(&self, id: Uuid) -> MvResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let affected = conn
+            .execute(
+                "UPDATE proposal_undo_snapshots SET used = 1 WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn cleanup_expired_snapshots(&self) -> MvResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+        let affected = conn
+            .execute(
+                "DELETE FROM proposal_undo_snapshots WHERE expires_at < ?1",
+                params![now],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FeedbackStore – Agent Feedback / Reflection
+// ---------------------------------------------------------------------------
+
+fn row_to_agent_feedback(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentFeedback> {
+    let id_str: String = row.get(0)?;
+    let intent_id_str: Option<String> = row.get(1)?;
+    let intent_type: String = row.get(2)?;
+    let action: String = row.get(3)?;
+    let confidence_at_time: Option<f64> = row.get(4)?;
+    let user_edit_delta: Option<f64> = row.get(5)?;
+    let response_time_ms: Option<i64> = row.get(6)?;
+    let created_at: String = row.get(7)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let intent_id = intent_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+    let created = chrono::DateTime::parse_from_rfc3339(&created_at)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+
+    Ok(AgentFeedback {
+        id,
+        intent_id,
+        intent_type,
+        action,
+        confidence_at_time: confidence_at_time.map(|v| v as f32),
+        user_edit_delta: user_edit_delta.map(|v| v as f32),
+        response_time_ms: response_time_ms.map(|v| v as u64),
+        created_at: created,
+    })
+}
+
+fn row_to_confidence_override(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConfidenceOverride> {
+    let intent_type: String = row.get(0)?;
+    let base_adjustment: f64 = row.get(1)?;
+    let auto_apply_threshold: f64 = row.get(2)?;
+    let suppress_below: f64 = row.get(3)?;
+    let updated_at: String = row.get(4)?;
+
+    let updated = chrono::DateTime::parse_from_rfc3339(&updated_at)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+
+    Ok(ConfidenceOverride {
+        intent_type,
+        base_adjustment: base_adjustment as f32,
+        auto_apply_threshold: auto_apply_threshold as f32,
+        suppress_below: suppress_below as f32,
+        updated_at: updated,
+    })
+}
+
+#[async_trait]
+impl FeedbackStore for SqliteNodeStore {
+    async fn record_feedback(&self, fb: &AgentFeedback) -> MvResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+			"INSERT INTO agent_feedback (id, intent_id, intent_type, action, confidence_at_time, user_edit_delta, response_time_ms, created_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+			params![
+				fb.id.to_string(),
+				fb.intent_id.map(|id| id.to_string()),
+				fb.intent_type,
+				fb.action,
+				fb.confidence_at_time.map(|v| v as f64),
+				fb.user_edit_delta.map(|v| v as f64),
+				fb.response_time_ms.map(|v| v as i64),
+				fb.created_at.to_rfc3339(),
+			],
+		)
+		.map_err(|e| MvError::Storage(format!("insert agent_feedback failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn list_feedback(
+        &self,
+        intent_type: Option<&str>,
+        limit: usize,
+    ) -> MvResult<Vec<AgentFeedback>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut sql = String::from(
+			"SELECT id, intent_id, intent_type, action, confidence_at_time, user_edit_delta, response_time_ms, created_at
+			 FROM agent_feedback WHERE 1=1",
+		);
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut param_idx = 1;
+
+        if let Some(it) = intent_type {
+            sql.push_str(&format!(" AND intent_type = ?{param_idx}"));
+            param_values.push(Box::new(it.to_string()));
+            param_idx += 1;
+        }
+
+        sql.push_str(&format!(" ORDER BY created_at DESC LIMIT ?{param_idx}"));
+        param_values.push(Box::new(limit as i64));
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(params_refs.as_slice(), row_to_agent_feedback)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(results)
+    }
+
+    async fn get_acceptance_rate(&self, intent_type: &str) -> MvResult<(usize, usize)> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let total: usize = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_feedback WHERE intent_type = ?1",
+                params![intent_type],
+                |row| row.get(0),
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let applied: usize = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_feedback WHERE intent_type = ?1 AND action = 'applied'",
+                params![intent_type],
+                |row| row.get(0),
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        Ok((applied, total))
+    }
+
+    async fn set_confidence_override(&self, override_: &ConfidenceOverride) -> MvResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+			"INSERT OR REPLACE INTO agent_confidence_overrides (intent_type, base_adjustment, auto_apply_threshold, suppress_below, updated_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5)",
+			params![
+				override_.intent_type,
+				override_.base_adjustment as f64,
+				override_.auto_apply_threshold as f64,
+				override_.suppress_below as f64,
+				override_.updated_at.to_rfc3339(),
+			],
+		)
+		.map_err(|e| MvError::Storage(format!("upsert confidence_override failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_confidence_override(
+        &self,
+        intent_type: &str,
+    ) -> MvResult<Option<ConfidenceOverride>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+			.prepare(
+				"SELECT intent_type, base_adjustment, auto_apply_threshold, suppress_below, updated_at
+				 FROM agent_confidence_overrides WHERE intent_type = ?1",
+			)
+			.map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let result = stmt
+            .query_row(params![intent_type], row_to_confidence_override)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(result)
+    }
+
+    async fn list_confidence_overrides(&self) -> MvResult<Vec<ConfidenceOverride>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+			.prepare(
+				"SELECT intent_type, base_adjustment, auto_apply_threshold, suppress_below, updated_at
+				 FROM agent_confidence_overrides ORDER BY intent_type",
+			)
+			.map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], row_to_confidence_override)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(results)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AutonomyStore – Autonomy & Precision Controls (Phase 3.1)
+// ---------------------------------------------------------------------------
+
+use mv_core::{AutonomyActionLog, AutonomyDecision, AutonomyRule, AutonomyStore};
+
+fn row_to_autonomy_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutonomyRule> {
+    let id_str: String = row.get(0)?;
+    let rule_type: String = row.get(1)?;
+    let scope_key: Option<String> = row.get(2)?;
+    let auto_apply_threshold: f64 = row.get(3)?;
+    let max_actions_per_hour: i64 = row.get(4)?;
+    let allowed_csv: Option<String> = row.get(5)?;
+    let blocked_csv: Option<String> = row.get(6)?;
+    let quiet_hours_start: Option<String> = row.get(7)?;
+    let quiet_hours_end: Option<String> = row.get(8)?;
+    let quiet_hours_timezone: String = row.get(9)?;
+    let enabled: bool = row.get(10)?;
+    let created_at: String = row.get(11)?;
+    let updated_at: Option<String> = row.get(12)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+
+    let allowed_intent_types: Vec<String> = allowed_csv
+        .map(|csv| {
+            csv.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let blocked_intent_types: Vec<String> = blocked_csv
+        .map(|csv| {
+            csv.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(AutonomyRule {
+        id,
+        rule_type,
+        scope_key,
+        auto_apply_threshold: auto_apply_threshold as f32,
+        max_actions_per_hour: max_actions_per_hour as u32,
+        allowed_intent_types,
+        blocked_intent_types,
+        quiet_hours_start,
+        quiet_hours_end,
+        quiet_hours_timezone,
+        enabled,
+        created_at: parse_dt_strict(11, &created_at)?,
+        updated_at: parse_optional_dt_strict(12, updated_at)?,
+    })
+}
+
+fn row_to_autonomy_action_log(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutonomyActionLog> {
+    let id_str: String = row.get(0)?;
+    let rule_id_str: Option<String> = row.get(1)?;
+    let intent_type: String = row.get(2)?;
+    let decision_str: String = row.get(3)?;
+    let confidence: Option<f64> = row.get(4)?;
+    let reason: Option<String> = row.get(5)?;
+    let created_at: String = row.get(6)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let rule_id = rule_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+    let decision: AutonomyDecision = decision_str.parse().map_err(|e: String| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        )
+    })?;
+
+    Ok(AutonomyActionLog {
+        id,
+        rule_id,
+        intent_type,
+        decision,
+        confidence: confidence.map(|v| v as f32),
+        reason,
+        created_at: parse_dt_strict(6, &created_at)?,
+    })
+}
+
+#[async_trait]
+impl AutonomyStore for SqliteNodeStore {
+    async fn add_autonomy_rule(&self, rule: &AutonomyRule) -> MvResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let allowed_csv = if rule.allowed_intent_types.is_empty() {
+            None
+        } else {
+            Some(rule.allowed_intent_types.join(","))
+        };
+        let blocked_csv = if rule.blocked_intent_types.is_empty() {
+            None
+        } else {
+            Some(rule.blocked_intent_types.join(","))
+        };
+
+        conn.execute(
+			"INSERT INTO autonomy_rules (id, rule_type, scope_key, auto_apply_threshold, max_actions_per_hour, allowed_intent_types, blocked_intent_types, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, enabled, created_at, updated_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+			params![
+				rule.id.to_string(),
+				rule.rule_type,
+				rule.scope_key,
+				rule.auto_apply_threshold as f64,
+				rule.max_actions_per_hour as i64,
+				allowed_csv,
+				blocked_csv,
+				rule.quiet_hours_start,
+				rule.quiet_hours_end,
+				rule.quiet_hours_timezone,
+				rule.enabled,
+				rule.created_at.to_rfc3339(),
+				rule.updated_at.map(|dt| dt.to_rfc3339()),
+			],
+		)
+		.map_err(|e| MvError::Storage(format!("insert autonomy_rule failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_autonomy_rule(&self, id: Uuid) -> MvResult<Option<AutonomyRule>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+			.prepare(
+				"SELECT id, rule_type, scope_key, auto_apply_threshold, max_actions_per_hour, allowed_intent_types, blocked_intent_types, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, enabled, created_at, updated_at
+				 FROM autonomy_rules WHERE id = ?1",
+			)
+			.map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let result = stmt
+            .query_row(params![id.to_string()], row_to_autonomy_rule)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(result)
+    }
+
+    async fn list_autonomy_rules(&self) -> MvResult<Vec<AutonomyRule>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+			.prepare(
+				"SELECT id, rule_type, scope_key, auto_apply_threshold, max_actions_per_hour, allowed_intent_types, blocked_intent_types, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, enabled, created_at, updated_at
+				 FROM autonomy_rules ORDER BY created_at DESC",
+			)
+			.map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], row_to_autonomy_rule)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
+    async fn update_autonomy_rule(&self, rule: &AutonomyRule) -> MvResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let allowed_csv = if rule.allowed_intent_types.is_empty() {
+            None
+        } else {
+            Some(rule.allowed_intent_types.join(","))
+        };
+        let blocked_csv = if rule.blocked_intent_types.is_empty() {
+            None
+        } else {
+            Some(rule.blocked_intent_types.join(","))
+        };
+        let now = Utc::now().to_rfc3339();
+
+        let affected = conn
+			.execute(
+				"UPDATE autonomy_rules SET rule_type = ?2, scope_key = ?3, auto_apply_threshold = ?4, max_actions_per_hour = ?5, allowed_intent_types = ?6, blocked_intent_types = ?7, quiet_hours_start = ?8, quiet_hours_end = ?9, quiet_hours_timezone = ?10, enabled = ?11, updated_at = ?12 WHERE id = ?1",
+				params![
+					rule.id.to_string(),
+					rule.rule_type,
+					rule.scope_key,
+					rule.auto_apply_threshold as f64,
+					rule.max_actions_per_hour as i64,
+					allowed_csv,
+					blocked_csv,
+					rule.quiet_hours_start,
+					rule.quiet_hours_end,
+					rule.quiet_hours_timezone,
+					rule.enabled,
+					now,
+				],
+			)
+			.map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn delete_autonomy_rule(&self, id: Uuid) -> MvResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let affected = conn
+            .execute(
+                "DELETE FROM autonomy_rules WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn log_autonomy_action(&self, log: &AutonomyActionLog) -> MvResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+			"INSERT INTO autonomy_action_log (id, rule_id, intent_type, decision, confidence, reason, created_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+			params![
+				log.id.to_string(),
+				log.rule_id.map(|id| id.to_string()),
+				log.intent_type,
+				log.decision.to_string(),
+				log.confidence.map(|v| v as f64),
+				log.reason,
+				log.created_at.to_rfc3339(),
+			],
+		)
+		.map_err(|e| MvError::Storage(format!("insert autonomy_action_log failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn count_recent_actions(
+        &self,
+        rule_id: Option<Uuid>,
+        since: DateTime<Utc>,
+    ) -> MvResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(rid) =
+            rule_id
+        {
+            (
+				"SELECT COUNT(*) FROM autonomy_action_log WHERE rule_id = ?1 AND decision = 'auto_apply' AND created_at >= ?2".to_string(),
+				vec![Box::new(rid.to_string()), Box::new(since.to_rfc3339())],
+			)
+        } else {
+            (
+				"SELECT COUNT(*) FROM autonomy_action_log WHERE decision = 'auto_apply' AND created_at >= ?1".to_string(),
+				vec![Box::new(since.to_rfc3339())],
+			)
+        };
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_box.iter().map(|p| p.as_ref()).collect();
+
+        let count: usize = conn
+            .query_row(&sql, params_refs.as_slice(), |row| row.get(0))
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(count)
+    }
+
+    async fn list_autonomy_action_log(&self, limit: usize) -> MvResult<Vec<AutonomyActionLog>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, rule_id, intent_type, decision, confidence, reason, created_at
+				 FROM autonomy_action_log ORDER BY created_at DESC LIMIT ?1",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![limit as i64], row_to_autonomy_action_log)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(result)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RelayStore – Communication Relay Network (Phase 3.2)
+// ---------------------------------------------------------------------------
+
+use mv_core::{
+    ChannelType, ContentType, MessageDirection, MessageStatus, RelayChannel, RelayContact,
+    RelayMessage, RelayStore, TrustLevel,
+};
+
+fn row_to_relay_contact(row: &rusqlite::Row<'_>) -> rusqlite::Result<RelayContact> {
+    let id_str: String = row.get(0)?;
+    let display_name: String = row.get(1)?;
+    let public_key: String = row.get(2)?;
+    let vault_address: Option<String> = row.get(3)?;
+    let trust_level_str: String = row.get(4)?;
+    let autonomy_rule_id_str: Option<String> = row.get(5)?;
+    let notes: Option<String> = row.get(6)?;
+    let created_at_str: String = row.get(7)?;
+    let updated_at_str: Option<String> = row.get(8)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let trust_level: TrustLevel = trust_level_str.parse().unwrap_or(TrustLevel::RelayOnly);
+    let autonomy_rule_id = autonomy_rule_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+    let created_at = parse_dt_strict(7, &created_at_str)?;
+    let updated_at = parse_optional_dt_strict(8, updated_at_str)?;
+
+    Ok(RelayContact {
+        id,
+        display_name,
+        public_key,
+        vault_address,
+        trust_level,
+        autonomy_rule_id,
+        notes,
+        created_at,
+        updated_at,
+    })
+}
+
+fn row_to_relay_channel(row: &rusqlite::Row<'_>) -> rusqlite::Result<RelayChannel> {
+    let id_str: String = row.get(0)?;
+    let name: Option<String> = row.get(1)?;
+    let channel_type_str: String = row.get(2)?;
+    let member_ids_json: String = row.get(3)?;
+    let created_at_str: String = row.get(4)?;
+    let updated_at_str: Option<String> = row.get(5)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let channel_type: ChannelType = channel_type_str.parse().unwrap_or(ChannelType::Direct);
+    let member_contact_ids: Vec<Uuid> = serde_json::from_str(&member_ids_json).unwrap_or_default();
+    let created_at = parse_dt_strict(4, &created_at_str)?;
+    let updated_at = parse_optional_dt_strict(5, updated_at_str)?;
+
+    Ok(RelayChannel {
+        id,
+        name,
+        channel_type,
+        member_contact_ids,
+        created_at,
+        updated_at,
+    })
+}
+
+fn row_to_relay_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<RelayMessage> {
+    let id_str: String = row.get(0)?;
+    let channel_id_str: String = row.get(1)?;
+    let thread_id_str: Option<String> = row.get(2)?;
+    let sender_contact_id_str: Option<String> = row.get(3)?;
+    let recipient_contact_id_str: Option<String> = row.get(4)?;
+    let direction_str: String = row.get(5)?;
+    let content: String = row.get(6)?;
+    let content_type_str: String = row.get(7)?;
+    let status_str: String = row.get(8)?;
+    let vault_node_id_str: Option<String> = row.get(9)?;
+    let metadata_json: String = row.get(10)?;
+    let created_at_str: String = row.get(11)?;
+    let updated_at_str: Option<String> = row.get(12)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let channel_id = parse_uuid_str(1, &channel_id_str)?;
+    let thread_id = thread_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+    let sender_contact_id = sender_contact_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+    let recipient_contact_id = recipient_contact_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+    let direction: MessageDirection = direction_str.parse().unwrap_or(MessageDirection::Outbound);
+    let content_type: ContentType = content_type_str.parse().unwrap_or(ContentType::Text);
+    let status: MessageStatus = status_str.parse().unwrap_or(MessageStatus::Pending);
+    let vault_node_id = vault_node_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+    let metadata: std::collections::HashMap<String, serde_json::Value> =
+        serde_json::from_str(&metadata_json).unwrap_or_default();
+    let created_at = parse_dt_strict(11, &created_at_str)?;
+    let updated_at = parse_optional_dt_strict(12, updated_at_str)?;
+
+    Ok(RelayMessage {
+        id,
+        channel_id,
+        thread_id,
+        sender_contact_id,
+        recipient_contact_id,
+        direction,
+        content,
+        content_type,
+        status,
+        vault_node_id,
+        metadata,
+        created_at,
+        updated_at,
+    })
+}
+
+#[async_trait]
+impl RelayStore for SqliteNodeStore {
+    // ── Contacts ──────────────────────────────────────────────────────────
+
+    async fn add_relay_contact(&self, contact: &RelayContact) -> MvResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+			"INSERT INTO relay_contacts (id, display_name, public_key, vault_address, trust_level, autonomy_rule_id, notes, created_at, updated_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+			params![
+				contact.id.to_string(),
+				contact.display_name,
+				contact.public_key,
+				contact.vault_address,
+				contact.trust_level.to_string(),
+				contact.autonomy_rule_id.map(|id| id.to_string()),
+				contact.notes,
+				contact.created_at.to_rfc3339(),
+				contact.updated_at.map(|dt| dt.to_rfc3339()),
+			],
+		)
+		.map_err(|e| MvError::Storage(format!("insert relay_contact failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_relay_contact(&self, id: Uuid) -> MvResult<Option<RelayContact>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+			.prepare(
+				"SELECT id, display_name, public_key, vault_address, trust_level, autonomy_rule_id, notes, created_at, updated_at
+				 FROM relay_contacts WHERE id = ?1",
+			)
+			.map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let result = stmt
+            .query_row(params![id.to_string()], row_to_relay_contact)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(result)
+    }
+
+    async fn list_relay_contacts(&self) -> MvResult<Vec<RelayContact>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+			.prepare(
+				"SELECT id, display_name, public_key, vault_address, trust_level, autonomy_rule_id, notes, created_at, updated_at
+				 FROM relay_contacts ORDER BY created_at DESC",
+			)
+			.map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], row_to_relay_contact)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
+    async fn update_relay_contact(&self, contact: &RelayContact) -> MvResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+        let affected = conn
+			.execute(
+				"UPDATE relay_contacts SET display_name = ?2, public_key = ?3, vault_address = ?4, trust_level = ?5, autonomy_rule_id = ?6, notes = ?7, updated_at = ?8 WHERE id = ?1",
+				params![
+					contact.id.to_string(),
+					contact.display_name,
+					contact.public_key,
+					contact.vault_address,
+					contact.trust_level.to_string(),
+					contact.autonomy_rule_id.map(|id| id.to_string()),
+					contact.notes,
+					now,
+				],
+			)
+			.map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn delete_relay_contact(&self, id: Uuid) -> MvResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let affected = conn
+            .execute(
+                "DELETE FROM relay_contacts WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    // ── Channels ──────────────────────────────────────────────────────────
+
+    async fn add_relay_channel(&self, channel: &RelayChannel) -> MvResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let member_ids_json = serde_json::to_string(&channel.member_contact_ids)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+			"INSERT INTO relay_channels (id, name, channel_type, member_contact_ids, created_at, updated_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+			params![
+				channel.id.to_string(),
+				channel.name,
+				channel.channel_type.to_string(),
+				member_ids_json,
+				channel.created_at.to_rfc3339(),
+				channel.updated_at.map(|dt| dt.to_rfc3339()),
+			],
+		)
+		.map_err(|e| MvError::Storage(format!("insert relay_channel failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_relay_channel(&self, id: Uuid) -> MvResult<Option<RelayChannel>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, channel_type, member_contact_ids, created_at, updated_at
+				 FROM relay_channels WHERE id = ?1",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let result = stmt
+            .query_row(params![id.to_string()], row_to_relay_channel)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(result)
+    }
+
+    async fn list_relay_channels(&self) -> MvResult<Vec<RelayChannel>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, channel_type, member_contact_ids, created_at, updated_at
+				 FROM relay_channels ORDER BY created_at DESC",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], row_to_relay_channel)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
+    async fn delete_relay_channel(&self, id: Uuid) -> MvResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let affected = conn
+            .execute(
+                "DELETE FROM relay_channels WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    // ── Messages ──────────────────────────────────────────────────────────
+
+    async fn add_relay_message(&self, message: &RelayMessage) -> MvResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let metadata_json = serde_json::to_string(&message.metadata)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+			"INSERT INTO relay_messages (id, channel_id, thread_id, sender_contact_id, recipient_contact_id, direction, content, content_type, status, vault_node_id, metadata, created_at, updated_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+			params![
+				message.id.to_string(),
+				message.channel_id.to_string(),
+				message.thread_id.map(|id| id.to_string()),
+				message.sender_contact_id.map(|id| id.to_string()),
+				message.recipient_contact_id.map(|id| id.to_string()),
+				message.direction.to_string(),
+				message.content,
+				message.content_type.to_string(),
+				message.status.to_string(),
+				message.vault_node_id.map(|id| id.to_string()),
+				metadata_json,
+				message.created_at.to_rfc3339(),
+				message.updated_at.map(|dt| dt.to_rfc3339()),
+			],
+		)
+		.map_err(|e| MvError::Storage(format!("insert relay_message failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_relay_message(&self, id: Uuid) -> MvResult<Option<RelayMessage>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+			.prepare(
+				"SELECT id, channel_id, thread_id, sender_contact_id, recipient_contact_id, direction, content, content_type, status, vault_node_id, metadata, created_at, updated_at
+				 FROM relay_messages WHERE id = ?1",
+			)
+			.map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let result = stmt
+            .query_row(params![id.to_string()], row_to_relay_message)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(result)
+    }
+
+    async fn list_relay_messages(
+        &self,
+        channel_id: Uuid,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<RelayMessage>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+			.prepare(
+				"SELECT id, channel_id, thread_id, sender_contact_id, recipient_contact_id, direction, content, content_type, status, vault_node_id, metadata, created_at, updated_at
+				 FROM relay_messages WHERE channel_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
+			)
+			.map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(
+                params![channel_id.to_string(), limit as i64, offset as i64],
+                row_to_relay_message,
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
+    async fn update_message_status(&self, id: Uuid, status: MessageStatus) -> MvResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+        let affected = conn
+            .execute(
+                "UPDATE relay_messages SET status = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id.to_string(), status.to_string(), now],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn list_thread_messages(
+        &self,
+        thread_id: Uuid,
+        limit: usize,
+    ) -> MvResult<Vec<RelayMessage>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+			.prepare(
+				"SELECT id, channel_id, thread_id, sender_contact_id, recipient_contact_id, direction, content, content_type, status, vault_node_id, metadata, created_at, updated_at
+				 FROM relay_messages WHERE thread_id = ?1 ORDER BY created_at ASC LIMIT ?2",
+			)
+			.map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(
+                params![thread_id.to_string(), limit as i64],
+                row_to_relay_message,
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
+    async fn count_unread_messages(&self, channel_id: Option<Uuid>) -> MvResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(cid) =
+            channel_id
+        {
+            (
+				"SELECT COUNT(*) FROM relay_messages WHERE status NOT IN ('read') AND direction = 'inbound' AND channel_id = ?1".to_string(),
+				vec![Box::new(cid.to_string())],
+			)
+        } else {
+            (
+				"SELECT COUNT(*) FROM relay_messages WHERE status NOT IN ('read') AND direction = 'inbound'".to_string(),
+				vec![],
+			)
+        };
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_box.iter().map(|p| p.as_ref()).collect();
+
+        let count: usize = conn
+            .query_row(&sql, params_refs.as_slice(), |row| row.get(0))
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(count)
     }
 }
 

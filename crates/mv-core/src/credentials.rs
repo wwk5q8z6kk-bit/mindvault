@@ -118,8 +118,7 @@ impl KeyringBackend {
     }
 
     fn entry(&self, key: &str) -> Result<keyring::Entry, CredentialError> {
-        keyring::Entry::new(&self.service, key)
-            .map_err(|e| CredentialError::Keyring(e.to_string()))
+        keyring::Entry::new(&self.service, key).map_err(|e| CredentialError::Keyring(e.to_string()))
     }
 }
 
@@ -273,6 +272,13 @@ impl CredentialStore {
         Self {
             backends: vec![Box::new(EnvBackend)],
         }
+    }
+
+    /// Insert a backend at a specific position in the resolution chain.
+    /// Index 0 = highest priority (checked first).
+    pub fn insert_backend(&mut self, index: usize, backend: Box<dyn CredentialBackend>) {
+        let idx = index.min(self.backends.len());
+        self.backends.insert(idx, backend);
     }
 
     /// Resolve a secret by walking the backend chain (highest priority first).

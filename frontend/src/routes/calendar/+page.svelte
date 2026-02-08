@@ -22,6 +22,13 @@
 	let icalInput: HTMLInputElement | null = null;
 	let calendarViewRef: CalendarView | null = null;
 	let plannerDate = new Date();
+
+	// iCal import options
+	let showImportOptions = false;
+	let importFile: File | null = null;
+	let importDuplicateStrategy: 'skip' | 'update' | 'duplicate' = 'skip';
+	let importTagsInput = '';
+	let importing = false;
 	let workdayStartHour = 9;
 	let workdayEndHour = 18;
 	let defaultBlockMinutes = 45;
@@ -150,16 +157,44 @@
 		}
 	}
 
-	async function handleIcalImport(event: Event) {
+	function handleIcalFileSelect(event: Event) {
 		const input = event.currentTarget as HTMLInputElement;
 		const file = input.files?.[0];
 		if (!file) return;
+		importFile = file;
+		importDuplicateStrategy = 'skip';
+		importTagsInput = '';
+		showImportOptions = true;
+	}
+
+	function cancelImport() {
+		showImportOptions = false;
+		importFile = null;
+		if (icalInput) icalInput.value = '';
+	}
+
+	async function confirmIcalImport() {
+		if (!importFile || importing) return;
+		importing = true;
 		try {
-			const result = await importIcal(file);
-			pushToast(`Imported ${result.imported_count} events`, 'success');
+			const tags = importTagsInput
+				.split(',')
+				.map((t) => t.trim())
+				.filter((t) => t.length > 0);
+			const namespace = get(activeNamespace);
+			const result = await importIcal(importFile, {
+				namespace: namespace || undefined,
+				duplicate_strategy: importDuplicateStrategy,
+				tags: tags.length > 0 ? tags : undefined
+			});
+			pushToast(`Imported ${result.imported_count} events (${result.skipped_count} skipped)`, 'success');
+			showImportOptions = false;
+			importFile = null;
+			await calendarViewRef?.reload();
 		} catch {
 			pushToast('iCal import failed', 'danger');
 		} finally {
+			importing = false;
 			if (icalInput) icalInput.value = '';
 		}
 	}
@@ -173,7 +208,7 @@
 		</div>
 		<label class="cursor-pointer rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-700">
 			Import .ics
-			<input type="file" accept=".ics,.ical" class="hidden" bind:this={icalInput} on:change={handleIcalImport} />
+			<input type="file" accept=".ics,.ical" class="hidden" bind:this={icalInput} on:change={handleIcalFileSelect} />
 		</label>
 	</div>
 
@@ -325,6 +360,72 @@
 		<CalendarView bind:this={calendarViewRef} on:itemClick={handleItemClick} on:dateChange={handleDateChange} />
 	</div>
 </div>
+
+<!-- iCal Import Options Modal -->
+{#if showImportOptions}
+	<div class="fixed inset-0 z-50 flex items-center justify-center" role="presentation">
+		<div
+			class="absolute inset-0 bg-black/50"
+			on:click={cancelImport}
+			on:keydown={(e) => e.key === 'Escape' && cancelImport()}
+			role="button"
+			tabindex="-1"
+			aria-label="Close"
+		></div>
+		<div class="relative z-10 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+			<h3 class="text-sm font-semibold text-white">Import iCal</h3>
+			<p class="mt-1 text-[11px] text-slate-400">
+				{importFile?.name ?? 'Selected file'} ({Math.round((importFile?.size ?? 0) / 1024)}KB)
+			</p>
+
+			<div class="mt-4 space-y-3">
+				<div>
+					<label class="text-[10px] uppercase tracking-wide text-slate-500" for="ical-dup-strategy">
+						Duplicate handling
+					</label>
+					<select
+						id="ical-dup-strategy"
+						class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+						bind:value={importDuplicateStrategy}
+					>
+						<option value="skip">Skip duplicates</option>
+						<option value="update">Update existing</option>
+						<option value="duplicate">Create duplicates</option>
+					</select>
+				</div>
+
+				<div>
+					<label class="text-[10px] uppercase tracking-wide text-slate-500" for="ical-tags">
+						Tags (comma-separated)
+					</label>
+					<input
+						id="ical-tags"
+						type="text"
+						class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-600"
+						placeholder="e.g. imported, work"
+						bind:value={importTagsInput}
+					/>
+				</div>
+			</div>
+
+			<div class="mt-4 flex justify-end gap-2">
+				<button
+					class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+					on:click={cancelImport}
+				>
+					Cancel
+				</button>
+				<button
+					class="rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+					on:click={confirmIcalImport}
+					disabled={importing}
+				>
+					{importing ? 'Importing...' : 'Import'}
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}
 
 <style>
 	.calendar-wrapper :global(.calendar-view) {

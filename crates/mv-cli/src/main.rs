@@ -162,7 +162,14 @@ enum Commands {
     },
 
     /// Start the MCP (Model Context Protocol) server on stdio
-    Mcp,
+    Mcp {
+        /// Access key for scoped MCP access (or set MINDVAULT_MCP_ACCESS_KEY)
+        #[arg(long)]
+        access_key: Option<String>,
+        /// Allow unscoped read-only access (or set MINDVAULT_MCP_ALLOW_UNSCOPED=true)
+        #[arg(long)]
+        allow_unscoped: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -357,6 +364,12 @@ enum KeychainAction {
         /// Unseal using password stored in macOS Keychain
         #[arg(long)]
         from_macos_keychain: bool,
+        /// Unseal using macOS Secure Enclave
+        #[arg(long)]
+        from_secure_enclave: bool,
+        /// Auto-seal timeout in seconds (default: 900)
+        #[arg(long, default_value = "900")]
+        timeout: u64,
     },
     /// Seal (lock) the vault
     Seal,
@@ -481,6 +494,19 @@ enum KeychainAction {
         #[arg(long, default_value = "20")]
         limit: u32,
     },
+    /// Export an encrypted vault backup
+    #[command(name = "vault-backup")]
+    VaultBackup {
+        /// Output file path
+        #[arg(long, short)]
+        output: String,
+    },
+    /// Restore vault from an encrypted backup
+    #[command(name = "vault-restore")]
+    VaultRestore {
+        /// Backup file path
+        input: String,
+    },
 }
 
 #[tokio::main]
@@ -531,9 +557,12 @@ async fn main() -> Result<()> {
             }
         },
 
-        Commands::Import { from, path, namespace, dry_run } => {
-            commands::import::run(from, path, namespace, dry_run, &cli.config).await
-        }
+        Commands::Import {
+            from,
+            path,
+            namespace,
+            dry_run,
+        } => commands::import::run(from, path, namespace, dry_run, &cli.config).await,
 
         Commands::Server { action } => match action {
             ServerAction::Start {
@@ -597,9 +626,7 @@ async fn main() -> Result<()> {
         },
 
         Commands::Secret { action } => match action {
-            SecretAction::Set { key, value } => {
-                commands::secret::set(&key, value.as_deref()).await
-            }
+            SecretAction::Set { key, value } => commands::secret::set(&key, value.as_deref()).await,
             SecretAction::Get { key } => commands::secret::get(&key).await,
             SecretAction::List => commands::secret::list().await,
             SecretAction::Delete { key } => commands::secret::delete(&key).await,
@@ -614,7 +641,18 @@ async fn main() -> Result<()> {
             KeychainAction::Unseal {
                 from_env,
                 from_macos_keychain,
-            } => commands::keychain::unseal(from_env, from_macos_keychain, &cli.config).await,
+                from_secure_enclave,
+                timeout,
+            } => {
+                commands::keychain::unseal(
+                    from_env,
+                    from_macos_keychain,
+                    from_secure_enclave,
+                    timeout,
+                    &cli.config,
+                )
+                .await
+            }
             KeychainAction::Seal => commands::keychain::seal(&cli.config).await,
             KeychainAction::Status => commands::keychain::status(&cli.config).await,
             KeychainAction::Rotate { grace_hours } => {
@@ -691,14 +729,21 @@ async fn main() -> Result<()> {
                 credential_id,
                 nonce,
             } => commands::keychain::prove(&credential_id, &nonce, &cli.config).await,
-            KeychainAction::AuditVerify => {
-                commands::keychain::audit_verify(&cli.config).await
-            }
+            KeychainAction::AuditVerify => commands::keychain::audit_verify(&cli.config).await,
             KeychainAction::Alerts { limit } => {
                 commands::keychain::alerts(limit, &cli.config).await
             }
+            KeychainAction::VaultBackup { output } => {
+                commands::keychain::vault_backup(&output, &cli.config).await
+            }
+            KeychainAction::VaultRestore { input } => {
+                commands::keychain::vault_restore(&input, &cli.config).await
+            }
         },
 
-        Commands::Mcp => commands::mcp::run(&cli.config).await,
+        Commands::Mcp {
+            access_key,
+            allow_unscoped,
+        } => commands::mcp::run(&cli.config, access_key, allow_unscoped).await,
     }
 }

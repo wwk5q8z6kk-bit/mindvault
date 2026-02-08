@@ -634,6 +634,9 @@
 						API keys and secrets stored securely via the server's credential backends (OS
 						Keychain, environment variables).
 					</p>
+					<a href="/settings/keychain" class="mt-1 inline-block text-xs text-sky-400 hover:text-sky-300"
+						>Manage Sovereign Keychain &rarr;</a
+					>
 				</div>
 				<button
 					class="rounded-lg border border-slate-700 px-2.5 py-1.5 text-[10px] text-slate-300 hover:bg-slate-800"

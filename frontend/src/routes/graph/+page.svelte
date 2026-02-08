@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { listNodes } from '$lib/api/nodes';
-	import { getNeighbors, addRelationship, getNodeRelationships, deleteRelationship, getGraphClusters } from '$lib/api/graph';
-	import type { NodeRelationship, GraphCluster } from '$lib/api/graph';
+	import { getNeighbors, addRelationship, getNodeRelationships, deleteRelationship, getGraphClusters, searchGraph } from '$lib/api/graph';
+	import type { NodeRelationship, GraphCluster, GraphSearchResult } from '$lib/api/graph';
 	import type { KnowledgeNode } from '$lib/api/types';
 	import { pushToast } from '$lib/stores/toast';
 	import { kindColor, kindLabel, ALL_NODE_KINDS, RELATIONSHIP_TYPES, type RelationshipType } from '$lib/utils/kind-helpers';
@@ -70,6 +70,20 @@
 	let clusters: GraphCluster[] = [];
 	let loadingClusters = false;
 	let nodeClusterMap: Map<string, number> = new Map();
+
+	// Cluster detail state
+	let selectedClusterId: string | null = null;
+	$: selectedCluster = clusters.find((c) => c.id === selectedClusterId) ?? null;
+	$: selectedClusterNodes = selectedCluster
+		? nodes.filter((n) => selectedCluster!.node_ids.includes(n.id))
+		: [];
+
+	// Graph search state
+	let showGraphSearch = false;
+	let graphSearchResults: GraphSearchResult[] = [];
+	let graphSearching = false;
+	let searchMaxDepth = 3;
+	let searchMinScore = 0.1;
 
 	// Graph depth control
 	let graphDepth = 1;
@@ -369,6 +383,27 @@
 			cancelRelationshipCreation();
 		}
 	}
+
+	async function runGraphSearch() {
+		if (!selectedNodeId || graphSearching) return;
+		graphSearching = true;
+		showGraphSearch = true;
+		try {
+			const result = await searchGraph({
+				start_id: selectedNodeId,
+				max_depth: searchMaxDepth,
+				min_score: searchMinScore
+			});
+			graphSearchResults = result.results;
+			if (result.results.length === 0) {
+				pushToast('No reachable nodes found from this starting point', 'info');
+			}
+		} catch {
+			pushToast('Graph search failed', 'danger');
+		} finally {
+			graphSearching = false;
+		}
+	}
 </script>
 
 <svelte:window on:mousemove={handleMouseMove} on:mouseup={handleMouseUp} />
@@ -593,7 +628,7 @@
 			</div>
 		{/if}
 
-		<!-- Cluster Legend -->
+		<!-- Cluster Legend + Details -->
 		{#if showClusters && clusters.length > 0}
 			<div class="mt-2 rounded-lg border border-slate-800 bg-slate-900/40 p-3">
 				<div class="flex items-center gap-2">
@@ -604,7 +639,12 @@
 				</div>
 				<div class="mt-2 flex flex-wrap gap-2">
 					{#each clusters as cluster, idx (cluster.id)}
-						<div class="flex items-center gap-1.5 rounded-lg border border-slate-700 px-2 py-1">
+						<button
+							class="flex items-center gap-1.5 rounded-lg border px-2 py-1 transition {selectedClusterId === cluster.id
+								? 'border-sky-500/40 bg-sky-500/10'
+								: 'border-slate-700 hover:border-slate-600'}"
+							on:click={() => { selectedClusterId = selectedClusterId === cluster.id ? null : cluster.id; }}
+						>
 							<div
 								class="h-3 w-3 rounded-full"
 								style="background-color: {CLUSTER_COLORS[idx % CLUSTER_COLORS.length]}"
@@ -615,9 +655,42 @@
 							<span class="rounded bg-slate-700 px-1 text-[9px] text-slate-400">
 								{cluster.node_ids.length}
 							</span>
-						</div>
+						</button>
 					{/each}
 				</div>
+
+				<!-- Cluster detail panel -->
+				{#if selectedCluster}
+					{@const clusterIdx = clusters.indexOf(selectedCluster)}
+					<div class="mt-3 border-t border-slate-800 pt-3">
+						<div class="flex items-center gap-2">
+							<div
+								class="h-4 w-4 rounded-full"
+								style="background-color: {CLUSTER_COLORS[clusterIdx % CLUSTER_COLORS.length]}"
+							></div>
+							<h4 class="text-xs font-semibold text-white">
+								{selectedCluster.name || `Cluster ${clusterIdx + 1}`}
+							</h4>
+							<span class="ml-auto text-[10px] text-slate-500">
+								Density: {selectedCluster.density.toFixed(2)}
+							</span>
+						</div>
+						<div class="mt-2 flex flex-col gap-1 max-h-40 overflow-y-auto">
+							{#each selectedClusterNodes as cNode (cNode.id)}
+								<a
+									href={nodeLink(cNode)}
+									class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-slate-800/60 transition {cNode.id === selectedCluster.center_node_id ? 'border border-sky-500/30 bg-sky-500/5' : ''}"
+								>
+									<div class="h-2.5 w-2.5 rounded-full flex-shrink-0" style="background-color: {kindColor(cNode.kind)}"></div>
+									<span class="truncate text-slate-300">{cNode.title}</span>
+									{#if cNode.id === selectedCluster.center_node_id}
+										<span class="ml-auto text-[9px] text-sky-400">center</span>
+									{/if}
+								</a>
+							{/each}
+						</div>
+					</div>
+				{/if}
 			</div>
 		{/if}
 
@@ -636,6 +709,13 @@
 								on:click={() => startRelationshipCreation(selected.id)}
 							>
 								Link from here
+							</button>
+							<button
+								class="rounded-lg border border-violet-500/40 px-3 py-1 text-xs text-violet-300 hover:bg-violet-500/10 disabled:opacity-50"
+								on:click={runGraphSearch}
+								disabled={graphSearching}
+							>
+								{graphSearching ? 'Searching...' : 'Explore from here'}
 							</button>
 							<a
 								href={nodeLink(selected)}
@@ -676,6 +756,70 @@
 									</div>
 								{/each}
 							</div>
+						</div>
+					{/if}
+
+					<!-- Graph Search Results -->
+					{#if showGraphSearch}
+						<div class="mt-3 border-t border-slate-800 pt-3">
+							<div class="flex items-center justify-between">
+								<h4 class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+									Graph Exploration
+								</h4>
+								<button
+									class="text-[10px] text-slate-500 hover:text-slate-300"
+									on:click={() => { showGraphSearch = false; graphSearchResults = []; }}
+								>
+									Close
+								</button>
+							</div>
+							<div class="mt-2 flex items-center gap-2">
+								<label class="text-[10px] text-slate-500">
+									Depth
+									<input
+										type="number"
+										min="1"
+										max="5"
+										class="ml-1 w-12 rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] text-white"
+										bind:value={searchMaxDepth}
+									/>
+								</label>
+								<label class="text-[10px] text-slate-500">
+									Min score
+									<input
+										type="number"
+										min="0"
+										max="1"
+										step="0.1"
+										class="ml-1 w-14 rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] text-white"
+										bind:value={searchMinScore}
+									/>
+								</label>
+								<button
+									class="rounded border border-violet-500/40 px-2 py-0.5 text-[10px] text-violet-300 hover:bg-violet-500/10 disabled:opacity-50"
+									on:click={runGraphSearch}
+									disabled={graphSearching}
+								>
+									{graphSearching ? '...' : 'Search'}
+								</button>
+							</div>
+							{#if graphSearchResults.length > 0}
+								<div class="mt-2 flex flex-col gap-1 max-h-48 overflow-y-auto">
+									{#each graphSearchResults as result (result.node.id)}
+										<a
+											href={nodeLink({ id: result.node.id, title: result.node.title || 'Untitled', kind: result.node.kind, x: 0, y: 0, vx: 0, vy: 0 })}
+											class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-slate-800/60 transition"
+										>
+											<div class="h-2.5 w-2.5 rounded-full flex-shrink-0" style="background-color: {kindColor(result.node.kind)}"></div>
+											<span class="flex-1 truncate text-slate-300">{result.node.title || 'Untitled'}</span>
+											<span class="text-[9px] text-slate-500">{result.path_length} hop{result.path_length !== 1 ? 's' : ''}</span>
+											<span class="text-[9px] text-violet-400">{result.score.toFixed(2)}</span>
+										</a>
+									{/each}
+								</div>
+							{:else if !graphSearching}
+								<p class="mt-2 text-[10px] text-slate-500">No results yet. Click Search to explore.</p>
+							{/if}
 						</div>
 					{/if}
 				</div>

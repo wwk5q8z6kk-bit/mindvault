@@ -38,6 +38,6 @@ export async function fetchBriefing(namespace?: string): Promise<BriefingRespons
 		params.set('namespace', namespace);
 	}
 	const query = params.toString();
-	const url = query ? `/api/briefing?${query}` : '/api/briefing';
+	const url = query ? `/api/v1/briefing?${query}` : '/api/v1/briefing';
 	return fetchJson<BriefingResponse>(url);
 }

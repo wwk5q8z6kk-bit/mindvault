@@ -2,23 +2,21 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use mv_engine::engine::MindVaultEngine;
+use mv_plugin::PluginRegistry;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, RwLock};
+
+pub use mv_core::ChangeNotification;
+use mv_core::{CapturedIntent, ChronicleEntry, ProactiveInsight};
 
 /// Shared application state.
 pub struct AppState {
     pub engine: Arc<MindVaultEngine>,
     pub change_tx: broadcast::Sender<ChangeNotification>,
     pub reminder_tx: broadcast::Sender<ReminderNotification>,
+    pub agent_tx: broadcast::Sender<AgentNotification>,
     pub webhook_config: WebhookConfig,
-}
-
-#[derive(Clone, Debug)]
-pub struct ChangeNotification {
-    pub node_id: String,
-    pub operation: String,
-    pub timestamp: String,
-    pub namespace: Option<String>,
+    pub plugin_registry: Arc<RwLock<PluginRegistry>>,
 }
 
 /// Notification for task reminders.
@@ -31,6 +29,50 @@ pub struct ReminderNotification {
     pub namespace: Option<String>,
     pub timestamp: DateTime<Utc>,
     pub notification_type: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgentRelatedNode {
+    pub id: String,
+    pub title: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentNotification {
+    Chronicle {
+        entry: ChronicleEntry,
+        namespace: Option<String>,
+    },
+    Intent {
+        intent: CapturedIntent,
+        namespace: Option<String>,
+    },
+    InsightDiscovered {
+        insight: ProactiveInsight,
+        namespace: Option<String>,
+    },
+    RelatedContext {
+        nodes: Vec<AgentRelatedNode>,
+        namespace: Option<String>,
+    },
+    NodeEnriched {
+        node_id: String,
+        namespace: Option<String>,
+    },
+}
+
+impl AgentNotification {
+    pub fn namespace(&self) -> Option<&str> {
+        match self {
+            Self::Chronicle { namespace, .. }
+            | Self::Intent { namespace, .. }
+            | Self::InsightDiscovered { namespace, .. }
+            | Self::RelatedContext { namespace, .. }
+            | Self::NodeEnriched { namespace, .. } => namespace.as_deref(),
+        }
+    }
 }
 
 /// Configuration for webhook notifications.
@@ -61,12 +103,22 @@ impl WebhookConfig {
 impl AppState {
     pub fn new(engine: Arc<MindVaultEngine>) -> Self {
         let (change_tx, _) = broadcast::channel(256);
+        Self::new_with_change_tx(engine, change_tx)
+    }
+
+    pub fn new_with_change_tx(
+        engine: Arc<MindVaultEngine>,
+        change_tx: broadcast::Sender<ChangeNotification>,
+    ) -> Self {
         let (reminder_tx, _) = broadcast::channel(256);
+        let (agent_tx, _) = broadcast::channel(256);
         Self {
             engine,
             change_tx,
             reminder_tx,
+            agent_tx,
             webhook_config: WebhookConfig::from_env(),
+            plugin_registry: Arc::new(RwLock::new(PluginRegistry::new())),
         }
     }
 
@@ -102,5 +154,47 @@ impl AppState {
                 }
             });
         }
+    }
+
+    pub fn notify_agent(&self, notification: AgentNotification) {
+        let _ = self.agent_tx.send(notification);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mv_core::{InsightType, IntentType};
+
+    #[test]
+    fn agent_notification_serializes_with_expected_type_tag() {
+        let mut intent = CapturedIntent::new(uuid::Uuid::now_v7(), IntentType::ExtractTask);
+        intent.confidence = 0.8;
+        let notification = AgentNotification::Intent {
+            intent,
+            namespace: Some("default".to_string()),
+        };
+
+        let json = serde_json::to_value(notification).unwrap();
+        assert_eq!(json["type"], "intent");
+        assert_eq!(json["namespace"], "default");
+
+        let insight = ProactiveInsight::new("t", "c", InsightType::Trend);
+        let insight_json = serde_json::to_value(AgentNotification::InsightDiscovered {
+            insight,
+            namespace: Some("default".to_string()),
+        })
+        .unwrap();
+        assert_eq!(insight_json["type"], "insight_discovered");
+    }
+
+    #[test]
+    fn agent_notification_namespace_accessor() {
+        let entry = ChronicleEntry::new("step", "logic");
+        let notification = AgentNotification::Chronicle {
+            entry,
+            namespace: Some("ops".to_string()),
+        };
+        assert_eq!(notification.namespace(), Some("ops"));
     }
 }

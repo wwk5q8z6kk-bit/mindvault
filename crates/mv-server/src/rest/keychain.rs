@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
+use base64::Engine;
 use mv_core::model::keychain::*;
 use mv_core::MvError;
 
@@ -23,7 +24,9 @@ use crate::state::AppState;
 fn map_keychain_error(err: MvError) -> (StatusCode, String) {
     match &err {
         MvError::VaultSealed => (StatusCode::LOCKED, err.to_string()),
-        MvError::Keychain(msg) if msg.contains("not found") => (StatusCode::NOT_FOUND, err.to_string()),
+        MvError::Keychain(msg) if msg.contains("not found") => {
+            (StatusCode::NOT_FOUND, err.to_string())
+        }
         MvError::Keychain(msg) if msg.contains("not initialized") => {
             (StatusCode::PRECONDITION_FAILED, err.to_string())
         }
@@ -62,6 +65,8 @@ pub struct UnsealRequest {
     pub password: Option<String>,
     #[serde(default)]
     pub from_macos_keychain: bool,
+    #[serde(default)]
+    pub from_secure_enclave: bool,
 }
 
 #[derive(Serialize)]
@@ -72,6 +77,7 @@ pub struct VaultStatusResponse {
     pub domain_count: Option<usize>,
     pub created_at: Option<String>,
     pub last_rotated_at: Option<String>,
+    pub auto_seal_remaining_secs: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -197,7 +203,24 @@ pub async fn unseal_vault(
     Json(body): Json<UnsealRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_admin(&auth)?;
-    if body.from_macos_keychain {
+    if body.from_secure_enclave {
+        #[cfg(target_os = "macos")]
+        {
+            state
+                .engine
+                .keychain
+                .unseal_from_secure_enclave()
+                .await
+                .map_err(map_keychain_error)?;
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Secure Enclave only available on macOS".into(),
+            ));
+        }
+    } else if body.from_macos_keychain {
         state
             .engine
             .keychain
@@ -215,6 +238,8 @@ pub async fn unseal_vault(
             .await
             .map_err(map_keychain_error)?;
     }
+    // Start auto-seal timer after successful unseal
+    state.engine.keychain.start_auto_seal().await;
     Ok(Json(serde_json::json!({"status": "unsealed"})))
 }
 
@@ -263,6 +288,8 @@ pub async fn vault_status(
         (None, None)
     };
 
+    let seal_remaining = state.engine.keychain.auto_seal_remaining().await;
+
     Ok(Json(VaultStatusResponse {
         state: vault_state.to_string(),
         key_epoch: meta.as_ref().map(|m| m.key_epoch),
@@ -272,6 +299,7 @@ pub async fn vault_status(
         last_rotated_at: meta
             .as_ref()
             .and_then(|m| m.last_rotated_at.map(|dt| dt.to_rfc3339())),
+        auto_seal_remaining_secs: seal_remaining,
     }))
 }
 
@@ -369,7 +397,14 @@ pub async fn store_credential(
     let cred = state
         .engine
         .keychain
-        .store_credential(domain_id, &body.name, &body.kind, body.value.as_bytes(), body.tags, expires_at)
+        .store_credential(
+            domain_id,
+            &body.name,
+            &body.kind,
+            body.value.as_bytes(),
+            body.tags,
+            expires_at,
+        )
         .await
         .map_err(map_keychain_error)?;
     Ok((StatusCode::CREATED, Json(cred)))
@@ -382,7 +417,9 @@ pub async fn list_credentials(
 ) -> Result<Json<Vec<StoredCredential>>, (StatusCode, String)> {
     require_admin(&auth)?;
     let domain_id = match q.domain_id {
-        Some(ref s) => Some(Uuid::parse_str(s).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?),
+        Some(ref s) => {
+            Some(Uuid::parse_str(s).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?)
+        }
         None => None,
     };
     let cred_state = match q.state {
@@ -411,7 +448,7 @@ pub async fn read_credential(
     let (cred, plaintext) = state
         .engine
         .keychain
-        .read_credential(uuid, &auth.subject)
+        .read_credential(uuid, auth.subject.as_deref().unwrap_or("anonymous"))
         .await
         .map_err(map_keychain_error)?;
     let value = String::from_utf8_lossy(&plaintext).to_string();
@@ -506,8 +543,8 @@ pub async fn list_delegations(
     Query(q): Query<DelegationListQuery>,
 ) -> Result<Json<Vec<Delegation>>, (StatusCode, String)> {
     require_admin(&auth)?;
-    let cred_id = Uuid::parse_str(&q.credential_id)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let cred_id =
+        Uuid::parse_str(&q.credential_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let delegations = state
         .engine
         .keychain
@@ -567,7 +604,7 @@ pub async fn generate_proof(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
     Json(body): Json<GenerateProofRequest>,
-) -> Result<Json<ZkAccessProof>, (StatusCode, String)> {
+) -> Result<Json<AccessProof>, (StatusCode, String)> {
     require_admin(&auth)?;
     let cred_id = Uuid::parse_str(&body.credential_id)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -590,7 +627,12 @@ pub async fn verify_proof(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let generated_at = chrono::DateTime::parse_from_rfc3339(&body.generated_at)
         .map(|dt| dt.with_timezone(&chrono::Utc))
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid generated_at: {e}")))?;
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("invalid generated_at: {e}"),
+            )
+        })?;
     let expires_at = chrono::DateTime::parse_from_rfc3339(&body.expires_at)
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid expires_at: {e}")))?;
@@ -683,4 +725,52 @@ pub async fn run_lifecycle(
         .await
         .map_err(map_keychain_error)?;
     Ok(Json(serde_json::json!({"transitioned": count})))
+}
+
+// ---------------------------------------------------------------------------
+// Backup / Restore
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct BackupRequest {
+    pub password: String,
+}
+
+#[derive(Deserialize)]
+pub struct RestoreRequest {
+    pub password: String,
+    pub data: String, // base64-encoded backup data
+}
+
+pub async fn backup_vault(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(body): Json<BackupRequest>,
+) -> Result<(StatusCode, Vec<u8>), (StatusCode, String)> {
+    require_admin(&auth)?;
+    let data = state
+        .engine
+        .keychain
+        .backup_vault(&body.password)
+        .await
+        .map_err(map_keychain_error)?;
+    Ok((StatusCode::OK, data))
+}
+
+pub async fn restore_vault(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(body): Json<RestoreRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_admin(&auth)?;
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(&body.data)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid base64: {e}")))?;
+    state
+        .engine
+        .keychain
+        .restore_vault(&data, &body.password)
+        .await
+        .map_err(map_keychain_error)?;
+    Ok(Json(serde_json::json!({"status": "restored"})))
 }
