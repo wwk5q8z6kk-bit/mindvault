@@ -1587,6 +1587,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_credential_metadata_applies_fields() {
+        let engine = test_engine().await;
+        engine.initialize_vault("test-password", false).await.unwrap();
+        engine.unseal_vault("test-password").await.unwrap();
+
+        let domain_id = engine.find_or_create_domain("oauth-clients").await.unwrap();
+        let stored = engine
+            .store_credential(
+                domain_id,
+                "client-id",
+                "oauth_client_secret",
+                b"secret",
+                vec!["oauth".into()],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "template_id".to_string(),
+            serde_json::Value::String("template-123".to_string()),
+        );
+        metadata.insert(
+            "token_ttl_seconds".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(3600u64)),
+        );
+
+        let updated = engine
+            .update_credential_metadata(
+                stored.id,
+                Some("AI Manager".to_string()),
+                Some(vec!["oauth".into(), "client".into()]),
+                Some(metadata.clone()),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.description.as_deref(), Some("AI Manager"));
+        assert_eq!(updated.tags.len(), 2);
+        assert_eq!(
+            updated
+                .metadata
+                .get("template_id")
+                .and_then(|v| v.as_str()),
+            Some("template-123")
+        );
+    }
+
+    #[tokio::test]
     async fn wrong_password_rejected() {
         let engine = test_engine().await;
         engine.initialize_vault("correct", false).await.unwrap();
