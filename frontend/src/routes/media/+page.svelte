@@ -1,13 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { listNotes } from '$lib/api/notes';
-	import { listTasks } from '$lib/api/tasks';
 	import {
 		attachmentDownloadUrl,
 		attachmentInlineUrl,
-		listNodeAttachments,
-		type NodeAttachment
+		listAttachmentIndex,
+		type AttachmentIndexItem
 	} from '$lib/api/files';
 	import {
 		badgeClass,
@@ -16,76 +14,56 @@
 		formatExtractionStatus
 	} from '$lib/utils/attachments';
 	import { pushToast } from '$lib/stores/toast';
-	import type { Note } from '$lib/api/notes';
-	import type { Task } from '$lib/api/tasks';
 
-	type MediaItem = {
-		attachment: NodeAttachment;
-		nodeId: string;
-		nodeTitle: string;
-		nodeKind: 'note' | 'task';
-		uploadedAt?: string | null;
-	};
+	const PAGE_SIZE = 24;
 
-	let items: MediaItem[] = [];
+	let items: AttachmentIndexItem[] = [];
 	let loading = true;
+	let loadingMore = false;
 	let query = '';
+	let hasMore = false;
+	let total = 0;
+	let requestVersion = 0;
 	let typeFilter: 'all' | 'image' | 'pdf' | 'audio' | 'video' | 'other' = 'all';
 
-	function hasAttachments(meta: Record<string, unknown>): boolean {
-		const raw = meta?.attachments as unknown;
-		return Array.isArray(raw) && raw.length > 0;
-	}
-
-	async function loadMedia() {
-		loading = true;
+	async function loadMedia(reset = false) {
+		const nextVersion = ++requestVersion;
+		if (reset) {
+			loading = true;
+		} else {
+			loadingMore = true;
+		}
 		try {
-			const [notes, tasks] = await Promise.all([listNotes(100), listTasks()]);
-			const targets: Array<{ id: string; title: string; kind: 'note' | 'task'; meta: Record<string, unknown> }> = [
-				...notes.map((note: Note) => ({
-					id: note.id,
-					title: note.title ?? 'Untitled note',
-					kind: 'note' as const,
-					meta: note.metadata ?? {}
-				})),
-				...tasks.map((task: Task) => ({
-					id: task.id,
-					title: task.title ?? 'Untitled task',
-					kind: 'task' as const,
-					meta: task.metadata ?? {}
-				}))
-			];
-
-			const withAttachments = targets.filter((t) => hasAttachments(t.meta));
-			const batches = await Promise.all(
-				withAttachments.map(async (target) => {
-					try {
-						const attachments = await listNodeAttachments(target.id);
-						return attachments.map((attachment) => ({
-							attachment,
-							nodeId: target.id,
-							nodeTitle: target.title,
-							nodeKind: target.kind,
-							uploadedAt: attachment.uploaded_at
-						}));
-					} catch {
-						return [] as MediaItem[];
-					}
-				})
-			);
-			items = batches.flat().sort((a, b) => {
-				const aTime = a.uploadedAt ? new Date(a.uploadedAt).getTime() : 0;
-				const bTime = b.uploadedAt ? new Date(b.uploadedAt).getTime() : 0;
-				return bTime - aTime;
+			const offset = reset ? 0 : items.length;
+			const response = await listAttachmentIndex({
+				q: query.trim() || undefined,
+				limit: PAGE_SIZE,
+				offset,
+				sort: 'uploaded_desc'
 			});
+
+			// Ignore stale responses from older inflight requests.
+			if (nextVersion !== requestVersion) return;
+
+			items = reset ? response.items : [...items, ...response.items];
+			hasMore = response.has_more;
+			total = response.total;
 		} catch {
+			if (nextVersion !== requestVersion) return;
+			if (reset) {
+				items = [];
+				hasMore = false;
+				total = 0;
+			}
 			pushToast('Failed to load media library', 'danger');
 		} finally {
+			if (nextVersion !== requestVersion) return;
 			loading = false;
+			loadingMore = false;
 		}
 	}
 
-	function matchesType(attachment: NodeAttachment): boolean {
+	function matchesType(attachment: AttachmentIndexItem): boolean {
 		if (typeFilter === 'all') return true;
 		const kind = classifyAttachment(attachment);
 		if (typeFilter === 'image') return kind.isImage;
@@ -96,22 +74,21 @@
 	}
 
 	$: filteredItems = items.filter((item) => {
-		if (typeFilter !== 'all' && !matchesType(item.attachment)) return false;
-		if (!query.trim()) return true;
-		const q = query.toLowerCase();
-		return (
-			item.attachment.file_name.toLowerCase().includes(q) ||
-			item.nodeTitle.toLowerCase().includes(q)
-		);
+		if (typeFilter !== 'all' && !matchesType(item)) return false;
+		return true;
 	});
 
-	function openSource(item: MediaItem) {
-		const path = item.nodeKind === 'note' ? `/notes?note=${item.nodeId}` : `/tasks?task=${item.nodeId}`;
+	function openSource(item: AttachmentIndexItem) {
+		const path = item.node_kind === 'task' ? `/tasks?task=${item.node_id}` : `/notes?note=${item.node_id}`;
 		goto(path);
 	}
 
+	function onSearchInput() {
+		void loadMedia(true);
+	}
+
 	onMount(() => {
-		void loadMedia();
+		void loadMedia(true);
 	});
 </script>
 
@@ -126,6 +103,7 @@
 				class="w-56 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-200"
 				placeholder="Search attachments"
 				bind:value={query}
+				on:input={onSearchInput}
 			/>
 			<select
 				class="rounded-lg border border-slate-800 bg-slate-900 px-2 py-2 text-xs text-slate-200"
@@ -141,6 +119,13 @@
 		</div>
 	</div>
 
+	<div class="mt-2 flex items-center justify-between text-[11px] text-slate-500">
+		<span>Showing {filteredItems.length} of {total}</span>
+		{#if query.trim()}
+			<span>Server search: “{query.trim()}”</span>
+		{/if}
+	</div>
+
 	<div class="mt-4">
 		{#if loading}
 			<p class="text-xs text-slate-500">Loading media…</p>
@@ -148,30 +133,32 @@
 			<p class="text-xs text-slate-500">No attachments found.</p>
 		{:else}
 			<div class="grid gap-4 md:grid-cols-2">
-				{#each filteredItems as item (item.nodeId + item.attachment.attachment_id)}
-					{@const previewUrl = attachmentInlineUrl(item.nodeId, item.attachment.attachment_id)}
-					{@const kind = classifyAttachment(item.attachment)}
-					{@const badge = extractionBadge(item.attachment.extraction_status)}
+				{#each filteredItems as item (item.node_id + item.attachment_id)}
+					{@const previewUrl = attachmentInlineUrl(item.node_id, item.attachment_id)}
+					{@const kind = classifyAttachment(item)}
+					{@const badge = extractionBadge(item.extraction_status)}
 					<div class="rounded-2xl border border-slate-900 bg-slate-900/40 p-4">
 						<div class="flex items-start justify-between gap-2">
 							<div>
-								<div class="text-sm font-semibold text-white">{item.attachment.file_name}</div>
+								<div class="text-sm font-semibold text-white">{item.file_name}</div>
 								<div class="mt-1 text-[10px] text-slate-500">
 									<span
-										class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] {badgeClass(badge.tone)}"
-										title={formatExtractionStatus(item.attachment.extraction_status, item.attachment.extracted_chars)}
+										class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] {badgeClass(
+											badge.tone
+										)}"
+										title={formatExtractionStatus(item.extraction_status, item.extracted_chars)}
 									>
 										{badge.label}
 									</span>
 									<span class="ml-2 text-[10px] text-slate-400">
-										{item.nodeKind === 'note' ? 'Note' : 'Task'} · {item.nodeTitle}
+										{item.node_kind === 'task' ? 'Task' : 'Note'} · {item.node_title}
 									</span>
 								</div>
 							</div>
 							<div class="flex items-center gap-2">
 								<a
 									class="rounded-lg border border-slate-700 px-2 py-1 text-[10px] text-slate-200 hover:bg-slate-800"
-									href={attachmentDownloadUrl(item.nodeId, item.attachment.attachment_id)}
+									href={attachmentDownloadUrl(item.node_id, item.attachment_id)}
 									target="_blank"
 									rel="noreferrer"
 								>
@@ -191,20 +178,24 @@
 								<img
 									class="h-40 w-full rounded-lg border border-slate-800 object-cover"
 									src={previewUrl}
-									alt={item.attachment.file_name}
+									alt={item.file_name}
 									loading="lazy"
 								/>
 							{:else if kind.isPdf}
 								<iframe
 									class="h-44 w-full rounded-lg border border-slate-800 bg-slate-950"
 									src={previewUrl}
-									title={`Preview ${item.attachment.file_name}`}
+									title={`Preview ${item.file_name}`}
 									loading="lazy"
 								></iframe>
 							{:else if kind.isAudio}
 								<audio class="w-full" controls src={previewUrl}></audio>
 							{:else if kind.isVideo}
-								<video class="h-44 w-full rounded-lg border border-slate-800 bg-black" controls src={previewUrl}>
+								<video
+									class="h-44 w-full rounded-lg border border-slate-800 bg-black"
+									controls
+									src={previewUrl}
+								>
 									<track kind="captions" />
 								</video>
 							{:else}
@@ -216,6 +207,18 @@
 					</div>
 				{/each}
 			</div>
+
+			{#if hasMore}
+				<div class="mt-4 flex justify-center">
+					<button
+						class="rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+						on:click={() => void loadMedia(false)}
+						disabled={loadingMore}
+					>
+						{loadingMore ? 'Loading…' : 'Load more'}
+					</button>
+				</div>
+			{/if}
 		{/if}
 	</div>
 </div>
