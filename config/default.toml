@@ -12,6 +12,33 @@ lancedb_path = "~/.mindvault/data/lancedb"
 tantivy_path = "~/.mindvault/data/tantivy"
 blobs_path = "~/.mindvault/data/blobs"
 
+[profile]
+display_name = "MindVault Owner"
+primary_email = ""
+timezone = "UTC"
+signature = ""
+
+[email]
+enabled = false
+namespace = "default"
+poll_interval_secs = 120
+max_fetch = 20
+max_attachment_bytes = 5242880
+mark_seen = false
+imap_host = ""
+imap_port = 993
+imap_username = ""
+imap_folder = "INBOX"
+imap_starttls = true
+smtp_host = ""
+smtp_port = 587
+smtp_username = ""
+smtp_from = ""
+smtp_starttls = true
+# Passwords should be set via secrets:
+# mindvault secret set MINDVAULT_EMAIL_IMAP_PASSWORD
+# mindvault secret set MINDVAULT_EMAIL_SMTP_PASSWORD
+
 [embedding]
 provider = "local_fastembed"
 model = "bge-small-en-v1.5"

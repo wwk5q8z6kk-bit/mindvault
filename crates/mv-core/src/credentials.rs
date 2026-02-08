@@ -127,6 +127,8 @@ const KNOWN_SECRET_KEYS: &[&str] = &[
     "OPENAI_API_KEY",
     "MINDVAULT_EMBEDDING_API_KEY",
     "MINDVAULT_ENCRYPTION_KEY",
+    "MINDVAULT_EMAIL_IMAP_PASSWORD",
+    "MINDVAULT_EMAIL_SMTP_PASSWORD",
 ];
 
 impl CredentialBackend for KeyringBackend {

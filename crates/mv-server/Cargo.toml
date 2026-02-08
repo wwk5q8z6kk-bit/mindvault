@@ -37,6 +37,10 @@ async-stream = "0.3"
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 base64 = { workspace = true }
+imap = "2.4"
+native-tls = "0.2"
+mailparse = "0.15"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-native-tls"] }
 
 [build-dependencies]
 tonic-build = "0.12"

@@ -32,6 +32,28 @@ pub async fn show(config_path: &str) -> Result<()> {
     println!("\n[storage]");
     println!("  data_dir = {}", runtime.engine.data_dir);
 
+    println!("\n[profile]");
+    println!("  display_name = {}", runtime.engine.profile.display_name);
+    println!(
+        "  primary_email = {}",
+        runtime
+            .engine
+            .profile
+            .primary_email
+            .as_deref()
+            .unwrap_or("<unset>")
+    );
+    println!("  timezone = {}", runtime.engine.profile.timezone);
+    println!(
+        "  signature = {}",
+        runtime
+            .engine
+            .profile
+            .signature
+            .as_deref()
+            .unwrap_or("<unset>")
+    );
+
     println!("\n[embedding]");
     println!("  provider = {}", runtime.engine.embedding.provider);
     println!("  model = {}", runtime.engine.embedding.model);
@@ -146,6 +168,55 @@ pub async fn show(config_path: &str) -> Result<()> {
     println!("  max_tokens = {}", runtime.engine.llm.max_tokens);
     println!("  temperature = {}", runtime.engine.llm.temperature);
     println!("  timeout_secs = {}", runtime.engine.llm.timeout_secs);
+
+    println!("\n[email]");
+    println!("  enabled = {}", runtime.engine.email.enabled);
+    println!("  namespace = {}", runtime.engine.email.namespace);
+    println!(
+        "  poll_interval_secs = {}",
+        runtime.engine.email.poll_interval_secs
+    );
+    println!("  max_fetch = {}", runtime.engine.email.max_fetch);
+    println!(
+        "  max_attachment_bytes = {}",
+        runtime.engine.email.max_attachment_bytes
+    );
+    println!("  mark_seen = {}", runtime.engine.email.mark_seen);
+    println!(
+        "  imap_host = {}",
+        runtime.engine.email.imap_host.as_deref().unwrap_or("<unset>")
+    );
+    println!("  imap_port = {}", runtime.engine.email.imap_port);
+    println!(
+        "  imap_username = {}",
+        runtime
+            .engine
+            .email
+            .imap_username
+            .as_deref()
+            .unwrap_or("<unset>")
+    );
+    println!("  imap_folder = {}", runtime.engine.email.imap_folder);
+    println!("  imap_starttls = {}", runtime.engine.email.imap_starttls);
+    println!(
+        "  smtp_host = {}",
+        runtime.engine.email.smtp_host.as_deref().unwrap_or("<unset>")
+    );
+    println!("  smtp_port = {}", runtime.engine.email.smtp_port);
+    println!(
+        "  smtp_username = {}",
+        runtime
+            .engine
+            .email
+            .smtp_username
+            .as_deref()
+            .unwrap_or("<unset>")
+    );
+    println!(
+        "  smtp_from = {}",
+        runtime.engine.email.smtp_from.as_deref().unwrap_or("<unset>")
+    );
+    println!("  smtp_starttls = {}", runtime.engine.email.smtp_starttls);
 
     println!("\n[watcher]");
     println!("  enabled = {}", runtime.engine.watcher.enabled);
