@@ -184,6 +184,7 @@ MindVault supports two auth modes:
 
 1. Shared bearer token via `MINDVAULT_AUTH_TOKEN`.
 2. HS256 JWT bearer tokens via `MINDVAULT_JWT_SECRET`.
+3. OAuth2 client-credentials (built-in, local) backed by the Sovereign Keychain.
 
 If both are set, either token type is accepted.
 
@@ -218,6 +219,16 @@ Authorization: Bearer <token>
 
 Auth is enforced on REST, WebSocket, and gRPC when enabled.
 When limits are exceeded, APIs return `429` (REST/WebSocket) or `RESOURCE_EXHAUSTED` (gRPC).
+
+### OAuth2 (Client Credentials)
+
+MindVault includes a local OAuth2 client‑credentials flow for delegated AI managers.
+Client secrets are stored in the Sovereign Keychain; the vault must be unsealed to issue tokens.
+
+- Create client (admin-only): `POST /api/v1/oauth/clients`
+- Token endpoint: `POST /api/v1/oauth/token`
+
+Tokens returned are standard Bearer tokens (internally backed by access keys with expiry).
 
 ## Runtime Diagnostics
 
