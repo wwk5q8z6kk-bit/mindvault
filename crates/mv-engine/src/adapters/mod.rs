@@ -231,7 +231,7 @@ impl AdapterRegistry {
         let adapters = self.adapters.read().await;
         match adapters.get(&adapter_id) {
             Some(adapter) => adapter.send(message).await,
-            None => Err(mv_core::MvError::NotFound(format!(
+            None => Err(mv_core::MvError::InvalidInput(format!(
                 "adapter {adapter_id} not found"
             ))),
         }

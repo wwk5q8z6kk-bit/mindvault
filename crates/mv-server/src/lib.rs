@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod auth;
+pub mod email;
 pub mod grpc;
 pub mod limits;
 pub mod metrics;
@@ -84,6 +85,7 @@ pub async fn start_server(
     let state = Arc::new(AppState::new_with_change_tx(engine, change_tx));
     spawn_agent_change_processor(Arc::clone(&state), shutdown_tx.subscribe());
     spawn_recurrence_and_reminder_scheduler(Arc::clone(&state));
+    email::spawn_email_adapter(Arc::clone(&state), shutdown_tx.subscribe());
 
     // REST + WebSocket server
     let rest_state = Arc::clone(&state);

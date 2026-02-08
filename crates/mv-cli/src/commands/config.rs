@@ -285,6 +285,14 @@ pub async fn validate(config_path: &str) -> Result<()> {
                 Ok(Some(sv)) => println!("  OPENAI_API_KEY: set (via {})", sv.source()),
                 _ => println!("  OPENAI_API_KEY: not set (vector search will be disabled)"),
             }
+            match creds.get("MINDVAULT_EMAIL_IMAP_PASSWORD") {
+                Ok(Some(sv)) => println!("  MINDVAULT_EMAIL_IMAP_PASSWORD: set (via {})", sv.source()),
+                _ => println!("  MINDVAULT_EMAIL_IMAP_PASSWORD: not set"),
+            }
+            match creds.get("MINDVAULT_EMAIL_SMTP_PASSWORD") {
+                Ok(Some(sv)) => println!("  MINDVAULT_EMAIL_SMTP_PASSWORD: set (via {})", sv.source()),
+                _ => println!("  MINDVAULT_EMAIL_SMTP_PASSWORD: not set"),
+            }
         }
         Err(e) => {
             println!("config validation failed: {e}");

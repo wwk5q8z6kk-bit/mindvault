@@ -47,6 +47,7 @@ pub struct SendMessageDto {
     pub content: String,
     pub content_type: Option<String>,
     pub thread_id: Option<String>,
+    pub subject: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -84,6 +85,15 @@ fn map_mv_error(err: mv_core::MvError) -> (StatusCode, String) {
         mv_core::MvError::NodeNotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
         mv_core::MvError::InvalidInput(_) => (StatusCode::BAD_REQUEST, err.to_string()),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+fn map_email_error(err: mv_core::MvError) -> (StatusCode, String) {
+    match err {
+        mv_core::MvError::Config(_) | mv_core::MvError::InvalidInput(_) => {
+            (StatusCode::BAD_REQUEST, err.to_string())
+        }
+        _ => (StatusCode::BAD_GATEWAY, err.to_string()),
     }
 }
 
@@ -397,14 +407,53 @@ pub async fn send_message(
         message = message.with_thread(thread_id);
     }
 
+    if let Some(subject) = req.subject.as_ref().map(|value| value.trim()) {
+        if !subject.is_empty() {
+            message.metadata.insert(
+                "subject".to_string(),
+                serde_json::Value::String(subject.to_string()),
+            );
+        }
+    }
+
     let namespace = auth.namespace.as_deref().unwrap_or("default");
 
-    let stored = state
+    let mut stored = state
         .engine
         .relay
         .send_message(message, namespace)
         .await
         .map_err(map_mv_error)?;
+
+    match crate::email::send_outbound_relay_if_email_channel(&state, &stored).await {
+        Ok(Some(recipient)) => {
+            state
+                .engine
+                .relay
+                .update_status(stored.id, MessageStatus::Delivered)
+                .await
+                .map_err(map_mv_error)?;
+            stored.status = MessageStatus::Delivered;
+            stored.metadata.insert(
+                "email_recipient".to_string(),
+                serde_json::Value::String(recipient),
+            );
+            stored.metadata.insert(
+                "adapter".to_string(),
+                serde_json::Value::String("email".to_string()),
+            );
+        }
+        Ok(None) => {}
+        Err(err) => {
+            let _ = state
+                .engine
+                .relay
+                .update_status(stored.id, MessageStatus::Failed)
+                .await;
+            stored.status = MessageStatus::Failed;
+            return Err(map_email_error(err));
+        }
+    }
 
     Ok((StatusCode::CREATED, Json(stored)).into_response())
 }
