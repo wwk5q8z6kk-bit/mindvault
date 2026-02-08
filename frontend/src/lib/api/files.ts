@@ -31,6 +31,34 @@ export interface NodeAttachment {
 	download_url: string;
 }
 
+export interface AttachmentIndexQuery {
+	q?: string;
+	status?: string;
+	failed_only?: boolean;
+	limit?: number;
+	offset?: number;
+	sort?: string;
+	namespace?: string;
+	kind?: string;
+}
+
+export interface AttachmentIndexItem extends NodeAttachment {
+	node_id: string;
+	node_title: string;
+	node_kind: string;
+	namespace?: string | null;
+}
+
+export interface AttachmentIndexPagedResponse {
+	total: number;
+	limit: number;
+	offset: number;
+	returned: number;
+	has_more: boolean;
+	sort: string;
+	items: AttachmentIndexItem[];
+}
+
 /**
  * Upload a file to the server.
  *
@@ -170,6 +198,34 @@ export async function uploadNodeAttachment(
 		xhr.addEventListener('abort', () => reject(new ApiError('Upload aborted', 0)));
 		xhr.send(formData);
 	});
+}
+
+export async function listAttachmentIndex(
+	query: AttachmentIndexQuery = {}
+): Promise<AttachmentIndexPagedResponse> {
+	const params = new URLSearchParams();
+	if (query.q?.trim()) params.set('q', query.q.trim());
+	if (query.status?.trim()) params.set('status', query.status.trim());
+	if (query.failed_only !== undefined) params.set('failed_only', String(query.failed_only));
+	if (query.limit !== undefined) params.set('limit', String(query.limit));
+	if (query.offset !== undefined) params.set('offset', String(query.offset));
+	if (query.sort?.trim()) params.set('sort', query.sort.trim());
+	if (query.namespace?.trim()) params.set('namespace', query.namespace.trim());
+	if (query.kind?.trim()) params.set('kind', query.kind.trim());
+
+	const suffix = params.toString();
+	const res = await fetch(`${API_BASE_URL}/api/v1/files${suffix ? `?${suffix}` : ''}`);
+	if (!res.ok) {
+		const raw = await res.text();
+		let body: unknown = raw;
+		try {
+			body = JSON.parse(raw);
+		} catch {
+			// Keep raw text body
+		}
+		throw new ApiError(`Request failed (${res.status})`, res.status, body);
+	}
+	return (await res.json()) as AttachmentIndexPagedResponse;
 }
 
 export async function listNodeAttachments(nodeId: string): Promise<NodeAttachment[]> {

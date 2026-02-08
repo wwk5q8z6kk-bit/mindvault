@@ -5,8 +5,10 @@ import {
 	attachmentInlineUrl,
 	deleteNodeAttachment,
 	getAttachmentChunks,
+	listAttachmentIndex,
 	listNodeAttachments,
 	type AttachmentChunkListResponse,
+	type AttachmentIndexPagedResponse,
 	type NodeAttachment
 } from './files';
 
@@ -43,6 +45,53 @@ describe('files api client', () => {
 		const result = await listNodeAttachments('node-1');
 		expect(result).toEqual(payload);
 		expect(fetchMock).toHaveBeenCalledWith(`${API_BASE}/api/v1/files/node-1`);
+	});
+
+	it('lists attachment index with server-side query params', async () => {
+		const payload: AttachmentIndexPagedResponse = {
+			total: 1,
+			limit: 25,
+			offset: 0,
+			returned: 1,
+			has_more: false,
+			sort: 'uploaded_desc',
+			items: [
+				{
+					node_id: 'node-1',
+					node_title: 'Research Note',
+					node_kind: 'note',
+					namespace: 'default',
+					attachment_id: 'att-1',
+					file_name: 'paper.pdf',
+					content_type: 'application/pdf',
+					size_bytes: 2048,
+					uploaded_at: '2026-02-08T06:00:00Z',
+					extraction_status: 'indexed_pdf_text',
+					extracted_chars: 512,
+					search_chunk_count: 4,
+					search_preview: 'summary',
+					download_url: '/api/v1/files/node-1/att-1'
+				}
+			]
+		};
+		fetchMock.mockResolvedValueOnce(
+			new Response(JSON.stringify(payload), {
+				status: 200,
+				headers: { 'Content-Type': 'application/json' }
+			})
+		);
+
+		const result = await listAttachmentIndex({
+			q: 'paper',
+			limit: 25,
+			offset: 0,
+			sort: 'uploaded_desc',
+			kind: 'note'
+		});
+		expect(result).toEqual(payload);
+		expect(fetchMock).toHaveBeenCalledWith(
+			`${API_BASE}/api/v1/files?q=paper&limit=25&offset=0&sort=uploaded_desc&kind=note`
+		);
 	});
 
 	it('deletes node attachment', async () => {
