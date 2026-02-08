@@ -44,5 +44,10 @@ security-framework = "3"
 core-foundation = "0.10"
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
+
+[[bench]]
+name = "engine_bench"
+harness = false

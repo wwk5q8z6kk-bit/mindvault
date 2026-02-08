@@ -39,7 +39,20 @@ export async function fetchJson<T>(
 			throw new ApiError(`Request failed (${res.status})`, res.status, body);
 		}
 
-		return (await res.json()) as T;
+		if (res.status === 204 || res.status === 205) {
+			return undefined as T;
+		}
+
+		const text = await res.text();
+		if (!text) {
+			return undefined as T;
+		}
+
+		try {
+			return JSON.parse(text) as T;
+		} catch (err) {
+			throw new ApiError('Invalid JSON response', res.status, text);
+		}
 	} finally {
 		clearTimeout(timer);
 	}

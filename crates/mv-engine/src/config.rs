@@ -28,6 +28,8 @@ pub struct WatcherConfig {
     pub lookback_hours: u64,
     /// Maximum nodes to scan per cycle.
     pub max_nodes_per_cycle: usize,
+    /// Number of days after which pending proposals expire.
+    pub expiry_days: u64,
 }
 
 impl Default for WatcherConfig {
@@ -37,6 +39,7 @@ impl Default for WatcherConfig {
             interval_secs: 300,
             lookback_hours: 24,
             max_nodes_per_cycle: 50,
+            expiry_days: 7,
         }
     }
 }

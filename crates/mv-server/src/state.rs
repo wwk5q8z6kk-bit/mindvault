@@ -1,8 +1,9 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use mv_engine::engine::MindVaultEngine;
-use mv_plugin::PluginRegistry;
+use mv_plugin::{PluginManager, PluginRegistry};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 
@@ -17,6 +18,7 @@ pub struct AppState {
     pub agent_tx: broadcast::Sender<AgentNotification>,
     pub webhook_config: WebhookConfig,
     pub plugin_registry: Arc<RwLock<PluginRegistry>>,
+    pub plugin_manager: Arc<RwLock<PluginManager>>,
 }
 
 /// Notification for task reminders.
@@ -110,8 +112,19 @@ impl AppState {
         engine: Arc<MindVaultEngine>,
         change_tx: broadcast::Sender<ChangeNotification>,
     ) -> Self {
-        let (reminder_tx, _) = broadcast::channel(256);
         let (agent_tx, _) = broadcast::channel(256);
+        Self::new_with_channels(engine, change_tx, agent_tx)
+    }
+
+    pub fn new_with_channels(
+        engine: Arc<MindVaultEngine>,
+        change_tx: broadcast::Sender<ChangeNotification>,
+        agent_tx: broadcast::Sender<AgentNotification>,
+    ) -> Self {
+        let (reminder_tx, _) = broadcast::channel(256);
+        let plugins_dir = std::env::var("MINDVAULT_PLUGINS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("plugins"));
         Self {
             engine,
             change_tx,
@@ -119,6 +132,7 @@ impl AppState {
             agent_tx,
             webhook_config: WebhookConfig::from_env(),
             plugin_registry: Arc::new(RwLock::new(PluginRegistry::new())),
+            plugin_manager: Arc::new(RwLock::new(PluginManager::new(plugins_dir))),
         }
     }
 

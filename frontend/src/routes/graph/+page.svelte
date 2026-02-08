@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { listNodes } from '$lib/api/nodes';
-	import { getNeighbors, addRelationship, getNodeRelationships, deleteRelationship, getGraphClusters, searchGraph } from '$lib/api/graph';
+	import { getNeighbors, addRelationship, getNodeRelationships, deleteRelationship, updateRelationship, getGraphClusters, searchGraph } from '$lib/api/graph';
 	import type { NodeRelationship, GraphCluster, GraphSearchResult } from '$lib/api/graph';
 	import type { KnowledgeNode } from '$lib/api/types';
 	import { pushToast } from '$lib/stores/toast';
@@ -64,6 +64,8 @@
 	let selectedNodeRelationships: NodeRelationship[] = [];
 	let loadingRelationships = false;
 	let deletingRelId: string | null = null;
+	let editingRelId: string | null = null;
+	let editingWeight: number = 1;
 
 	// Cluster visualization
 	let showClusters = false;
@@ -353,6 +355,25 @@
 			pushToast('Failed to delete relationship', 'danger');
 		} finally {
 			deletingRelId = null;
+		}
+	}
+
+	function startEditRelationship(rel: NodeRelationship) {
+		editingRelId = rel.id;
+		editingWeight = rel.weight ?? 1;
+	}
+
+	async function saveRelationshipWeight(relId: string) {
+		try {
+			const updated = await updateRelationship(relId, { weight: editingWeight });
+			selectedNodeRelationships = selectedNodeRelationships.map((r) =>
+				r.id === relId ? updated : r
+			);
+			pushToast('Relationship weight updated', 'success');
+		} catch {
+			pushToast('Failed to update relationship', 'danger');
+		} finally {
+			editingRelId = null;
 		}
 	}
 
@@ -739,20 +760,62 @@
 									{@const otherNodeId = rel.from_node_id === selected.id ? rel.to_node_id : rel.from_node_id}
 									{@const otherNode = nodes.find((n) => n.id === otherNodeId)}
 									{@const isOutgoing = rel.from_node_id === selected.id}
-									<div class="group flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-slate-800/60">
-										<span class="text-[9px] text-slate-600">{isOutgoing ? '\u2192' : '\u2190'}</span>
-										<span class="text-[9px] font-medium" style="color: {getRelationshipColor(rel.kind)}">{rel.kind}</span>
-										<span class="flex-1 truncate text-slate-300">{otherNode?.title ?? otherNodeId.slice(0, 8)}</span>
-										<button
-											class="flex-shrink-0 rounded p-1 text-slate-600 opacity-0 transition hover:bg-red-500/10 hover:text-red-400 group-hover:opacity-100"
-											title="Delete relationship"
-											disabled={deletingRelId === rel.id}
-											on:click={() => handleDeleteRelationship(rel)}
-										>
-											<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-												<path d="M18 6L6 18M6 6l12 12"/>
-											</svg>
-										</button>
+									<div class="group rounded-lg px-2 py-1.5 text-xs hover:bg-slate-800/60">
+										<div class="flex items-center gap-2">
+											<span class="text-[9px] text-slate-600">{isOutgoing ? '\u2192' : '\u2190'}</span>
+											<span class="text-[9px] font-medium" style="color: {getRelationshipColor(rel.kind)}">{rel.kind}</span>
+											<span class="flex-1 truncate text-slate-300">{otherNode?.title ?? otherNodeId.slice(0, 8)}</span>
+											{#if rel.weight != null}
+												<span class="text-[9px] text-slate-600" title="Weight">{rel.weight}</span>
+											{/if}
+											<button
+												class="flex-shrink-0 rounded p-1 text-slate-600 opacity-0 transition hover:bg-sky-500/10 hover:text-sky-400 group-hover:opacity-100"
+												title="Edit weight"
+												on:click={() => startEditRelationship(rel)}
+											>
+												<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+													<path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+												</svg>
+											</button>
+											<button
+												class="flex-shrink-0 rounded p-1 text-slate-600 opacity-0 transition hover:bg-red-500/10 hover:text-red-400 group-hover:opacity-100"
+												title="Delete relationship"
+												disabled={deletingRelId === rel.id}
+												on:click={() => handleDeleteRelationship(rel)}
+											>
+												<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+													<path d="M18 6L6 18M6 6l12 12"/>
+												</svg>
+											</button>
+										</div>
+										{#if editingRelId === rel.id}
+											<div class="mt-1.5 flex items-center gap-2">
+												<label class="flex items-center gap-1 text-[9px] text-slate-500">
+													Weight
+													<input
+														type="number"
+														min="0"
+														max="10"
+														step="0.1"
+														class="w-16 rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] text-white"
+														bind:value={editingWeight}
+														on:keydown={(e) => e.key === 'Enter' && saveRelationshipWeight(rel.id)}
+													/>
+												</label>
+												<button
+													class="rounded bg-sky-600 px-2 py-0.5 text-[9px] text-white hover:bg-sky-500"
+													on:click={() => saveRelationshipWeight(rel.id)}
+												>
+													Save
+												</button>
+												<button
+													class="text-[9px] text-slate-500 hover:text-white"
+													on:click={() => { editingRelId = null; }}
+												>
+													Cancel
+												</button>
+											</div>
+										{/if}
 									</div>
 								{/each}
 							</div>

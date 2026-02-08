@@ -551,7 +551,33 @@
                     <div class="form-group">
                         <label for="file-attachments">Attachments:</label>
                         <input type="file" id="file-attachments" multiple accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.txt,.md">
+                        <div class="attachment-toolbar">
+                            <input type="search" id="attachment-filter-query" placeholder="Filter attachments...">
+                            <select id="attachment-filter-status">
+                                <option value="all">All statuses</option>
+                                <option value="failed">Failed</option>
+                                <option value="indexed">Indexed</option>
+                                <option value="transcribed">Transcribed</option>
+                                <option value="other">Other</option>
+                            </select>
+                            <select id="attachment-sort">
+                                <option value="uploaded_at_desc">Newest first</option>
+                                <option value="uploaded_at_asc">Oldest first</option>
+                                <option value="file_name_asc">Name A-Z</option>
+                                <option value="file_name_desc">Name Z-A</option>
+                            </select>
+                            <button type="button" id="attachment-filter-apply-btn" class="btn">Apply</button>
+                            <button type="button" id="attachment-reindex-failed-btn" class="btn">Reindex Failed</button>
+                            <button type="button" id="attachment-delete-filtered-btn" class="btn danger">Delete Filtered</button>
+                        </div>
+                        <div id="attachment-status-facets" class="attachment-status-facets"></div>
+                        <div id="attachment-list-meta" class="attachment-list-meta"></div>
                         <div id="attachment-preview" class="attachment-preview"></div>
+                        <div class="attachment-pagination">
+                            <button type="button" id="attachment-prev-page-btn" class="btn">Prev</button>
+                            <span id="attachment-page-label">Page 1</span>
+                            <button type="button" id="attachment-next-page-btn" class="btn">Next</button>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>Node History:</label>

@@ -50,6 +50,7 @@
 		"vitest-browser-svelte": "^2.0.2"
 	},
 	"dependencies": {
+		"@tanstack/svelte-virtual": "^3.13.18",
 		"@tauri-apps/api": "^2.10.1",
 		"@tiptap/core": "3.19.0",
 		"@tiptap/extension-image": "3.19.0",

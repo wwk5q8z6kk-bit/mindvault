@@ -25,12 +25,19 @@ pub trait NodeStore: Send + Sync {
 /// Vector embedding storage + similarity search.
 #[async_trait]
 pub trait VectorStore: Send + Sync {
-    async fn upsert(&self, id: Uuid, embedding: Vec<f32>, content: &str) -> MvResult<()>;
+    async fn upsert(
+        &self,
+        id: Uuid,
+        embedding: Vec<f32>,
+        content: &str,
+        namespace: Option<&str>,
+    ) -> MvResult<()>;
     async fn search(
         &self,
         embedding: Vec<f32>,
         limit: usize,
         min_score: f64,
+        namespace: Option<&str>,
     ) -> MvResult<Vec<(Uuid, f64)>>;
     async fn delete(&self, id: Uuid) -> MvResult<()>;
 }
@@ -289,6 +296,15 @@ fn _assert_relay_store_object_safe(_: &dyn RelayStore) {}
 // Legacy aliases for backward compatibility with proactive.rs
 pub trait InsightStore: AgenticStore {}
 impl<T: AgenticStore> InsightStore for T {}
+
+/// Storage for owner profile.
+#[async_trait]
+pub trait ProfileStore: Send + Sync {
+	async fn get_profile(&self) -> MvResult<OwnerProfile>;
+	async fn update_profile(&self, req: &UpdateProfileRequest) -> MvResult<OwnerProfile>;
+}
+
+fn _assert_profile_store_object_safe(_: &dyn ProfileStore) {}
 
 #[cfg(test)]
 mod tests {

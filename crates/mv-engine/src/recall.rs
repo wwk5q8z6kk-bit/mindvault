@@ -53,7 +53,12 @@ impl RecallPipeline {
                 if let Some(ref vectors) = self.store.vectors {
                     let embedding = self.store.embedder.embed(&query.text).await?;
                     let vec_results = vectors
-                        .search(embedding, fetch_limit, query.min_score)
+                        .search(
+                            embedding,
+                            fetch_limit,
+                            query.min_score,
+                            query.filters.namespace.as_deref(),
+                        )
                         .await?;
                     result_lists.push(vec_results);
                 }
@@ -68,7 +73,12 @@ impl RecallPipeline {
                     match self.store.embedder.embed(&query.text).await {
                         Ok(embedding) => {
                             let vec_results = vectors
-                                .search(embedding, fetch_limit, query.min_score)
+                                .search(
+                                    embedding,
+                                    fetch_limit,
+                                    query.min_score,
+                                    query.filters.namespace.as_deref(),
+                                )
                                 .await?;
                             result_lists.push(vec_results);
                         }

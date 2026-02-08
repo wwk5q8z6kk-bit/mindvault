@@ -105,6 +105,10 @@ hkdf = "0.12"
 hmac = "0.12"
 sha2 = "0.10"
 
+# WASM plugin runtime
+wasmtime = "27"
+wasmtime-wasi = "27"
+
 [profile.release]
 lto = "thin"
 strip = true

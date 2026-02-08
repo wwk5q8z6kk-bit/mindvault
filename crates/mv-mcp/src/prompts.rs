@@ -8,8 +8,12 @@ use crate::auth::McpContext;
 use crate::protocol::{PromptArgument, PromptContent, PromptDefinition, PromptMessage};
 
 /// Return all prompt definitions exposed by this MCP server.
-pub fn list_prompts(_ctx: &McpContext) -> Vec<PromptDefinition> {
-    vec![
+pub fn list_prompts(ctx: &McpContext) -> Vec<PromptDefinition> {
+    if ctx.scope().ensure_action("mcp.read").is_err() {
+        return vec![];
+    }
+
+    let mut prompts = vec![
         PromptDefinition {
             name: "summarize".into(),
             description: "Summarize content using your MindVault knowledge as context.".into(),
@@ -35,7 +39,10 @@ pub fn list_prompts(_ctx: &McpContext) -> Vec<PromptDefinition> {
                 required: true,
             }],
         },
-        PromptDefinition {
+    ];
+
+    if ctx.scope().ensure_kind(NodeKind::Task).is_ok() {
+        prompts.push(PromptDefinition {
             name: "daily_briefing".into(),
             description:
                 "Generate a daily briefing based on recent vault activity, due tasks, and insights."
@@ -45,8 +52,10 @@ pub fn list_prompts(_ctx: &McpContext) -> Vec<PromptDefinition> {
                 description: "Namespace to scope the briefing to.".into(),
                 required: false,
             }],
-        },
-    ]
+        });
+    }
+
+    prompts
 }
 
 /// Get prompt messages for a named prompt with the given arguments.

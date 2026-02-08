@@ -35,7 +35,22 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "saved-searches", description = "Saved search presets"),
         (name = "saved-views", description = "Saved view presets"),
         (name = "permissions", description = "Permission templates and access keys"),
-        (name = "oauth", description = "OAuth2 client credentials")
+        (name = "oauth", description = "OAuth2 client credentials"),
+        (name = "profile", description = "Owner profile settings"),
+        (name = "exchange", description = "Exchange proposal inbox"),
+        (name = "autonomy", description = "Autonomy rules and evaluation"),
+        (name = "keychain", description = "Encryption vault and credential management"),
+        (name = "relay", description = "Messaging relay contacts and channels"),
+        (name = "safeguards", description = "Blocked senders, auto-approve rules, undo"),
+        (name = "plugins", description = "WASM plugin lifecycle"),
+        (name = "sync", description = "Device sync export/import"),
+        (name = "federation", description = "Federated peer queries"),
+        (name = "adapters", description = "External service adapters (email, etc.)"),
+        (name = "agent", description = "Agent context, intents, insights, feedback"),
+        (name = "proactive", description = "Proactive insight generation"),
+        (name = "graph-extra", description = "Graph relationship management"),
+        (name = "clips", description = "Web clip import and enrichment"),
+        (name = "secrets", description = "Server-side secret storage")
     ),
     paths(
         // Health
@@ -117,10 +132,122 @@ use utoipa_swagger_ui::SwaggerUi;
         create_oauth_client,
         revoke_oauth_client,
         oauth_token,
+        // Profile
+        get_profile,
+        update_profile,
+        // Exchange
+        list_proposals,
+        submit_proposal,
+        get_proposal,
+        approve_proposal,
+        reject_proposal,
+        inbox_count,
+        // Autonomy
+        list_autonomy_rules,
+        create_autonomy_rule,
+        get_autonomy_rule,
+        update_autonomy_rule,
+        delete_autonomy_rule,
+        list_autonomy_action_log,
+        evaluate_autonomy,
+        // Keychain
+        keychain_init,
+        keychain_unseal,
+        keychain_seal,
+        keychain_status,
+        keychain_rotate,
+        keychain_list_epochs,
+        keychain_store_credential,
+        keychain_list_credentials,
+        keychain_read_credential,
+        keychain_update_credential,
+        keychain_destroy_credential,
+        keychain_create_domain,
+        keychain_list_domains,
+        keychain_create_delegation,
+        keychain_list_delegations,
+        keychain_revoke_delegation,
+        keychain_list_audit,
+        keychain_backup,
+        keychain_restore,
+        // Relay
+        relay_list_contacts,
+        relay_create_contact,
+        relay_get_contact,
+        relay_update_contact,
+        relay_delete_contact,
+        relay_list_channels,
+        relay_create_channel,
+        relay_delete_channel,
+        relay_list_messages,
+        relay_send_message,
+        relay_mark_read,
+        relay_unread_count,
+        // Safeguards
+        list_blocked_senders,
+        add_blocked_sender,
+        remove_blocked_sender,
+        list_auto_approve_rules,
+        add_auto_approve_rule,
+        update_auto_approve_rule,
+        remove_auto_approve_rule,
+        undo_proposal,
+        // Plugins
+        list_plugins_api,
+        install_plugin_api,
+        list_hook_points_api,
+        reload_plugins_api,
+        uninstall_plugin_api,
+        // Sync
+        sync_export,
+        sync_import,
+        sync_status,
+        // Federation
+        federation_list_peers,
+        federation_add_peer,
+        federation_remove_peer,
+        federation_peer_health,
+        federation_query,
+        // Adapters
+        adapters_list,
+        adapters_register,
+        adapters_statuses,
+        adapter_get_status,
+        adapter_remove,
+        adapter_send,
+        adapter_health,
+        // Agent
+        agent_context,
+        agent_chronicle,
+        agent_list_intents,
+        agent_apply_intent,
+        agent_dismiss_intent,
+        agent_list_models,
+        agent_watcher_status,
+        agent_list_insights,
+        agent_record_feedback,
+        agent_list_feedback,
+        agent_reflection_stats,
+        // Proactive
+        proactive_list_insights,
+        proactive_generate,
+        proactive_delete_insight,
+        // Clips
+        clips_import,
+        clips_enrich,
+        clips_create_note,
+        // Graph extra
+        delete_relationship,
+        // Secrets
+        set_secret,
+        secret_status,
+        delete_secret,
     ),
     components(
         schemas(
             HealthResponse,
+            ProfileResponse,
+            UpdateProfileRequest,
             KnowledgeNode,
             NodeKind,
             RecallRequest,
@@ -464,6 +591,250 @@ async fn revoke_oauth_client() {}
 #[utoipa::path(post, path = "/api/v1/oauth/token", tag = "oauth", responses((status = 200, body = OAuthTokenResponse)))]
 async fn oauth_token() {}
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/profile",
+    tag = "profile",
+    responses(
+        (status = 200, description = "Owner profile", body = ProfileResponse)
+    )
+)]
+async fn get_profile() {}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/profile",
+    tag = "profile",
+    request_body = UpdateProfileRequest,
+    responses(
+        (status = 200, description = "Updated owner profile", body = ProfileResponse)
+    )
+)]
+async fn update_profile() {}
+
+#[utoipa::path(get, path = "/api/v1/exchange/proposals", tag = "exchange", responses((status = 200)))]
+async fn list_proposals() {}
+
+#[utoipa::path(post, path = "/api/v1/exchange/proposals", tag = "exchange", responses((status = 201)))]
+async fn submit_proposal() {}
+
+#[utoipa::path(get, path = "/api/v1/exchange/proposals/{id}", tag = "exchange", responses((status = 200)))]
+async fn get_proposal() {}
+
+#[utoipa::path(post, path = "/api/v1/exchange/proposals/{id}/approve", tag = "exchange", responses((status = 200)))]
+async fn approve_proposal() {}
+
+#[utoipa::path(post, path = "/api/v1/exchange/proposals/{id}/reject", tag = "exchange", responses((status = 200)))]
+async fn reject_proposal() {}
+
+#[utoipa::path(get, path = "/api/v1/exchange/inbox/count", tag = "exchange", responses((status = 200)))]
+async fn inbox_count() {}
+
+#[utoipa::path(get, path = "/api/v1/autonomy/rules", tag = "autonomy", responses((status = 200)))]
+async fn list_autonomy_rules() {}
+
+#[utoipa::path(post, path = "/api/v1/autonomy/rules", tag = "autonomy", responses((status = 201)))]
+async fn create_autonomy_rule() {}
+
+#[utoipa::path(get, path = "/api/v1/autonomy/rules/{id}", tag = "autonomy", responses((status = 200)))]
+async fn get_autonomy_rule() {}
+
+#[utoipa::path(put, path = "/api/v1/autonomy/rules/{id}", tag = "autonomy", responses((status = 200)))]
+async fn update_autonomy_rule() {}
+
+#[utoipa::path(delete, path = "/api/v1/autonomy/rules/{id}", tag = "autonomy", responses((status = 204)))]
+async fn delete_autonomy_rule() {}
+
+#[utoipa::path(get, path = "/api/v1/autonomy/action-log", tag = "autonomy", responses((status = 200)))]
+async fn list_autonomy_action_log() {}
+
+#[utoipa::path(post, path = "/api/v1/autonomy/evaluate", tag = "autonomy", responses((status = 200)))]
+async fn evaluate_autonomy() {}
+
+// --- Keychain ---
+#[utoipa::path(post, path = "/api/v1/keychain/init", tag = "keychain", responses((status = 200, description = "Vault initialized")))]
+async fn keychain_init() {}
+#[utoipa::path(post, path = "/api/v1/keychain/unseal", tag = "keychain", responses((status = 200, description = "Vault unsealed")))]
+async fn keychain_unseal() {}
+#[utoipa::path(post, path = "/api/v1/keychain/seal", tag = "keychain", responses((status = 200, description = "Vault sealed")))]
+async fn keychain_seal() {}
+#[utoipa::path(get, path = "/api/v1/keychain/status", tag = "keychain", responses((status = 200, description = "Vault status")))]
+async fn keychain_status() {}
+#[utoipa::path(post, path = "/api/v1/keychain/rotate", tag = "keychain", responses((status = 200, description = "Key rotated")))]
+async fn keychain_rotate() {}
+#[utoipa::path(get, path = "/api/v1/keychain/epochs", tag = "keychain", responses((status = 200, description = "List key epochs")))]
+async fn keychain_list_epochs() {}
+#[utoipa::path(post, path = "/api/v1/keychain/credentials", tag = "keychain", responses((status = 201, description = "Credential stored")))]
+async fn keychain_store_credential() {}
+#[utoipa::path(get, path = "/api/v1/keychain/credentials", tag = "keychain", responses((status = 200, description = "List credentials")))]
+async fn keychain_list_credentials() {}
+#[utoipa::path(get, path = "/api/v1/keychain/credentials/{id}", tag = "keychain", params(("id" = String, Path)), responses((status = 200, description = "Credential value")))]
+async fn keychain_read_credential() {}
+#[utoipa::path(put, path = "/api/v1/keychain/credentials/{id}", tag = "keychain", params(("id" = String, Path)), responses((status = 200, description = "Credential updated")))]
+async fn keychain_update_credential() {}
+#[utoipa::path(delete, path = "/api/v1/keychain/credentials/{id}", tag = "keychain", params(("id" = String, Path)), responses((status = 204, description = "Credential destroyed")))]
+async fn keychain_destroy_credential() {}
+#[utoipa::path(post, path = "/api/v1/keychain/domains", tag = "keychain", responses((status = 201, description = "Domain created")))]
+async fn keychain_create_domain() {}
+#[utoipa::path(get, path = "/api/v1/keychain/domains", tag = "keychain", responses((status = 200, description = "List domains")))]
+async fn keychain_list_domains() {}
+#[utoipa::path(post, path = "/api/v1/keychain/delegations", tag = "keychain", responses((status = 201, description = "Delegation created")))]
+async fn keychain_create_delegation() {}
+#[utoipa::path(get, path = "/api/v1/keychain/delegations", tag = "keychain", responses((status = 200, description = "List delegations")))]
+async fn keychain_list_delegations() {}
+#[utoipa::path(delete, path = "/api/v1/keychain/delegations/{id}", tag = "keychain", params(("id" = String, Path)), responses((status = 204, description = "Delegation revoked")))]
+async fn keychain_revoke_delegation() {}
+#[utoipa::path(get, path = "/api/v1/keychain/audit", tag = "keychain", responses((status = 200, description = "Audit entries")))]
+async fn keychain_list_audit() {}
+#[utoipa::path(post, path = "/api/v1/keychain/backup", tag = "keychain", responses((status = 200, description = "Vault backup")))]
+async fn keychain_backup() {}
+#[utoipa::path(post, path = "/api/v1/keychain/restore", tag = "keychain", responses((status = 200, description = "Vault restored")))]
+async fn keychain_restore() {}
+
+// --- Relay ---
+#[utoipa::path(get, path = "/api/v1/relay/contacts", tag = "relay", responses((status = 200)))]
+async fn relay_list_contacts() {}
+#[utoipa::path(post, path = "/api/v1/relay/contacts", tag = "relay", responses((status = 201)))]
+async fn relay_create_contact() {}
+#[utoipa::path(get, path = "/api/v1/relay/contacts/{id}", tag = "relay", params(("id" = String, Path)), responses((status = 200)))]
+async fn relay_get_contact() {}
+#[utoipa::path(put, path = "/api/v1/relay/contacts/{id}", tag = "relay", params(("id" = String, Path)), responses((status = 200)))]
+async fn relay_update_contact() {}
+#[utoipa::path(delete, path = "/api/v1/relay/contacts/{id}", tag = "relay", params(("id" = String, Path)), responses((status = 204)))]
+async fn relay_delete_contact() {}
+#[utoipa::path(get, path = "/api/v1/relay/channels", tag = "relay", responses((status = 200)))]
+async fn relay_list_channels() {}
+#[utoipa::path(post, path = "/api/v1/relay/channels", tag = "relay", responses((status = 201)))]
+async fn relay_create_channel() {}
+#[utoipa::path(delete, path = "/api/v1/relay/channels/{id}", tag = "relay", params(("id" = String, Path)), responses((status = 204)))]
+async fn relay_delete_channel() {}
+#[utoipa::path(get, path = "/api/v1/relay/channels/{id}/messages", tag = "relay", params(("id" = String, Path)), responses((status = 200)))]
+async fn relay_list_messages() {}
+#[utoipa::path(post, path = "/api/v1/relay/channels/{id}/messages", tag = "relay", params(("id" = String, Path)), responses((status = 201)))]
+async fn relay_send_message() {}
+#[utoipa::path(post, path = "/api/v1/relay/messages/{id}/read", tag = "relay", params(("id" = String, Path)), responses((status = 200)))]
+async fn relay_mark_read() {}
+#[utoipa::path(get, path = "/api/v1/relay/unread", tag = "relay", responses((status = 200)))]
+async fn relay_unread_count() {}
+
+// --- Safeguards ---
+#[utoipa::path(get, path = "/api/v1/exchange/blocked-senders", tag = "safeguards", responses((status = 200)))]
+async fn list_blocked_senders() {}
+#[utoipa::path(post, path = "/api/v1/exchange/blocked-senders", tag = "safeguards", responses((status = 201)))]
+async fn add_blocked_sender() {}
+#[utoipa::path(delete, path = "/api/v1/exchange/blocked-senders/{id}", tag = "safeguards", params(("id" = String, Path)), responses((status = 204)))]
+async fn remove_blocked_sender() {}
+#[utoipa::path(get, path = "/api/v1/exchange/auto-approve-rules", tag = "safeguards", responses((status = 200)))]
+async fn list_auto_approve_rules() {}
+#[utoipa::path(post, path = "/api/v1/exchange/auto-approve-rules", tag = "safeguards", responses((status = 201)))]
+async fn add_auto_approve_rule() {}
+#[utoipa::path(put, path = "/api/v1/exchange/auto-approve-rules/{id}", tag = "safeguards", params(("id" = String, Path)), responses((status = 200)))]
+async fn update_auto_approve_rule() {}
+#[utoipa::path(delete, path = "/api/v1/exchange/auto-approve-rules/{id}", tag = "safeguards", params(("id" = String, Path)), responses((status = 204)))]
+async fn remove_auto_approve_rule() {}
+#[utoipa::path(post, path = "/api/v1/exchange/proposals/{id}/undo", tag = "safeguards", params(("id" = String, Path)), responses((status = 200, description = "Proposal undone")))]
+async fn undo_proposal() {}
+
+// --- Plugins ---
+#[utoipa::path(get, path = "/api/v1/plugins", tag = "plugins", responses((status = 200, description = "List installed plugins")))]
+async fn list_plugins_api() {}
+#[utoipa::path(post, path = "/api/v1/plugins", tag = "plugins", responses((status = 201, description = "Plugin installed")))]
+async fn install_plugin_api() {}
+#[utoipa::path(get, path = "/api/v1/plugins/hooks", tag = "plugins", responses((status = 200, description = "Available hook points")))]
+async fn list_hook_points_api() {}
+#[utoipa::path(post, path = "/api/v1/plugins/reload", tag = "plugins", responses((status = 200, description = "Plugins reloaded")))]
+async fn reload_plugins_api() {}
+#[utoipa::path(delete, path = "/api/v1/plugins/{name}", tag = "plugins", params(("name" = String, Path)), responses((status = 204, description = "Plugin uninstalled")))]
+async fn uninstall_plugin_api() {}
+
+// --- Sync ---
+#[utoipa::path(post, path = "/api/v1/sync/export", tag = "sync", responses((status = 200, description = "Sync export bundle")))]
+async fn sync_export() {}
+#[utoipa::path(post, path = "/api/v1/sync/import", tag = "sync", responses((status = 200, description = "Sync import result")))]
+async fn sync_import() {}
+#[utoipa::path(get, path = "/api/v1/sync/status", tag = "sync", responses((status = 200, description = "Sync status")))]
+async fn sync_status() {}
+
+// --- Federation ---
+#[utoipa::path(get, path = "/api/v1/federation/peers", tag = "federation", responses((status = 200)))]
+async fn federation_list_peers() {}
+#[utoipa::path(post, path = "/api/v1/federation/peers", tag = "federation", responses((status = 201)))]
+async fn federation_add_peer() {}
+#[utoipa::path(delete, path = "/api/v1/federation/peers/{id}", tag = "federation", params(("id" = String, Path)), responses((status = 204)))]
+async fn federation_remove_peer() {}
+#[utoipa::path(get, path = "/api/v1/federation/peers/{id}/health", tag = "federation", params(("id" = String, Path)), responses((status = 200)))]
+async fn federation_peer_health() {}
+#[utoipa::path(post, path = "/api/v1/federation/query", tag = "federation", responses((status = 200, description = "Federated query results")))]
+async fn federation_query() {}
+
+// --- Adapters ---
+#[utoipa::path(get, path = "/api/v1/adapters", tag = "adapters", responses((status = 200)))]
+async fn adapters_list() {}
+#[utoipa::path(post, path = "/api/v1/adapters", tag = "adapters", responses((status = 201)))]
+async fn adapters_register() {}
+#[utoipa::path(get, path = "/api/v1/adapters/statuses", tag = "adapters", responses((status = 200)))]
+async fn adapters_statuses() {}
+#[utoipa::path(get, path = "/api/v1/adapters/{id}", tag = "adapters", params(("id" = String, Path)), responses((status = 200)))]
+async fn adapter_get_status() {}
+#[utoipa::path(delete, path = "/api/v1/adapters/{id}", tag = "adapters", params(("id" = String, Path)), responses((status = 204)))]
+async fn adapter_remove() {}
+#[utoipa::path(post, path = "/api/v1/adapters/{id}/send", tag = "adapters", params(("id" = String, Path)), responses((status = 200)))]
+async fn adapter_send() {}
+#[utoipa::path(post, path = "/api/v1/adapters/{id}/health", tag = "adapters", params(("id" = String, Path)), responses((status = 200)))]
+async fn adapter_health() {}
+
+// --- Agent ---
+#[utoipa::path(get, path = "/api/v1/agent/context", tag = "agent", responses((status = 200)))]
+async fn agent_context() {}
+#[utoipa::path(get, path = "/api/v1/agent/chronicle", tag = "agent", responses((status = 200)))]
+async fn agent_chronicle() {}
+#[utoipa::path(get, path = "/api/v1/agent/intents", tag = "agent", responses((status = 200)))]
+async fn agent_list_intents() {}
+#[utoipa::path(post, path = "/api/v1/agent/intents/{id}/apply", tag = "agent", params(("id" = String, Path)), responses((status = 200)))]
+async fn agent_apply_intent() {}
+#[utoipa::path(post, path = "/api/v1/agent/intents/{id}/dismiss", tag = "agent", params(("id" = String, Path)), responses((status = 200)))]
+async fn agent_dismiss_intent() {}
+#[utoipa::path(get, path = "/api/v1/agent/models", tag = "agent", responses((status = 200)))]
+async fn agent_list_models() {}
+#[utoipa::path(get, path = "/api/v1/agent/watcher/status", tag = "agent", responses((status = 200)))]
+async fn agent_watcher_status() {}
+#[utoipa::path(get, path = "/api/v1/agent/insights", tag = "agent", responses((status = 200)))]
+async fn agent_list_insights() {}
+#[utoipa::path(post, path = "/api/v1/agent/feedback", tag = "agent", responses((status = 201, description = "Feedback recorded")))]
+async fn agent_record_feedback() {}
+#[utoipa::path(get, path = "/api/v1/agent/feedback", tag = "agent", responses((status = 200)))]
+async fn agent_list_feedback() {}
+#[utoipa::path(get, path = "/api/v1/agent/reflection/stats", tag = "agent", responses((status = 200)))]
+async fn agent_reflection_stats() {}
+
+// --- Proactive ---
+#[utoipa::path(get, path = "/api/v1/proactive/insights", tag = "proactive", responses((status = 200)))]
+async fn proactive_list_insights() {}
+#[utoipa::path(post, path = "/api/v1/proactive/generate", tag = "proactive", responses((status = 200)))]
+async fn proactive_generate() {}
+#[utoipa::path(delete, path = "/api/v1/proactive/insights/{id}", tag = "proactive", params(("id" = String, Path)), responses((status = 204)))]
+async fn proactive_delete_insight() {}
+
+// --- Clips ---
+#[utoipa::path(post, path = "/api/v1/clips/import", tag = "clips", responses((status = 201)))]
+async fn clips_import() {}
+#[utoipa::path(post, path = "/api/v1/clips/enrich", tag = "clips", responses((status = 200)))]
+async fn clips_enrich() {}
+#[utoipa::path(post, path = "/api/v1/clips/{id}/note", tag = "clips", params(("id" = String, Path)), responses((status = 201)))]
+async fn clips_create_note() {}
+
+// --- Graph extra ---
+#[utoipa::path(delete, path = "/api/v1/graph/relationships/{id}", tag = "graph-extra", params(("id" = String, Path)), responses((status = 204)))]
+async fn delete_relationship() {}
+
+// --- Secrets ---
+#[utoipa::path(post, path = "/api/v1/secrets", tag = "secrets", responses((status = 200, description = "Secret stored")))]
+async fn set_secret() {}
+#[utoipa::path(get, path = "/api/v1/secrets/status", tag = "secrets", responses((status = 200)))]
+async fn secret_status() {}
+#[utoipa::path(delete, path = "/api/v1/secrets/{key}", tag = "secrets", params(("key" = String, Path)), responses((status = 204)))]
+async fn delete_secret() {}
+
 // Schema types for OpenAPI
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -474,6 +845,38 @@ pub struct HealthResponse {
     pub status: String,
     pub node_count: usize,
     pub version: String,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ProfileResponse {
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub bio: Option<String>,
+    pub email: Option<String>,
+    pub preferred_namespace: String,
+    pub default_node_kind: String,
+    pub preferred_llm_provider: Option<String>,
+    pub timezone: String,
+    pub signature_name: Option<String>,
+    pub signature_public_key: Option<String>,
+    pub metadata: std::collections::HashMap<String, serde_json::Value>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateProfileRequest {
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub bio: Option<String>,
+    pub email: Option<String>,
+    pub preferred_namespace: Option<String>,
+    pub default_node_kind: Option<String>,
+    pub preferred_llm_provider: Option<String>,
+    pub timezone: Option<String>,
+    pub signature_name: Option<String>,
+    pub signature_public_key: Option<String>,
+    pub metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 #[derive(Serialize, Deserialize, ToSchema)]
@@ -607,7 +1010,7 @@ pub struct OAuthClientCreateRequest {
 
 #[derive(Serialize, Deserialize, ToSchema)]
 pub struct OAuthClientResponse {
-    pub id: String,
+    pub client_id: String,
     pub name: String,
     pub template_id: String,
     pub created_at: String,

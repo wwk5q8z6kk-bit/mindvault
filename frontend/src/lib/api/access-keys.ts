@@ -3,23 +3,23 @@ import { fetchJson } from './client';
 export interface AccessKey {
 	id: string;
 	name: string;
-	description?: string | null;
-	permission_template_id?: string | null;
+	template_id: string;
+	template_name?: string | null;
 	created_at: string;
 	last_used_at?: string | null;
 	expires_at?: string | null;
+	revoked_at?: string | null;
 }
 
 export interface CreateAccessKeyPayload {
-	name: string;
-	description?: string;
-	permission_template_id?: string;
+	template_id: string;
+	name?: string;
 	expires_at?: string;
 }
 
 export interface CreateAccessKeyResponse {
-	key_id: string;
-	raw_key: string;
+	token: string;
+	access_key: AccessKey;
 }
 
 export async function listAccessKeys(): Promise<AccessKey[]> {

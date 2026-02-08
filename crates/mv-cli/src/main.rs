@@ -184,6 +184,22 @@ enum DbAction {
     Info,
     /// Rebuild indexes
     Reindex,
+    /// Rebuild vector index (LanceDB) from SQLite nodes
+    #[command(name = "rebuild-vectors")]
+    RebuildVectors {
+        /// Batch size for embedding
+        #[arg(long, default_value = "64")]
+        batch_size: usize,
+        /// Dry run (counts nodes and shows target paths)
+        #[arg(long)]
+        dry_run: bool,
+        /// Apply: swap rebuilt index into place
+        #[arg(long)]
+        apply: bool,
+        /// Confirm destructive swap (required with --apply)
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -623,6 +639,15 @@ async fn main() -> Result<()> {
             DbAction::Analyze => commands::db::analyze(&cli.config).await,
             DbAction::Info => commands::db::info(&cli.config).await,
             DbAction::Reindex => commands::db::reindex(&cli.config).await,
+            DbAction::RebuildVectors {
+                batch_size,
+                dry_run,
+                apply,
+                confirm,
+            } => {
+                commands::db::rebuild_vectors(&cli.config, batch_size, dry_run, apply, confirm)
+                    .await
+            }
         },
 
         Commands::Secret { action } => match action {

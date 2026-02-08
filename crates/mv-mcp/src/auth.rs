@@ -9,6 +9,7 @@ const DEFAULT_RESOURCE_LIMIT: usize = 1000;
 pub struct McpContext {
     scope: McpScope,
     template_name: Option<String>,
+    key_id: Option<String>,
 }
 
 impl McpContext {
@@ -23,11 +24,13 @@ impl McpContext {
             .ok_or("access key not found or expired".to_string())?;
 
         let scope = McpScope::from_template(&template);
+        let key_id = Some(key.id.to_string());
         let template_name = Some(format!("{}:{}", template.name, key.id));
 
         Ok(Self {
             scope,
             template_name,
+            key_id,
         })
     }
 
@@ -35,11 +38,16 @@ impl McpContext {
         Self {
             scope: McpScope::read_only(),
             template_name: None,
+            key_id: None,
         }
     }
 
     pub fn scope(&self) -> &McpScope {
         &self.scope
+    }
+
+    pub fn key_id(&self) -> Option<&str> {
+        self.key_id.as_deref()
     }
 
     pub fn can_read(&self) -> bool {
@@ -66,6 +74,7 @@ pub struct McpScope {
     pub allow_write: bool,
     pub allow_actions: Vec<String>,
     pub resource_limit: usize,
+    pub tier: PermissionTier,
 }
 
 impl McpScope {
@@ -82,6 +91,7 @@ impl McpScope {
             allow_write,
             allow_actions: template.allow_actions.clone(),
             resource_limit: DEFAULT_RESOURCE_LIMIT,
+            tier: template.tier,
         }
     }
 
@@ -93,11 +103,16 @@ impl McpScope {
             allow_write: false,
             allow_actions: Vec::new(),
             resource_limit: DEFAULT_RESOURCE_LIMIT,
+            tier: PermissionTier::View,
         }
     }
 
     pub fn is_unscoped(&self) -> bool {
         self.namespace.is_none() && self.tags.is_empty() && self.kinds.is_empty()
+    }
+
+    pub fn is_admin(&self) -> bool {
+        self.tier == PermissionTier::Admin
     }
 
     pub fn ensure_action(&self, action: &str) -> Result<(), String> {

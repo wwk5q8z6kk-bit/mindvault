@@ -9,7 +9,10 @@ use crate::auth::McpContext;
 use crate::protocol::{ResourceContent, ResourceDefinition};
 
 /// Return all resource definitions exposed by this MCP server.
-pub fn list_resources(_ctx: &McpContext) -> Vec<ResourceDefinition> {
+pub fn list_resources(ctx: &McpContext) -> Vec<ResourceDefinition> {
+    if ctx.scope().ensure_action("mcp.read").is_err() {
+        return vec![];
+    }
     vec![
         ResourceDefinition {
             uri: "mindvault://recent".into(),
@@ -151,21 +154,24 @@ async fn read_stats(
     let total = nodes.len();
     let truncated = nodes.len() >= limit;
 
-    let embedding_status = engine.embedding_runtime_status();
+    let mut stats = json!({
+        "total_nodes": total,
+        "kinds": kind_counts,
+        "truncated": truncated,
+    });
+
+    if ctx.scope().is_admin() {
+        let embedding_status = engine.embedding_runtime_status();
+        stats["embedding"] = json!({
+            "provider": embedding_status.effective_provider,
+            "model": embedding_status.effective_model,
+            "dimensions": embedding_status.effective_dimensions,
+        });
+    }
 
     Ok(ResourceContent {
         uri: "mindvault://stats".into(),
         mime_type: "application/json".into(),
-        text: serde_json::to_string_pretty(&json!({
-            "total_nodes": total,
-            "kinds": kind_counts,
-            "truncated": truncated,
-            "embedding": {
-                "provider": embedding_status.effective_provider,
-                "model": embedding_status.effective_model,
-                "dimensions": embedding_status.effective_dimensions,
-            },
-        }))
-        .unwrap_or_default(),
+        text: serde_json::to_string_pretty(&stats).unwrap_or_default(),
     })
 }

@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(feature = "local-embeddings")]
 use std::sync::Mutex;
@@ -9,6 +10,8 @@ use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
+use tokio::sync::OnceCell;
+use tracing::warn;
 use uuid::Uuid;
 
 use mv_core::*;
@@ -20,6 +23,8 @@ pub struct LanceVectorStore {
     db: lancedb::Connection,
     table_name: String,
     dimensions: usize,
+    table: OnceCell<lancedb::Table>,
+    namespace_supported: AtomicBool,
 }
 
 impl LanceVectorStore {
@@ -37,13 +42,31 @@ impl LanceVectorStore {
             db,
             table_name: "embeddings".into(),
             dimensions,
+            table: OnceCell::new(),
+            namespace_supported: AtomicBool::new(true),
         };
 
         store.ensure_table().await?;
         Ok(store)
     }
 
-    fn schema(&self) -> Arc<Schema> {
+    fn schema_with_namespace(&self) -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("content", DataType::Utf8, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    self.dimensions as i32,
+                ),
+                false,
+            ),
+            Field::new("namespace", DataType::Utf8, true),
+        ]))
+    }
+
+    fn schema_without_namespace(&self) -> Arc<Schema> {
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
             Field::new("content", DataType::Utf8, false),
@@ -67,7 +90,7 @@ impl LanceVectorStore {
             .map_err(|e| MvError::Storage(format!("lancedb list tables: {e}")))?;
 
         if !tables.contains(&self.table_name) {
-            let schema = self.schema();
+            let schema = self.schema_with_namespace();
             let batch = RecordBatch::new_empty(schema.clone());
             let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
             self.db
@@ -79,37 +102,60 @@ impl LanceVectorStore {
         Ok(())
     }
 
-    async fn get_table(&self) -> MvResult<lancedb::Table> {
-        self.db
-            .open_table(&self.table_name)
-            .execute()
+    async fn get_table(&self) -> MvResult<&lancedb::Table> {
+        self.table
+            .get_or_try_init(|| async {
+                self.db
+                    .open_table(&self.table_name)
+                    .execute()
+                    .await
+                    .map_err(|e| MvError::Storage(format!("failed to open table: {e}")))
+            })
             .await
-            .map_err(|e| MvError::Storage(format!("lancedb open table: {e}")))
     }
-}
 
-#[async_trait]
-impl VectorStore for LanceVectorStore {
-    async fn upsert(&self, id: Uuid, embedding: Vec<f32>, content: &str) -> MvResult<()> {
-        if embedding.len() != self.dimensions {
-            return Err(MvError::InvalidInput(format!(
-                "embedding dimension mismatch: expected {}, got {}",
-                self.dimensions,
-                embedding.len()
-            )));
+    fn escape_filter_value(value: &str) -> String {
+        value.replace('\'', "''")
+    }
+
+    fn is_namespace_schema_error(message: &str) -> bool {
+        let lower = message.to_lowercase();
+        lower.contains("namespace")
+            && (lower.contains("schema") || lower.contains("column") || lower.contains("field"))
+    }
+
+    fn should_use_namespace(&self) -> bool {
+        self.namespace_supported.load(Ordering::Relaxed)
+    }
+
+    fn disable_namespace(&self) {
+        if self
+            .namespace_supported
+            .swap(false, Ordering::Relaxed)
+        {
+            warn!(
+                "LanceDB table does not support namespace column. Falling back to legacy schema. Rebuild the vector table to enable namespace filtering."
+            );
         }
+    }
 
-        // Delete existing if present, then insert
-        let _ = VectorStore::delete(self, id).await;
+    fn build_batch(
+        &self,
+        ids: Vec<String>,
+        contents: Vec<String>,
+        all_floats: Vec<f32>,
+        include_namespace: bool,
+        namespaces: Option<Vec<Option<String>>>,
+    ) -> MvResult<(Arc<Schema>, RecordBatch)> {
+        let schema = if include_namespace {
+            self.schema_with_namespace()
+        } else {
+            self.schema_without_namespace()
+        };
 
-        let table = self.get_table().await?;
-        let schema = self.schema();
-
-        let id_array = StringArray::from(vec![id.to_string()]);
-        let content_array = StringArray::from(vec![content.to_string()]);
-
-        // Build FixedSizeListArray from Float32Array
-        let values = Float32Array::from(embedding);
+        let id_array = StringArray::from(ids);
+        let content_array = StringArray::from(contents);
+        let values = Float32Array::from(all_floats);
         let field = Arc::new(Field::new("item", DataType::Float32, true));
         let vector_array = arrow_array::FixedSizeListArray::new(
             field,
@@ -118,31 +164,134 @@ impl VectorStore for LanceVectorStore {
             None,
         );
 
-        let batch = RecordBatch::try_new(
-            schema.clone(),
+        let columns: Vec<Arc<dyn Array>> = if include_namespace {
+            let namespaces = namespaces.unwrap_or_else(|| vec![None; id_array.len()]);
+            if namespaces.len() != id_array.len() {
+                return Err(MvError::InvalidInput(format!(
+                    "namespace length mismatch: expected {}, got {}",
+                    id_array.len(),
+                    namespaces.len()
+                )));
+            }
+            let ns_array = StringArray::from(namespaces);
             vec![
                 Arc::new(id_array),
                 Arc::new(content_array),
                 Arc::new(vector_array),
-            ],
-        )
-        .map_err(|e| MvError::Storage(format!("record batch error: {e}")))?;
+                Arc::new(ns_array),
+            ]
+        } else {
+            vec![
+                Arc::new(id_array),
+                Arc::new(content_array),
+                Arc::new(vector_array),
+            ]
+        };
 
-        let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
-        table
-            .add(Box::new(batches))
-            .execute()
+        let batch = RecordBatch::try_new(schema.clone(), columns)
+            .map_err(|e| MvError::Storage(format!("record batch error: {e}")))?;
+
+        Ok((schema, batch))
+    }
+
+    /// Create a vector index if the table has enough rows.
+    ///
+    /// IVF-PQ indexing requires at least 256 rows to be effective.
+    /// This is idempotent — calling it multiple times replaces the existing index.
+    pub async fn ensure_index(&self) -> MvResult<()> {
+        let table = self.get_table().await?;
+        let count = table
+            .count_rows(None)
             .await
-            .map_err(|e| MvError::Storage(format!("lancedb upsert: {e}")))?;
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        if count >= 256 {
+            table
+                .create_index(&["vector"], lancedb::index::Index::Auto)
+                .execute()
+                .await
+                .map_err(|e| MvError::Storage(format!("index creation failed: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Bulk upsert embeddings using merge-insert (much faster than individual upserts).
+    pub async fn upsert_batch(
+        &self,
+        items: &[(Uuid, Vec<f32>, String, Option<String>)],
+    ) -> MvResult<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        for (_, emb, _, _) in items {
+            if emb.len() != self.dimensions {
+                return Err(MvError::InvalidInput(format!(
+                    "embedding dimension mismatch: expected {}, got {}",
+                    self.dimensions,
+                    emb.len()
+                )));
+            }
+        }
+
+        let table = self.get_table().await?;
+
+        let ids: Vec<String> = items.iter().map(|(id, _, _, _)| id.to_string()).collect();
+        let contents: Vec<String> = items.iter().map(|(_, _, c, _)| c.clone()).collect();
+        let all_floats: Vec<f32> = items
+            .iter()
+            .flat_map(|(_, emb, _, _)| emb.iter().copied())
+            .collect();
+
+        let mut include_namespace = self.should_use_namespace();
+        let namespaces = if include_namespace {
+            Some(items.iter().map(|(_, _, _, ns)| ns.clone()).collect::<Vec<_>>())
+        } else {
+            None
+        };
+        let (schema, batch) = self.build_batch(
+            ids.clone(),
+            contents.clone(),
+            all_floats.clone(),
+            include_namespace,
+            namespaces.clone(),
+        )?;
+        let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
+        let mut merge = table.merge_insert(&["id"]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let result = merge.execute(Box::new(batches)).await;
+
+        if let Err(err) = result {
+            let message = err.to_string();
+            if include_namespace && Self::is_namespace_schema_error(&message) {
+                self.disable_namespace();
+                include_namespace = false;
+                let (schema, batch) =
+                    self.build_batch(ids, contents, all_floats, include_namespace, None)?;
+                let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
+                let mut merge = table.merge_insert(&["id"]);
+                merge
+                    .when_matched_update_all(None)
+                    .when_not_matched_insert_all();
+                merge
+                    .execute(Box::new(batches))
+                    .await
+                    .map_err(|e| MvError::Storage(format!("lancedb batch upsert: {e}")))?;
+            } else {
+                return Err(MvError::Storage(format!("lancedb batch upsert: {err}")));
+            }
+        }
 
         Ok(())
     }
 
-    async fn search(
+    /// Vector search with optional namespace pre-filtering.
+    pub async fn search_with_namespace(
         &self,
         embedding: Vec<f32>,
         limit: usize,
         min_score: f64,
+        namespace: Option<&str>,
     ) -> MvResult<Vec<(Uuid, f64)>> {
         if embedding.len() != self.dimensions {
             return Err(MvError::InvalidInput(format!(
@@ -154,15 +303,44 @@ impl VectorStore for LanceVectorStore {
 
         let table = self.get_table().await?;
 
-        let query = table
+        let embedding_fallback = embedding.clone();
+        let mut query = table
             .vector_search(embedding)
             .map_err(|e| MvError::Storage(format!("lancedb query build: {e}")))?
             .limit(limit);
 
+        let mut applied_namespace = false;
+        if let Some(ns) = namespace {
+            if self.should_use_namespace() {
+                let escaped = Self::escape_filter_value(ns);
+                query = query.only_if(format!("namespace = '{escaped}'"));
+                applied_namespace = true;
+            }
+        }
+
         let stream = query
             .execute()
-            .await
-            .map_err(|e| MvError::Storage(format!("lancedb search: {e}")))?;
+            .await;
+
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(err) => {
+                let message = err.to_string();
+                if applied_namespace && Self::is_namespace_schema_error(&message) {
+                    self.disable_namespace();
+                    let query = table
+                        .vector_search(embedding_fallback)
+                        .map_err(|e| MvError::Storage(format!("lancedb query build: {e}")))?
+                        .limit(limit);
+                    query
+                        .execute()
+                        .await
+                        .map_err(|e| MvError::Storage(format!("lancedb search: {e}")))?
+                } else {
+                    return Err(MvError::Storage(format!("lancedb search: {err}")));
+                }
+            }
+        };
 
         let batches: Vec<RecordBatch> = stream
             .try_collect()
@@ -192,6 +370,76 @@ impl VectorStore for LanceVectorStore {
         scored.retain(|(_, score)| *score >= min_score);
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         Ok(scored)
+    }
+}
+
+#[async_trait]
+impl VectorStore for LanceVectorStore {
+    async fn upsert(
+        &self,
+        id: Uuid,
+        embedding: Vec<f32>,
+        content: &str,
+        namespace: Option<&str>,
+    ) -> MvResult<()> {
+        if embedding.len() != self.dimensions {
+            return Err(MvError::InvalidInput(format!(
+                "embedding dimension mismatch: expected {}, got {}",
+                self.dimensions,
+                embedding.len()
+            )));
+        }
+
+        // Delete existing if present, then insert
+        let _ = VectorStore::delete(self, id).await;
+
+        let table = self.get_table().await?;
+
+        let ids = vec![id.to_string()];
+        let contents = vec![content.to_string()];
+        let all_floats = embedding;
+        let mut include_namespace = self.should_use_namespace();
+        let namespaces = namespace.map(|value| vec![Some(value.to_string())]);
+
+        let (schema, batch) = self.build_batch(
+            ids.clone(),
+            contents.clone(),
+            all_floats.clone(),
+            include_namespace,
+            namespaces.clone(),
+        )?;
+        let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
+        let result = table.add(Box::new(batches)).execute().await;
+        if let Err(err) = result {
+            let message = err.to_string();
+            if include_namespace && Self::is_namespace_schema_error(&message) {
+                self.disable_namespace();
+                include_namespace = false;
+                let (schema, batch) =
+                    self.build_batch(ids, contents, all_floats, include_namespace, None)?;
+                let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
+                table
+                    .add(Box::new(batches))
+                    .execute()
+                    .await
+                    .map_err(|e| MvError::Storage(format!("lancedb upsert: {e}")))?;
+            } else {
+                return Err(MvError::Storage(format!("lancedb upsert: {err}")));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn search(
+        &self,
+        embedding: Vec<f32>,
+        limit: usize,
+        min_score: f64,
+        namespace: Option<&str>,
+    ) -> MvResult<Vec<(Uuid, f64)>> {
+        self.search_with_namespace(embedding, limit, min_score, namespace)
+            .await
     }
 
     async fn delete(&self, id: Uuid) -> MvResult<()> {

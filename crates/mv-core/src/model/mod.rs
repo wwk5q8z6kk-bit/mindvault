@@ -743,6 +743,63 @@ pub struct ChangeNotification {
     pub namespace: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Owner Profile
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnerProfile {
+	pub display_name: String,
+	pub avatar_url: Option<String>,
+	pub bio: Option<String>,
+	pub email: Option<String>,
+	pub preferred_namespace: String,
+	pub default_node_kind: String,
+	pub preferred_llm_provider: Option<String>,
+	pub timezone: String,
+	pub signature_name: Option<String>,
+	pub signature_public_key: Option<String>,
+	pub metadata: HashMap<String, serde_json::Value>,
+	pub created_at: DateTime<Utc>,
+	pub updated_at: DateTime<Utc>,
+}
+
+impl Default for OwnerProfile {
+	fn default() -> Self {
+		let now = Utc::now();
+		Self {
+			display_name: String::new(),
+			avatar_url: None,
+			bio: None,
+			email: None,
+			preferred_namespace: "default".into(),
+			default_node_kind: "fact".into(),
+			preferred_llm_provider: None,
+			timezone: "UTC".into(),
+			signature_name: None,
+			signature_public_key: None,
+			metadata: HashMap::new(),
+			created_at: now,
+			updated_at: now,
+		}
+	}
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateProfileRequest {
+	pub display_name: Option<String>,
+	pub avatar_url: Option<String>,
+	pub bio: Option<String>,
+	pub email: Option<String>,
+	pub preferred_namespace: Option<String>,
+	pub default_node_kind: Option<String>,
+	pub preferred_llm_provider: Option<String>,
+	pub timezone: Option<String>,
+	pub signature_name: Option<String>,
+	pub signature_public_key: Option<String>,
+	pub metadata: Option<HashMap<String, serde_json::Value>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::NodeKind;

@@ -79,10 +79,13 @@ pub async fn start_server(
     // Shutdown broadcast for background agents
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
-    // Spawn watcher agent
-    spawn_watcher_agent(Arc::clone(&engine), shutdown_tx.subscribe());
+    // Create agent notification channel early so watcher can use it
+    let (agent_tx, _) = tokio::sync::broadcast::channel::<state::AgentNotification>(256);
 
-    let state = Arc::new(AppState::new_with_change_tx(engine, change_tx));
+    // Spawn watcher agent with notification forwarding
+    spawn_watcher_agent(Arc::clone(&engine), agent_tx.clone(), shutdown_tx.subscribe());
+
+    let state = Arc::new(AppState::new_with_channels(engine, change_tx, agent_tx));
     spawn_agent_change_processor(Arc::clone(&state), shutdown_tx.subscribe());
     spawn_recurrence_and_reminder_scheduler(Arc::clone(&state));
     email::spawn_email_adapter(Arc::clone(&state), shutdown_tx.subscribe());
@@ -196,6 +199,7 @@ pub async fn start_server(
 
 fn spawn_watcher_agent(
     engine: Arc<MindVaultEngine>,
+    agent_tx: tokio::sync::broadcast::Sender<state::AgentNotification>,
     shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) {
     let watcher_config = engine.config.watcher.clone();
@@ -207,12 +211,26 @@ fn spawn_watcher_agent(
     let intent_engine = IntentEngine::new(Arc::clone(&engine.store));
     let proactive_engine = Arc::clone(&engine.proactive);
 
-    let agent = Arc::new(WatcherAgent::new(
-        Arc::clone(&engine),
-        intent_engine,
-        proactive_engine,
-        watcher_config,
-    ));
+    // Build notifier that forwards discoveries to WebSocket via agent_tx
+    let notifier: mv_engine::watcher::WatcherNotifier = Arc::new(move |report| {
+        for (intent, namespace) in &report.new_intents {
+            let _ = agent_tx.send(state::AgentNotification::Intent {
+                intent: intent.clone(),
+                namespace: Some(namespace.clone()),
+            });
+        }
+        for (insight, namespace) in &report.new_insights {
+            let _ = agent_tx.send(state::AgentNotification::InsightDiscovered {
+                insight: insight.clone(),
+                namespace: Some(namespace.clone()),
+            });
+        }
+    });
+
+    let agent = Arc::new(
+        WatcherAgent::new(Arc::clone(&engine), intent_engine, proactive_engine, watcher_config)
+            .with_notifier(notifier),
+    );
 
     tokio::spawn(async move {
         agent.run_loop(shutdown_rx).await;

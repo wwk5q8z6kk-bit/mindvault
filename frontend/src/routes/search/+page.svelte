@@ -16,6 +16,7 @@
 	import { onMount } from 'svelte';
 	import { kindLabel, kindBadgeClass, ALL_NODE_KINDS } from '$lib/utils/kind-helpers';
 	import { recentItems } from '$lib/stores/recent';
+	import { createVirtualizer } from '@tanstack/svelte-virtual';
 
 	type SearchType = 'fulltext' | 'hybrid';
 	type SortOption = 'relevance' | 'date_desc' | 'date_asc' | 'title';
@@ -38,6 +39,16 @@
 	let savedSearchLoading = false;
 	let selectedIndex = -1;
 	let resultsContainer: HTMLDivElement | null = null;
+	let searchListParentRef: HTMLDivElement | null = null;
+
+	const searchVirtualizer = createVirtualizer({
+		get count() {
+			return sortedResults.length;
+		},
+		getScrollElement: () => searchListParentRef,
+		estimateSize: () => 80,
+		overscan: 5
+	});
 
 	const kindOptions = [
 		{ value: 'all', label: 'All' },
@@ -479,56 +490,66 @@
 		</div>
 
 		{#if sortedResults.length > 0}
-			<div class="flex flex-col gap-3" bind:this={resultsContainer}>
-				<p class="text-xs text-slate-400">
+			<div bind:this={resultsContainer}>
+				<p class="mb-3 text-xs text-slate-400">
 					{sortedResults.length} result{sortedResults.length !== 1 ? 's' : ''}{tagFilter.trim() ? ` (filtered by tag "${tagFilter}")` : ''}
 				</p>
-				{#each sortedResults as result, idx (result.node.id)}
-					{@const badge = kindBadge(result.node.kind)}
-					{@const isSelected = idx === selectedIndex}
-					<button
-						data-result-item
-						class={`w-full rounded-xl border p-4 text-left transition ${
-							isSelected
-								? 'border-sky-500 bg-sky-500/10 ring-1 ring-sky-500/30'
-								: 'border-slate-800 bg-slate-900/60 hover:border-slate-700 hover:bg-slate-900/80'
-						}`}
-						on:click={() => navigateToResult(result)}
-						on:mouseenter={() => (selectedIndex = idx)}
-					>
-						<div class="flex items-center gap-2">
-							<span class={`rounded-full px-2 py-0.5 text-[10px] font-medium ${badge.color}`}>
-								{badge.label}
-							</span>
-							<h3 class="text-sm font-medium text-white">{result.node.title}</h3>
-							{#if result.score != null}
-								<span class="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">
-									{result.score.toFixed(2)}
-								</span>
-							{/if}
-						</div>
-						{#if result.node.content}
-							<p class="mt-1 line-clamp-2 text-xs text-slate-400">
-								{result.node.content.slice(0, 200)}
-							</p>
-						{/if}
-						{#if result.node.tags.length > 0}
-							<div class="mt-2 flex flex-wrap gap-1">
-								{#each result.node.tags.slice(0, 5) as tag}
-									<span
-										class="cursor-pointer rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-700 hover:text-slate-300"
-										role="button"
-										tabindex="0"
-										on:click|stopPropagation={() => (tagFilter = tag)}
-										on:keydown|stopPropagation={(e) => e.key === 'Enter' && (tagFilter = tag)}
-									>
-										{tag}
-									</span>
-								{/each}
+				<div bind:this={searchListParentRef} style="max-height: 70vh; overflow-y: auto;">
+					<div style="height: {$searchVirtualizer.getTotalSize()}px; width: 100%; position: relative;">
+						{#each $searchVirtualizer.getVirtualItems() as row (row.key)}
+							{@const result = sortedResults[row.index]}
+							{@const idx = row.index}
+							{@const badge = kindBadge(result.node.kind)}
+							{@const isSelected = idx === selectedIndex}
+							<div
+								style="position: absolute; top: 0; left: 0; width: 100%; transform: translateY({row.start}px);"
+							>
+								<button
+									data-result-item
+									class={`w-full rounded-xl border p-4 mb-3 text-left transition ${
+										isSelected
+											? 'border-sky-500 bg-sky-500/10 ring-1 ring-sky-500/30'
+											: 'border-slate-800 bg-slate-900/60 hover:border-slate-700 hover:bg-slate-900/80'
+									}`}
+									on:click={() => navigateToResult(result)}
+									on:mouseenter={() => (selectedIndex = idx)}
+								>
+									<div class="flex items-center gap-2">
+										<span class={`rounded-full px-2 py-0.5 text-[10px] font-medium ${badge.color}`}>
+											{badge.label}
+										</span>
+										<h3 class="text-sm font-medium text-white">{result.node.title}</h3>
+										{#if result.score != null}
+											<span class="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">
+												{result.score.toFixed(2)}
+											</span>
+										{/if}
+									</div>
+									{#if result.node.content}
+										<p class="mt-1 line-clamp-2 text-xs text-slate-400">
+											{result.node.content.slice(0, 200)}
+										</p>
+									{/if}
+									{#if result.node.tags.length > 0}
+										<div class="mt-2 flex flex-wrap gap-1">
+											{#each result.node.tags.slice(0, 5) as tag}
+												<span
+													class="cursor-pointer rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-700 hover:text-slate-300"
+													role="button"
+													tabindex="0"
+													on:click|stopPropagation={() => (tagFilter = tag)}
+													on:keydown|stopPropagation={(e) => e.key === 'Enter' && (tagFilter = tag)}
+												>
+													{tag}
+												</span>
+											{/each}
+										</div>
+									{/if}
+								</button>
 							</div>
-						{/if}
-					</button>
-				{/each}
+						{/each}
+					</div>
+				</div>
 			</div>
 		{:else if query.trim() && !loading}
 			<div class="rounded-xl border border-dashed border-slate-800 bg-slate-900/20 p-8 text-center">

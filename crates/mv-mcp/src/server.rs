@@ -1,5 +1,8 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use mv_core::ChronicleEntry;
 use mv_engine::engine::MindVaultEngine;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -13,14 +16,49 @@ const SERVER_NAME: &str = "mindvault-mcp";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
+pub struct RateLimiter {
+    calls: Mutex<HashMap<String, Vec<Instant>>>,
+    max_per_minute: usize,
+}
+
+impl RateLimiter {
+    pub fn new(max_per_minute: usize) -> Self {
+        Self {
+            calls: Mutex::new(HashMap::new()),
+            max_per_minute,
+        }
+    }
+
+    pub fn check(&self, key: &str) -> Result<(), String> {
+        let mut map = self.calls.lock().unwrap();
+        let now = Instant::now();
+        let window = Duration::from_secs(60);
+        let entry = map.entry(key.to_string()).or_default();
+        entry.retain(|t| now.duration_since(*t) < window);
+        if entry.len() >= self.max_per_minute {
+            return Err(format!(
+                "rate limit exceeded: {} calls/minute",
+                self.max_per_minute
+            ));
+        }
+        entry.push(now);
+        Ok(())
+    }
+}
+
 pub struct McpServer {
     engine: Arc<MindVaultEngine>,
     context: McpContext,
+    rate_limiter: RateLimiter,
 }
 
 impl McpServer {
     pub fn new(engine: Arc<MindVaultEngine>, context: McpContext) -> Self {
-        Self { engine, context }
+        Self {
+            engine,
+            context,
+            rate_limiter: RateLimiter::new(60),
+        }
     }
 
     /// Run the MCP server over stdio (line-delimited JSON-RPC).
@@ -122,12 +160,35 @@ impl McpServer {
             }
         };
 
+        let caller_key = self
+            .context
+            .key_id()
+            .unwrap_or("anonymous")
+            .to_string();
+
+        if let Err(e) = self.rate_limiter.check(&caller_key) {
+            return JsonRpcResponse::error(id, -32000, e);
+        }
+
         let arguments = params
             .get("arguments")
             .cloned()
             .unwrap_or(Value::Object(serde_json::Map::new()));
 
         let result = tools::call_tool(&self.engine, &self.context, &name, arguments).await;
+
+        let is_err = result.is_error();
+        let chronicle = ChronicleEntry::new(
+            "mcp.tool_call",
+            format!(
+                "Tool '{}' called by '{}': {}",
+                name,
+                caller_key,
+                if is_err { "error" } else { "success" }
+            ),
+        );
+        let _ = self.engine.log_chronicle(&chronicle).await;
+
         JsonRpcResponse::success(id, serde_json::to_value(result).unwrap_or(json!({})))
     }
 

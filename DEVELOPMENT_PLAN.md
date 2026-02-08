@@ -10,7 +10,7 @@ MindVault is a sovereign personal intelligence system: a private, encrypted vaul
 Key integrated elements:
 - Natural Relay System for text and voice communication with deferral, high-threshold autonomy, and passive vault growth.
 - Proactive agentic layer for monitoring, suggestion, reflection, semantic insight, and multi-modal processing.
-- Strict emphasis on owner-mediated merges, provenance, and granular control.
+- Strict emphasis on owner-mediated approvals, provenance, and granular control.
 
 The design delivers a familiar communication experience that becomes progressively smarter through natural use, while keeping full control, transparency, and privacy in the hands of the user.
 
@@ -46,7 +46,7 @@ Create a communication network that feels and functions like everyday messaging 
 8. Single admin owner — all delegated access is issued and revoked by the owner via OAuth/API credentials.
 
 ## Core Architecture: Sovereign Vault Foundation
-**Details**: Encrypted local database with hybrid retrieval (vectors + full-text + graph), rich node metadata, automatic backlinks, and provenance tracking. All external input (human or agent) arrives as proposals in a dedicated Exchange Inbox layer; only the owner can review and merge. The Natural Relay System integrates as a deferral and registration mechanism for communication.
+**Details**: Encrypted local database with hybrid retrieval (vectors + full-text + graph), rich node metadata, automatic backlinks, and provenance tracking. All external input (human or agent) arrives as proposals in a dedicated Exchange Inbox layer; only the owner can review and accept. The Natural Relay System integrates as a deferral and registration mechanism for communication.
 
 **Core Design Tenets**:
 - Single-owner, canonical vault — no shared state.
@@ -101,6 +101,12 @@ Create a communication network that feels and functions like everyday messaging 
 - Easy onboarding: begins as plain messaging/voice; intelligence enabled gradually via configuration.
 - Delegation model: AI assistant managers authenticate via OAuth or API keys; no shared-state multi-user accounts.
 
+## Delegation & Identity Model
+- Single admin owner; no shared multi-user logins.
+- All delegated access uses OAuth client credentials or API keys scoped by permission templates.
+- OAuth client secrets live only in the Sovereign Keychain; tokens are minted locally as access keys.
+- Owner profile is the canonical identity for adapters (email, relay, federation).
+
 ## Key Safeguards
 - No guessing — deferral is the safe default.
 - Full audit trail: logged queries, relays, autonomous replies, registrations; tamper-evident and visible per-contact/domain views.
@@ -117,7 +123,7 @@ Create a communication network that feels and functions like everyday messaging 
    Lightweight watcher (local SLM) scans vault changes and proposes actions/insights via Inbox.
 
 2. **Self-Improving / Reflection Loop for Agents**
-   Logs merge/reject feedback to personalize future proposals (local fine-tuning).
+   Logs accept/reject feedback to personalize future proposals (local fine-tuning).
 
 3. **Semantic Insight Engine**
    Advanced hybrid retrieval + local LLM for conceptual links and insight proposals.
@@ -163,15 +169,17 @@ This section is the factual anchor for execution: what is verified in the codeba
 - MCP server (stdio) + tool/resource surfacing — `crates/mv-mcp/`
 - LLM provider abstraction (OpenAI-compatible + fallback) — `crates/mv-engine/src/llm.rs`
 - Email adapter (IMAP inbound + SMTP outbound) — `crates/mv-server/src/email.rs`
+- Owner profile persistence (migration + API + UI) — `migrations/010_profile.sql`, `crates/mv-server/src/rest/profile.rs`, `frontend/src/routes/settings/profile/+page.svelte`
+- Local OAuth2 client-credentials server + Keychain-backed secrets — `crates/mv-server/src/rest/oauth.rs`, `crates/mv-engine/src/keychain.rs`, `frontend/src/routes/settings/profiles/+page.svelte`
 
 ### Claims that must be calibrated
 - AI features are LLM-backed only when a provider is configured and reachable; otherwise they fall back to heuristics. UI and docs must surface provider status clearly.
 - “Autonomy” is high-threshold and policy-gated; any new automation must default to deferral unless explicitly enabled.
 
 ### Active gaps (prioritized)
-- **P1** Profile API + UI (persisted owner profile + contact linkage).
-- **P1** Delegation auth: OAuth client credentials + API key lifecycle (owner-managed).
-- **P1** Adapter hardening (email stabilization + Slack/Discord adapters on same contract).
+- **P1** Owner profile linkage (contact linkage + relay/federation identity propagation).
+- **P1** Delegation auth hardening (OAuth client lifecycle, audit trails, tests, and docs).
+- **P1** Adapter hardening (email stabilization + Slack/Discord adapters on the same contract).
 - **P1** Proposal inbox UX hardening (diff clarity, undo/revoke, provenance surfacing).
 - **P1** MCP scoping tests + audit linkage.
 - **P2** Device sync conflict resolution + recovery UX.
@@ -189,38 +197,34 @@ This section is the operational source of truth for day-to-day execution.
 ### 1) Workflow States
 - `Backlog`: approved objective, not started
 - `Ready`: scoped with acceptance criteria and test surface
-- `In Progress`: implementation active on a dedicated branch
-- `Review`: code complete, tests passing, docs updated
-- `Done`: merged, tagged, and reflected in this tracker
+- `In Progress`: implementation active with task checklist
+- `Review`: implementation complete, tests passing, docs updated
+- `Done`: verified in product and reflected in this tracker
 
-### 2) Version Control Rules
-- If the repo is not under git, initialize and create a baseline commit before new work.
-- Branch format: `phase/<phase-number>-<scope>` or `hotfix/<scope>`
-- Commit style: `type(scope): action` (e.g. `feat(email): add imap polling cursor state`)
-- Required before merge:
-- all targeted tests pass
-- migration safety reviewed (if schema touched)
-- docs updated (`README.md`, `DEVELOPMENT_PLAN.md`, API docs when relevant)
-- merge policy: squash for feature branches, fast-forward for hotfixes
-- rollback policy: every phase ships behind feature flags or reversible config toggles where feasible
+### 2) Change Control & Safety Rules
+- Schema changes require migrations plus explicit rollback notes.
+- Secrets never written to disk; OAuth client secrets live only in the Sovereign Keychain.
+- External adapters must include rate limits, retry policies, and audit logging.
+- Risky behaviors ship disabled by default behind config/feature flags.
+- Each phase includes explicit exit criteria and a rollback path.
 
 ### 3) Quality Gates Per Item
 - Definition of Ready:
-- API/UX contract is explicit
-- storage impact identified
-- security/privacy impact identified
+  - API/UX contract is explicit
+  - storage impact identified
+  - security/privacy impact identified
 - Definition of Done:
-- implementation complete
-- tests added or updated
-- observability hooks present (logs/metrics/audit where relevant)
-- user-facing docs updated
+  - implementation complete
+  - tests added or updated
+  - observability hooks present (logs/metrics/audit where relevant)
+  - user-facing docs updated
 
 ### 4) Master Program Board
 - [~] `P0` Keep sovereign defaults strict (offline-first, local embeddings, explicit opt-ins)
-- [~] `P1` Personal profile as canonical identity source (config done; API/UI pending)
+- [~] `P1` Owner profile as canonical identity source (API/UI implemented; contact linkage pending)
+- [~] `P1` Delegation auth (OAuth client credentials + API key lifecycle; audit/tests pending)
 - [x] `P1` Email adapter end-to-end (IMAP inbound + SMTP outbound + attachment ingestion)
-- [ ] `P1` Profile API + UI (persisted owner profile + contact linkage)
-- [ ] `P1` Delegation auth (OAuth client credentials + API key lifecycle)
+- [~] `P1` Email adapter stabilization (compile clean, test matrix, failure-path hardening)
 - [ ] `P1` Exchange inbox hardening (proposal review UX, diff clarity, undo/revoke)
 - [ ] `P1` MCP hardening (tool scoping tests, permission templates, audit linkage)
 - [ ] `P2` Additional relay adapters (Slack, Discord) on same adapter contract
@@ -255,11 +259,12 @@ This section is the operational source of truth for day-to-day execution.
 
 ### Phase 3 — Relay & Adapters
 - [x] Owner profile config (display name, primary email, signature)
-- [ ] Owner profile API + UI (persisted profile + contact linkage)
+- [~] Owner profile API + UI (persisted profile; contact linkage pending)
 - [x] Email adapter: IMAP inbound, SMTP outbound, attachment ingest, threading
 - [~] Email adapter stabilization: compile clean, test matrix, and failure-path hardening
 - [ ] Slack adapter (webhook outbound + bot inbound)
 - [ ] Discord adapter (webhook outbound + bot inbound)
+- [~] Delegation auth (OAuth client credentials + API key lifecycle; audit/tests pending)
 
 ### Phase 4 — Ecosystem & Polish
 - [x] Plugin framework + management UI
@@ -317,6 +322,7 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 | 007 | Autonomy (rules, action log) | Ready |
 | 008 | Relay (contacts, channels, messages) | Ready |
 | 009 | Keychain security (brute-force, HMAC) | Ready |
+| 010 | Owner profile | Ready |
 
 ### Frontend Components (SvelteKit + Tauri)
 
@@ -341,11 +347,11 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 ## Remaining Work
 
 ### Phase 3: Interoperability & Enhancements
-**Status:** Near-complete (only adapters remaining)
+**Status:** Near-complete (profile linkage + delegation auth hardening + adapters remaining)
 
 Backend:
-- [ ] Profile API (GET/PUT) with persisted storage
-- [ ] Delegation auth: OAuth client credentials + API key lifecycle endpoints
+- [~] Profile API (GET/PUT) with persisted storage (contact linkage pending)
+- [~] Delegation auth: OAuth client credentials + API key lifecycle endpoints (audit/tests/docs pending)
 - [x] Implement MCP server (tools/resources) with scoped access
 - [x] Build relay engine (contacts, channels, messages, blocking)
 - [x] Build autonomy gate (rules, quiet hours, rate limiting)
@@ -364,7 +370,8 @@ Backend:
 - [ ] Discord adapter (webhook outbound + bot inbound)
 
 Frontend:
-- [ ] Profile settings UI (owner identity, signature, default contact info)
+- [~] Profile settings UI (owner identity, signature, default contact info)
+- [~] Access keys + OAuth clients UI (API-aligned; testing pending)
 - [x] Build relay chat page (/relay) with contacts, channels, messages
 - [x] Build autonomy settings UI (/autonomy)
 - [x] Build federation peers management UI (/federation)

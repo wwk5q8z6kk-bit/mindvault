@@ -340,6 +340,42 @@ pub async fn undo_proposal(
         .await
         .map_err(map_mv_error)?;
 
+    // Actually reverse the action based on snapshot data
+    let snap = &snapshot.snapshot_data;
+    if let Some(action) = snap.get("action").and_then(|v| v.as_str()) {
+        match action {
+            "create_node" => {
+                // Undo a create by deleting the created node
+                if let Some(node_id_str) = snap.get("node_id").and_then(|v| v.as_str()) {
+                    if let Ok(node_id) = Uuid::parse_str(node_id_str) {
+                        let _ = state.engine.delete_node(node_id).await;
+                    }
+                }
+            }
+            "update_node" => {
+                // Undo an update by restoring the previous state
+                if let Some(previous) = snap.get("previous") {
+                    if let Ok(node) =
+                        serde_json::from_value::<mv_core::KnowledgeNode>(previous.clone())
+                    {
+                        let _ = state.engine.update_node(node).await;
+                    }
+                }
+            }
+            "delete_node" => {
+                // Undo a delete by re-inserting the node
+                if let Some(node_data) = snap.get("node") {
+                    if let Ok(node) =
+                        serde_json::from_value::<mv_core::KnowledgeNode>(node_data.clone())
+                    {
+                        let _ = state.engine.store_node(node).await;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     // Log chronicle entry for transparency
     let chronicle = ChronicleEntry::new("exchange.undo", format!("User undid proposal {uuid}"));
     let _ = state.engine.log_chronicle(&chronicle).await;

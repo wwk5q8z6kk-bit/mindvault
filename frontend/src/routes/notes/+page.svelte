@@ -25,7 +25,10 @@
 		kind: NodeKind;
 	}
 	import { pushToast } from '$lib/stores/toast';
+	import AiSuggestionsPanel from '$lib/components/AiSuggestionsPanel.svelte';
+	import { fetchAgentContext, agentStore } from '$lib/api/agent';
 	import VersionHistory from '$lib/components/VersionHistory.svelte';
+	import { createVirtualizer } from '@tanstack/svelte-virtual';
 
 	let notes: NoteWithKind[] = [];
 	let selectedNote: NoteWithKind | null = null;
@@ -43,6 +46,8 @@
 	const NOTE_LIKE_KINDS: NodeKind[] = ['fact', 'decision', 'procedure', 'observation', 'preference', 'concept'];
 	let extractingActionItems = false;
 	let suggestedTags: string[] = [];
+	let showAiSuggestions = true;
+	let agentContextLoading = false;
 
 	// Bulk selection state
 	let selectedNoteIds: Set<string> = new Set();
@@ -53,6 +58,17 @@
 	// Keyboard navigation state
 	let focusedIndex = 0;
 	let listContainer: HTMLDivElement | null = null;
+
+	let notesListParentRef: HTMLDivElement | null = null;
+
+	const notesVirtualizer = createVirtualizer({
+		get count() {
+			return displayedNotes.length;
+		},
+		getScrollElement: () => notesListParentRef,
+		estimateSize: () => 72,
+		overscan: 5
+	});
 
 	$: selectedCount = selectedNoteIds.size;
 	$: allDisplayedSelected = displayedNotes.length > 0 && displayedNotes.every((n) => selectedNoteIds.has(n.id));
@@ -192,8 +208,22 @@
 		selectedNote = note;
 		title = note.title ?? '';
 		markdown = note.markdown ?? '';
+		showAiSuggestions = true;
 		// Track in recent items
 		recentItems.addNote(note.id, note.title ?? 'Untitled');
+		// Load agent context for this note
+		void loadAgentContext(note.id);
+	}
+
+	async function loadAgentContext(nodeId: string) {
+		agentContextLoading = true;
+		try {
+			await fetchAgentContext(nodeId);
+		} catch {
+			// Agent context is supplementary — fail silently
+		} finally {
+			agentContextLoading = false;
+		}
 	}
 
 	function newNote() {
@@ -824,7 +854,7 @@
 			</div>
 		{/if}
 
-		<div class="mt-3 flex flex-col gap-2" bind:this={listContainer}>
+		<div class="mt-3" bind:this={listContainer}>
 			{#if loading}
 				<div class="rounded-lg border border-slate-800 p-4 text-xs text-slate-400">
 					Loading notes...
@@ -853,58 +883,68 @@
 					No notes match your search.
 				</div>
 			{:else}
-				{#each displayedNotes as note, idx (note.id)}
-					<div
-						data-note-item
-						class={`flex items-start gap-2 rounded-lg border px-3 py-2 text-left text-xs transition ${
-							idx === focusedIndex
-								? 'ring-1 ring-sky-400/50'
-								: ''
-						} ${
-							selectedNoteIds.has(note.id)
-								? 'border-sky-500 bg-sky-500/10'
-								: note.id === selectedNote?.id
-									? 'border-sky-500 bg-sky-500/10 text-sky-200'
-									: 'border-slate-800 bg-slate-900/40 text-slate-200 hover:border-slate-700'
-						}`}
-					>
-						{#if bulkMode}
-							<label class="flex h-5 cursor-pointer items-center">
-								<input
-									type="checkbox"
-									class="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 text-sky-500 focus:ring-sky-500 focus:ring-offset-0"
-									checked={selectedNoteIds.has(note.id)}
-									on:change={() => toggleNoteSelection(note.id)}
-								/>
-							</label>
-						{/if}
-						<button
-							class="min-w-0 flex-1 text-left"
-							on:mouseenter={() => {
-								focusedIndex = idx;
-							}}
-							on:click={() => bulkMode ? toggleNoteSelection(note.id) : selectNote(note)}
-						>
-							<div class="flex items-center gap-1.5">
-								<span class={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${kindBadgeClass(note.kind)}`}>
-									{kindLabel(note.kind)}
-								</span>
-								{#if note.pinned}<span class="text-amber-400" title="Pinned">*</span>{/if}
-								<span class="font-semibold truncate">{note.title}</span>
-							</div>
-							{#if note.tags && note.tags.length > 0}
-								<div class="mt-1 flex flex-wrap gap-1">
-									{#each note.tags.slice(0, 3) as tag}
-										<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-400">{tag}</span>
-									{/each}
+				<div bind:this={notesListParentRef} style="max-height: 70vh; overflow-y: auto;">
+					<div style="height: {$notesVirtualizer.getTotalSize()}px; width: 100%; position: relative;">
+						{#each $notesVirtualizer.getVirtualItems() as row (row.key)}
+							{@const note = displayedNotes[row.index]}
+							{@const idx = row.index}
+							<div
+								style="position: absolute; top: 0; left: 0; width: 100%; transform: translateY({row.start}px);"
+							>
+								<div
+									data-note-item
+									class={`flex items-start gap-2 rounded-lg border px-3 py-2 mb-2 text-left text-xs transition ${
+										idx === focusedIndex
+											? 'ring-1 ring-sky-400/50'
+											: ''
+									} ${
+										selectedNoteIds.has(note.id)
+											? 'border-sky-500 bg-sky-500/10'
+											: note.id === selectedNote?.id
+												? 'border-sky-500 bg-sky-500/10 text-sky-200'
+												: 'border-slate-800 bg-slate-900/40 text-slate-200 hover:border-slate-700'
+									}`}
+								>
+									{#if bulkMode}
+										<label class="flex h-5 cursor-pointer items-center">
+											<input
+												type="checkbox"
+												class="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 text-sky-500 focus:ring-sky-500 focus:ring-offset-0"
+												checked={selectedNoteIds.has(note.id)}
+												on:change={() => toggleNoteSelection(note.id)}
+											/>
+										</label>
+									{/if}
+									<button
+										class="min-w-0 flex-1 text-left"
+										on:mouseenter={() => {
+											focusedIndex = idx;
+										}}
+										on:click={() => bulkMode ? toggleNoteSelection(note.id) : selectNote(note)}
+									>
+										<div class="flex items-center gap-1.5">
+											<span class={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${kindBadgeClass(note.kind)}`}>
+												{kindLabel(note.kind)}
+											</span>
+											{#if note.pinned}<span class="text-amber-400" title="Pinned">*</span>{/if}
+											<span class="font-semibold truncate">{note.title}</span>
+										</div>
+										{#if note.tags && note.tags.length > 0}
+											<div class="mt-1 flex flex-wrap gap-1">
+												{#each note.tags.slice(0, 3) as tag}
+													<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-400">{tag}</span>
+												{/each}
+											</div>
+										{/if}
+										<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">
+											{note.markdown.slice(0, 120) || 'No content'}
+										</p>
+									</button>
 								</div>
-							{/if}
-							<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">
-								{note.markdown.slice(0, 120) || 'No content'}
-							</p>
-						</button>
+							</div>
+						{/each}
 					</div>
-				{/each}
+				</div>
 			{/if}
 		</div>
 	</section>
@@ -1044,6 +1084,45 @@
 					content={selectedNote.markdown ?? ''}
 				/>
 			</div>
+
+			{#if showAiSuggestions}
+				<div class="mt-4">
+					<AiSuggestionsPanel
+						nodeId={selectedNote.id}
+						on:applied={async () => {
+							showAiSuggestions = false;
+							await loadNotes();
+							const refreshed = notes.find((n) => n.id === selectedNote?.id);
+							if (refreshed) selectNote(refreshed);
+						}}
+						on:dismissed={() => { showAiSuggestions = false; }}
+					/>
+				</div>
+			{/if}
+
+			{#if $agentStore.relatedNodes.length > 0 || agentContextLoading}
+				<div class="mt-4 rounded-xl border border-sky-500/20 bg-sky-500/5 p-4">
+					<div class="flex items-center gap-2 mb-2">
+						{#if agentContextLoading}
+							<div class="h-2 w-2 rounded-full bg-sky-400 animate-pulse"></div>
+						{/if}
+						<h4 class="text-[10px] font-bold uppercase tracking-wider text-sky-400">Agent Context</h4>
+					</div>
+					<p class="text-xs text-slate-300 leading-relaxed">{$agentStore.summary}</p>
+					{#if $agentStore.relatedNodes.length > 0}
+						<div class="mt-2 space-y-1">
+							{#each $agentStore.relatedNodes.slice(0, 5) as node (node.id)}
+								<a
+									href="/notes?note={node.id}"
+									class="block rounded-lg border border-slate-800/60 bg-slate-900/40 px-2 py-1.5 text-xs text-slate-300 transition hover:border-sky-500/30 hover:text-sky-200"
+								>
+									{node.title || 'Untitled'}
+								</a>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			{/if}
 
 			<div class="mt-4">
 				<AttachmentsPanel

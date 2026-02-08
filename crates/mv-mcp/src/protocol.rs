@@ -120,6 +120,10 @@ impl ToolResult {
             is_error: Some(true),
         }
     }
+
+    pub fn is_error(&self) -> bool {
+        self.is_error == Some(true)
+    }
 }
 
 // ---------------------------------------------------------------------------

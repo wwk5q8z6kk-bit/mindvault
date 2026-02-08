@@ -88,6 +88,8 @@ mod federation;
 mod adapters;
 #[path = "rest/plugins.rs"]
 mod plugins;
+#[path = "rest/profile.rs"]
+mod profile;
 #[path = "rest/sync.rs"]
 mod sync;
 
@@ -366,6 +368,8 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/secrets/status", get(secrets::secret_status))
         .route("/api/v1/secrets", post(secrets::set_secret))
         .route("/api/v1/secrets/{key}", delete(secrets::delete_secret))
+        // --- Owner Profile ---
+        .route("/api/v1/profile", get(profile::get_profile).put(profile::update_profile))
         // --- Sovereign Keychain ---
         .route("/api/v1/keychain/init", post(keychain::init_vault))
         .route("/api/v1/keychain/unseal", post(keychain::unseal_vault))
@@ -487,8 +491,10 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/sync/import", post(sync::sync_import))
         .route("/api/v1/sync/status", get(sync::sync_status))
         // --- Plugin System ---
-        .route("/api/v1/plugins", get(plugins::list_plugins))
+        .route("/api/v1/plugins", get(plugins::list_plugins).post(plugins::install_plugin))
         .route("/api/v1/plugins/hooks", get(plugins::list_hook_points))
+        .route("/api/v1/plugins/reload", post(plugins::reload_plugins))
+        .route("/api/v1/plugins/{name}", delete(plugins::uninstall_plugin))
         // --- Federation ---
         .route(
             "/api/v1/federation/peers",
@@ -6075,8 +6081,29 @@ async fn apply_intent(
     let uuid = Uuid::parse_str(&id)
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid intent id".to_string()))?;
 
-    // Execute the intent action (not just update status)
+    // Get intent before executing (for feedback recording)
+    let intent = state
+        .engine
+        .get_intent(uuid)
+        .await
+        .map_err(map_mv_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "intent not found".to_string()))?;
+
+    // Execute the intent action
     let result = state.engine.apply_intent(uuid).await.map_err(map_mv_error)?;
+
+    // Record feedback for learning
+    let fb = AgentFeedback::new(intent.intent_type.to_string(), "applied")
+        .with_intent(uuid)
+        .with_confidence(intent.confidence as f32);
+    let _ = state.engine.record_feedback(&fb).await;
+
+    // Recalculate confidence thresholds for this intent type
+    let intent_type_str = intent.intent_type.to_string();
+    let engine = Arc::clone(&state.engine);
+    tokio::spawn(async move {
+        let _ = engine.recalculate_confidence(&intent_type_str).await;
+    });
 
     // Log to chronicle
     let entry = mv_core::ChronicleEntry::new(
@@ -6107,12 +6134,34 @@ async fn dismiss_intent(
     let uuid = Uuid::parse_str(&id)
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid intent id".to_string()))?;
 
+    // Get intent before dismissing (for feedback recording)
+    let intent = state
+        .engine
+        .get_intent(uuid)
+        .await
+        .map_err(map_mv_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "intent not found".to_string()))?;
+
     let ok = state
         .engine
         .update_intent_status(uuid, IntentStatus::Dismissed)
         .await
         .map_err(map_mv_error)?;
+
     if ok {
+        // Record feedback for learning
+        let fb = AgentFeedback::new(intent.intent_type.to_string(), "dismissed")
+            .with_intent(uuid)
+            .with_confidence(intent.confidence as f32);
+        let _ = state.engine.record_feedback(&fb).await;
+
+        // Recalculate confidence thresholds
+        let intent_type_str = intent.intent_type.to_string();
+        let engine = Arc::clone(&state.engine);
+        tokio::spawn(async move {
+            let _ = engine.recalculate_confidence(&intent_type_str).await;
+        });
+
         Ok(StatusCode::OK)
     } else {
         Err((StatusCode::NOT_FOUND, "intent not found".to_string()))

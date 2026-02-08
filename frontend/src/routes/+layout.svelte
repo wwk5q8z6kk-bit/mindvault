@@ -46,8 +46,10 @@
 		{ label: 'Calendar', href: '/calendar' },
 		{ label: 'Timeline', href: '/timeline' },
 		{ label: 'Review', href: '/review' },
+		{ label: 'Stats', href: '/stats' },
 		{ label: 'Tags', href: '/tags' },
 		{ label: 'Bookmarks', href: '/bookmarks' },
+		{ label: 'Media', href: '/media' },
 		{ label: 'Flashcards', href: '/flashcards' },
 		{ label: 'Graph', href: '/graph' },
 		{ label: 'Canvas', href: '/canvas' },
@@ -145,6 +147,11 @@
 			subtitle: 'AI-powered weekly digest and spaced review prompts.'
 		},
 		{
+			href: '/stats',
+			title: 'Productivity Stats',
+			subtitle: 'Track streaks, daily activity, hourly patterns, and tag usage.'
+		},
+		{
 			href: '/tags',
 			title: 'Tag Manager',
 			subtitle: 'Browse, rename, merge, and AI-summarize tags across your vault.'
@@ -153,6 +160,11 @@
 			href: '/bookmarks',
 			title: 'Reading List',
 			subtitle: 'Save and organize web clips, references, and reading material.'
+		},
+		{
+			href: '/media',
+			title: 'Media Library',
+			subtitle: 'Browse and manage all attachments across notes and tasks.'
 		},
 		{
 			href: '/flashcards',

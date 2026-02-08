@@ -49,7 +49,9 @@ impl IngestPipeline {
         if let Some(ref vectors) = self.store.vectors {
             match self.store.embedder.embed(&node.content).await {
                 Ok(embedding) => {
-                    vectors.upsert(node.id, embedding, &node.content).await?;
+                    vectors
+                        .upsert(node.id, embedding, &node.content, Some(&node.namespace))
+                        .await?;
                 }
                 Err(e) => {
                     tracing::warn!("embedding failed for node {}: {e}", node.id);
@@ -89,7 +91,9 @@ impl IngestPipeline {
         if let Some(ref vectors) = self.store.vectors {
             match self.store.embedder.embed(&node.content).await {
                 Ok(embedding) => {
-                    vectors.upsert(node.id, embedding, &node.content).await?;
+                    vectors
+                        .upsert(node.id, embedding, &node.content, Some(&node.namespace))
+                        .await?;
                 }
                 Err(e) => {
                     tracing::warn!("re-embedding failed for node {}: {e}", node.id);

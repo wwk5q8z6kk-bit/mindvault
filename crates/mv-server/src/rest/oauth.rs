@@ -41,7 +41,7 @@ pub struct OAuthClientCreateRequest {
 
 #[derive(Serialize)]
 pub struct OAuthClientResponse {
-    pub id: String,
+    pub client_id: String,
     pub name: String,
     pub template_id: String,
     pub created_at: String,
@@ -145,8 +145,7 @@ fn extract_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
 }
 
 fn build_client_response(
-    cred_id: Uuid,
-    cred_name: String,
+    client_id: String,
     metadata: &HashMap<String, Value>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -162,7 +161,7 @@ fn build_client_response(
     let display_name = metadata
         .get(METADATA_DISPLAY_NAME)
         .and_then(|v| v.as_str())
-        .unwrap_or(&cred_name)
+        .unwrap_or(&client_id)
         .to_string();
     let token_ttl_seconds = metadata
         .get(METADATA_TOKEN_TTL_SECS)
@@ -174,7 +173,7 @@ fn build_client_response(
         .map(|s| s.to_string());
 
     OAuthClientResponse {
-        id: cred_id.to_string(),
+        client_id,
         name: display_name,
         template_id,
         created_at: created_at.to_rfc3339(),
@@ -280,14 +279,13 @@ pub async fn create_oauth_client(
         .map_err(map_keychain_error)?;
 
     let response = build_client_response(
-        updated.id,
         updated.name.clone(),
         &updated.metadata,
         updated.created_at,
         updated.updated_at,
         updated.last_accessed_at,
         updated.expires_at,
-        updated.revoked_at,
+        updated.destroyed_at.or(updated.archived_at),
     );
 
     Ok(Json(OAuthClientCreateResponse {
@@ -325,7 +323,6 @@ pub async fn list_oauth_clients(
         .into_iter()
         .map(|cred| {
             build_client_response(
-                cred.id,
                 cred.name,
                 &cred.metadata,
                 cred.created_at,

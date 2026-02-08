@@ -1,6 +1,11 @@
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Extension, Json};
+use axum::{
+    extract::{Multipart, Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Extension, Json,
+};
 use serde::Serialize;
 
 use crate::auth::{authorize_read, AuthContext};
@@ -16,12 +21,32 @@ pub struct PluginSummary {
     pub description: Option<String>,
     pub author: Option<String>,
     pub hooks: Vec<String>,
+    pub status: String,
 }
 
 #[derive(Serialize)]
 pub struct HookPointInfo {
     pub name: String,
     pub description: String,
+}
+
+const MAX_MANIFEST_BYTES: usize = 256 * 1024;
+const MAX_WASM_BYTES: usize = 20 * 1024 * 1024;
+
+fn authorize_admin(auth: &AuthContext) -> Result<(), (StatusCode, String)> {
+    if auth.is_admin() {
+        Ok(())
+    } else {
+        Err((StatusCode::FORBIDDEN, "admin permission required".into()))
+    }
+}
+
+fn validate_plugin_name(name: &str) -> Result<(), (StatusCode, String)> {
+    if mv_plugin::PluginManager::is_valid_plugin_name(name) {
+        Ok(())
+    } else {
+        Err((StatusCode::BAD_REQUEST, "invalid plugin name".into()))
+    }
 }
 
 // --- Handlers ---
@@ -34,18 +59,59 @@ pub async fn list_plugins(
     authorize_read(&auth)?;
 
     let registry = state.plugin_registry.read().await;
-    let plugins: Vec<PluginSummary> = registry
+    let mut plugins: std::collections::HashMap<String, PluginSummary> = registry
         .list_plugins()
         .into_iter()
-        .map(|m| PluginSummary {
-            id: m.id.clone(),
-            name: m.name.clone(),
-            version: m.version.clone(),
-            description: m.description.clone(),
-            author: m.author.clone(),
-            hooks: m.hooks.clone(),
+        .map(|m| {
+            (
+                m.id.clone(),
+                PluginSummary {
+                    id: m.id.clone(),
+                    name: m.name.clone(),
+                    version: m.version.clone(),
+                    description: m.description.clone(),
+                    author: m.author.clone(),
+                    hooks: m.hooks.clone(),
+                    status: "loaded".to_string(),
+                },
+            )
         })
         .collect();
+
+    let mgr = state.plugin_manager.read().await.clone();
+    match tokio::task::spawn_blocking(move || mgr.discover()).await {
+        Ok(Ok(discovered)) => {
+            for (name, _path, manifest) in discovered {
+                let entry = plugins.entry(manifest.id.clone()).or_insert_with(|| PluginSummary {
+                    id: manifest.id.clone(),
+                    name: manifest.name.clone(),
+                    version: manifest.version.clone(),
+                    description: manifest.description.clone(),
+                    author: manifest.author.clone(),
+                    hooks: manifest.hooks.clone(),
+                    status: "installed".to_string(),
+                });
+                if entry.status != "loaded" {
+                    entry.name = manifest.name.clone();
+                    entry.version = manifest.version.clone();
+                    entry.description = manifest.description.clone();
+                    entry.author = manifest.author.clone();
+                    entry.hooks = manifest.hooks.clone();
+                    entry.status = "installed".to_string();
+                }
+                let _ = name;
+            }
+        }
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, "plugin discovery failed");
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "plugin discovery task failed");
+        }
+    }
+
+    let mut plugins: Vec<PluginSummary> = plugins.into_values().collect();
+    plugins.sort_by(|a, b| a.name.cmp(&b.name));
     let count = plugins.len();
     Ok(Json(serde_json::json!({
         "plugins": plugins,
@@ -92,4 +158,119 @@ pub async fn list_hook_points(
     ];
 
     Ok(Json(serde_json::json!({ "hooks": hooks })))
+}
+
+/// Install a plugin via multipart upload (manifest JSON + WASM binary).
+pub async fn install_plugin(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize_admin(&auth)?;
+
+    let mut manifest_bytes: Option<Vec<u8>> = None;
+    let mut wasm_bytes: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("multipart error: {e}")))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("read field error: {e}")))?;
+        match name.as_str() {
+            "manifest" => {
+                if data.len() > MAX_MANIFEST_BYTES {
+                    return Err((StatusCode::PAYLOAD_TOO_LARGE, "manifest too large".into()));
+                }
+                manifest_bytes = Some(data.to_vec());
+            }
+            "wasm" => {
+                if data.len() > MAX_WASM_BYTES {
+                    return Err((StatusCode::PAYLOAD_TOO_LARGE, "wasm too large".into()));
+                }
+                wasm_bytes = Some(data.to_vec());
+            }
+            _ => {}
+        }
+    }
+
+    let manifest_bytes = manifest_bytes
+        .ok_or((StatusCode::BAD_REQUEST, "missing 'manifest' field".into()))?;
+    let wasm_bytes =
+        wasm_bytes.ok_or((StatusCode::BAD_REQUEST, "missing 'wasm' field".into()))?;
+
+    let manifest: mv_plugin::PluginManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid manifest JSON: {e}")))?;
+
+    let plugin_name = manifest.id.clone();
+    validate_plugin_name(&plugin_name)?;
+
+    let mgr = state.plugin_manager.read().await.clone();
+    let manifest_clone = manifest.clone();
+    let wasm_clone = wasm_bytes.clone();
+    let name_clone = plugin_name.clone();
+    let id = tokio::task::spawn_blocking(move || {
+        mgr.install(&name_clone, &wasm_clone, &manifest_clone)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("install task failed: {e}")))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "id": id.to_string(),
+            "name": plugin_name,
+            "status": "installed",
+        })),
+    ))
+}
+
+/// Uninstall a plugin by name.
+pub async fn uninstall_plugin(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize_admin(&auth)?;
+    validate_plugin_name(&name)?;
+
+    let mgr = state.plugin_manager.read().await.clone();
+    let name_clone = name.clone();
+    tokio::task::spawn_blocking(move || mgr.uninstall(&name_clone))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("uninstall task failed: {e}")))?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(serde_json::json!({
+        "name": name,
+        "status": "uninstalled",
+    })))
+}
+
+/// Reload / rediscover plugins from the plugins directory.
+pub async fn reload_plugins(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize_admin(&auth)?;
+
+    let mgr = state.plugin_manager.read().await.clone();
+    let discovered = tokio::task::spawn_blocking(move || mgr.discover())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("reload task failed: {e}")))?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let count = discovered.len();
+    let names: Vec<String> = discovered.into_iter().map(|(name, _, _)| name).collect();
+
+    Ok(Json(serde_json::json!({
+        "status": "reloaded",
+        "count": count,
+        "plugins": names,
+    })))
 }

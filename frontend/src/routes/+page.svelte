@@ -11,6 +11,7 @@
 	import InsightsDashboard from '$lib/components/InsightsDashboard.svelte';
 	import RecentNotesWidget from '$lib/components/RecentNotesWidget.svelte';
 	import IntentInbox from '$lib/components/IntentInbox.svelte';
+	import AgentStream from '$lib/components/AgentStream.svelte';
 	import { onMount } from 'svelte';
 
 	let loaded = false;
@@ -208,6 +209,9 @@
 
 			<!-- Proactive Intelligence -->
 			<InsightsDashboard />
+
+			<!-- Live Agent Intelligence -->
+			<AgentStream />
 
 			<!-- Recent Notes (from briefing API) -->
 			<RecentNotesWidget

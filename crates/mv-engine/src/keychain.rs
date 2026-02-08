@@ -1590,7 +1590,7 @@ mod tests {
     async fn update_credential_metadata_applies_fields() {
         let engine = test_engine().await;
         engine.initialize_vault("test-password", false).await.unwrap();
-        engine.unseal_vault("test-password").await.unwrap();
+        engine.unseal("test-password").await.unwrap();
 
         let domain_id = engine.find_or_create_domain("oauth-clients").await.unwrap();
         let stored = engine

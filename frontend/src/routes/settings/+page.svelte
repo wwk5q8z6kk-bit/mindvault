@@ -34,8 +34,18 @@
 		KNOWN_SECRETS,
 		type BackendStatus
 	} from '$lib/api/secrets';
+	import { listAdapterStatuses, type AdapterStatus } from '$lib/api/adapters';
+	import { fetchAiModels } from '$lib/api/agent';
+	import type { ModelRegistry } from '$lib/api/types';
 
 	let showServerExport = false;
+
+	// Adapter status
+	let adapterStatuses: AdapterStatus[] = [];
+	let adapterStatusLoading = false;
+
+	// Backend AI model info
+	let backendModels: ModelRegistry | null = null;
 
 	const themeOptions: Array<{ value: ThemeMode; label: string; description: string }> = [
 		{ value: 'system', label: 'System', description: 'Follow operating system preference' },
@@ -145,6 +155,29 @@
 
 	// Load credentials on mount
 	loadCredentials();
+
+	// Load adapter statuses
+	async function loadAdapterStatuses() {
+		adapterStatusLoading = true;
+		try {
+			adapterStatuses = await listAdapterStatuses();
+		} catch {
+			// Adapters may not be configured — fail silently
+		} finally {
+			adapterStatusLoading = false;
+		}
+	}
+	loadAdapterStatuses();
+
+	// Load backend AI model info
+	async function loadBackendModels() {
+		try {
+			backendModels = await fetchAiModels();
+		} catch {
+			// Not critical — fail silently
+		}
+	}
+	loadBackendModels();
 
 	function handleThemeChange(mode: ThemeMode) {
 		setTheme(mode);
@@ -526,6 +559,54 @@
 			</div>
 		</section>
 
+		<!-- Connected Adapters -->
+		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+			<div class="flex items-center justify-between">
+				<div>
+					<h3 class="text-sm font-semibold text-white">Connected Adapters</h3>
+					<p class="mt-1 text-[11px] text-slate-400">External integrations (Slack, email, webhooks, etc.)</p>
+				</div>
+				<button
+					class="rounded-lg border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800"
+					on:click={loadAdapterStatuses}
+					disabled={adapterStatusLoading}
+				>
+					{adapterStatusLoading ? 'Checking...' : 'Refresh'}
+				</button>
+			</div>
+			{#if adapterStatusLoading && adapterStatuses.length === 0}
+				<div class="mt-3 text-xs text-slate-500">Checking adapter status...</div>
+			{:else if adapterStatuses.length === 0}
+				<div class="mt-3 rounded-lg border border-dashed border-slate-800 p-3 text-center text-[11px] text-slate-500">
+					No adapters configured. Adapters connect MindVault to external services.
+				</div>
+			{:else}
+				<div class="mt-3 space-y-2">
+					{#each adapterStatuses as adapter (adapter.name)}
+						<div class="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+							<div class="h-2 w-2 rounded-full {adapter.connected ? 'bg-emerald-400' : 'bg-red-400'}"></div>
+							<div class="flex-1 min-w-0">
+								<div class="flex items-center gap-2">
+									<span class="text-xs font-medium text-white">{adapter.name}</span>
+									<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-400">{adapter.adapter_type}</span>
+								</div>
+								{#if adapter.error}
+									<p class="mt-0.5 text-[10px] text-red-400 truncate">{adapter.error}</p>
+								{:else if adapter.last_receive}
+									<p class="mt-0.5 text-[10px] text-slate-500">
+										Last activity: {new Date(adapter.last_receive).toLocaleString()}
+									</p>
+								{/if}
+							</div>
+							<span class="text-[10px] {adapter.connected ? 'text-emerald-400' : 'text-red-400'}">
+								{adapter.connected ? 'Connected' : 'Disconnected'}
+							</span>
+						</div>
+					{/each}
+				</div>
+			{/if}
+		</section>
+
 		<!-- AI Provider (BYOK) -->
 		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
 			<h3 class="text-sm font-semibold text-white">AI Provider</h3>
@@ -533,6 +614,17 @@
 				Bring your own API key or use a local LLM. Leave as "Server Default" to use the backend's
 				configured provider.
 			</p>
+
+			{#if backendModels}
+				<div class="mt-3 rounded-lg border border-sky-500/20 bg-sky-500/5 px-3 py-2">
+					<div class="text-[10px] uppercase tracking-wider text-sky-400">Server Embedding Model</div>
+					<div class="mt-1 flex items-center gap-2 text-xs text-white">
+						<span class="font-medium">{backendModels.embedding.provider}</span>
+						<span class="text-slate-500">/</span>
+						<span class="font-mono text-slate-300">{backendModels.embedding.model}</span>
+					</div>
+				</div>
+			{/if}
 
 			<div class="mt-3 grid grid-cols-2 gap-2">
 				{#each AI_PROVIDERS as provider (provider.value)}
@@ -623,6 +715,17 @@
 					</button>
 				{/if}
 			</div>
+		</section>
+
+		<!-- Owner Profile -->
+		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+			<h3 class="text-sm font-semibold text-white">Owner Profile</h3>
+			<p class="mt-1 text-[11px] text-slate-400">
+				Your identity for signing nodes, email headers, and federation.
+			</p>
+			<a href="/settings/profile" class="mt-1 inline-block text-xs text-sky-400 hover:text-sky-300"
+				>Edit Profile &rarr;</a
+			>
 		</section>
 
 		<!-- Server Credentials (Keychain) -->

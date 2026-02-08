@@ -525,6 +525,9 @@ async fn tool_propose_node(
         .with_payload(payload);
 
     if let Some(confidence) = params.get("confidence").and_then(|v| v.as_f64()) {
+        if !(0.0..=1.0).contains(&confidence) {
+            return ToolResult::error("confidence must be between 0.0 and 1.0");
+        }
         proposal = proposal.with_confidence(confidence as f32);
     }
     if let Some(diff) = params.get("diff_preview").and_then(|v| v.as_str()) {
@@ -583,6 +586,9 @@ async fn tool_propose_tag(
     proposal = proposal.with_payload(payload);
 
     if let Some(confidence) = params.get("confidence").and_then(|v| v.as_f64()) {
+        if !(0.0..=1.0).contains(&confidence) {
+            return ToolResult::error("confidence must be between 0.0 and 1.0");
+        }
         proposal = proposal.with_confidence(confidence as f32);
     }
     if let Some(diff) = params.get("diff_preview").and_then(|v| v.as_str()) {
@@ -666,6 +672,9 @@ async fn tool_propose_update(
     proposal = proposal.with_payload(payload);
 
     if let Some(confidence) = params.get("confidence").and_then(|v| v.as_f64()) {
+        if !(0.0..=1.0).contains(&confidence) {
+            return ToolResult::error("confidence must be between 0.0 and 1.0");
+        }
         proposal = proposal.with_confidence(confidence as f32);
     }
     if let Some(diff) = params.get("diff_preview").and_then(|v| v.as_str()) {

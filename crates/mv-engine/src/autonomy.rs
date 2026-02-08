@@ -14,6 +14,18 @@ impl AutonomyGate {
         Self { store }
     }
 
+    /// Check whether any enabled global rule has quiet hours active right now.
+    pub async fn is_in_quiet_hours(&self) -> MvResult<bool> {
+        let rules = self.store.nodes.list_autonomy_rules().await?;
+        let now = Utc::now();
+        for rule in &rules {
+            if rule.enabled && rule.rule_type == "global" && self.in_quiet_hours(rule, now) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Evaluate an action against autonomy rules.
     /// Rules cascade: contact > domain > tag > global.
     pub async fn evaluate(

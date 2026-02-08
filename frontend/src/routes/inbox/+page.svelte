@@ -10,6 +10,8 @@
 	import { updateNote } from '$lib/api/notes';
 	import { assistAutoTag } from '$lib/api/assist';
 	import { prioritizeTasks } from '$lib/api/ai';
+	import { listProposals, approveProposal, rejectProposal, type Proposal } from '$lib/api/exchange';
+	import ProposalCard from '$lib/components/ProposalCard.svelte';
 	import {
 		buildInboxTriagePatch,
 		buildInboxTriageSuggestions,
@@ -22,6 +24,7 @@
 		INBOX_TRIAGE_SETTINGS_UPDATED_EVENT_NAME,
 		loadInboxTriageSettings
 	} from '$lib/inbox/triage-settings';
+	import { createVirtualizer } from '@tanstack/svelte-virtual';
 
 	type InboxItem =
 		| { type: 'task'; data: TaskRecord; created: string }
@@ -29,10 +32,22 @@
 
 	let items: InboxItem[] = [];
 	let loading = true;
+	let inboxListParentRef: HTMLDivElement | null = null;
+
+	const inboxVirtualizer = createVirtualizer({
+		get count() {
+			return items.length;
+		},
+		getScrollElement: () => inboxListParentRef,
+		estimateSize: () => 120,
+		overscan: 5
+	});
 	let processedCount = 0;
 	let snoozeOpenId: string | null = null;
 	let suggestingTagsFor: string | null = null;
 	let suggestedTags: Map<string, string[]> = new Map();
+	let proposals: Proposal[] = [];
+	let proposalsLoading = false;
 	let triageLoading = false;
 	let triageSuggestions: Map<string, InboxTriageSuggestion> = new Map();
 	let triageSettings = loadInboxTriageSettings();
@@ -80,6 +95,7 @@
 		window.addEventListener(INBOX_TRIAGE_APPLY_TOP_EVENT_NAME, handleExternalApplyTop as EventListener);
 		window.addEventListener(INBOX_TRIAGE_SETTINGS_UPDATED_EVENT_NAME, refreshTriageSettings);
 		window.addEventListener('storage', handleStorageEvent);
+		void loadProposals();
 		void Promise.all([loadTasks(), loadNotes()]).finally(() => {
 			triageSettings = loadInboxTriageSettings();
 			loading = false;
@@ -97,6 +113,39 @@
 			window.removeEventListener('storage', handleStorageEvent);
 		};
 	});
+
+	async function loadProposals() {
+		proposalsLoading = true;
+		try {
+			proposals = await listProposals('pending', 20);
+		} catch {
+			// Silently fail — proposals are supplementary
+		} finally {
+			proposalsLoading = false;
+		}
+	}
+
+	async function handleApproveProposal(event: CustomEvent<string>) {
+		try {
+			await approveProposal(event.detail);
+			proposals = proposals.filter((p) => p.id !== event.detail);
+			processedCount++;
+			pushToast('Proposal approved', 'success');
+		} catch {
+			pushToast('Failed to approve proposal', 'danger');
+		}
+	}
+
+	async function handleRejectProposal(event: CustomEvent<string>) {
+		try {
+			await rejectProposal(event.detail);
+			proposals = proposals.filter((p) => p.id !== event.detail);
+			processedCount++;
+			pushToast('Proposal rejected', 'success');
+		} catch {
+			pushToast('Failed to reject proposal', 'danger');
+		}
+	}
 
 	async function moveTask(taskId: string, status: TaskStatus) {
 		try {
@@ -357,7 +406,27 @@
 		</div>
 	</div>
 
-	<div class="mt-4 flex flex-col gap-3">
+	{#if proposals.length > 0}
+		<div class="mt-4">
+			<div class="mb-2 flex items-center gap-2">
+				<span class="text-xs font-semibold text-slate-300">Pending Proposals</span>
+				<span class="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+					{proposals.length}
+				</span>
+			</div>
+			<div class="space-y-2">
+				{#each proposals as proposal (proposal.id)}
+					<ProposalCard
+						{proposal}
+						on:approve={handleApproveProposal}
+						on:reject={handleRejectProposal}
+					/>
+				{/each}
+			</div>
+		</div>
+	{/if}
+
+	<div class="mt-4">
 		{#if loading}
 			<div class="rounded-xl border border-slate-800 p-6 text-center text-xs text-slate-400">
 				Loading inbox...
@@ -377,157 +446,166 @@
 				</p>
 			</div>
 		{:else}
-			{#each items as item (item.type + '-' + item.data.id)}
-				<div class="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4 transition hover:border-slate-700">
-					<div class="flex items-start justify-between gap-3">
-						<div class="min-w-0 flex-1">
-							<div class="flex items-center gap-2">
-								<span class="rounded px-1.5 py-0.5 text-[9px] font-medium uppercase {item.type === 'task'
-									? 'bg-violet-500/20 text-violet-300'
-									: 'bg-sky-500/20 text-sky-300'}">
-									{item.type}
-								</span>
-								<span class="text-[10px] text-slate-500">{relativeTime(item.created)}</span>
-							</div>
-							<h4 class="mt-1 text-sm font-medium text-white">
-								{item.type === 'task' ? item.data.title : item.data.title ?? 'Untitled Note'}
-							</h4>
-							{#if item.type === 'task' && item.data.description}
-								<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">{item.data.description}</p>
-							{/if}
-							{#if item.type === 'note' && item.data.markdown}
-								<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">{item.data.markdown.slice(0, 150)}</p>
-							{/if}
-							{#if item.type === 'task' && triageSuggestions.has(item.data.id)}
-								{@const suggestion = triageSuggestions.get(item.data.id)}
-								{#if suggestion}
-									<div class="mt-2 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-2">
-										<div class="flex items-center gap-2 text-[10px] text-indigo-200">
-											<span class="rounded bg-indigo-500/20 px-1.5 py-0.5 font-medium">AI triage</span>
-											<span>Rank #{suggestion.rank}</span>
-											<span>Priority P{suggestion.suggestedPriority}</span>
-											<span>{statusLabel(suggestion.suggestedStatus)}</span>
+			<div bind:this={inboxListParentRef} style="max-height: 80vh; overflow-y: auto;">
+				<div style="height: {$inboxVirtualizer.getTotalSize()}px; width: 100%; position: relative;">
+					{#each $inboxVirtualizer.getVirtualItems() as row (row.key)}
+						{@const item = items[row.index]}
+						<div
+							style="position: absolute; top: 0; left: 0; width: 100%; transform: translateY({row.start}px);"
+						>
+							<div class="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4 mb-3 transition hover:border-slate-700">
+								<div class="flex items-start justify-between gap-3">
+									<div class="min-w-0 flex-1">
+										<div class="flex items-center gap-2">
+											<span class="rounded px-1.5 py-0.5 text-[9px] font-medium uppercase {item.type === 'task'
+												? 'bg-violet-500/20 text-violet-300'
+												: 'bg-sky-500/20 text-sky-300'}">
+												{item.type}
+											</span>
+											<span class="text-[10px] text-slate-500">{relativeTime(item.created)}</span>
 										</div>
-										{#if suggestion.reason}
-											<p class="mt-1 line-clamp-2 text-[10px] text-indigo-100/90">{suggestion.reason}</p>
+										<h4 class="mt-1 text-sm font-medium text-white">
+											{item.type === 'task' ? item.data.title : item.data.title ?? 'Untitled Note'}
+										</h4>
+										{#if item.type === 'task' && item.data.description}
+											<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">{item.data.description}</p>
+										{/if}
+										{#if item.type === 'note' && item.data.markdown}
+											<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">{item.data.markdown.slice(0, 150)}</p>
+										{/if}
+										{#if item.type === 'task' && triageSuggestions.has(item.data.id)}
+											{@const suggestion = triageSuggestions.get(item.data.id)}
+											{#if suggestion}
+												<div class="mt-2 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-2">
+													<div class="flex items-center gap-2 text-[10px] text-indigo-200">
+														<span class="rounded bg-indigo-500/20 px-1.5 py-0.5 font-medium">AI triage</span>
+														<span>Rank #{suggestion.rank}</span>
+														<span>Priority P{suggestion.suggestedPriority}</span>
+														<span>{statusLabel(suggestion.suggestedStatus)}</span>
+													</div>
+													{#if suggestion.reason}
+														<p class="mt-1 line-clamp-2 text-[10px] text-indigo-100/90">{suggestion.reason}</p>
+													{/if}
+												</div>
+											{/if}
 										{/if}
 									</div>
-								{/if}
-							{/if}
-						</div>
-					</div>
+								</div>
 
-					<div class="mt-3 flex flex-wrap gap-1.5">
-						{#if item.type === 'task'}
-							{#each STATUS_ACTIONS as action (action.status)}
-								<button
-									class="rounded-lg border px-2.5 py-1 text-[10px] font-medium transition {action.color}"
-									on:click={() => moveTask(item.data.id, action.status)}
-								>
-									{action.label}
-								</button>
-							{/each}
-							<div class="relative">
-								<button
-									class="rounded-lg border border-orange-500/30 px-2.5 py-1 text-[10px] font-medium text-orange-300 transition hover:bg-orange-500/10"
-									on:click={() => { snoozeOpenId = snoozeOpenId === item.data.id ? null : item.data.id; }}
-								>
-									Snooze
-								</button>
-								{#if snoozeOpenId === item.data.id}
-									<div class="absolute left-0 top-full z-20 mt-1 w-36 rounded-lg border border-slate-700 bg-slate-800 py-1 shadow-xl">
+								<div class="mt-3 flex flex-wrap gap-1.5">
+									{#if item.type === 'task'}
+										{#each STATUS_ACTIONS as action (action.status)}
+											<button
+												class="rounded-lg border px-2.5 py-1 text-[10px] font-medium transition {action.color}"
+												on:click={() => moveTask(item.data.id, action.status)}
+											>
+												{action.label}
+											</button>
+										{/each}
+										<div class="relative">
+											<button
+												class="rounded-lg border border-orange-500/30 px-2.5 py-1 text-[10px] font-medium text-orange-300 transition hover:bg-orange-500/10"
+												on:click={() => { snoozeOpenId = snoozeOpenId === item.data.id ? null : item.data.id; }}
+											>
+												Snooze
+											</button>
+											{#if snoozeOpenId === item.data.id}
+												<div class="absolute left-0 top-full z-20 mt-1 w-36 rounded-lg border border-slate-700 bg-slate-800 py-1 shadow-xl">
+													<button
+														class="w-full px-3 py-1.5 text-left text-[10px] text-slate-300 hover:bg-slate-700"
+														on:click={() => handleSnooze(item.data.id, 'tomorrow')}
+													>
+														Tomorrow
+													</button>
+													<button
+														class="w-full px-3 py-1.5 text-left text-[10px] text-slate-300 hover:bg-slate-700"
+														on:click={() => handleSnooze(item.data.id, 'next_week')}
+													>
+														Next Week
+													</button>
+													<button
+														class="w-full px-3 py-1.5 text-left text-[10px] text-slate-300 hover:bg-slate-700"
+														on:click={() => handleSnooze(item.data.id, 'custom')}
+													>
+														Custom...
+													</button>
+												</div>
+											{/if}
+										</div>
 										<button
-											class="w-full px-3 py-1.5 text-left text-[10px] text-slate-300 hover:bg-slate-700"
-											on:click={() => handleSnooze(item.data.id, 'tomorrow')}
+											class="rounded-lg border border-emerald-500/30 px-2.5 py-1 text-[10px] font-medium text-emerald-300 transition hover:bg-emerald-500/10"
+											on:click={() => markDone(item.data.id)}
 										>
-											Tomorrow
+											Done
 										</button>
 										<button
-											class="w-full px-3 py-1.5 text-left text-[10px] text-slate-300 hover:bg-slate-700"
-											on:click={() => handleSnooze(item.data.id, 'next_week')}
+											class="rounded-lg border border-teal-500/30 px-2.5 py-1 text-[10px] font-medium text-teal-300 transition hover:bg-teal-500/10 disabled:opacity-50"
+											disabled={suggestingTagsFor === item.data.id}
+											on:click={() => suggestTags(item)}
 										>
-											Next Week
+											{suggestingTagsFor === item.data.id ? 'Thinking...' : 'AI Tag'}
+										</button>
+										{#if triageSuggestions.has(item.data.id)}
+											<button
+												class="rounded-lg border border-indigo-500/30 px-2.5 py-1 text-[10px] font-medium text-indigo-200 transition hover:bg-indigo-500/10"
+												on:click={() => applyAiTriageSuggestion(item.data.id)}
+											>
+												Apply AI
+											</button>
+										{/if}
+										<a
+											href="/tasks?task={item.data.id}"
+											class="rounded-lg border border-slate-700 px-2.5 py-1 text-[10px] text-slate-300 transition hover:bg-slate-800"
+										>
+											Open
+										</a>
+									{:else}
+										<button
+											class="rounded-lg border border-sky-500/30 px-2.5 py-1 text-[10px] font-medium text-sky-300 transition hover:bg-sky-500/10"
+											on:click={() => tagNote(item.data.id)}
+										>
+											Tag
 										</button>
 										<button
-											class="w-full px-3 py-1.5 text-left text-[10px] text-slate-300 hover:bg-slate-700"
-											on:click={() => handleSnooze(item.data.id, 'custom')}
+											class="rounded-lg border border-teal-500/30 px-2.5 py-1 text-[10px] font-medium text-teal-300 transition hover:bg-teal-500/10 disabled:opacity-50"
+											disabled={suggestingTagsFor === item.data.id}
+											on:click={() => suggestTags(item)}
 										>
-											Custom...
+											{suggestingTagsFor === item.data.id ? 'Thinking...' : 'AI Tag'}
 										</button>
+										<button
+											class="rounded-lg border border-slate-600 px-2.5 py-1 text-[10px] text-slate-300 transition hover:bg-slate-800"
+											on:click={() => archiveNote(item.data.id)}
+										>
+											Archive
+										</button>
+										<a
+											href="/notes?note={item.data.id}"
+											class="rounded-lg border border-slate-700 px-2.5 py-1 text-[10px] text-slate-300 transition hover:bg-slate-800"
+										>
+											Open
+										</a>
+									{/if}
+								</div>
+
+								{#if suggestedTags.has(item.data.id)}
+									<div class="mt-2 flex flex-wrap gap-1.5">
+										<span class="text-[10px] text-slate-500">Suggested:</span>
+										{#each suggestedTags.get(item.data.id) ?? [] as tag}
+											<button
+												class="rounded-full border border-teal-500/30 bg-teal-500/10 px-2 py-0.5 text-[10px] text-teal-300 transition hover:bg-teal-500/20"
+												on:click={() => applyTag(item.data.id, tag, item.type)}
+											>
+												+ {tag}
+											</button>
+										{/each}
 									</div>
 								{/if}
 							</div>
-							<button
-								class="rounded-lg border border-emerald-500/30 px-2.5 py-1 text-[10px] font-medium text-emerald-300 transition hover:bg-emerald-500/10"
-								on:click={() => markDone(item.data.id)}
-							>
-								Done
-							</button>
-							<button
-								class="rounded-lg border border-teal-500/30 px-2.5 py-1 text-[10px] font-medium text-teal-300 transition hover:bg-teal-500/10 disabled:opacity-50"
-								disabled={suggestingTagsFor === item.data.id}
-								on:click={() => suggestTags(item)}
-							>
-								{suggestingTagsFor === item.data.id ? 'Thinking...' : 'AI Tag'}
-							</button>
-							{#if triageSuggestions.has(item.data.id)}
-								<button
-									class="rounded-lg border border-indigo-500/30 px-2.5 py-1 text-[10px] font-medium text-indigo-200 transition hover:bg-indigo-500/10"
-									on:click={() => applyAiTriageSuggestion(item.data.id)}
-								>
-									Apply AI
-								</button>
-							{/if}
-							<a
-								href="/tasks?task={item.data.id}"
-								class="rounded-lg border border-slate-700 px-2.5 py-1 text-[10px] text-slate-300 transition hover:bg-slate-800"
-							>
-								Open
-							</a>
-						{:else}
-							<button
-								class="rounded-lg border border-sky-500/30 px-2.5 py-1 text-[10px] font-medium text-sky-300 transition hover:bg-sky-500/10"
-								on:click={() => tagNote(item.data.id)}
-							>
-								Tag
-							</button>
-							<button
-								class="rounded-lg border border-teal-500/30 px-2.5 py-1 text-[10px] font-medium text-teal-300 transition hover:bg-teal-500/10 disabled:opacity-50"
-								disabled={suggestingTagsFor === item.data.id}
-								on:click={() => suggestTags(item)}
-							>
-								{suggestingTagsFor === item.data.id ? 'Thinking...' : 'AI Tag'}
-							</button>
-							<button
-								class="rounded-lg border border-slate-600 px-2.5 py-1 text-[10px] text-slate-300 transition hover:bg-slate-800"
-								on:click={() => archiveNote(item.data.id)}
-							>
-								Archive
-							</button>
-							<a
-								href="/notes?note={item.data.id}"
-								class="rounded-lg border border-slate-700 px-2.5 py-1 text-[10px] text-slate-300 transition hover:bg-slate-800"
-							>
-								Open
-							</a>
-						{/if}
-					</div>
-
-					{#if suggestedTags.has(item.data.id)}
-						<div class="mt-2 flex flex-wrap gap-1.5">
-							<span class="text-[10px] text-slate-500">Suggested:</span>
-							{#each suggestedTags.get(item.data.id) ?? [] as tag}
-								<button
-									class="rounded-full border border-teal-500/30 bg-teal-500/10 px-2 py-0.5 text-[10px] text-teal-300 transition hover:bg-teal-500/20"
-									on:click={() => applyTag(item.data.id, tag, item.type)}
-								>
-									+ {tag}
-								</button>
-							{/each}
 						</div>
-					{/if}
+					{/each}
 				</div>
-			{/each}
+			</div>
 		{/if}
 	</div>
 </div>

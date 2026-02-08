@@ -11,6 +11,7 @@ import { TaskItem } from 'https://unpkg.com/@tiptap/extension-task-item@3.19.0/d
 import { Placeholder } from 'https://unpkg.com/@tiptap/extension-placeholder@3.19.0/dist/index.js';
 import { Markdown } from 'https://unpkg.com/@tiptap/markdown@3.19.0/dist/index.js';
 import Suggestion from 'https://unpkg.com/@tiptap/suggestion@3.19.0/dist/index.js';
+import { AttachmentTriage } from './attachments.js';
 
 const AI_TRANSFORM_SELECTION_CHAR_LIMIT = 5000;
 
@@ -96,6 +97,7 @@ class MindVaultAdmin {
         this.attachedFiles = [];
         this.existingAttachments = [];
         this.attachmentChunksCache = new Map();
+        this.attachmentTriage = new AttachmentTriage(this);
         this.init();
     }
 
@@ -108,6 +110,7 @@ class MindVaultAdmin {
 
     init() {
         this.bindEvents();
+        this.attachmentTriage.init();
         this.initRichTextEditor();
         this.setEditorContentFromMarkdown('');
         this.setEditorMode(this.editorMode);
@@ -4770,6 +4773,9 @@ class MindVaultAdmin {
         this.aiSuggestions.innerHTML = '';
         this.clearWikiLinkSuggestions();
         this.renderAttachmentPreview();
+        if (this.attachmentTriage) {
+            this.attachmentTriage.loadExistingAttachments(null);
+        }
         this.setNodeVersionHistoryPlaceholder('Version history appears after the first edit save.');
         this.setNodeRelationshipOverviewPlaceholder('Relationship context appears when editing an existing node.');
         document.getElementById('node-modal').classList.add('active');
@@ -4794,7 +4800,7 @@ class MindVaultAdmin {
         this.attachedFiles = [];
         this.existingAttachments = [];
         this.renderAttachmentPreview();
-        this.loadExistingAttachments(node.id);
+        this.loadExistingAttachments(node.id, { resetPage: true });
         if (this.isTemplateNode(node)) {
             this.setNodeVersionHistoryPlaceholder('Template nodes use the Templates tab history workflow.');
         } else {
@@ -4813,6 +4819,9 @@ class MindVaultAdmin {
         this.attachedFiles = [];
         this.existingAttachments = [];
         this.renderAttachmentPreview();
+        if (this.attachmentTriage) {
+            this.attachmentTriage.loadExistingAttachments(null);
+        }
         this.setNodeVersionHistoryPlaceholder('Version history appears after the first edit save.');
         this.setNodeRelationshipOverviewPlaceholder('Relationship context appears when editing an existing node.');
         this.clearAutoComplete();
@@ -5285,7 +5294,12 @@ class MindVaultAdmin {
         });
     }
 
-    async loadExistingAttachments(nodeId) {
+    async loadExistingAttachments(nodeId, options = {}) {
+        if (this.attachmentTriage?.loadExistingAttachments) {
+            await this.attachmentTriage.loadExistingAttachments(nodeId, options);
+            return;
+        }
+
         if (!nodeId) {
             this.existingAttachments = [];
             this.attachmentChunksCache = new Map();
@@ -5346,11 +5360,7 @@ class MindVaultAdmin {
                 `/api/v1/files/${encodeURIComponent(this.currentEditingNode.id)}/${encodeURIComponent(attachment.attachment_id)}`,
                 { method: 'DELETE' }
             );
-            this.existingAttachments = this.existingAttachments.filter(
-                (item) => item.attachment_id !== attachment.attachment_id
-            );
-            this.attachmentChunksCache.delete(attachment.attachment_id);
-            this.renderAttachmentPreview();
+            await this.loadExistingAttachments(this.currentEditingNode.id);
             this.showNotification('Attachment removed.', 'success');
         } catch (error) {
             console.error('Failed to delete attachment:', error);

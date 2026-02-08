@@ -31,6 +31,7 @@
 	import { taskFilterFromSavedView } from '$lib/utils/saved-views';
 	import { setActiveSavedView } from '$lib/stores/saved-views';
 	import TaskPrioritizationModal from '$lib/components/TaskPrioritizationModal.svelte';
+	import { createVirtualizer } from '@tanstack/svelte-virtual';
 
 	let showPrioritization = false;
 
@@ -49,6 +50,17 @@
 	let bulkPriority: 1 | 2 | 3 | 4 | 5 = 3;
 	let bulkLabelInput = '';
 	let showDeleteConfirm = false;
+
+	let taskListParentRef: HTMLDivElement | null = null;
+
+	const taskVirtualizer = createVirtualizer({
+		get count() {
+			return $filteredTasks.length;
+		},
+		getScrollElement: () => taskListParentRef,
+		estimateSize: () => 60,
+		overscan: 5
+	});
 
 	$: selectionCount = selectedIds.size;
 
@@ -598,7 +610,7 @@
 			</div>
 		{/if}
 
-		<div class="mt-3 flex flex-col gap-3">
+		<div class="mt-3">
 			{#if $filteredTasks.length === 0}
 				<div class="rounded-xl border border-dashed border-slate-800 bg-slate-900/20 p-8 text-center">
 					{#if $tasksStore.length === 0}
@@ -631,33 +643,42 @@
 					{/if}
 				</div>
 			{:else}
-				{#each $filteredTasks as task (task.id)}
-					<div class="flex items-start gap-2">
-						<button
-							class="mt-3 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition {selectedIds.has(task.id)
-								? 'border-sky-500 bg-sky-500/20 text-sky-300'
-								: 'border-slate-700 hover:border-slate-500'}"
-							on:click|stopPropagation={() => toggleSelection(task.id)}
-							aria-label={selectedIds.has(task.id) ? 'Deselect task' : 'Select task'}
-						>
-							{#if selectedIds.has(task.id)}
-								<svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
-								</svg>
-							{/if}
-						</button>
-						<div class="min-w-0 flex-1">
-							<TaskListItem
-								{task}
-								active={selectedTask?.id === task.id}
-								blocked={blockedSet.has(task.id)}
-								blockedReason={planning.blockedReasonByTask[task.id] ?? ''}
-								on:select={(e) => handleSelect(e.detail)}
-								on:complete={(e) => toggleComplete(e.detail)}
-							/>
-						</div>
+				<div bind:this={taskListParentRef} style="max-height: 70vh; overflow-y: auto;">
+					<div style="height: {$taskVirtualizer.getTotalSize()}px; width: 100%; position: relative;">
+						{#each $taskVirtualizer.getVirtualItems() as row (row.key)}
+							{@const task = $filteredTasks[row.index]}
+							<div
+								style="position: absolute; top: 0; left: 0; width: 100%; transform: translateY({row.start}px);"
+							>
+								<div class="flex items-start gap-2 pb-3">
+									<button
+										class="mt-3 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition {selectedIds.has(task.id)
+											? 'border-sky-500 bg-sky-500/20 text-sky-300'
+											: 'border-slate-700 hover:border-slate-500'}"
+										on:click|stopPropagation={() => toggleSelection(task.id)}
+										aria-label={selectedIds.has(task.id) ? 'Deselect task' : 'Select task'}
+									>
+										{#if selectedIds.has(task.id)}
+											<svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+											</svg>
+										{/if}
+									</button>
+									<div class="min-w-0 flex-1">
+										<TaskListItem
+											{task}
+											active={selectedTask?.id === task.id}
+											blocked={blockedSet.has(task.id)}
+											blockedReason={planning.blockedReasonByTask[task.id] ?? ''}
+											on:select={(e) => handleSelect(e.detail)}
+											on:complete={(e) => toggleComplete(e.detail)}
+										/>
+									</div>
+								</div>
+							</div>
+						{/each}
 					</div>
-				{/each}
+				</div>
 			{/if}
 		</div>
 	</section>
