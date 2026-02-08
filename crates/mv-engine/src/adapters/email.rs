@@ -8,7 +8,6 @@
 //! - `from_address`: Sender email address
 //! - `default_to`: (optional) Default recipient email
 
-use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;

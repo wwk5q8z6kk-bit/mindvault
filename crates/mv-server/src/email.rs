@@ -593,8 +593,6 @@ async fn ensure_direct_channel_for_contact(state: &Arc<AppState>, contact_id: Uu
 }
 
 fn fetch_inbound_emails(request: ImapFetchRequest) -> Result<ImapFetchOutcome, String> {
-    use mailparse::MailHeaderMap;
-
     let tls = native_tls::TlsConnector::builder()
         .build()
         .map_err(|err| format!("build TLS connector: {err}"))?;
