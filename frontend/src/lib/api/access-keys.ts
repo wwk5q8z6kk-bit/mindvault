@@ -2,7 +2,7 @@ import { fetchJson } from './client';
 
 export interface AccessKey {
 	id: string;
-	name: string;
+	name?: string | null;
 	template_id: string;
 	template_name?: string | null;
 	created_at: string;

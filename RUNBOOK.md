@@ -98,6 +98,18 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+## Vector Index Rebuild
+
+When embedding settings change or namespace-aware vector filtering is enabled, rebuild LanceDB:
+
+```bash
+cargo run -p mv-cli -- db rebuild-vectors --dry-run
+cargo run -p mv-cli -- db rebuild-vectors --batch-size 64
+cargo run -p mv-cli -- db rebuild-vectors --batch-size 64 --apply --confirm
+```
+
+Stop the server before running `--apply` to avoid file locks.
+
 ## Key Improvements
 
 1. Security defaults: local bind, auth on REST/gRPC/WebSocket, non-permissive CORS.
