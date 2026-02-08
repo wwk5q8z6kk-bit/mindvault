@@ -30,7 +30,8 @@
 		delete_node: 'Delete Node',
 		suggest_tag: 'Suggest Tag',
 		suggest_link: 'Suggest Link',
-		schedule_reminder: 'Schedule Reminder'
+		schedule_reminder: 'Schedule Reminder',
+		'relay.reply': 'Relay Reply'
 	};
 
 	$: senderLabel = senderLabels[proposal.sender] ?? proposal.sender;

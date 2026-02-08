@@ -510,14 +510,47 @@ pub async fn receive_message(
 
     let namespace = auth.namespace.as_deref().unwrap_or("default");
 
-    let stored = state
+    let outcome = state
         .engine
-        .relay
-        .receive_message(message, namespace)
+        .receive_relay_message(message, namespace)
         .await
         .map_err(map_mv_error)?;
 
-    Ok((StatusCode::CREATED, Json(stored)).into_response())
+    if let Some(mut auto_reply) = outcome.auto_reply {
+        match crate::email::send_outbound_relay_if_email_channel(&state, &auto_reply).await {
+            Ok(Some(recipient)) => {
+                if let Err(err) = state
+                    .engine
+                    .relay
+                    .update_status(auto_reply.id, MessageStatus::Delivered)
+                    .await
+                {
+                    tracing::warn!(error = %err, "relay_auto_reply_status_update_failed");
+                } else {
+                    auto_reply.status = MessageStatus::Delivered;
+                }
+                auto_reply.metadata.insert(
+                    "email_recipient".to_string(),
+                    serde_json::Value::String(recipient),
+                );
+                auto_reply.metadata.insert(
+                    "adapter".to_string(),
+                    serde_json::Value::String("email".to_string()),
+                );
+            }
+            Ok(None) => {}
+            Err(err) => {
+                let _ = state
+                    .engine
+                    .relay
+                    .update_status(auto_reply.id, MessageStatus::Failed)
+                    .await;
+                tracing::warn!(error = %err, "relay_auto_reply_send_failed");
+            }
+        }
+    }
+
+    Ok((StatusCode::CREATED, Json(outcome.message)).into_response())
 }
 
 /// POST /api/v1/relay/messages/:id/read

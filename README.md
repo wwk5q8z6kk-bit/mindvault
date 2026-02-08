@@ -138,6 +138,9 @@ To send email via the relay UI/API, create a relay contact with
 `public_key` to the email address). Outbound relay messages on that direct
 channel will be delivered via SMTP when `[email] enabled = true`.
 
+Inbound relay messages can optionally create reply proposals in the Exchange
+Inbox (action `relay.reply`) or auto-replies when autonomy rules allow it.
+
 ### Embedding Providers
 
 MindVault supports:

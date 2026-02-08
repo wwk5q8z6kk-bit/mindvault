@@ -1,3 +1,4 @@
+use chrono::{Datelike, Utc, Weekday};
 use mv_core::*;
 use mv_storage::unified::UnifiedStore;
 use std::collections::HashSet;
@@ -15,6 +16,7 @@ impl IntentEngine {
     }
 
     /// Extract possible intents from a node and store them.
+    /// Applies confidence adjustments from learned feedback.
     pub async fn extract_intents_and_store(
         &self,
         node: &KnowledgeNode,
@@ -31,6 +33,24 @@ impl IntentEngine {
 
         detected.extend(self.detect_link_intents(node));
         detected.extend(self.detect_tag_intents(node));
+
+        // Apply learned confidence adjustments
+        for intent in &mut detected {
+            let type_str = intent.intent_type.to_string();
+            if let Ok(Some(override_)) = self.store.nodes.get_confidence_override(&type_str).await {
+                // Adjust confidence based on feedback history
+                intent.confidence =
+                    (intent.confidence + override_.base_adjustment).clamp(0.0, 1.0);
+
+                // Suppress intents below the learned floor
+                if intent.confidence < override_.suppress_below {
+                    continue; // will be filtered out below
+                }
+            }
+        }
+
+        // Filter out suppressed intents (confidence set to 0 above)
+        detected.retain(|i| i.confidence > 0.0);
 
         let existing_intents = self
             .store
@@ -60,19 +80,27 @@ impl IntentEngine {
         format!("{}|{params}", intent.intent_type)
     }
 
-    /// Detect reminder-related intents using string matching
+    /// Detect reminder-related intents with rich date parsing
     fn detect_reminder_intent(&self, node: &KnowledgeNode) -> Option<CapturedIntent> {
         let content_lower = node.content.to_lowercase();
 
         let is_reminder = content_lower.contains("remind me")
             || content_lower.contains("don't forget")
             || content_lower.contains("dont forget")
-            || content_lower.contains("reminder:")
-            || content_lower.contains("tomorrow")
-            || content_lower.contains("next week")
-            || content_lower.contains("next month");
+            || content_lower.contains("reminder:");
 
-        if !is_reminder {
+        // Also trigger if time expressions are present with action verbs
+        let has_time_expr = self.parse_relative_date(&content_lower).is_some();
+        let has_action_verb = content_lower.contains("need to")
+            || content_lower.contains("should")
+            || content_lower.contains("call")
+            || content_lower.contains("email")
+            || content_lower.contains("send")
+            || content_lower.contains("check")
+            || content_lower.contains("review")
+            || content_lower.contains("follow up");
+
+        if !is_reminder && !(has_time_expr && has_action_verb) {
             return None;
         }
 
@@ -81,21 +109,25 @@ impl IntentEngine {
         // Adjust confidence based on keyword strength
         if content_lower.contains("remind me") || content_lower.contains("don't forget") {
             intent.confidence = 0.9;
-        } else if content_lower.contains("tomorrow") || content_lower.contains("next week") {
-            intent.confidence = 0.75;
+        } else if has_time_expr && has_action_verb {
+            intent.confidence = 0.8;
+        } else if has_time_expr {
+            intent.confidence = 0.7;
         } else {
             intent.confidence = 0.6;
         }
 
         // Extract date hints as parameters
         let mut params = serde_json::Map::new();
-        if content_lower.contains("tomorrow") {
-            params.insert("relative_time".into(), "tomorrow".into());
-        } else if content_lower.contains("next week") {
-            params.insert("relative_time".into(), "next_week".into());
-        } else if content_lower.contains("next month") {
-            params.insert("relative_time".into(), "next_month".into());
+        if let Some(relative) = self.parse_relative_date(&content_lower) {
+            params.insert("relative_time".into(), relative.into());
         }
+
+        // Extract the reminder subject (what to be reminded about)
+        if let Some(subject) = self.extract_reminder_subject(&content_lower) {
+            params.insert("subject".into(), subject.into());
+        }
+
         if !params.is_empty() {
             intent.parameters = serde_json::Value::Object(params);
         }
@@ -103,7 +135,7 @@ impl IntentEngine {
         Some(intent)
     }
 
-    /// Detect task-related intents
+    /// Detect task-related intents with priority and deadline extraction
     fn detect_task_intent(&self, node: &KnowledgeNode) -> Option<CapturedIntent> {
         let content = &node.content;
         let content_lower = content.to_lowercase();
@@ -115,7 +147,8 @@ impl IntentEngine {
             || content_lower.contains("need to ")
             || content_lower.contains("must ")
             || content_lower.contains("have to ")
-            || content_lower.contains("action item");
+            || content_lower.contains("action item")
+            || content_lower.contains("action items:");
 
         if !is_task {
             return None;
@@ -134,6 +167,28 @@ impl IntentEngine {
             intent.confidence = 0.6;
         }
 
+        let mut params = serde_json::Map::new();
+
+        // Extract priority
+        if let Some((priority, label)) = self.detect_priority(&content_lower) {
+            params.insert("priority".into(), serde_json::json!(priority));
+            params.insert("priority_label".into(), label.into());
+        }
+
+        // Extract deadline
+        if let Some(deadline) = self.detect_deadline(&content_lower) {
+            params.insert("deadline_relative".into(), deadline.into());
+        }
+
+        // Extract dependency hints
+        if let Some(dep) = self.detect_dependency(&content_lower) {
+            params.insert("depends_on".into(), dep.into());
+        }
+
+        if !params.is_empty() {
+            intent.parameters = serde_json::Value::Object(params);
+        }
+
         Some(intent)
     }
 
@@ -146,12 +201,10 @@ impl IntentEngine {
         let chars: Vec<char> = node.content.chars().collect();
         while i < chars.len().saturating_sub(3) {
             if chars[i] == '[' && chars.get(i + 1) == Some(&'[') {
-                // Found opening [[
                 let start = i + 2;
                 let mut end = start;
                 while end < chars.len().saturating_sub(1) {
                     if chars[end] == ']' && chars.get(end + 1) == Some(&']') {
-                        // Found closing ]]
                         let target: String = chars[start..end].iter().collect();
                         if !target.is_empty() {
                             let mut intent = CapturedIntent::new(node.id, IntentType::SuggestLink)
@@ -177,7 +230,7 @@ impl IntentEngine {
             }
         }
 
-        // Detect @mentions - simple word boundary matching
+        // Detect @mentions
         let words: Vec<&str> = node.content.split_whitespace().collect();
         for word in words {
             if word.starts_with('@') && word.len() > 1 {
@@ -203,7 +256,6 @@ impl IntentEngine {
     fn detect_tag_intents(&self, node: &KnowledgeNode) -> Vec<CapturedIntent> {
         let mut intents = Vec::new();
 
-        // Find #hashtags in content that aren't already tags
         let words: Vec<&str> = node.content.split_whitespace().collect();
         for word in words {
             if word.starts_with('#') && word.len() > 1 {
@@ -214,7 +266,6 @@ impl IntentEngine {
                     continue;
                 }
 
-                // Skip if already tagged
                 if node.tags.iter().any(|t| t.to_lowercase() == tag) {
                     continue;
                 }
@@ -248,6 +299,232 @@ impl IntentEngine {
 
         intents
     }
+
+    // --- Enhanced parsing helpers ---
+
+    /// Parse relative date expressions from content. Returns a normalized key
+    /// like "tomorrow", "next_week", "next_monday", "in_3_days", etc.
+    fn parse_relative_date(&self, content: &str) -> Option<String> {
+        // Exact matches (most specific first)
+        if content.contains("this evening") || content.contains("tonight") {
+            return Some("today".into());
+        }
+        if content.contains("tomorrow morning") || content.contains("tomorrow") {
+            return Some("tomorrow".into());
+        }
+        if content.contains("day after tomorrow") {
+            return Some("in_2_days".into());
+        }
+        if content.contains("this weekend") {
+            let now = Utc::now();
+            let days_to_saturday = (Weekday::Sat.num_days_from_monday() as i64
+                - now.weekday().num_days_from_monday() as i64
+                + 7)
+                % 7;
+            let days = if days_to_saturday == 0 { 7 } else { days_to_saturday };
+            return Some(format!("in_{}_days", days));
+        }
+
+        // "next [day]" patterns
+        let days = [
+            ("monday", Weekday::Mon),
+            ("tuesday", Weekday::Tue),
+            ("wednesday", Weekday::Wed),
+            ("thursday", Weekday::Thu),
+            ("friday", Weekday::Fri),
+            ("saturday", Weekday::Sat),
+            ("sunday", Weekday::Sun),
+        ];
+        for (name, weekday) in &days {
+            let pattern = format!("next {}", name);
+            if content.contains(&pattern) {
+                let now = Utc::now();
+                let current = now.weekday().num_days_from_monday() as i64;
+                let target = weekday.num_days_from_monday() as i64;
+                let delta = (target - current + 7) % 7;
+                let delta = if delta == 0 { 7 } else { delta };
+                return Some(format!("in_{}_days", delta));
+            }
+        }
+
+        // "by [day]" patterns (same logic)
+        for (name, weekday) in &days {
+            let pattern = format!("by {}", name);
+            if content.contains(&pattern) {
+                let now = Utc::now();
+                let current = now.weekday().num_days_from_monday() as i64;
+                let target = weekday.num_days_from_monday() as i64;
+                let delta = (target - current + 7) % 7;
+                let delta = if delta == 0 { 7 } else { delta };
+                return Some(format!("in_{}_days", delta));
+            }
+        }
+
+        // "in N days/weeks" patterns
+        if let Some(n) = self.parse_in_n_time(content) {
+            return Some(n);
+        }
+
+        // Generic relative periods
+        if content.contains("next week") {
+            return Some("next_week".into());
+        }
+        if content.contains("next month") {
+            return Some("next_month".into());
+        }
+        if content.contains("end of week") || content.contains("eow") {
+            let now = Utc::now();
+            let days_to_friday = (Weekday::Fri.num_days_from_monday() as i64
+                - now.weekday().num_days_from_monday() as i64
+                + 7)
+                % 7;
+            let days = if days_to_friday == 0 { 7 } else { days_to_friday };
+            return Some(format!("in_{}_days", days));
+        }
+        if content.contains("end of month") || content.contains("eom") {
+            return Some("end_of_month".into());
+        }
+
+        None
+    }
+
+    /// Parse "in N days/weeks/hours" patterns
+    fn parse_in_n_time(&self, content: &str) -> Option<String> {
+        // Look for "in X days", "in X weeks", "in X hours"
+        let words: Vec<&str> = content.split_whitespace().collect();
+        for window in words.windows(3) {
+            if window[0] == "in" {
+                if let Ok(n) = window[1].parse::<i64>() {
+                    match window[2].trim_end_matches(|c: char| !c.is_alphabetic()) {
+                        "day" | "days" => return Some(format!("in_{}_days", n)),
+                        "week" | "weeks" => return Some(format!("in_{}_days", n * 7)),
+                        "hour" | "hours" => return Some("today".into()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract the subject of a reminder ("remind me to ...")
+    fn extract_reminder_subject(&self, content: &str) -> Option<String> {
+        // Try "remind me to ..."
+        for prefix in &["remind me to ", "don't forget to ", "dont forget to ", "remember to "] {
+            if let Some(pos) = content.find(prefix) {
+                let rest = &content[pos + prefix.len()..];
+                let subject = rest
+                    .lines()
+                    .next()
+                    .unwrap_or(rest)
+                    .trim()
+                    .trim_end_matches('.')
+                    .to_string();
+                if !subject.is_empty() {
+                    return Some(subject);
+                }
+            }
+        }
+
+        // Try "reminder: ..."
+        if let Some(pos) = content.find("reminder:") {
+            let rest = &content[pos + 9..];
+            let subject = rest
+                .lines()
+                .next()
+                .unwrap_or(rest)
+                .trim()
+                .trim_end_matches('.')
+                .to_string();
+            if !subject.is_empty() {
+                return Some(subject);
+            }
+        }
+
+        None
+    }
+
+    /// Detect priority level from content. Returns (numeric_priority, label).
+    fn detect_priority(&self, content: &str) -> Option<(i32, String)> {
+        // Explicit priority markers
+        if content.contains("p0") || content.contains("critical") {
+            return Some((0, "critical".into()));
+        }
+        if content.contains("p1")
+            || content.contains("urgent")
+            || content.contains("asap")
+            || content.contains("immediately")
+            || content.contains("right away")
+        {
+            return Some((1, "high".into()));
+        }
+        if content.contains("p2") || content.contains("high priority") {
+            return Some((1, "high".into()));
+        }
+        if content.contains("low priority") || content.contains("p3") || content.contains("when possible") {
+            return Some((3, "low".into()));
+        }
+
+        // Infer from urgency signals
+        if content.contains("!!")
+            || content.contains("important")
+            || content.contains("blocking")
+            || content.contains("blocker")
+        {
+            return Some((1, "high".into()));
+        }
+
+        None
+    }
+
+    /// Detect deadline expressions. Returns a relative key like "tomorrow", "this_week".
+    fn detect_deadline(&self, content: &str) -> Option<String> {
+        // Explicit deadline markers
+        for prefix in &["due by ", "deadline: ", "deadline ", "due: ", "due date: ", "before "] {
+            if let Some(pos) = content.find(prefix) {
+                let rest = &content[pos + prefix.len()..];
+                let fragment = rest.split(|c: char| c == '.' || c == ',' || c == '\n').next().unwrap_or("");
+                if let Some(date) = self.parse_relative_date(fragment.trim()) {
+                    return Some(date);
+                }
+                // If the fragment itself is a day name
+                let trimmed = fragment.trim().to_lowercase();
+                if let Some(date) = self.parse_relative_date(&format!("next {}", trimmed)) {
+                    return Some(date);
+                }
+            }
+        }
+
+        // Pattern: "by tomorrow", "by friday", "by next week"
+        if let Some(pos) = content.find(" by ") {
+            let rest = &content[pos + 4..];
+            let fragment = rest.split(|c: char| c == '.' || c == ',' || c == '\n').next().unwrap_or("");
+            if let Some(date) = self.parse_relative_date(fragment.trim()) {
+                return Some(date);
+            }
+        }
+
+        None
+    }
+
+    /// Detect dependency hints like "after X", "depends on Y", "blocked by Z"
+    fn detect_dependency(&self, content: &str) -> Option<String> {
+        for prefix in &["depends on ", "blocked by ", "waiting on ", "after completing "] {
+            if let Some(pos) = content.find(prefix) {
+                let rest = &content[pos + prefix.len()..];
+                let dep = rest
+                    .split(|c: char| c == '.' || c == ',' || c == '\n')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if !dep.is_empty() {
+                    return Some(dep);
+                }
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -258,10 +535,14 @@ mod tests {
         KnowledgeNode::new(NodeKind::Fact, content.to_string())
     }
 
+    fn make_engine() -> IntentEngine {
+        let store = Arc::new(mv_storage::unified::UnifiedStore::in_memory(384).unwrap());
+        IntentEngine::new(store)
+    }
+
     #[test]
     fn test_reminder_detection() {
-        let store = Arc::new(mv_storage::unified::UnifiedStore::in_memory(384).unwrap());
-        let engine = IntentEngine::new(store);
+        let engine = make_engine();
 
         let node = make_node("Remind me to call John tomorrow");
         let intents = engine.analyze_node(&node);
@@ -277,9 +558,62 @@ mod tests {
     }
 
     #[test]
+    fn test_reminder_extracts_subject() {
+        let engine = make_engine();
+
+        let node = make_node("Remind me to call John tomorrow");
+        let intents = engine.analyze_node(&node);
+        let reminder = intents
+            .iter()
+            .find(|i| matches!(i.intent_type, IntentType::ScheduleReminder))
+            .unwrap();
+        assert_eq!(
+            reminder.parameters.get("subject").and_then(|v| v.as_str()),
+            Some("call john tomorrow")
+        );
+    }
+
+    #[test]
+    fn test_reminder_relative_dates() {
+        let engine = make_engine();
+
+        let node = make_node("Remind me to review the PR next week");
+        let intents = engine.analyze_node(&node);
+        let reminder = intents
+            .iter()
+            .find(|i| matches!(i.intent_type, IntentType::ScheduleReminder))
+            .unwrap();
+        assert_eq!(
+            reminder
+                .parameters
+                .get("relative_time")
+                .and_then(|v| v.as_str()),
+            Some("next_week")
+        );
+    }
+
+    #[test]
+    fn test_reminder_in_n_days() {
+        let engine = make_engine();
+
+        let node = make_node("Don't forget to check in 3 days");
+        let intents = engine.analyze_node(&node);
+        let reminder = intents
+            .iter()
+            .find(|i| matches!(i.intent_type, IntentType::ScheduleReminder))
+            .unwrap();
+        assert_eq!(
+            reminder
+                .parameters
+                .get("relative_time")
+                .and_then(|v| v.as_str()),
+            Some("in_3_days")
+        );
+    }
+
+    #[test]
     fn test_task_detection() {
-        let store = Arc::new(mv_storage::unified::UnifiedStore::in_memory(384).unwrap());
-        let engine = IntentEngine::new(store);
+        let engine = make_engine();
 
         let node = make_node("- [ ] Complete the report");
         let intents = engine.analyze_node(&node);
@@ -295,9 +629,66 @@ mod tests {
     }
 
     #[test]
+    fn test_task_priority_detection() {
+        let engine = make_engine();
+
+        let node = make_node("TODO: Fix the urgent login bug ASAP");
+        let intents = engine.analyze_node(&node);
+        let task = intents
+            .iter()
+            .find(|i| matches!(i.intent_type, IntentType::ExtractTask))
+            .unwrap();
+        assert_eq!(
+            task.parameters.get("priority").and_then(|v| v.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            task.parameters
+                .get("priority_label")
+                .and_then(|v| v.as_str()),
+            Some("high")
+        );
+    }
+
+    #[test]
+    fn test_task_deadline_detection() {
+        let engine = make_engine();
+
+        let node = make_node("TODO: Submit report. Due by tomorrow.");
+        let intents = engine.analyze_node(&node);
+        let task = intents
+            .iter()
+            .find(|i| matches!(i.intent_type, IntentType::ExtractTask))
+            .unwrap();
+        assert_eq!(
+            task.parameters
+                .get("deadline_relative")
+                .and_then(|v| v.as_str()),
+            Some("tomorrow")
+        );
+    }
+
+    #[test]
+    fn test_task_dependency_detection() {
+        let engine = make_engine();
+
+        let node = make_node("TODO: Deploy to prod. Depends on code review.");
+        let intents = engine.analyze_node(&node);
+        let task = intents
+            .iter()
+            .find(|i| matches!(i.intent_type, IntentType::ExtractTask))
+            .unwrap();
+        assert_eq!(
+            task.parameters
+                .get("depends_on")
+                .and_then(|v| v.as_str()),
+            Some("code review")
+        );
+    }
+
+    #[test]
     fn test_link_detection() {
-        let store = Arc::new(mv_storage::unified::UnifiedStore::in_memory(384).unwrap());
-        let engine = IntentEngine::new(store);
+        let engine = make_engine();
 
         let node = make_node("See [[Project Alpha]] for details");
         let intents = engine.analyze_node(&node);
@@ -314,8 +705,7 @@ mod tests {
 
     #[test]
     fn test_tag_detection() {
-        let store = Arc::new(mv_storage::unified::UnifiedStore::in_memory(384).unwrap());
-        let engine = IntentEngine::new(store);
+        let engine = make_engine();
 
         let node = make_node("This is about #rust and #performance");
         let intents = engine.analyze_node(&node);

@@ -11,9 +11,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use mv_core::{
-    ChronicleEntry, KnowledgeNode, NodeKind, Proposal, ProposalAction, ProposalSender,
-    ProposalState,
+    ChronicleEntry, ContentType, KnowledgeNode, MessageStatus, NodeKind, Proposal, ProposalAction,
+    ProposalSender, ProposalState, RelayMessage, SafeguardStore, UndoSnapshot,
 };
+
+use chrono::{Duration, Utc};
 
 use crate::auth::{
     authorize_namespace, authorize_read, authorize_write, namespace_for_create, AuthContext,
@@ -53,6 +55,16 @@ struct ProposalNodePayload {
     metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
+#[derive(Deserialize)]
+struct RelayReplyPayload {
+    channel_id: Uuid,
+    content: String,
+    content_type: Option<String>,
+    thread_id: Option<Uuid>,
+    recipient_contact_id: Option<Uuid>,
+    subject: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct ProposalCountResponse {
     pub count: usize,
@@ -81,6 +93,376 @@ fn map_namespace_quota_error(err: NamespaceQuotaError) -> (StatusCode, String) {
             format!("backend error: {msg}"),
         ),
     }
+}
+
+// --- Helpers ---
+
+struct ProposalActionResult {
+    created_node_id: Option<String>,
+    updated_node_id: Option<String>,
+    deleted_node_id: Option<String>,
+}
+
+fn resolve_sender_context(
+    auth: &AuthContext,
+    requested_sender: &str,
+) -> Result<(ProposalSender, String, bool), (StatusCode, String)> {
+    let requested_sender = requested_sender.trim();
+    let subject = auth
+        .subject
+        .clone()
+        .unwrap_or_else(|| "anonymous".to_string());
+
+    if auth.is_admin() {
+        let sender = if requested_sender.is_empty() {
+            ProposalSender::UserSelf
+        } else {
+            requested_sender
+                .parse::<ProposalSender>()
+                .map_err(|e: String| (StatusCode::BAD_REQUEST, format!("invalid sender: {e}")))?
+        };
+        let sender_name = if subject == "anonymous" {
+            if requested_sender.is_empty() {
+                "admin".to_string()
+            } else {
+                requested_sender.to_string()
+            }
+        } else {
+            subject
+        };
+        return Ok((sender, sender_name, true));
+    }
+
+    if !requested_sender.is_empty() && requested_sender != "self" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "sender must be 'self' for non-admin requests".to_string(),
+        ));
+    }
+
+    Ok((ProposalSender::UserSelf, subject, false))
+}
+
+async fn build_undo_snapshot_data(
+    state: &AppState,
+    auth: &AuthContext,
+    proposal: &Proposal,
+) -> Result<Option<serde_json::Value>, (StatusCode, String)> {
+    match proposal.action {
+        ProposalAction::CreateNode => Ok(Some(serde_json::json!({ "action": "create_node" }))),
+        ProposalAction::UpdateNode | ProposalAction::SuggestTag => {
+            let target_id = proposal.target_node_id.ok_or((
+                StatusCode::BAD_REQUEST,
+                "missing target node id".to_string(),
+            ))?;
+            let existing = state
+                .engine
+                .get_node(target_id)
+                .await
+                .map_err(map_mv_error)?
+                .ok_or((StatusCode::NOT_FOUND, "target node not found".to_string()))?;
+            authorize_namespace(auth, &existing.namespace)?;
+            Ok(Some(serde_json::json!({
+                "action": "update_node",
+                "previous": existing
+            })))
+        }
+        ProposalAction::DeleteNode => {
+            let target_id = proposal.target_node_id.ok_or((
+                StatusCode::BAD_REQUEST,
+                "missing target node id".to_string(),
+            ))?;
+            let existing = state
+                .engine
+                .get_node(target_id)
+                .await
+                .map_err(map_mv_error)?
+                .ok_or((StatusCode::NOT_FOUND, "target node not found".to_string()))?;
+            authorize_namespace(auth, &existing.namespace)?;
+            Ok(Some(serde_json::json!({
+                "action": "delete_node",
+                "node": existing
+            })))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Simple glob matching: supports `*` as wildcard prefix/suffix/full.
+fn glob_match_simple(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        return value.ends_with(suffix);
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return value.starts_with(prefix);
+    }
+    pattern == value
+}
+
+/// Execute the action described by a proposal (create/update/delete node).
+/// Shared by both manual approve and auto-approve paths.
+async fn execute_proposal_action(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    proposal: &Proposal,
+) -> Result<ProposalActionResult, (StatusCode, String)> {
+    let mut result = ProposalActionResult {
+        created_node_id: None,
+        updated_node_id: None,
+        deleted_node_id: None,
+    };
+
+    match &proposal.action {
+        ProposalAction::CreateNode => {
+            let payload_value = serde_json::to_value(&proposal.payload)
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
+            let payload: ProposalNodePayload = serde_json::from_value(payload_value)
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
+
+            let content = payload.content.ok_or((
+                StatusCode::BAD_REQUEST,
+                "proposal payload missing content".to_string(),
+            ))?;
+            let kind_raw = payload.kind.unwrap_or_else(|| "fact".to_string());
+            let kind: NodeKind = kind_raw
+                .parse()
+                .map_err(|e: String| (StatusCode::BAD_REQUEST, e))?;
+            let tags = payload.tags.unwrap_or_default();
+
+            validate_node_payload(
+                kind,
+                payload.title.as_deref(),
+                &content,
+                payload.source.as_deref(),
+                payload.namespace.as_deref(),
+                &tags,
+                payload.importance,
+                payload.metadata.as_ref(),
+            )
+            .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+
+            let namespace = namespace_for_create(auth, payload.namespace, "default")?;
+            enforce_namespace_quota(&state.engine, &namespace)
+                .await
+                .map_err(map_namespace_quota_error)?;
+
+            let mut node = KnowledgeNode::new(kind, content).with_namespace(namespace);
+            if let Some(title) = payload.title {
+                node = node.with_title(title);
+            }
+            if let Some(source) = payload.source {
+                node = node.with_source(source);
+            }
+            if !tags.is_empty() {
+                node = node.with_tags(tags);
+            }
+            if let Some(importance) = payload.importance {
+                node = node.with_importance(importance);
+            }
+            if let Some(metadata) = payload.metadata {
+                node.metadata = metadata;
+            }
+
+            let stored = state.engine.store_node(node).await.map_err(map_mv_error)?;
+            state.notify_change(&stored.id.to_string(), "create", Some(&stored.namespace));
+            result.created_node_id = Some(stored.id.to_string());
+        }
+        ProposalAction::UpdateNode | ProposalAction::SuggestTag => {
+            let target_id = proposal.target_node_id.ok_or((
+                StatusCode::BAD_REQUEST,
+                "proposal missing target_node_id".to_string(),
+            ))?;
+            let existing = state
+                .engine
+                .get_node(target_id)
+                .await
+                .map_err(map_mv_error)?
+                .ok_or((StatusCode::NOT_FOUND, "target node not found".to_string()))?;
+
+            authorize_namespace(auth, &existing.namespace)?;
+
+            let payload_value = serde_json::to_value(&proposal.payload)
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
+            let payload: ProposalNodePayload = serde_json::from_value(payload_value)
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
+
+            let mut updated = existing.clone();
+            if let Some(kind) = payload.kind {
+                updated.kind = kind
+                    .parse()
+                    .map_err(|e: String| (StatusCode::BAD_REQUEST, e))?;
+            }
+            if let Some(content) = payload.content {
+                updated.content = content;
+            }
+            if let Some(title) = payload.title {
+                updated.title = Some(title);
+            }
+            if let Some(source) = payload.source {
+                updated.source = Some(source);
+            }
+
+            let mut tags = updated.tags.clone();
+            if matches!(&proposal.action, ProposalAction::SuggestTag) {
+                if let Some(tag_val) = proposal.payload.get("tag").and_then(|v| v.as_str()) {
+                    let tag = tag_val.trim();
+                    if !tag.is_empty() && !tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+                        tags.push(tag.to_string());
+                    }
+                } else {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "proposal payload missing tag".to_string(),
+                    ));
+                }
+            } else if let Some(new_tags) = payload.tags {
+                tags = new_tags;
+            }
+
+            if let Some(importance) = payload.importance {
+                updated.importance = importance;
+            }
+            if let Some(metadata) = payload.metadata {
+                updated.metadata = metadata;
+            }
+
+            if let Some(namespace) = payload.namespace {
+                let ns = namespace_for_create(auth, Some(namespace), &existing.namespace)?;
+                updated.namespace = ns;
+            }
+
+            validate_node_payload(
+                updated.kind,
+                updated.title.as_deref(),
+                &updated.content,
+                updated.source.as_deref(),
+                Some(&updated.namespace),
+                &tags,
+                Some(updated.importance),
+                Some(&updated.metadata),
+            )
+            .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+
+            updated.tags = tags;
+            let saved = state
+                .engine
+                .update_node(updated)
+                .await
+                .map_err(map_mv_error)?;
+            state.notify_change(&saved.id.to_string(), "update", Some(&saved.namespace));
+            result.updated_node_id = Some(saved.id.to_string());
+        }
+        ProposalAction::DeleteNode => {
+            let target_id = proposal.target_node_id.ok_or((
+                StatusCode::BAD_REQUEST,
+                "proposal missing target_node_id".to_string(),
+            ))?;
+            let existing = state
+                .engine
+                .get_node(target_id)
+                .await
+                .map_err(map_mv_error)?
+                .ok_or((StatusCode::NOT_FOUND, "target node not found".to_string()))?;
+            authorize_namespace(auth, &existing.namespace)?;
+
+            let deleted = state
+                .engine
+                .delete_node(target_id)
+                .await
+                .map_err(map_mv_error)?;
+            if deleted {
+                state.notify_change(&target_id.to_string(), "delete", Some(&existing.namespace));
+                result.deleted_node_id = Some(target_id.to_string());
+            } else {
+                return Err((StatusCode::NOT_FOUND, "target node not found".to_string()));
+            }
+        }
+        ProposalAction::Custom(action) if action == "relay.reply" => {
+            let payload_value = serde_json::to_value(&proposal.payload)
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
+            let payload: RelayReplyPayload = serde_json::from_value(payload_value)
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
+
+            let namespace = auth.namespace.as_deref().unwrap_or("default");
+            let mut message = RelayMessage::outbound(payload.channel_id, payload.content);
+
+            if let Some(content_type) = payload.content_type.as_deref() {
+                let ct: ContentType = content_type
+                    .parse()
+                    .map_err(|e: String| (StatusCode::BAD_REQUEST, e))?;
+                message = message.with_content_type(ct);
+            }
+
+            if let Some(thread_id) = payload.thread_id {
+                message = message.with_thread(thread_id);
+            }
+
+            if let Some(recipient_id) = payload.recipient_contact_id {
+                message.recipient_contact_id = Some(recipient_id);
+            }
+
+            if let Some(subject) = payload.subject.as_deref().map(str::trim) {
+                if !subject.is_empty() {
+                    message.metadata.insert(
+                        "subject".to_string(),
+                        serde_json::Value::String(subject.to_string()),
+                    );
+                }
+            }
+
+            let mut stored = state
+                .engine
+                .relay
+                .send_message(message, namespace)
+                .await
+                .map_err(map_mv_error)?;
+
+            match crate::email::send_outbound_relay_if_email_channel(state, &stored).await {
+                Ok(Some(recipient)) => {
+                    state
+                        .engine
+                        .relay
+                        .update_status(stored.id, MessageStatus::Delivered)
+                        .await
+                        .map_err(map_mv_error)?;
+                    stored.status = MessageStatus::Delivered;
+                    stored.metadata.insert(
+                        "email_recipient".to_string(),
+                        serde_json::Value::String(recipient),
+                    );
+                    stored.metadata.insert(
+                        "adapter".to_string(),
+                        serde_json::Value::String("email".to_string()),
+                    );
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    let _ = state
+                        .engine
+                        .relay
+                        .update_status(stored.id, MessageStatus::Failed)
+                        .await;
+                    stored.status = MessageStatus::Failed;
+                    return Err(map_mv_error(err));
+                }
+            }
+
+            if let Some(node_id) = stored.vault_node_id {
+                result.created_node_id = Some(node_id.to_string());
+            }
+        }
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "proposal action not supported for approval".to_string(),
+            ))
+        }
+    }
+
+    Ok(result)
 }
 
 // --- Handlers ---
@@ -145,16 +527,26 @@ pub async fn submit_proposal(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     authorize_write(&auth)?;
 
-    let sender: ProposalSender = req
-        .sender
-        .parse()
-        .map_err(|e: String| (StatusCode::BAD_REQUEST, format!("invalid sender: {e}")))?;
+    let (sender, sender_name, allow_auto_approve) =
+        resolve_sender_context(&auth, &req.sender)?;
     let action: ProposalAction = req
         .action
         .parse()
         .map_err(|e: String| (StatusCode::BAD_REQUEST, format!("invalid action: {e}")))?;
 
-    let mut proposal = Proposal::new(sender, action);
+    // Check blocked senders
+    let is_blocked = state
+        .engine
+        .store
+        .nodes
+        .is_sender_blocked(sender.as_str(), &sender_name)
+        .await
+        .map_err(map_mv_error)?;
+    if is_blocked {
+        return Err((StatusCode::FORBIDDEN, "sender is blocked".to_string()));
+    }
+
+    let mut proposal = Proposal::new(sender, action.clone());
 
     if let Some(ref target_id_str) = req.target_node_id {
         let target_id = Uuid::parse_str(target_id_str).map_err(|_| {
@@ -178,11 +570,102 @@ pub async fn submit_proposal(
         proposal = proposal.with_payload(payload);
     }
 
+    // Check auto-approve rules before submitting
+    let rules = state
+        .engine
+        .store
+        .nodes
+        .list_auto_approve_rules()
+        .await
+        .map_err(map_mv_error)?;
+
+    let mut auto_approved = false;
+    for rule in &rules {
+        if !rule.enabled {
+            continue;
+        }
+        // Check sender pattern match
+        if let Some(ref pattern) = rule.sender_pattern {
+            if !glob_match_simple(pattern, &sender_name) {
+                continue;
+            }
+        }
+        // Check action type match
+        if !rule.action_types.is_empty()
+            && !rule.action_types.iter().any(|a| a == action.as_str())
+        {
+            continue;
+        }
+        // Check confidence threshold
+        if proposal.confidence < rule.min_confidence {
+            continue;
+        }
+        // Rule matches — auto-approve
+        auto_approved = allow_auto_approve;
+        break;
+    }
+
     state
         .engine
         .submit_proposal(&proposal)
         .await
         .map_err(map_mv_error)?;
+
+    if auto_approved {
+        let mut snapshot_data = build_undo_snapshot_data(&state, &auth, &proposal).await?;
+        let result = execute_proposal_action(&state, &auth, &proposal).await?;
+
+        if let Some(ref mut data) = snapshot_data {
+            if let Some(created_id) = result.created_node_id.as_ref() {
+                data["node_id"] = serde_json::json!(created_id);
+            }
+        } else if let Some(created_id) = result.created_node_id.as_ref() {
+            snapshot_data = Some(serde_json::json!({
+                "action": "create_node",
+                "node_id": created_id
+            }));
+        }
+
+        if let Some(snapshot_data) = snapshot_data {
+            let now = Utc::now();
+            let snapshot = UndoSnapshot {
+                id: Uuid::now_v7(),
+                proposal_id: proposal.id,
+                snapshot_data,
+                created_at: now,
+                expires_at: now + Duration::days(7),
+                used: false,
+            };
+            state
+                .engine
+                .store
+                .nodes
+                .save_undo_snapshot(&snapshot)
+                .await
+                .map_err(map_mv_error)?;
+        }
+
+        state
+            .engine
+            .resolve_proposal(proposal.id, ProposalState::AutoApproved)
+            .await
+            .map_err(map_mv_error)?;
+
+        let chronicle = ChronicleEntry::new(
+            "exchange.auto_approve",
+            format!("Auto-approved proposal {}", proposal.id),
+        );
+        let _ = state.engine.log_chronicle(&chronicle).await;
+
+        return Ok(Json(serde_json::json!({
+            "id": proposal.id.to_string(),
+            "state": "auto_approved",
+            "created_node_id": result.created_node_id,
+            "updated_node_id": result.updated_node_id,
+            "deleted_node_id": result.deleted_node_id
+        }))
+        .into_response());
+    }
 
     Ok((StatusCode::CREATED, Json(proposal)).into_response())
 }
@@ -205,181 +688,37 @@ pub async fn approve_proposal(
         .map_err(map_mv_error)?
         .ok_or((StatusCode::NOT_FOUND, "proposal not found".to_string()))?;
 
-    let mut created_node_id: Option<String> = None;
-    let mut updated_node_id: Option<String> = None;
-    let mut deleted_node_id: Option<String> = None;
+    let mut snapshot_data = build_undo_snapshot_data(&state, &auth, &proposal).await?;
+    let result = execute_proposal_action(&state, &auth, &proposal).await?;
 
-    match &proposal.action {
-        ProposalAction::CreateNode => {
-            let payload_value = serde_json::to_value(&proposal.payload)
-                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
-            let payload: ProposalNodePayload = serde_json::from_value(payload_value)
-                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
-
-            let content = payload.content.ok_or((
-                StatusCode::BAD_REQUEST,
-                "proposal payload missing content".to_string(),
-            ))?;
-            let kind_raw = payload.kind.unwrap_or_else(|| "fact".to_string());
-            let kind: NodeKind = kind_raw
-                .parse()
-                .map_err(|e: String| (StatusCode::BAD_REQUEST, e))?;
-            let tags = payload.tags.unwrap_or_default();
-
-            validate_node_payload(
-                kind,
-                payload.title.as_deref(),
-                &content,
-                payload.source.as_deref(),
-                payload.namespace.as_deref(),
-                &tags,
-                payload.importance,
-                payload.metadata.as_ref(),
-            )
-            .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
-
-            let namespace = namespace_for_create(&auth, payload.namespace, "default")?;
-            enforce_namespace_quota(&state.engine, &namespace)
-                .await
-                .map_err(map_namespace_quota_error)?;
-
-            let mut node = KnowledgeNode::new(kind, content).with_namespace(namespace);
-            if let Some(title) = payload.title {
-                node = node.with_title(title);
-            }
-            if let Some(source) = payload.source {
-                node = node.with_source(source);
-            }
-            if !tags.is_empty() {
-                node = node.with_tags(tags);
-            }
-            if let Some(importance) = payload.importance {
-                node = node.with_importance(importance);
-            }
-            if let Some(metadata) = payload.metadata {
-                node.metadata = metadata;
-            }
-
-            let stored = state.engine.store_node(node).await.map_err(map_mv_error)?;
-            state.notify_change(&stored.id.to_string(), "create", Some(&stored.namespace));
-            created_node_id = Some(stored.id.to_string());
+    if let Some(ref mut data) = snapshot_data {
+        if let Some(created_id) = result.created_node_id.as_ref() {
+            data["node_id"] = serde_json::json!(created_id);
         }
-        ProposalAction::UpdateNode | ProposalAction::SuggestTag => {
-            let target_id = proposal.target_node_id.ok_or((
-                StatusCode::BAD_REQUEST,
-                "proposal missing target_node_id".to_string(),
-            ))?;
-            let existing = state
-                .engine
-                .get_node(target_id)
-                .await
-                .map_err(map_mv_error)?
-                .ok_or((StatusCode::NOT_FOUND, "target node not found".to_string()))?;
+    } else if let Some(created_id) = result.created_node_id.as_ref() {
+        snapshot_data = Some(serde_json::json!({
+            "action": "create_node",
+            "node_id": created_id
+        }));
+    }
 
-            authorize_namespace(&auth, &existing.namespace)?;
-
-            let payload_value = serde_json::to_value(&proposal.payload)
-                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
-            let payload: ProposalNodePayload = serde_json::from_value(payload_value)
-                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
-
-            let mut updated = existing.clone();
-            if let Some(kind) = payload.kind {
-                updated.kind = kind
-                    .parse()
-                    .map_err(|e: String| (StatusCode::BAD_REQUEST, e))?;
-            }
-            if let Some(content) = payload.content {
-                updated.content = content;
-            }
-            if let Some(title) = payload.title {
-                updated.title = Some(title);
-            }
-            if let Some(source) = payload.source {
-                updated.source = Some(source);
-            }
-
-            let mut tags = updated.tags.clone();
-            if matches!(&proposal.action, ProposalAction::SuggestTag) {
-                if let Some(tag_val) = proposal.payload.get("tag").and_then(|v| v.as_str()) {
-                    let tag = tag_val.trim();
-                    if !tag.is_empty() && !tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
-                        tags.push(tag.to_string());
-                    }
-                } else {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        "proposal payload missing tag".to_string(),
-                    ));
-                }
-            } else if let Some(new_tags) = payload.tags {
-                tags = new_tags;
-            }
-
-            if let Some(importance) = payload.importance {
-                updated.importance = importance;
-            }
-            if let Some(metadata) = payload.metadata {
-                updated.metadata = metadata;
-            }
-
-            if let Some(namespace) = payload.namespace {
-                let ns = namespace_for_create(&auth, Some(namespace), &existing.namespace)?;
-                updated.namespace = ns;
-            }
-
-            validate_node_payload(
-                updated.kind,
-                updated.title.as_deref(),
-                &updated.content,
-                updated.source.as_deref(),
-                Some(&updated.namespace),
-                &tags,
-                Some(updated.importance),
-                Some(&updated.metadata),
-            )
-            .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
-
-            updated.tags = tags;
-            let saved = state
-                .engine
-                .update_node(updated)
-                .await
-                .map_err(map_mv_error)?;
-            state.notify_change(&saved.id.to_string(), "update", Some(&saved.namespace));
-            updated_node_id = Some(saved.id.to_string());
-        }
-        ProposalAction::DeleteNode => {
-            let target_id = proposal.target_node_id.ok_or((
-                StatusCode::BAD_REQUEST,
-                "proposal missing target_node_id".to_string(),
-            ))?;
-            let existing = state
-                .engine
-                .get_node(target_id)
-                .await
-                .map_err(map_mv_error)?
-                .ok_or((StatusCode::NOT_FOUND, "target node not found".to_string()))?;
-            authorize_namespace(&auth, &existing.namespace)?;
-
-            let deleted = state
-                .engine
-                .delete_node(target_id)
-                .await
-                .map_err(map_mv_error)?;
-            if deleted {
-                state.notify_change(&target_id.to_string(), "delete", Some(&existing.namespace));
-                deleted_node_id = Some(target_id.to_string());
-            } else {
-                return Err((StatusCode::NOT_FOUND, "target node not found".to_string()));
-            }
-        }
-        _ => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "proposal action not supported for approval".to_string(),
-            ))
-        }
+    if let Some(snapshot_data) = snapshot_data {
+        let now = Utc::now();
+        let snapshot = UndoSnapshot {
+            id: Uuid::now_v7(),
+            proposal_id: proposal.id,
+            snapshot_data,
+            created_at: now,
+            expires_at: now + Duration::days(7),
+            used: false,
+        };
+        state
+            .engine
+            .store
+            .nodes
+            .save_undo_snapshot(&snapshot)
+            .await
+            .map_err(map_mv_error)?;
     }
 
     let resolved = state
@@ -400,9 +739,9 @@ pub async fn approve_proposal(
     Ok(Json(serde_json::json!({
         "id": uuid.to_string(),
         "state": "approved",
-        "created_node_id": created_node_id,
-        "updated_node_id": updated_node_id,
-        "deleted_node_id": deleted_node_id
+        "created_node_id": result.created_node_id,
+        "updated_node_id": result.updated_node_id,
+        "deleted_node_id": result.deleted_node_id
     })))
 }
 

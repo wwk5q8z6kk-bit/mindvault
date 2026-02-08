@@ -8,8 +8,8 @@ use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials as SmtpCredentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use mv_core::{
-    ChannelType, ContentType, KnowledgeNode, MvError, MvResult, RelayChannel, RelayContact,
-    RelayMessage, TrustLevel,
+    ChannelType, ContentType, KnowledgeNode, MessageStatus, MvError, MvResult, RelayChannel,
+    RelayContact, RelayMessage, TrustLevel,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -186,7 +186,7 @@ fn resolve_message_subject(message: &RelayMessage) -> String {
 }
 
 pub async fn send_outbound_relay_if_email_channel(
-    state: &Arc<AppState>,
+    state: &AppState,
     message: &RelayMessage,
 ) -> MvResult<Option<String>> {
     let channel = match state.engine.relay.get_channel(message.channel_id).await? {
@@ -266,7 +266,7 @@ pub async fn send_outbound_relay_if_email_channel(
 }
 
 async fn resolve_email_channel_target(
-    state: &Arc<AppState>,
+    state: &AppState,
     channel: &RelayChannel,
 ) -> MvResult<Option<String>> {
     if channel.channel_type != ChannelType::Direct || channel.member_contact_ids.len() != 1 {
@@ -492,11 +492,46 @@ async fn ingest_inbound_email(
         .with_content_type(ContentType::Text);
     relay_message.metadata = metadata.into_iter().collect();
 
-    let stored = state
+    let outcome = state
         .engine
-        .relay
-        .receive_message(relay_message, &config.namespace)
+        .receive_relay_message(relay_message, &config.namespace)
         .await?;
+
+    if let Some(mut auto_reply) = outcome.auto_reply {
+        match send_outbound_relay_if_email_channel(state, &auto_reply).await {
+            Ok(Some(recipient)) => {
+                if let Err(err) = state
+                    .engine
+                    .relay
+                    .update_status(auto_reply.id, MessageStatus::Delivered)
+                    .await
+                {
+                    tracing::warn!(error = %err, "relay_auto_reply_status_update_failed");
+                } else {
+                    auto_reply.status = MessageStatus::Delivered;
+                }
+                auto_reply.metadata.insert(
+                    "email_recipient".to_string(),
+                    serde_json::Value::String(recipient),
+                );
+                auto_reply.metadata.insert(
+                    "adapter".to_string(),
+                    serde_json::Value::String("email".to_string()),
+                );
+            }
+            Ok(None) => {}
+            Err(err) => {
+                let _ = state
+                    .engine
+                    .relay
+                    .update_status(auto_reply.id, MessageStatus::Failed)
+                    .await;
+                tracing::warn!(error = %err, "relay_auto_reply_send_failed");
+            }
+        }
+    }
+
+    let stored = outcome.message;
 
     if let Some(node_id) = stored.vault_node_id {
         if !email.attachments.is_empty() {

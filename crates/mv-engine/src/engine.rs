@@ -81,6 +81,20 @@ pub struct TaskReminderDispatchStats {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct RelayInboundOutcome {
+    pub message: RelayMessage,
+    pub auto_reply: Option<RelayMessage>,
+    pub proposal_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone)]
+struct RelayReplySuggestion {
+    content: String,
+    confidence: f32,
+    context_snippets: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PrioritizedTask {
     pub task: KnowledgeNode,
     pub score: f64,
@@ -509,6 +523,16 @@ impl MindVaultEngine {
         Ok(Some((key, template)))
     }
 
+    // ── Owner Profile ────────────────────────────────────────────────
+
+    pub async fn get_profile(&self) -> MvResult<OwnerProfile> {
+        self.store.nodes.get_profile().await
+    }
+
+    pub async fn update_profile(&self, req: &UpdateProfileRequest) -> MvResult<OwnerProfile> {
+        self.store.nodes.update_profile(req).await
+    }
+
     /// Store a knowledge node.
     pub async fn store_node(&self, node: KnowledgeNode) -> MvResult<KnowledgeNode> {
         let stored = self.ingest.ingest(node).await?;
@@ -530,6 +554,279 @@ impl MindVaultEngine {
     /// Recall knowledge matching a query.
     pub async fn recall(&self, query: &MemoryQuery) -> MvResult<Vec<SearchResult>> {
         self.recall.recall(query).await
+    }
+
+    /// Receive a relay message and optionally generate an auto-reply or proposal.
+    pub async fn receive_relay_message(
+        &self,
+        message: RelayMessage,
+        namespace: &str,
+    ) -> MvResult<RelayInboundOutcome> {
+        let mut stored = self.relay.receive_message(message, namespace).await?;
+
+        if stored.status == MessageStatus::Failed {
+            return Ok(RelayInboundOutcome {
+                message: stored,
+                auto_reply: None,
+                proposal_id: None,
+            });
+        }
+
+        let Some(sender_id) = stored.sender_contact_id else {
+            return Ok(RelayInboundOutcome {
+                message: stored,
+                auto_reply: None,
+                proposal_id: None,
+            });
+        };
+
+        let Some(contact) = self.relay.get_contact(sender_id).await? else {
+            return Ok(RelayInboundOutcome {
+                message: stored,
+                auto_reply: None,
+                proposal_id: None,
+            });
+        };
+
+        if contact.trust_level == TrustLevel::RelayOnly {
+            return Ok(RelayInboundOutcome {
+                message: stored,
+                auto_reply: None,
+                proposal_id: None,
+            });
+        }
+
+        if stored.content_type != ContentType::Text || stored.content.trim().is_empty() {
+            return Ok(RelayInboundOutcome {
+                message: stored,
+                auto_reply: None,
+                proposal_id: None,
+            });
+        }
+
+        let thread_id = stored.thread_id.unwrap_or(stored.id);
+
+        let subject = stored
+            .metadata
+            .get("subject")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                if value.to_ascii_lowercase().starts_with("re:") {
+                    value.to_string()
+                } else {
+                    format!("Re: {value}")
+                }
+            });
+
+        let query = MemoryQuery::new(&stored.content)
+            .with_namespace(namespace.to_string())
+            .with_limit(6)
+            .with_min_score(0.0);
+
+        let results = match self.recall(&query).await {
+            Ok(results) => results,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "relay_reply_context_recall_failed"
+                );
+                return Ok(RelayInboundOutcome {
+                    message: stored,
+                    auto_reply: None,
+                    proposal_id: None,
+                });
+            }
+        };
+
+        let context_snippets = llm::extract_context_snippets(&results, 4);
+        if context_snippets.is_empty() {
+            return Ok(RelayInboundOutcome {
+                message: stored,
+                auto_reply: None,
+                proposal_id: None,
+            });
+        }
+
+        let input = if let Some(ref subject) = subject {
+            format!("Subject: {subject}\n\n{}", stored.content)
+        } else {
+            stored.content.clone()
+        };
+
+        let mut used_llm = false;
+        let mut suggestion_text = None;
+        if let Some(ref llm) = self.llm {
+            match llm::llm_completion_suggestions(llm.as_ref(), &input, &context_snippets, 1).await
+            {
+                Ok(mut suggestions) => {
+                    if let Some(first) = suggestions.pop() {
+                        suggestion_text = Some(first);
+                        used_llm = true;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        provider = %llm.name(),
+                        "relay_reply_llm_suggestion_failed"
+                    );
+                }
+            }
+        }
+
+        if suggestion_text.is_none() {
+            let preview = context_snippets
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n");
+            suggestion_text = Some(format!(
+                "I have related notes that might help:\n{preview}\n\nWant me to share details?"
+            ));
+        }
+
+        let mut confidence: f32 = if used_llm { 0.6 } else { 0.4 };
+        if context_snippets.len() >= 3 {
+            confidence += 0.1;
+        }
+        if contact.trust_level == TrustLevel::Full {
+            confidence += 0.1;
+        }
+        if contact.trust_level == TrustLevel::ContextInject {
+            confidence -= 0.05;
+        }
+        confidence = confidence.clamp(0.0, 1.0);
+
+        let suggestion = RelayReplySuggestion {
+            content: suggestion_text.unwrap_or_default(),
+            confidence,
+            context_snippets,
+        };
+
+        let contact_scope = sender_id.to_string();
+        let scope_hints = [("contact", contact_scope.as_str()), ("domain", "relay")];
+        let mut decision = self
+            .autonomy
+            .evaluate("relay.reply", suggestion.confidence, &scope_hints)
+            .await?;
+
+        if contact.trust_level != TrustLevel::Full
+            && matches!(decision, AutonomyDecision::AutoApply)
+        {
+            decision = AutonomyDecision::Defer;
+        }
+
+        let mut auto_reply = None;
+        let mut proposal_id = None;
+
+        match decision {
+            AutonomyDecision::AutoApply => {
+                let mut reply =
+                    RelayMessage::outbound(stored.channel_id, suggestion.content.clone())
+                        .with_thread(thread_id)
+                        .with_content_type(ContentType::Text);
+                reply.recipient_contact_id = Some(sender_id);
+                reply.metadata.insert(
+                    "auto_reply".to_string(),
+                    serde_json::Value::Bool(true),
+                );
+                reply.metadata.insert(
+                    "basis_message_id".to_string(),
+                    serde_json::Value::String(stored.id.to_string()),
+                );
+                if let Some(ref subject) = subject {
+                    reply.metadata.insert(
+                        "subject".to_string(),
+                        serde_json::Value::String(subject.clone()),
+                    );
+                }
+
+                let stored_reply = self.relay.send_message(reply, namespace).await?;
+                auto_reply = Some(stored_reply);
+
+                if let Ok(true) = self
+                    .relay
+                    .update_status(stored.id, MessageStatus::AutoReplied)
+                    .await
+                {
+                    stored.status = MessageStatus::AutoReplied;
+                }
+            }
+            AutonomyDecision::Defer | AutonomyDecision::QueueForLater => {
+                let mut payload = std::collections::HashMap::new();
+                payload.insert(
+                    "channel_id".to_string(),
+                    serde_json::Value::String(stored.channel_id.to_string()),
+                );
+                payload.insert(
+                    "content".to_string(),
+                    serde_json::Value::String(suggestion.content.clone()),
+                );
+                payload.insert(
+                    "content_type".to_string(),
+                    serde_json::Value::String(ContentType::Text.to_string()),
+                );
+                payload.insert(
+                    "basis_message_id".to_string(),
+                    serde_json::Value::String(stored.id.to_string()),
+                );
+                payload.insert(
+                    "context_snippets".to_string(),
+                    serde_json::Value::Array(
+                        suggestion
+                            .context_snippets
+                            .iter()
+                            .map(|snippet| serde_json::Value::String(snippet.clone()))
+                            .collect(),
+                    ),
+                );
+                payload.insert(
+                    "thread_id".to_string(),
+                    serde_json::Value::String(thread_id.to_string()),
+                );
+                if let Some(recipient_id) = stored.sender_contact_id {
+                    payload.insert(
+                        "recipient_contact_id".to_string(),
+                        serde_json::Value::String(recipient_id.to_string()),
+                    );
+                }
+                if let Some(ref subject) = subject {
+                    payload.insert(
+                        "subject".to_string(),
+                        serde_json::Value::String(subject.clone()),
+                    );
+                }
+
+                let proposal = Proposal::new(
+                    ProposalSender::Relay,
+                    ProposalAction::Custom("relay.reply".to_string()),
+                )
+                .with_confidence(suggestion.confidence)
+                .with_diff(suggestion.content.clone())
+                .with_payload(payload);
+
+                self.submit_proposal(&proposal).await?;
+                proposal_id = Some(proposal.id);
+
+                if let Ok(true) = self
+                    .relay
+                    .update_status(stored.id, MessageStatus::Deferred)
+                    .await
+                {
+                    stored.status = MessageStatus::Deferred;
+                }
+            }
+            AutonomyDecision::Block => {}
+        }
+
+        Ok(RelayInboundOutcome {
+            message: stored,
+            auto_reply,
+            proposal_id,
+        })
     }
 
     /// Get a node by ID.
@@ -1623,6 +1920,68 @@ impl MindVaultEngine {
         self.store.nodes.log_chronicle(entry).await
     }
 
+    // --- Feedback / Learning ---
+
+    /// Record feedback for an intent action (apply/dismiss).
+    pub async fn record_feedback(&self, fb: &AgentFeedback) -> MvResult<()> {
+        self.store.nodes.record_feedback(fb).await
+    }
+
+    /// Get acceptance rate for an intent type. Returns (total, applied).
+    pub async fn get_acceptance_rate(&self, intent_type: &str) -> MvResult<(usize, usize)> {
+        self.store.nodes.get_acceptance_rate(intent_type).await
+    }
+
+    /// Get confidence override for an intent type.
+    pub async fn get_confidence_override(
+        &self,
+        intent_type: &str,
+    ) -> MvResult<Option<ConfidenceOverride>> {
+        self.store.nodes.get_confidence_override(intent_type).await
+    }
+
+    /// Recalculate and store a confidence override based on accumulated feedback.
+    pub async fn recalculate_confidence(&self, intent_type: &str) -> MvResult<()> {
+        let (total, applied) = self.store.nodes.get_acceptance_rate(intent_type).await?;
+
+        // Need at least 5 data points to start adjusting
+        if total < 5 {
+            return Ok(());
+        }
+
+        let rate = applied as f32 / total as f32;
+
+        // base_adjustment: -0.2 to +0.2 based on acceptance rate
+        // 50% → 0.0, 100% → +0.2, 0% → -0.2
+        let base_adjustment = (rate - 0.5) * 0.4;
+
+        // auto_apply_threshold: lower if acceptance rate is high
+        let auto_apply_threshold = if rate > 0.9 && total >= 20 {
+            0.9 // auto-apply above 0.9 confidence
+        } else {
+            0.95 // default: very high threshold
+        };
+
+        // suppress_below: raise if acceptance rate is very low
+        let suppress_below = if rate < 0.1 && total >= 10 {
+            0.5 // suppress weak suggestions for disliked intent types
+        } else if rate < 0.3 {
+            0.3
+        } else {
+            0.1 // default
+        };
+
+        let override_ = ConfidenceOverride {
+            intent_type: intent_type.to_string(),
+            base_adjustment,
+            auto_apply_threshold,
+            suppress_below,
+            updated_at: chrono::Utc::now(),
+        };
+
+        self.store.nodes.set_confidence_override(&override_).await
+    }
+
     // --- Exchange Inbox ---
 
     pub async fn submit_proposal(&self, proposal: &Proposal) -> MvResult<()> {
@@ -1956,7 +2315,10 @@ fn hash_access_token(token: &str) -> String {
 mod tests {
     use super::*;
     use chrono::{NaiveDate, TimeZone, Utc};
-    use mv_core::{GraphStore, KnowledgeNode, NodeKind, RelationKind, Relationship};
+    use mv_core::{
+        GraphStore, KnowledgeNode, MessageStatus, NodeKind, ProposalAction, ProposalState,
+        RelayChannel, RelayContact, RelayMessage, RelationKind, Relationship, TrustLevel,
+    };
     use tempfile::TempDir;
 
     async fn create_test_engine() -> (MindVaultEngine, TempDir) {
@@ -2098,6 +2460,46 @@ mod tests {
         let neighbors = engine.get_neighbors(node1.id, 1).await.unwrap();
         assert_eq!(neighbors.len(), 1);
         assert_eq!(neighbors[0], node2.id);
+    }
+
+    #[tokio::test]
+    async fn test_relay_inbound_creates_reply_proposal() {
+        let (engine, _tmp_dir) = create_test_engine().await;
+
+        let contact = RelayContact::new("Alice", "pk-alice")
+            .with_trust(TrustLevel::ContextInject);
+        engine.relay.add_contact(&contact).await.unwrap();
+
+        let channel = RelayChannel::direct(contact.id);
+        engine.relay.create_channel(&channel).await.unwrap();
+
+        let node = KnowledgeNode::new(
+            NodeKind::Fact,
+            "Project Atlas roadmap lives in the Q2 plan.".to_string(),
+        );
+        engine.store_node(node).await.unwrap();
+
+        let message = RelayMessage::inbound(
+            channel.id,
+            contact.id,
+            "Can you share the Atlas roadmap?",
+        );
+        let outcome = engine
+            .receive_relay_message(message, "default")
+            .await
+            .unwrap();
+
+        assert!(outcome.proposal_id.is_some());
+        assert!(outcome.auto_reply.is_none());
+        assert_eq!(outcome.message.status, MessageStatus::Deferred);
+
+        let proposals = engine
+            .list_proposals(Some(ProposalState::Pending), 10, 0)
+            .await
+            .unwrap();
+        assert!(proposals.iter().any(|proposal| {
+            proposal.action == ProposalAction::Custom("relay.reply".to_string())
+        }));
     }
 
     #[tokio::test]
