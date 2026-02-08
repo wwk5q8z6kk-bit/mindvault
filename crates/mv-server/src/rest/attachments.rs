@@ -14,6 +14,7 @@ pub struct AttachmentTextExtractionOutcome {
 struct AttachmentExtractionTools {
     pdftotext_bin: String,
     tesseract_bin: String,
+    ffmpeg_bin: String,
 }
 
 impl AttachmentExtractionTools {
@@ -27,6 +28,10 @@ impl AttachmentExtractionTools {
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "tesseract".to_string()),
+            ffmpeg_bin: std::env::var("MINDVAULT_ATTACHMENT_FFMPEG_BIN")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "ffmpeg".to_string()),
         }
     }
 }
@@ -53,6 +58,7 @@ const TEXTUAL_EXTENSIONS: &[&str] = &[
 ];
 
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff", "webp"];
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "mkv", "webm", "avi", "m4v"];
 
 pub fn extract_attachment_search_text(
     file_name: &str,
@@ -145,6 +151,58 @@ fn extract_attachment_search_text_with_tools(
             status: "empty".to_string(),
             extracted_text: None,
             extracted_chars: 0,
+        };
+    }
+
+    if is_video_attachment(file_name, content_type) {
+        let audio_bytes = match extract_video_audio_bytes(file_name, bytes, tools) {
+            Ok(audio) => audio,
+            Err(ExternalExtractionError::ToolMissing) => {
+                return AttachmentTextExtractionOutcome {
+                    status: "tool_missing".to_string(),
+                    extracted_text: None,
+                    extracted_chars: 0,
+                }
+            }
+            Err(ExternalExtractionError::Failed) => {
+                return AttachmentTextExtractionOutcome {
+                    status: "extraction_failed".to_string(),
+                    extracted_text: None,
+                    extracted_chars: 0,
+                }
+            }
+        };
+
+        let whisper_config = WhisperConfig::from_env();
+        if !whisper_config.enabled {
+            return AttachmentTextExtractionOutcome {
+                status: "tool_missing".to_string(),
+                extracted_text: None,
+                extracted_chars: 0,
+            };
+        }
+
+        return match transcribe_audio("video-audio.wav", &audio_bytes, &whisper_config) {
+            Ok(result) => finalize_extraction_outcome(
+                "transcribed",
+                normalize_attachment_search_blob(&result.text, max_chars),
+            ),
+            Err(TranscriptionError::WhisperNotAvailable) => AttachmentTextExtractionOutcome {
+                status: "tool_missing".to_string(),
+                extracted_text: None,
+                extracted_chars: 0,
+            },
+            Err(TranscriptionError::UnsupportedFormat(_)) => AttachmentTextExtractionOutcome {
+                status: "unsupported".to_string(),
+                extracted_text: None,
+                extracted_chars: 0,
+            },
+            Err(TranscriptionError::TranscriptionFailed(_))
+            | Err(TranscriptionError::IoError(_)) => AttachmentTextExtractionOutcome {
+                status: "extraction_failed".to_string(),
+                extracted_text: None,
+                extracted_chars: 0,
+            },
         };
     }
 
@@ -357,6 +415,18 @@ fn is_image_attachment(file_name: &str, content_type: Option<&str>) -> bool {
     IMAGE_EXTENSIONS.iter().any(|value| *value == extension)
 }
 
+fn is_video_attachment(file_name: &str, content_type: Option<&str>) -> bool {
+    if let Some(content_type) = content_type {
+        let normalized = normalize_content_type(content_type);
+        if normalized.starts_with("video/") {
+            return true;
+        }
+    }
+
+    let extension = normalized_extension(file_name);
+    VIDEO_EXTENSIONS.iter().any(|value| *value == extension)
+}
+
 fn normalize_content_type(value: &str) -> String {
     value
         .split(';')
@@ -466,6 +536,59 @@ fn extract_image_ocr_text(
     extraction_result
 }
 
+fn extract_video_audio_bytes(
+    file_name: &str,
+    bytes: &[u8],
+    tools: &AttachmentExtractionTools,
+) -> Result<Vec<u8>, ExternalExtractionError> {
+    let extension = normalized_extension(file_name);
+    let input_suffix = if extension.is_empty() {
+        ".video".to_string()
+    } else {
+        format!(".{extension}")
+    };
+
+    let input_path = temp_file_path(&input_suffix);
+    if std::fs::write(&input_path, bytes).is_err() {
+        return Err(ExternalExtractionError::Failed);
+    }
+
+    let output_path = temp_file_path(".wav");
+    let output = Command::new(&tools.ffmpeg_bin)
+        .arg("-y")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-i")
+        .arg(&input_path)
+        .arg("-vn")
+        .arg("-acodec")
+        .arg("pcm_s16le")
+        .arg("-ar")
+        .arg("16000")
+        .arg("-ac")
+        .arg("1")
+        .arg(&output_path)
+        .output();
+    let _ = std::fs::remove_file(&input_path);
+
+    let extraction_result = match output {
+        Ok(result) => {
+            if !result.status.success() {
+                Err(ExternalExtractionError::Failed)
+            } else {
+                std::fs::read(&output_path).map_err(|_| ExternalExtractionError::Failed)
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Err(ExternalExtractionError::ToolMissing)
+        }
+        Err(_) => Err(ExternalExtractionError::Failed),
+    };
+    let _ = std::fs::remove_file(&output_path);
+
+    extraction_result
+}
+
 fn format_clip_tags_text(tags: &[ClipTag]) -> Option<String> {
     if tags.is_empty() {
         return None;
@@ -511,6 +634,7 @@ mod tests {
         let tools = AttachmentExtractionTools {
             pdftotext_bin: "missing-pdftotext-bin".to_string(),
             tesseract_bin: "missing-tesseract-bin".to_string(),
+            ffmpeg_bin: "missing-ffmpeg-bin".to_string(),
         };
         let outcome = extract_attachment_search_text_with_tools(
             "diagram.png",
@@ -529,6 +653,7 @@ mod tests {
         let tools = AttachmentExtractionTools {
             pdftotext_bin: "missing-pdftotext-bin".to_string(),
             tesseract_bin: "missing-tesseract-bin".to_string(),
+            ffmpeg_bin: "missing-ffmpeg-bin".to_string(),
         };
         let outcome = extract_attachment_search_text_with_tools(
             "doc.pdf",
@@ -557,6 +682,27 @@ mod tests {
             Some(value) => std::env::set_var("MINDVAULT_WHISPER_BIN", value),
             None => std::env::remove_var("MINDVAULT_WHISPER_BIN"),
         }
+    }
+
+    #[test]
+    fn returns_tool_missing_for_video_without_ffmpeg() {
+        let tools = AttachmentExtractionTools {
+            pdftotext_bin: "missing-pdftotext-bin".to_string(),
+            tesseract_bin: "missing-tesseract-bin".to_string(),
+            ffmpeg_bin: "missing-ffmpeg-bin".to_string(),
+        };
+
+        let outcome = extract_attachment_search_text_with_tools(
+            "demo.mp4",
+            Some("video/mp4"),
+            b"not-a-real-video",
+            128,
+            &tools,
+        );
+
+        assert_eq!(outcome.status, "tool_missing");
+        assert_eq!(outcome.extracted_chars, 0);
+        assert!(outcome.extracted_text.is_none());
     }
 
     #[test]
