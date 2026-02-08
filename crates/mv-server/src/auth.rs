@@ -19,6 +19,11 @@ const ENV_AUTH_TOKEN: &str = "MINDVAULT_AUTH_TOKEN";
 const ENV_AUTH_ROLE: &str = "MINDVAULT_AUTH_ROLE";
 const ENV_AUTH_NAMESPACE: &str = "MINDVAULT_AUTH_NAMESPACE";
 const ENV_JWT_SECRET: &str = "MINDVAULT_JWT_SECRET";
+const ENV_JWT_ISSUER: &str = "MINDVAULT_JWT_ISSUER";
+const ENV_JWT_AUDIENCE: &str = "MINDVAULT_JWT_AUDIENCE";
+
+/// Maximum bearer token length (8 KiB). Prevents DoS via oversized Authorization headers.
+const MAX_TOKEN_LENGTH: usize = 8192;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthRole {
@@ -133,6 +138,12 @@ struct JwtClaims {
     sub: String,
     exp: usize,
     #[serde(default)]
+    iat: Option<usize>,
+    #[serde(default)]
+    iss: Option<String>,
+    #[serde(default)]
+    aud: Option<String>,
+    #[serde(default)]
     role: Option<String>,
     #[serde(default)]
     namespace: Option<String>,
@@ -164,6 +175,11 @@ pub async fn auth_middleware_with_state(
     mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    if request.uri().path() == "/api/v1/oauth/token" {
+        request.extensions_mut().insert(AuthContext::system_admin());
+        return Ok(next.run(request).await);
+    }
+
     let auth_context = auth_context_from_headers_with_state(request.headers(), &state).await?;
     request.extensions_mut().insert(auth_context);
     Ok(next.run(request).await)
@@ -250,9 +266,13 @@ fn auth_context_from_authorization_header_with_config(
 
 fn extract_bearer_token(auth_header: Option<&str>) -> Result<&str, AuthError> {
     let header = auth_header.ok_or(AuthError::MissingAuthHeader)?;
-    header
+    let token = header
         .strip_prefix(AUTHORIZATION_BEARER_PREFIX)
-        .ok_or(AuthError::InvalidHeaderFormat)
+        .ok_or(AuthError::InvalidHeaderFormat)?;
+    if token.is_empty() || token.len() > MAX_TOKEN_LENGTH {
+        return Err(AuthError::InvalidHeaderFormat);
+    }
+    Ok(token)
 }
 
 fn validate_jwt(token: &str, secret: &str) -> Result<AuthContext, AuthError> {
@@ -270,6 +290,33 @@ fn validate_jwt(token: &str, secret: &str) -> Result<AuthContext, AuthError> {
         return Err(AuthError::InvalidJwt);
     }
 
+    // Validate issuer if MINDVAULT_JWT_ISSUER is configured
+    if let Some(expected_issuer) = read_non_empty_env(ENV_JWT_ISSUER) {
+        match &token_data.claims.iss {
+            Some(iss) if iss == &expected_issuer => {}
+            _ => return Err(AuthError::InvalidJwt),
+        }
+    }
+
+    // Validate audience if MINDVAULT_JWT_AUDIENCE is configured
+    if let Some(expected_audience) = read_non_empty_env(ENV_JWT_AUDIENCE) {
+        match &token_data.claims.aud {
+            Some(aud) if aud == &expected_audience => {}
+            _ => return Err(AuthError::InvalidJwt),
+        }
+    }
+
+    // Reject tokens with iat far in the future (>5 min clock skew tolerance)
+    if let Some(iat) = token_data.claims.iat {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as usize;
+        if iat > now + 300 {
+            return Err(AuthError::InvalidJwt);
+        }
+    }
+
     let role = token_data
         .claims
         .role
@@ -277,7 +324,13 @@ fn validate_jwt(token: &str, secret: &str) -> Result<AuthContext, AuthError> {
         .map(AuthRole::from_str)
         .transpose()
         .map_err(|_err| AuthError::InvalidJwt)?
-        .unwrap_or(AuthRole::Write);
+        .unwrap_or_else(|| {
+            tracing::debug!(
+                sub = %token_data.claims.sub,
+                "JWT missing 'role' claim, defaulting to Write"
+            );
+            AuthRole::Write
+        });
 
     Ok(AuthContext {
         subject: Some(token_data.claims.sub),
@@ -526,5 +579,121 @@ mod tests {
             Some("team-a".into())
         );
         assert!(scoped_namespace(&auth, Some("team-b".into())).is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_token() {
+        let long_token = "x".repeat(MAX_TOKEN_LENGTH + 1);
+        let header = format!("Bearer {long_token}");
+        let result = extract_bearer_token(Some(&header));
+        assert!(matches!(result, Err(AuthError::InvalidHeaderFormat)));
+    }
+
+    #[test]
+    fn accepts_token_at_max_length() {
+        let token = "y".repeat(MAX_TOKEN_LENGTH);
+        let header = format!("Bearer {token}");
+        let result = extract_bearer_token(Some(&header));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), MAX_TOKEN_LENGTH);
+    }
+
+    #[test]
+    fn empty_bearer_prefix_rejected() {
+        let result = extract_bearer_token(Some("Bearer "));
+        assert!(matches!(result, Err(AuthError::InvalidHeaderFormat)));
+    }
+
+    #[test]
+    fn jwt_defaults_to_write_when_role_missing() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_secs() as usize;
+
+        let secret = "test-secret";
+        let jwt = token_for(secret, "user-no-role", now + 3600, None, None);
+
+        let result = validate_jwt(&jwt, secret).expect("should succeed");
+        assert_eq!(result.role, AuthRole::Write);
+        assert_eq!(result.subject.as_deref(), Some("user-no-role"));
+    }
+
+    #[test]
+    fn jwt_with_invalid_role_is_rejected() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_secs() as usize;
+
+        let secret = "test-secret";
+        let jwt = token_for(secret, "user", now + 3600, Some("superadmin"), None);
+
+        let result = validate_jwt(&jwt, secret);
+        assert!(matches!(result, Err(AuthError::InvalidJwt)));
+    }
+
+    #[test]
+    fn namespace_none_allows_any_namespace() {
+        let auth = AuthContext {
+            subject: Some("user".into()),
+            role: AuthRole::Write,
+            namespace: None,
+        };
+
+        assert!(auth.allows_namespace("team-a"));
+        assert!(auth.allows_namespace("team-b"));
+        assert!(auth.allows_namespace("anything"));
+    }
+
+    #[test]
+    fn jwt_rejects_far_future_iat() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_secs() as usize;
+
+        let secret = "test-secret";
+        // Create a token with iat 10 minutes in the future (exceeds 5-min tolerance)
+        let claims = serde_json::json!({
+            "sub": "future-user",
+            "exp": now + 3600,
+            "iat": now + 600,
+        });
+
+        let jwt = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .expect("token creation should succeed");
+
+        let result = validate_jwt(&jwt, secret);
+        assert!(matches!(result, Err(AuthError::InvalidJwt)));
+    }
+
+    #[test]
+    fn jwt_accepts_reasonable_iat() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_secs() as usize;
+
+        let secret = "test-secret";
+        let claims = serde_json::json!({
+            "sub": "normal-user",
+            "exp": now + 3600,
+            "iat": now - 60, // issued 1 minute ago
+        });
+
+        let jwt = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .expect("token creation should succeed");
+
+        let result = validate_jwt(&jwt, secret);
+        assert!(result.is_ok());
     }
 }

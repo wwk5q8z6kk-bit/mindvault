@@ -43,6 +43,7 @@ Create a communication network that feels and functions like everyday messaging 
 5. Granular user control — define access, autonomy levels, quiet hours, export options exactly as desired.
 6. Interoperable and familiar — enhance existing chat/voice surfaces rather than replace them.
 7. Explainable and reviewable — injected context shows sources, confidence, and is always reversible.
+8. Single admin owner — all delegated access is issued and revoked by the owner via OAuth/API credentials.
 
 ## Core Architecture: Sovereign Vault Foundation
 **Details**: Encrypted local database with hybrid retrieval (vectors + full-text + graph), rich node metadata, automatic backlinks, and provenance tracking. All external input (human or agent) arrives as proposals in a dedicated Exchange Inbox layer; only the owner can review and merge. The Natural Relay System integrates as a deferral and registration mechanism for communication.
@@ -98,6 +99,7 @@ Create a communication network that feels and functions like everyday messaging 
 - Bounded sharing: owner approves exact query scopes (e.g., "schedule only", "project status only").
 - Plug into existing surfaces: Slack, Discord, email, voice apps — acts as intelligent relay layer.
 - Easy onboarding: begins as plain messaging/voice; intelligence enabled gradually via configuration.
+- Delegation model: AI assistant managers authenticate via OAuth or API keys; no shared-state multi-user accounts.
 
 ## Key Safeguards
 - No guessing — deferral is the safe default.
@@ -146,9 +148,127 @@ MindVault stands apart by combining absolute sovereignty, native agent interop, 
 - Maintain backward-compatible migrations with export-first safety.
 - Validate relay, deferral, and proposal flows with repeatable test scenarios.
 
+## Reality Check & Gap Register (Feb 2026)
+This section is the factual anchor for execution: what is verified in the codebase, what claims require calibration, and the highest-leverage gaps to close next.
+
+### Verified in the codebase (evidence)
+- Encryption at rest (AES-256-GCM + Argon2id) — `crates/mv-storage/src/crypto.rs`
+- OpenAPI + Swagger UI — `crates/mv-server/src/openapi.rs`
+- Prometheus metrics + audit logging — `crates/mv-server/src/metrics.rs`, `crates/mv-server/src/audit.rs`
+- Local embeddings (FastEmbed) + hybrid search — `crates/mv-storage/src/vector.rs`, `crates/mv-engine/src/engine.rs`
+- gRPC + REST + WebSocket + UDS transports — `crates/mv-server/src/grpc.rs`, `crates/mv-server/src/lib.rs`
+- Permission system + rate limiting — `crates/mv-server/src/auth.rs`, `crates/mv-server/src/limits.rs`
+- Node versioning + export/import — `crates/mv-server/src/rest/node_versions.rs`, `crates/mv-server/src/rest/sync.rs`
+- Obsidian/Markdown import — `crates/mv-engine/src/import/obsidian.rs`, `crates/mv-cli/src/commands/import.rs`
+- MCP server (stdio) + tool/resource surfacing — `crates/mv-mcp/`
+- LLM provider abstraction (OpenAI-compatible + fallback) — `crates/mv-engine/src/llm.rs`
+- Email adapter (IMAP inbound + SMTP outbound) — `crates/mv-server/src/email.rs`
+
+### Claims that must be calibrated
+- AI features are LLM-backed only when a provider is configured and reachable; otherwise they fall back to heuristics. UI and docs must surface provider status clearly.
+- “Autonomy” is high-threshold and policy-gated; any new automation must default to deferral unless explicitly enabled.
+
+### Active gaps (prioritized)
+- **P1** Profile API + UI (persisted owner profile + contact linkage).
+- **P1** Delegation auth: OAuth client credentials + API key lifecycle (owner-managed).
+- **P1** Adapter hardening (email stabilization + Slack/Discord adapters on same contract).
+- **P1** Proposal inbox UX hardening (diff clarity, undo/revoke, provenance surfacing).
+- **P1** MCP scoping tests + audit linkage.
+- **P2** Device sync conflict resolution + recovery UX.
+- **P2** Multi-modal extraction quality (PDF/image/audio edge cases).
+- **P3** Performance profiling on large vaults and packaging/onboarding polish.
+
 ---
 
+## A→Z Program Map (Living Task List)
+Legend: **[ ]** planned, **[~]** in progress, **[x]** done.
+
+### Autonomous Delivery Protocol (A→Z)
+This section is the operational source of truth for day-to-day execution.
+
+### 1) Workflow States
+- `Backlog`: approved objective, not started
+- `Ready`: scoped with acceptance criteria and test surface
+- `In Progress`: implementation active on a dedicated branch
+- `Review`: code complete, tests passing, docs updated
+- `Done`: merged, tagged, and reflected in this tracker
+
+### 2) Version Control Rules
+- If the repo is not under git, initialize and create a baseline commit before new work.
+- Branch format: `phase/<phase-number>-<scope>` or `hotfix/<scope>`
+- Commit style: `type(scope): action` (e.g. `feat(email): add imap polling cursor state`)
+- Required before merge:
+- all targeted tests pass
+- migration safety reviewed (if schema touched)
+- docs updated (`README.md`, `DEVELOPMENT_PLAN.md`, API docs when relevant)
+- merge policy: squash for feature branches, fast-forward for hotfixes
+- rollback policy: every phase ships behind feature flags or reversible config toggles where feasible
+
+### 3) Quality Gates Per Item
+- Definition of Ready:
+- API/UX contract is explicit
+- storage impact identified
+- security/privacy impact identified
+- Definition of Done:
+- implementation complete
+- tests added or updated
+- observability hooks present (logs/metrics/audit where relevant)
+- user-facing docs updated
+
+### 4) Master Program Board
+- [~] `P0` Keep sovereign defaults strict (offline-first, local embeddings, explicit opt-ins)
+- [~] `P1` Personal profile as canonical identity source (config done; API/UI pending)
+- [x] `P1` Email adapter end-to-end (IMAP inbound + SMTP outbound + attachment ingestion)
+- [ ] `P1` Profile API + UI (persisted owner profile + contact linkage)
+- [ ] `P1` Delegation auth (OAuth client credentials + API key lifecycle)
+- [ ] `P1` Exchange inbox hardening (proposal review UX, diff clarity, undo/revoke)
+- [ ] `P1` MCP hardening (tool scoping tests, permission templates, audit linkage)
+- [ ] `P2` Additional relay adapters (Slack, Discord) on same adapter contract
+- [ ] `P2` Device sync hardening (conflict strategy + recovery flow)
+- [ ] `P2` Multi-modal extraction quality passes (pdf/image/audio edge cases)
+- [ ] `P3` Performance passes on large local vaults
+- [ ] `P3` Packaging and install polish
+
+### 5) Adapter Strategy (Shared Contract)
+- adapter interface requirements:
+- inbound ingest path -> relay message -> vault registration
+- outbound delivery path <- relay outbound queue
+- contact/channel resolution with deterministic mapping
+- idempotency and cursor state persistence
+- per-adapter rate-limit and retry policy
+- email is reference implementation; Slack/Discord follow the same contract
+
+### Phase 0 — Core Vault Foundation
+- [x] Unified storage (SQLite + LanceDB + Tantivy) with encryption-ready path
+- [x] Ingest + recall pipelines with hybrid search + graph traversal
+- [x] Relay core (contacts, channels, messages) with audit trails
+
+### Phase 1 — Sovereignty Lock
+- [x] Local embeddings as default with offline-first guarantees
+- [x] Keychain integration and encryption-at-rest controls
+- [x] Export/import + backup/restore workflows
+
+### Phase 2 — Agent Interop & Proposals
+- [x] MCP server with scoped access and tool/resource surfacing
+- [x] Proposal node primitive with accept/reject/extract flow
+- [x] Autonomy + reflection + feedback loops
+
+### Phase 3 — Relay & Adapters
+- [x] Owner profile config (display name, primary email, signature)
+- [ ] Owner profile API + UI (persisted profile + contact linkage)
+- [x] Email adapter: IMAP inbound, SMTP outbound, attachment ingest, threading
+- [~] Email adapter stabilization: compile clean, test matrix, and failure-path hardening
+- [ ] Slack adapter (webhook outbound + bot inbound)
+- [ ] Discord adapter (webhook outbound + bot inbound)
+
+### Phase 4 — Ecosystem & Polish
+- [x] Plugin framework + management UI
+- [ ] Performance profiling + large-vault benchmarks
+- [ ] Onboarding/docs + migration polish
+- [ ] Community module support and marketplace considerations
+
 ## Implementation Status (as of Feb 2026)
+Note: “Complete” here means code is present in the repository. Operational validation is tracked in the A→Z Program Map and gap register above.
 
 ### Architecture Summary
 
@@ -224,6 +344,8 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 **Status:** Near-complete (only adapters remaining)
 
 Backend:
+- [ ] Profile API (GET/PUT) with persisted storage
+- [ ] Delegation auth: OAuth client credentials + API key lifecycle endpoints
 - [x] Implement MCP server (tools/resources) with scoped access
 - [x] Build relay engine (contacts, channels, messages, blocking)
 - [x] Build autonomy gate (rules, quiet hours, rate limiting)
@@ -237,9 +359,12 @@ Backend:
 - [x] Implement multi-modal image backend (metadata extraction + dimension parsing)
 - [x] Implement multi-modal PDF text extraction (pdftotext + OCR)
 - [x] Complete federation query transport (REST-based, parallel peer queries)
-- [ ] Expand adapters (Slack/Discord/email)
+- [x] Email adapter (IMAP inbound + SMTP outbound + attachment ingest)
+- [ ] Slack adapter (webhook outbound + bot inbound)
+- [ ] Discord adapter (webhook outbound + bot inbound)
 
 Frontend:
+- [ ] Profile settings UI (owner identity, signature, default contact info)
 - [x] Build relay chat page (/relay) with contacts, channels, messages
 - [x] Build autonomy settings UI (/autonomy)
 - [x] Build federation peers management UI (/federation)

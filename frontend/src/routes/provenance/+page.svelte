@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { pushToast } from '$lib/stores/toast';
 	import { fetchJson } from '$lib/api/client';
+	import TheChronicle from '$lib/components/TheChronicle.svelte';
 
 	interface MetricBucket {
 		period: string;
@@ -26,7 +27,7 @@
 	let metrics: MetricBucket[] = [];
 	let chronicle: ChronicleEntry[] = [];
 	let loading = true;
-	let tab: 'metrics' | 'chronicle' = 'metrics';
+	let tab: 'metrics' | 'chronicle' | 'live' = 'metrics';
 
 	onMount(async () => {
 		loading = true;
@@ -69,6 +70,12 @@
 				: 'border-transparent text-[rgb(var(--mv-muted))]'}"
 			onclick={() => (tab = 'chronicle')}
 		>Chronicle</button>
+		<button
+			class="border-b-2 px-2 pb-2 text-sm {tab === 'live'
+				? 'border-blue-500 text-blue-500'
+				: 'border-transparent text-[rgb(var(--mv-muted))]'}"
+			onclick={() => (tab = 'live')}
+		>Live</button>
 	</div>
 
 	{#if loading}
@@ -108,7 +115,7 @@
 				</table>
 			</div>
 		{/if}
-	{:else}
+	{:else if tab === 'chronicle'}
 		<div class="space-y-2">
 			{#if chronicle.length === 0}
 				<p class="text-sm text-[rgb(var(--mv-muted))]">No chronicle entries yet.</p>
@@ -125,5 +132,7 @@
 				</div>
 			{/each}
 		</div>
+	{:else if tab === 'live'}
+		<TheChronicle />
 	{/if}
 </div>

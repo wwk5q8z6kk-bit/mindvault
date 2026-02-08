@@ -57,6 +57,7 @@
 		{ label: 'Federation', href: '/federation' },
 		{ label: 'Sync', href: '/sync' },
 		{ label: 'Plugins', href: '/plugins' },
+		{ label: 'Adapters', href: '/adapters' },
 		{ label: 'Provenance', href: '/provenance' },
 		{ label: 'Profiles', href: '/settings/profiles' },
 		{ label: 'Settings', href: '/settings' }
@@ -197,6 +198,11 @@
 			href: '/plugins',
 			title: 'Plugins',
 			subtitle: 'Manage WASM-sandboxed extensions that hook into vault events.'
+		},
+		{
+			href: '/adapters',
+			title: 'Adapters',
+			subtitle: 'Bridge external messaging platforms into the relay engine.'
 		},
 		{
 			href: '/provenance',

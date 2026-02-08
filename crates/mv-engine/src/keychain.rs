@@ -830,6 +830,50 @@ impl KeychainEngine {
         Ok(cred)
     }
 
+    pub async fn update_credential_metadata(
+        &self,
+        id: Uuid,
+        description: Option<String>,
+        tags: Option<Vec<String>>,
+        metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
+        expires_at: Option<chrono::DateTime<Utc>>,
+    ) -> MvResult<StoredCredential> {
+        self.touch_last_access();
+
+        let mut cred = self
+            .store
+            .get_credential(id)
+            .await?
+            .ok_or_else(|| MvError::Keychain("credential not found".into()))?;
+
+        if let Some(desc) = description {
+            cred.description = Some(desc);
+        }
+        if let Some(tags) = tags {
+            cred.tags = tags;
+        }
+        if let Some(metadata) = metadata {
+            cred.metadata = metadata;
+        }
+        if let Some(expires_at) = expires_at {
+            cred.expires_at = Some(expires_at);
+        }
+
+        cred.updated_at = Utc::now();
+        cred.version += 1;
+        self.store.update_credential(&cred).await?;
+
+        self.audit_log(
+            KeychainAuditAction::CredentialUpdated,
+            "system",
+            Some(&id.to_string()),
+            Some(serde_json::json!({"new_version": cred.version})),
+        )
+        .await?;
+
+        Ok(cred)
+    }
+
     pub async fn archive_credential(&self, id: Uuid) -> MvResult<()> {
         self.touch_last_access();
 

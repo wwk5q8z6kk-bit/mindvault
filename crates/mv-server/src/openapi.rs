@@ -34,7 +34,8 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "metrics", description = "Prometheus metrics"),
         (name = "saved-searches", description = "Saved search presets"),
         (name = "saved-views", description = "Saved view presets"),
-        (name = "permissions", description = "Permission templates and access keys")
+        (name = "permissions", description = "Permission templates and access keys"),
+        (name = "oauth", description = "OAuth2 client credentials")
     ),
     paths(
         // Health
@@ -111,6 +112,11 @@ use utoipa_swagger_ui::SwaggerUi;
         list_access_keys,
         create_access_key,
         revoke_access_key,
+        // OAuth
+        list_oauth_clients,
+        create_oauth_client,
+        revoke_oauth_client,
+        oauth_token,
     ),
     components(
         schemas(
@@ -126,6 +132,11 @@ use utoipa_swagger_ui::SwaggerUi;
             PermissionTemplateResponse,
             AccessKeyResponse,
             AccessKeyCreateResponse,
+            OAuthClientCreateRequest,
+            OAuthClientResponse,
+            OAuthClientCreateResponse,
+            OAuthTokenRequest,
+            OAuthTokenResponse,
         )
     )
 )]
@@ -441,6 +452,18 @@ async fn create_access_key() {}
 #[utoipa::path(delete, path = "/api/v1/access-keys/{id}", tag = "permissions", responses((status = 204)))]
 async fn revoke_access_key() {}
 
+#[utoipa::path(get, path = "/api/v1/oauth/clients", tag = "oauth", responses((status = 200, body = Vec<OAuthClientResponse>)))]
+async fn list_oauth_clients() {}
+
+#[utoipa::path(post, path = "/api/v1/oauth/clients", tag = "oauth", responses((status = 201, body = OAuthClientCreateResponse)))]
+async fn create_oauth_client() {}
+
+#[utoipa::path(delete, path = "/api/v1/oauth/clients/{id}", tag = "oauth", responses((status = 204)))]
+async fn revoke_oauth_client() {}
+
+#[utoipa::path(post, path = "/api/v1/oauth/token", tag = "oauth", responses((status = 200, body = OAuthTokenResponse)))]
+async fn oauth_token() {}
+
 // Schema types for OpenAPI
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -571,6 +594,51 @@ pub struct AccessKeyResponse {
 pub struct AccessKeyCreateResponse {
     pub token: String,
     pub access_key: AccessKeyResponse,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct OAuthClientCreateRequest {
+    pub name: String,
+    pub template_id: String,
+    pub description: Option<String>,
+    pub token_ttl_seconds: Option<u64>,
+    pub expires_at: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct OAuthClientResponse {
+    pub id: String,
+    pub name: String,
+    pub template_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_used_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub revoked_at: Option<String>,
+    pub token_ttl_seconds: u64,
+    pub description: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct OAuthClientCreateResponse {
+    pub client: OAuthClientResponse,
+    pub client_secret: String,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct OAuthTokenRequest {
+    pub grant_type: String,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub scope: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct OAuthTokenResponse {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_in: u64,
+    pub scope: Option<String>,
 }
 
 /// Create the Swagger UI router.

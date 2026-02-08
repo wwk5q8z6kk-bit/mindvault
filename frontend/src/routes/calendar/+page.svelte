@@ -2,7 +2,7 @@
 	import { get } from 'svelte/store';
 	import { onMount } from 'svelte';
 	import CalendarView from '$lib/components/CalendarView.svelte';
-	import { formatCalendarDate, importIcal } from '$lib/api/calendar';
+	import { formatCalendarDate, importIcal, downloadIcal } from '$lib/api/calendar';
 	import { pushToast } from '$lib/stores/toast';
 	import type { CalendarItem } from '$lib/api/calendar';
 	import { activeNamespace } from '$lib/stores/namespace';
@@ -35,6 +35,7 @@
 	let timeBlockLimit = 6;
 	let blockSuggestions: TimeBlockSuggestion[] = [];
 	let reflowSuggestions: TimeBlockRescheduleSuggestion[] = [];
+	let exporting = false;
 	let suggestingBlocks = false;
 	let suggestingReflow = false;
 	let applyingBlocks = false;
@@ -157,6 +158,20 @@
 		}
 	}
 
+	async function handleExportIcal() {
+		if (exporting) return;
+		exporting = true;
+		try {
+			const namespace = get(activeNamespace);
+			await downloadIcal({ namespace: namespace || undefined });
+			pushToast('Calendar exported as .ics file', 'success');
+		} catch {
+			pushToast('iCal export failed', 'danger');
+		} finally {
+			exporting = false;
+		}
+	}
+
 	function handleIcalFileSelect(event: Event) {
 		const input = event.currentTarget as HTMLInputElement;
 		const file = input.files?.[0];
@@ -206,10 +221,19 @@
 			<h2 class="text-lg font-semibold text-white">Calendar</h2>
 			<p class="text-xs text-slate-400">View events and tasks from the server. Export/import iCal.</p>
 		</div>
-		<label class="cursor-pointer rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-700">
-			Import .ics
-			<input type="file" accept=".ics,.ical" class="hidden" bind:this={icalInput} on:change={handleIcalFileSelect} />
-		</label>
+		<div class="flex gap-2">
+			<button
+				class="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
+				on:click={handleExportIcal}
+				disabled={exporting}
+			>
+				{exporting ? 'Exporting...' : 'Export .ics'}
+			</button>
+			<label class="cursor-pointer rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-700">
+				Import .ics
+				<input type="file" accept=".ics,.ical" class="hidden" bind:this={icalInput} on:change={handleIcalFileSelect} />
+			</label>
+		</div>
 	</div>
 
 	<div class="mt-3">

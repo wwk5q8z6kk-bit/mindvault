@@ -64,6 +64,80 @@ Environment overrides are supported, including:
 - `MINDVAULT_RECURRENCE_SCHEDULER_INTERVAL_SECS`
 - `MINDVAULT_RECURRENCE_MAX_INSTANCES_PER_TEMPLATE`
 
+### Owner Profile
+
+The owner profile is used for outbound relay identity (email display name, signature, and default sender):
+
+```toml
+[profile]
+display_name = "MindVault Owner"
+primary_email = "me@example.com"
+timezone = "UTC"
+signature = "— Sent from MindVault"
+```
+
+Environment overrides:
+
+- `MINDVAULT_PROFILE_DISPLAY_NAME`
+- `MINDVAULT_PROFILE_PRIMARY_EMAIL`
+- `MINDVAULT_PROFILE_TIMEZONE`
+- `MINDVAULT_PROFILE_SIGNATURE`
+
+### Email Adapter (IMAP + SMTP)
+
+Enable email relay by configuring IMAP (inbound) and SMTP (outbound). Passwords are stored via the secret store:
+
+```toml
+[email]
+enabled = true
+namespace = "default"
+poll_interval_secs = 120
+max_fetch = 20
+max_attachment_bytes = 5242880
+mark_seen = false
+imap_host = "imap.example.com"
+imap_port = 993
+imap_username = "me@example.com"
+imap_folder = "INBOX"
+imap_starttls = true
+smtp_host = "smtp.example.com"
+smtp_port = 587
+smtp_username = "me@example.com"
+smtp_from = "me@example.com"
+smtp_starttls = true
+```
+
+Secrets:
+
+```bash
+mv secret set MINDVAULT_EMAIL_IMAP_PASSWORD
+mv secret set MINDVAULT_EMAIL_SMTP_PASSWORD
+```
+
+Environment overrides:
+
+- `MINDVAULT_EMAIL_ENABLED`
+- `MINDVAULT_EMAIL_NAMESPACE`
+- `MINDVAULT_EMAIL_POLL_INTERVAL_SECS`
+- `MINDVAULT_EMAIL_MAX_FETCH`
+- `MINDVAULT_EMAIL_MAX_ATTACHMENT_BYTES`
+- `MINDVAULT_EMAIL_MARK_SEEN`
+- `MINDVAULT_EMAIL_IMAP_HOST`
+- `MINDVAULT_EMAIL_IMAP_PORT`
+- `MINDVAULT_EMAIL_IMAP_USERNAME`
+- `MINDVAULT_EMAIL_IMAP_FOLDER`
+- `MINDVAULT_EMAIL_IMAP_STARTTLS`
+- `MINDVAULT_EMAIL_SMTP_HOST`
+- `MINDVAULT_EMAIL_SMTP_PORT`
+- `MINDVAULT_EMAIL_SMTP_USERNAME`
+- `MINDVAULT_EMAIL_SMTP_FROM`
+- `MINDVAULT_EMAIL_SMTP_STARTTLS`
+
+To send email via the relay UI/API, create a relay contact with
+`vault_address = "mailto:recipient@example.com"` (or set the contact
+`public_key` to the email address). Outbound relay messages on that direct
+channel will be delivered via SMTP when `[email] enabled = true`.
+
 ### Embedding Providers
 
 MindVault supports:

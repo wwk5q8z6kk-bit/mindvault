@@ -5,8 +5,10 @@
 //! to [`RelayMessage`] objects and flow through the relay engine, automatically
 //! creating vault nodes for searchability.
 
+#[allow(unused)]
 pub mod discord;
 pub mod email;
+#[allow(unused)]
 pub mod slack;
 
 use std::collections::HashMap;
@@ -397,5 +399,190 @@ mod tests {
 
         let results = registry.health_check_all().await;
         assert_eq!(results.get(&id), Some(&true));
+    }
+
+    // --- AdapterConfig tests ---
+
+    #[test]
+    fn adapter_config_new_sets_defaults() {
+        let config = AdapterConfig::new(AdapterType::Email, "my-email");
+        assert_eq!(config.adapter_type, AdapterType::Email);
+        assert_eq!(config.name, "my-email");
+        assert!(config.enabled);
+        assert!(config.settings.is_empty());
+        assert!(config.updated_at.is_none());
+    }
+
+    #[test]
+    fn adapter_config_with_setting_and_get() {
+        let config = AdapterConfig::new(AdapterType::Slack, "test")
+            .with_setting("webhook_url", "https://hooks.slack.com/xxx")
+            .with_setting("channel", "#general");
+
+        assert_eq!(
+            config.get_setting("webhook_url"),
+            Some("https://hooks.slack.com/xxx")
+        );
+        assert_eq!(config.get_setting("channel"), Some("#general"));
+        assert_eq!(config.get_setting("nonexistent"), None);
+    }
+
+    // --- AdapterType tests ---
+
+    #[test]
+    fn adapter_type_display_and_from_str() {
+        assert_eq!(AdapterType::Slack.to_string(), "slack");
+        assert_eq!(AdapterType::Discord.to_string(), "discord");
+        assert_eq!(AdapterType::Email.to_string(), "email");
+
+        assert_eq!("slack".parse::<AdapterType>().unwrap(), AdapterType::Slack);
+        assert_eq!("discord".parse::<AdapterType>().unwrap(), AdapterType::Discord);
+        assert_eq!("email".parse::<AdapterType>().unwrap(), AdapterType::Email);
+    }
+
+    #[test]
+    fn adapter_type_from_str_rejects_unknown() {
+        assert!("webhook".parse::<AdapterType>().is_err());
+        assert!("Slack".parse::<AdapterType>().is_err()); // case-sensitive
+        assert!("".parse::<AdapterType>().is_err());
+    }
+
+    #[test]
+    fn adapter_type_as_str_matches_display() {
+        for at in [AdapterType::Slack, AdapterType::Discord, AdapterType::Email] {
+            assert_eq!(at.as_str(), at.to_string());
+        }
+    }
+
+    // --- Message serialization tests ---
+
+    #[test]
+    fn outbound_message_serialization_roundtrip() {
+        let msg = AdapterOutboundMessage {
+            channel: "#dev".into(),
+            content: "build passed".into(),
+            thread_id: Some("t-123".into()),
+            metadata: HashMap::from([("key".into(), "val".into())]),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: AdapterOutboundMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.channel, "#dev");
+        assert_eq!(deserialized.content, "build passed");
+        assert_eq!(deserialized.thread_id.as_deref(), Some("t-123"));
+        assert_eq!(deserialized.metadata.get("key").unwrap(), "val");
+    }
+
+    #[test]
+    fn inbound_message_serialization_roundtrip() {
+        let msg = AdapterInboundMessage {
+            external_id: "ext-1".into(),
+            channel: "#support".into(),
+            sender: "user42".into(),
+            content: "help me".into(),
+            thread_id: None,
+            timestamp: Utc::now(),
+            metadata: HashMap::new(),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: AdapterInboundMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.external_id, "ext-1");
+        assert_eq!(deserialized.sender, "user42");
+        assert!(deserialized.thread_id.is_none());
+    }
+
+    #[test]
+    fn adapter_status_serialization() {
+        let status = AdapterStatus {
+            adapter_type: AdapterType::Discord,
+            name: "team-discord".into(),
+            connected: false,
+            last_send: None,
+            last_receive: None,
+            error: Some("timeout".into()),
+        };
+
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["adapter_type"], "discord");
+        assert_eq!(json["connected"], false);
+        assert_eq!(json["error"], "timeout");
+    }
+
+    // --- Registry edge case tests ---
+
+    #[tokio::test]
+    async fn list_configs_returns_all_registered() {
+        let registry = AdapterRegistry::new();
+        assert!(registry.list_configs().await.is_empty());
+
+        let a1 = Arc::new(MockAdapter {
+            name: "a1".into(),
+            sent: Arc::new(Mutex::new(Vec::new())),
+        });
+        let a2 = Arc::new(MockAdapter {
+            name: "a2".into(),
+            sent: Arc::new(Mutex::new(Vec::new())),
+        });
+
+        registry
+            .register(AdapterConfig::new(AdapterType::Slack, "slack-1"), a1)
+            .await;
+        registry
+            .register(AdapterConfig::new(AdapterType::Discord, "discord-1"), a2)
+            .await;
+
+        let configs = registry.list_configs().await;
+        assert_eq!(configs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_statuses_returns_all() {
+        let registry = AdapterRegistry::new();
+        let adapter = Arc::new(MockAdapter {
+            name: "stat".into(),
+            sent: Arc::new(Mutex::new(Vec::new())),
+        });
+        registry
+            .register(AdapterConfig::new(AdapterType::Slack, "stat"), adapter)
+            .await;
+
+        let statuses = registry.list_statuses().await;
+        assert_eq!(statuses.len(), 1);
+        assert!(statuses[0].connected);
+        assert_eq!(statuses[0].name, "stat");
+    }
+
+    #[tokio::test]
+    async fn send_to_nonexistent_adapter_returns_error() {
+        let registry = AdapterRegistry::new();
+        let msg = AdapterOutboundMessage {
+            channel: "#test".into(),
+            content: "msg".into(),
+            thread_id: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = registry.send(Uuid::now_v7(), &msg).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn remove_nonexistent_returns_false() {
+        let registry = AdapterRegistry::new();
+        assert!(!registry.remove(Uuid::now_v7()).await);
+    }
+
+    #[tokio::test]
+    async fn get_nonexistent_returns_none() {
+        let registry = AdapterRegistry::new();
+        assert!(registry.get(Uuid::now_v7()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn default_creates_empty_registry() {
+        let registry = AdapterRegistry::default();
+        assert!(registry.list_configs().await.is_empty());
+        assert!(registry.list_statuses().await.is_empty());
     }
 }

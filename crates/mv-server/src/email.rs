@@ -607,7 +607,7 @@ fn fetch_inbound_emails(request: ImapFetchRequest) -> Result<ImapFetchOutcome, S
     let mailbox = session
         .select(&request.folder)
         .map_err(|err| format!("select folder {}: {err}", request.folder))?;
-    let uid_validity = mailbox.uidvalidity;
+    let uid_validity = mailbox.uid_validity;
     let mut last_uid = request.cursor.last_uid;
     if request.cursor.uid_validity != uid_validity {
         last_uid = 0;

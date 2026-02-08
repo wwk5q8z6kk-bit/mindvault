@@ -37,7 +37,7 @@ use assist::{
     generate_summary_transform,
 };
 #[path = "rest/attachments.rs"]
-mod attachments;
+pub(crate) mod attachments;
 use attachments::{
     extract_attachment_search_text, normalize_attachment_search_blob,
     split_attachment_search_chunks, AttachmentTextExtractionOutcome,
@@ -54,6 +54,9 @@ use permissions::{
     create_access_key, create_permission_template, delete_permission_template, list_access_keys,
     list_permission_templates, revoke_access_key, update_permission_template,
 };
+#[path = "rest/oauth.rs"]
+mod oauth;
+use oauth::{create_oauth_client, list_oauth_clients, oauth_token, revoke_oauth_client};
 #[path = "rest/node_versions.rs"]
 mod node_versions;
 use node_versions::{
@@ -81,6 +84,8 @@ mod voice;
 use voice::{is_audio_file, transcribe_audio, transcribe_audio_api, WhisperConfig};
 #[path = "rest/federation.rs"]
 mod federation;
+#[path = "rest/adapters.rs"]
+mod adapters;
 #[path = "rest/plugins.rs"]
 mod plugins;
 #[path = "rest/sync.rs"]
@@ -260,6 +265,12 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(list_access_keys).post(create_access_key),
         )
         .route("/api/v1/access-keys/{id}", delete(revoke_access_key))
+        .route(
+            "/api/v1/oauth/clients",
+            get(list_oauth_clients).post(create_oauth_client),
+        )
+        .route("/api/v1/oauth/clients/{id}", delete(revoke_oauth_client))
+        .route("/api/v1/oauth/token", post(oauth_token))
         .route("/api/v1/export", get(export_bundle))
         .route("/api/v1/import", post(import_bundle))
         .route(
@@ -449,6 +460,27 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(relay::update_message_status),
         )
         .route("/api/v1/relay/unread", get(relay::unread_count))
+        // --- Adapters ---
+        .route(
+            "/api/v1/adapters",
+            get(adapters::list_adapters).post(adapters::register_adapter),
+        )
+        .route(
+            "/api/v1/adapters/statuses",
+            get(adapters::list_statuses),
+        )
+        .route(
+            "/api/v1/adapters/{id}",
+            get(adapters::get_adapter_status).delete(adapters::remove_adapter),
+        )
+        .route(
+            "/api/v1/adapters/{id}/send",
+            post(adapters::send_message),
+        )
+        .route(
+            "/api/v1/adapters/{id}/health",
+            post(adapters::health_check),
+        )
         .route("/api/v1/multimodal/status", get(multimodal_status))
         // --- Device Sync ---
         .route("/api/v1/sync/export", post(sync::sync_export))

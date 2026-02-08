@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { tasksStore, loadTasks, completeTaskOptimistic } from '$lib/stores/tasks';
+	import { tasksStore, loadTasks, completeTaskOptimistic, updateTaskOptimistic } from '$lib/stores/tasks';
 	import { prioritizeTasks, type PrioritizedTaskItem } from '$lib/api/ai';
 	import { pushToast } from '$lib/stores/toast';
 	import { selectedTaskId } from '$lib/stores/ui';
+	import TimeTracker from '$lib/components/TimeTracker.svelte';
 	import type { TaskRecord } from '$lib/db';
 
 	// Focus session state
@@ -182,7 +183,24 @@
 		return `${mins}m`;
 	}
 
+	// Per-task time tracking
+	let taskTimeSpent: Map<string, number> = new Map();
+
+	async function handleTimeUpdate(event: CustomEvent<{ taskId: string; timeSpentMin: number }>) {
+		const { taskId, timeSpentMin } = event.detail;
+		taskTimeSpent = new Map(taskTimeSpent).set(taskId, timeSpentMin);
+		try {
+			await updateTaskOptimistic(taskId, {
+				metadata: { time_spent_min: timeSpentMin }
+			});
+		} catch {
+			// Silently fail — time is tracked locally even if persist fails
+		}
+	}
+
 	$: currentTask = focusItems[currentIndex] ?? null;
+	$: currentTaskTimeSpent = currentTask ? (taskTimeSpent.get(currentTask.task.id) ?? (currentTask.task.metadata?.time_spent_min as number ?? 0)) : 0;
+	$: currentTaskEstimate = currentTask ? (currentTask.task.metadata?.estimate_min as number ?? null) : null;
 	$: progress = focusItems.length > 0 ? ((currentIndex + completedInSession.length) / focusItems.length) * 100 : 0;
 </script>
 
@@ -313,6 +331,16 @@
 						Next
 					</button>
 				</div>
+			</div>
+
+			<!-- Task-level Time Tracking -->
+			<div class="lg:col-span-2">
+				<TimeTracker
+					taskId={currentTask.task.id}
+					estimateMin={currentTaskEstimate}
+					timeSpentMin={currentTaskTimeSpent}
+					on:timeUpdate={handleTimeUpdate}
+				/>
 			</div>
 
 			<!-- Timer -->

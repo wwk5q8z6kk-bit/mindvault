@@ -128,6 +128,7 @@ pub struct MindVaultEngine {
     pub reflection: crate::reflection::ReflectionEngine,
     pub autonomy: crate::autonomy::AutonomyGate,
     pub relay: crate::relay::RelayEngine,
+    pub adapters: crate::adapters::AdapterRegistry,
     pub multimodal: crate::multimodal::MultiModalPipeline,
     pub sync: crate::sync::SyncEngine,
     pub federation: crate::federation::FederationEngine,
@@ -243,6 +244,7 @@ impl MindVaultEngine {
             reflection,
             autonomy,
             relay,
+            adapters: crate::adapters::AdapterRegistry::new(),
             sync,
             federation,
             multimodal: {

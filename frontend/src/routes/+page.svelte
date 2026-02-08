@@ -1,13 +1,16 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
 	import { goto } from '$app/navigation';
 	import { tasksStore, loadTasks } from '$lib/stores/tasks';
-	import { notesStore, loadNotes } from '$lib/stores/notes';
+	import { loadNotes } from '$lib/stores/notes';
 	import { shouldShowOnboarding } from '$lib/stores/onboarding';
 	import { fetchBriefing, type BriefingResponse } from '$lib/api/briefing';
 	import AiBriefingWidget from '$lib/components/AiBriefingWidget.svelte';
 	import DueTasksWidget from '$lib/components/DueTasksWidget.svelte';
 	import HabitsWidget from '$lib/components/HabitsWidget.svelte';
+	import WhatsNextWidget from '$lib/components/WhatsNextWidget.svelte';
+	import InsightsDashboard from '$lib/components/InsightsDashboard.svelte';
+	import RecentNotesWidget from '$lib/components/RecentNotesWidget.svelte';
+	import IntentInbox from '$lib/components/IntentInbox.svelte';
 	import { onMount } from 'svelte';
 
 	let loaded = false;
@@ -45,8 +48,6 @@
 		).length;
 	}
 	let doneThisWeek = 0;
-
-	$: recentNotes = $notesStore.slice(0, 5);
 
 	const quickActions = [
 		{ label: 'New Task', href: '/tasks', icon: '+', color: 'sky' },
@@ -173,6 +174,9 @@
 
 		<!-- Right sidebar -->
 		<div class="space-y-4">
+			<!-- What's Next: AI-prioritized top task -->
+			<WhatsNextWidget />
+
 			<!-- Habits -->
 			<HabitsWidget
 				habits={briefing?.habits_today ?? []}
@@ -199,40 +203,17 @@
 				</div>
 			</div>
 
-			<!-- Recent Notes -->
-			<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-				<div class="flex items-center justify-between">
-					<h3 class="text-sm font-semibold text-white">Recent Notes</h3>
-					<a
-						href={resolve('/notes')}
-						class="text-[11px] text-sky-400 hover:text-sky-300"
-					>
-						All notes
-					</a>
-				</div>
-				<div class="mt-3 space-y-1.5">
-					{#if recentNotes.length === 0}
-						<p class="text-[11px] text-slate-500">No notes yet.</p>
-					{:else}
-						{#each recentNotes as note (note.id)}
-							<a
-								href={`/notes?note=${note.id}`}
-								class="block rounded-lg px-2.5 py-2 transition hover:bg-slate-800/60"
-							>
-								<div class="flex items-center gap-1.5">
-									{#if note.pinned}
-										<span class="text-[9px] text-amber-400">pin</span>
-									{/if}
-									<span class="truncate text-xs font-medium text-slate-200">{note.title || 'Untitled'}</span>
-								</div>
-								<div class="mt-0.5 truncate text-[10px] text-slate-500">
-									{note.markdown.slice(0, 50)}
-								</div>
-							</a>
-						{/each}
-					{/if}
-				</div>
-			</div>
+			<!-- Agent Suggestions -->
+			<IntentInbox />
+
+			<!-- Proactive Intelligence -->
+			<InsightsDashboard />
+
+			<!-- Recent Notes (from briefing API) -->
+			<RecentNotesWidget
+				notes={briefing?.recent_notes ?? []}
+				loading={briefingLoading}
+			/>
 
 			<!-- Keyboard hint -->
 			<div class="rounded-xl border border-slate-800/60 bg-slate-900/20 p-4">
