@@ -8,8 +8,8 @@ use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials as SmtpCredentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use mv_core::{
-    ChannelType, ContentType, KnowledgeNode, MessageStatus, MvError, MvResult, NodeKind,
-    RelayChannel, RelayContact, RelayMessage, TrustLevel,
+    ChannelType, ContentType, KnowledgeNode, MvError, MvResult, RelayChannel, RelayContact,
+    RelayMessage, TrustLevel,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -31,7 +31,6 @@ const MAX_ATTACHMENT_SEARCH_CHUNK_COUNT: usize = 32;
 #[derive(Debug, Clone)]
 struct RuntimeEmailConfig {
     namespace: String,
-    poll_interval_secs: u64,
     max_fetch: usize,
     max_attachment_bytes: usize,
     mark_seen: bool,
@@ -53,7 +52,6 @@ impl RuntimeEmailConfig {
         let cfg = &state.engine.config;
         Self {
             namespace: cfg.email.namespace.clone(),
-            poll_interval_secs: cfg.email.poll_interval_secs.max(30),
             max_fetch: cfg.email.max_fetch.max(1),
             max_attachment_bytes: cfg.email.max_attachment_bytes.max(1024),
             mark_seen: cfg.email.mark_seen,
@@ -224,9 +222,15 @@ pub async fn send_outbound_relay_if_email_channel(
         })?;
     let (smtp_username, from_address) = select_smtp_identity(&config)?;
 
-    let from_mailbox: Mailbox = from_address
-        .parse()
-        .map_err(|err| MvError::InvalidInput(format!("invalid smtp_from address: {err}")))?;
+    let from_mailbox: Mailbox = if config.profile_display_name.trim().is_empty() {
+        from_address
+            .parse()
+            .map_err(|err| MvError::InvalidInput(format!("invalid smtp_from address: {err}")))?
+    } else {
+        format!("{} <{}>", config.profile_display_name, from_address)
+            .parse()
+            .map_err(|err| MvError::InvalidInput(format!("invalid smtp_from address: {err}")))?
+    };
     let to_mailbox: Mailbox = target_email
         .parse()
         .map_err(|err| MvError::InvalidInput(format!("invalid email recipient: {err}")))?;
