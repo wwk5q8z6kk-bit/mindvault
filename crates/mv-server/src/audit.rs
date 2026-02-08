@@ -311,6 +311,7 @@ fn extract_action(method: &str, path: &str) -> String {
 
         // Files
         ("POST", ["api", "v1", "files", "upload"]) => "upload_file".into(),
+        ("GET", ["api", "v1", "files"]) => "list_attachments_index".into(),
         ("GET", ["api", "v1", "files", _node_id]) => "list_attachments".into(),
         ("GET", ["api", "v1", "files", _node_id, _att_id, "chunks"]) => {
             "get_attachment_chunks".into()
@@ -530,6 +531,10 @@ mod tests {
         assert_eq!(
             extract_action("POST", "/api/v1/tasks/abc/complete"),
             "complete_task"
+        );
+        assert_eq!(
+            extract_action("GET", "/api/v1/files"),
+            "list_attachments_index"
         );
         assert_eq!(
             extract_action("GET", "/api/v1/files/node-1/att-1/chunks"),

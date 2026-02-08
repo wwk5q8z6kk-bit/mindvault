@@ -74,6 +74,7 @@ use utoipa_swagger_ui::SwaggerUi;
         apply_template,
         // Files
         upload_file,
+        list_attachments_index,
         list_node_attachments,
         get_attachment_chunks,
         reindex_attachment,
@@ -324,6 +325,24 @@ async fn apply_template() {}
 
 #[utoipa::path(post, path = "/api/v1/files/upload", tag = "files", responses((status = 201)))]
 async fn upload_file() {}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/files",
+    tag = "files",
+    params(
+        ("q" = Option<String>, Query, description = "Search text filter"),
+        ("status" = Option<String>, Query, description = "Filter by extraction status"),
+        ("failed_only" = Option<bool>, Query, description = "Only include failed extractions"),
+        ("limit" = Option<usize>, Query, description = "Page size"),
+        ("offset" = Option<usize>, Query, description = "Pagination offset"),
+        ("sort" = Option<String>, Query, description = "Sort key (uploaded_desc/uploaded_asc/name_asc/name_desc/status_asc/status_desc)"),
+        ("namespace" = Option<String>, Query, description = "Namespace filter"),
+        ("kind" = Option<String>, Query, description = "Node kind filter")
+    ),
+    responses((status = 200))
+)]
+async fn list_attachments_index() {}
 
 #[utoipa::path(get, path = "/api/v1/files/{node_id}", tag = "files", responses((status = 200)))]
 async fn list_node_attachments() {}
