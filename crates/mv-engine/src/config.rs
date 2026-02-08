@@ -3,11 +3,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineConfig {
     pub data_dir: String,
+    pub profile: OwnerProfileConfig,
     pub embedding: EmbeddingConfig,
     pub search: SearchConfig,
     pub graph: GraphConfig,
     pub ai: AiConfig,
     pub llm: LlmConfig,
+    pub email: EmailAdapterConfig,
     pub linking: LinkingConfig,
     pub daily_notes: DailyNotesConfig,
     pub recurrence: RecurrenceConfig,
@@ -98,16 +100,80 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             data_dir: shellexpand("~/.mindvault/data"),
+            profile: OwnerProfileConfig::default(),
             embedding: EmbeddingConfig::default(),
             search: SearchConfig::default(),
             graph: GraphConfig::default(),
             ai: AiConfig::default(),
             llm: LlmConfig::default(),
+            email: EmailAdapterConfig::default(),
             linking: LinkingConfig::default(),
             daily_notes: DailyNotesConfig::default(),
             recurrence: RecurrenceConfig::default(),
             encryption: EncryptionConfig::default(),
             watcher: WatcherConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnerProfileConfig {
+    pub display_name: String,
+    pub primary_email: Option<String>,
+    pub timezone: String,
+    pub signature: Option<String>,
+}
+
+impl Default for OwnerProfileConfig {
+    fn default() -> Self {
+        Self {
+            display_name: "MindVault Owner".into(),
+            primary_email: None,
+            timezone: "UTC".into(),
+            signature: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailAdapterConfig {
+    pub enabled: bool,
+    pub namespace: String,
+    pub poll_interval_secs: u64,
+    pub max_fetch: usize,
+    pub max_attachment_bytes: usize,
+    pub mark_seen: bool,
+    pub imap_host: Option<String>,
+    pub imap_port: u16,
+    pub imap_username: Option<String>,
+    pub imap_folder: String,
+    pub imap_starttls: bool,
+    pub smtp_host: Option<String>,
+    pub smtp_port: u16,
+    pub smtp_username: Option<String>,
+    pub smtp_from: Option<String>,
+    pub smtp_starttls: bool,
+}
+
+impl Default for EmailAdapterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            namespace: "default".into(),
+            poll_interval_secs: 120,
+            max_fetch: 20,
+            max_attachment_bytes: 5 * 1024 * 1024,
+            mark_seen: false,
+            imap_host: None,
+            imap_port: 993,
+            imap_username: None,
+            imap_folder: "INBOX".into(),
+            imap_starttls: true,
+            smtp_host: None,
+            smtp_port: 587,
+            smtp_username: None,
+            smtp_from: None,
+            smtp_starttls: true,
         }
     }
 }

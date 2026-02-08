@@ -387,9 +387,9 @@
 
 				<!-- Subtasks -->
 				<div>
-					<label class="text-xs uppercase tracking-wide text-slate-500">
+					<span class="text-xs uppercase tracking-wide text-slate-500">
 						Subtasks / Checklist
-					</label>
+					</span>
 					<div class="mt-2 space-y-1.5">
 						{#each subtasks as subtask (subtask.id)}
 							<div class="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
@@ -411,6 +411,7 @@
 								</span>
 								<button
 									type="button"
+									title="Remove subtask"
 									class="rounded p-0.5 text-slate-500 hover:bg-red-500/20 hover:text-red-300"
 									on:click={() => removeSubtask(subtask.id)}
 								>

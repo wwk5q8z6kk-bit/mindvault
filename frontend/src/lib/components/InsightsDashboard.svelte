@@ -42,9 +42,10 @@
             <h3 class="text-sm font-bold text-white mb-1">Proactive Intelligence</h3>
             <p class="text-[10px] text-slate-500">Autonomous discovery of patterns and gaps.</p>
         </div>
-        <button 
+        <button
             on:click={handleRefresh}
             disabled={loading}
+            title="Refresh insights"
             class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-all disabled:opacity-50"
         >
             <svg class="w-4 h-4 {loading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">

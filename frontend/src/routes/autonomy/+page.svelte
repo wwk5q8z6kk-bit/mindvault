@@ -116,8 +116,9 @@
 				<div class="space-y-3 rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-4">
 					<div class="grid grid-cols-2 gap-3">
 						<div>
-							<label class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Type</label>
+							<label for="rule-type" class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Type</label>
 							<select
+								id="rule-type"
 								bind:value={newRule.rule_type}
 								class="w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-sm text-[rgb(var(--mv-text))]"
 							>
@@ -128,16 +129,18 @@
 							</select>
 						</div>
 						<div>
-							<label class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Scope Key</label>
+							<label for="rule-scope" class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Scope Key</label>
 							<input
+								id="rule-scope"
 								bind:value={newRule.scope_key}
 								class="w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-sm text-[rgb(var(--mv-text))]"
 								placeholder="* for all"
 							/>
 						</div>
 						<div>
-							<label class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Threshold</label>
+							<label for="rule-threshold" class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Threshold</label>
 							<input
+								id="rule-threshold"
 								type="number"
 								min="0"
 								max="1"
@@ -147,8 +150,9 @@
 							/>
 						</div>
 						<div>
-							<label class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Max/Hour</label>
+							<label for="rule-max-hour" class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Max/Hour</label>
 							<input
+								id="rule-max-hour"
 								type="number"
 								min="0"
 								bind:value={newRule.max_actions_per_hour}

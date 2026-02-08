@@ -1083,7 +1083,7 @@
 			</p>
 
 			<div class="mt-4">
-				<label class="text-[10px] uppercase tracking-wide text-slate-500">Format</label>
+				<span class="text-[10px] uppercase tracking-wide text-slate-500">Format</span>
 				<div class="mt-2 grid grid-cols-3 gap-2">
 					{#each [
 						{ value: 'markdown', label: 'Markdown', desc: '.md file' },

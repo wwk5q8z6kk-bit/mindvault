@@ -154,6 +154,7 @@
             </div>
             <button
                 on:click={() => isOpen = false}
+                title="Close"
                 class="p-1.5 text-slate-500 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
             >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -342,6 +343,7 @@
     .line-clamp-2 {
         display: -webkit-box;
         -webkit-line-clamp: 2;
+        line-clamp: 2;
         -webkit-box-orient: vertical;
         overflow: hidden;
     }

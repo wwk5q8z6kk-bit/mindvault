@@ -794,10 +794,11 @@
 					/>
 				</div>
 				<div>
-					<label class="text-[10px] uppercase tracking-wide text-slate-500">Color</label>
+					<span class="text-[10px] uppercase tracking-wide text-slate-500">Color</span>
 					<div class="mt-1 flex flex-wrap gap-1.5">
 						{#each FOLDER_COLORS as color}
 							<button
+								title="Color: {color}"
 								class="h-5 w-5 rounded-full bg-{color}-400 ring-2 ring-offset-2 ring-offset-slate-900 transition {newFolderColor === color ? 'ring-white' : 'ring-transparent hover:ring-slate-600'}"
 								on:click={() => (newFolderColor = color)}
 							></button>

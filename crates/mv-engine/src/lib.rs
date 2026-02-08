@@ -1,3 +1,4 @@
+pub mod adapters;
 pub mod ai_autotag;
 pub mod autonomy;
 pub mod backlinks;

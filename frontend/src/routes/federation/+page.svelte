@@ -113,16 +113,18 @@
 			<div class="space-y-3 rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-4">
 				<div class="grid grid-cols-2 gap-3">
 					<div>
-						<label class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Vault ID</label>
+						<label for="peer-vault-id" class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Vault ID</label>
 						<input
+							id="peer-vault-id"
 							bind:value={newPeer.vault_id}
 							class="w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-sm text-[rgb(var(--mv-text))]"
 							placeholder="peer-vault-id"
 						/>
 					</div>
 					<div>
-						<label class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Display Name</label>
+						<label for="peer-name" class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Display Name</label>
 						<input
+							id="peer-name"
 							bind:value={newPeer.display_name}
 							class="w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-sm text-[rgb(var(--mv-text))]"
 							placeholder="Alice's vault"
@@ -130,8 +132,9 @@
 					</div>
 				</div>
 				<div>
-					<label class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Endpoint URL</label>
+					<label for="peer-endpoint" class="mb-1 block text-xs text-[rgb(var(--mv-muted))]">Endpoint URL</label>
 					<input
+						id="peer-endpoint"
 						bind:value={newPeer.endpoint}
 						class="w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-sm text-[rgb(var(--mv-text))]"
 						placeholder="http://192.168.1.50:9470"

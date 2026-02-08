@@ -1043,8 +1043,9 @@
 						<h4 class="text-xs font-medium text-white">Store New Credential</h4>
 						<div class="mt-2 grid grid-cols-2 gap-2">
 							<div>
-								<label class="text-[10px] uppercase tracking-wider text-slate-500">Domain</label>
+								<label for="cred-domain" class="text-[10px] uppercase tracking-wider text-slate-500">Domain</label>
 								<select
+									id="cred-domain"
 									class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white"
 									bind:value={newCredDomainId}
 								>
@@ -1055,8 +1056,9 @@
 								</select>
 							</div>
 							<div>
-								<label class="text-[10px] uppercase tracking-wider text-slate-500">Kind</label>
+								<label for="cred-kind" class="text-[10px] uppercase tracking-wider text-slate-500">Kind</label>
 								<select
+									id="cred-kind"
 									class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white"
 									bind:value={newCredKind}
 								>
@@ -1070,17 +1072,19 @@
 							</div>
 						</div>
 						<div class="mt-2">
-							<label class="text-[10px] uppercase tracking-wider text-slate-500">Name</label>
+							<label for="cred-name" class="text-[10px] uppercase tracking-wider text-slate-500">Name</label>
 							<input
+								id="cred-name"
 								class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
 								placeholder="e.g. OPENAI_API_KEY"
 								bind:value={newCredName}
 							/>
 						</div>
 						<div class="mt-2">
-							<label class="text-[10px] uppercase tracking-wider text-slate-500">Value</label>
+							<label for="cred-value" class="text-[10px] uppercase tracking-wider text-slate-500">Value</label>
 							<div class="relative mt-1">
 								<input
+									id="cred-value"
 									class="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 pr-14 text-xs text-white outline-none focus:border-sky-500"
 									type={showNewCredValue ? 'text' : 'password'}
 									placeholder="Secret value"
@@ -1096,8 +1100,9 @@
 						</div>
 						<div class="mt-2 grid grid-cols-2 gap-2">
 							<div>
-								<label class="text-[10px] uppercase tracking-wider text-slate-500">Tags</label>
+								<label for="cred-tags" class="text-[10px] uppercase tracking-wider text-slate-500">Tags</label>
 								<input
+									id="cred-tags"
 									class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
 									placeholder="comma-separated tags"
 									bind:value={newCredTags}
@@ -1105,9 +1110,10 @@
 							</div>
 							<div>
 								<label class="text-[10px] uppercase tracking-wider text-slate-500"
-									>Expires At</label
+									 for="cred-expires">Expires At</label
 								>
 								<input
+									id="cred-expires"
 									class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
 									type="datetime-local"
 									min={now}
@@ -1211,9 +1217,10 @@
 						</div>
 						<div class="mt-3 flex flex-col gap-2">
 							<div>
-								<label class="text-[10px] uppercase tracking-wider text-slate-500">Value</label>
+								<label for="view-cred-value" class="text-[10px] uppercase tracking-wider text-slate-500">Value</label>
 								<div class="relative mt-1">
 									<input
+										id="view-cred-value"
 										class="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 pr-24 text-xs text-white"
 										type={showViewCredValue ? 'text' : 'password'}
 										value={viewCredData.value}
@@ -1277,8 +1284,9 @@
 						</div>
 						{#if editingCredValue}
 							<div class="mt-3 flex flex-col gap-2">
-								<label class="text-[10px] uppercase tracking-wider text-slate-500">New Value</label>
+								<label for="edit-cred-value" class="text-[10px] uppercase tracking-wider text-slate-500">New Value</label>
 								<input
+									id="edit-cred-value"
 									class="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
 									type="password"
 									placeholder="Enter new secret value"
@@ -1408,9 +1416,10 @@
 
 				<!-- Credential selector -->
 				<div class="mt-3">
-					<label class="text-[10px] uppercase tracking-wider text-slate-500">Select Credential</label>
+					<label for="del-cred-select" class="text-[10px] uppercase tracking-wider text-slate-500">Select Credential</label>
 					<div class="mt-1 flex gap-2">
 						<select
+							id="del-cred-select"
 							class="flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white"
 							bind:value={delegationCredId}
 							on:change={() => loadDelegationsFor(delegationCredId)}
@@ -1491,8 +1500,9 @@
 					<h4 class="text-xs font-medium text-white">Create Delegation</h4>
 					<div class="mt-2 grid grid-cols-2 gap-2">
 						<div>
-							<label class="text-[10px] uppercase tracking-wider text-slate-500">Credential</label>
+							<label for="new-del-cred" class="text-[10px] uppercase tracking-wider text-slate-500">Credential</label>
 							<select
+								id="new-del-cred"
 								class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white"
 								bind:value={newDelCredId}
 							>
@@ -1503,8 +1513,9 @@
 							</select>
 						</div>
 						<div>
-							<label class="text-[10px] uppercase tracking-wider text-slate-500">Delegatee</label>
+							<label for="new-del-delegatee" class="text-[10px] uppercase tracking-wider text-slate-500">Delegatee</label>
 							<input
+								id="new-del-delegatee"
 								class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
 								placeholder="Agent or user name"
 								bind:value={newDelDelegatee}
@@ -1525,8 +1536,9 @@
 							Delegate
 						</label>
 						<div>
-							<label class="text-[10px] uppercase tracking-wider text-slate-500">Max Depth</label>
+							<label for="new-del-depth" class="text-[10px] uppercase tracking-wider text-slate-500">Max Depth</label>
 							<input
+								id="new-del-depth"
 								class="ml-1 w-14 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-white"
 								type="number"
 								min="1"
@@ -1535,8 +1547,9 @@
 							/>
 						</div>
 						<div>
-							<label class="text-[10px] uppercase tracking-wider text-slate-500">Expires</label>
+							<label for="new-del-expires" class="text-[10px] uppercase tracking-wider text-slate-500">Expires</label>
 							<input
+								id="new-del-expires"
 								class="ml-1 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-white"
 								type="datetime-local"
 								min={now}
