@@ -232,29 +232,33 @@ async fn auth_context_from_authorization_header_with_state(
 ) -> Result<AuthContext, AuthError> {
     let config = AuthConfig::from_env();
 
+    // Always try resolving bearer tokens as access keys or consumer tokens,
+    // even when traditional auth (JWT/shared token) is not configured.
+    // This allows consumer profiles to work without requiring JWT/shared auth setup.
+    if let Ok(token) = extract_bearer_token(auth_header) {
+        if let Some((key, template)) = state
+            .engine
+            .resolve_access_key(token)
+            .await
+            .map_err(|_err| AuthError::InvalidSharedToken)?
+        {
+            return Ok(AuthContext::from_access_key(&key, &template));
+        }
+
+        // Try resolving as a consumer token
+        if let Some(consumer) = state
+            .engine
+            .resolve_consumer_token(token)
+            .await
+            .map_err(|_err| AuthError::InvalidSharedToken)?
+        {
+            return Ok(AuthContext::from_consumer(&consumer.name));
+        }
+    }
+
+    // Fall back to traditional auth or disabled (admin) mode
     if !config.is_enabled() {
         return Ok(AuthContext::system_admin());
-    }
-
-    let token = extract_bearer_token(auth_header)?;
-
-    if let Some((key, template)) = state
-        .engine
-        .resolve_access_key(token)
-        .await
-        .map_err(|_err| AuthError::InvalidSharedToken)?
-    {
-        return Ok(AuthContext::from_access_key(&key, &template));
-    }
-
-    // Try resolving as a consumer token
-    if let Some(consumer) = state
-        .engine
-        .resolve_consumer_token(token)
-        .await
-        .map_err(|_err| AuthError::InvalidSharedToken)?
-    {
-        return Ok(AuthContext::from_consumer(&consumer.name));
     }
 
     auth_context_from_authorization_header_with_config(auth_header, &config)

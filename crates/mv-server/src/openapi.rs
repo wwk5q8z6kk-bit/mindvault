@@ -1046,7 +1046,7 @@ pub struct OAuthTokenResponse {
 
 /// Create the Swagger UI router.
 pub fn swagger_ui() -> SwaggerUi {
-    SwaggerUi::new("/api/docs/{_:.*}").url("/api/openapi.json", ApiDoc::openapi())
+    SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi())
 }
 
 /// Get the OpenAPI JSON spec.

@@ -54,10 +54,16 @@ impl SqliteKeychainStore {
         conn.execute_batch(migration_sql)
             .map_err(|e| MvError::Migration(format!("keychain migration failed: {e}")))?;
 
-        // Security enhancements migration
+        // Security enhancements migration (idempotent — ignore "duplicate column" errors)
         let security_sql = include_str!("../../../migrations/009_keychain_security.sql");
-        conn.execute_batch(security_sql)
-            .map_err(|e| MvError::Migration(format!("keychain security migration failed: {e}")))?;
+        if let Err(e) = conn.execute_batch(security_sql) {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column") {
+                return Err(MvError::Migration(format!(
+                    "keychain security migration failed: {e}"
+                )));
+            }
+        }
         Ok(())
     }
 }

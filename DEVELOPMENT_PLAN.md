@@ -171,13 +171,14 @@ This section is the factual anchor for execution: what is verified in the codeba
 - Email adapter (IMAP inbound + SMTP outbound) — `crates/mv-server/src/email.rs`
 - Owner profile persistence (migration + API + UI) — `migrations/010_profile.sql`, `crates/mv-server/src/rest/profile.rs`, `frontend/src/routes/settings/profile/+page.svelte`
 - Local OAuth2 client-credentials server + Keychain-backed secrets — `crates/mv-server/src/rest/oauth.rs`, `crates/mv-engine/src/keychain.rs`, `frontend/src/routes/settings/profiles/+page.svelte`
+- Owner profile identity propagation (relay contact sync + email adapter sourcing) — `crates/mv-engine/src/engine.rs`, `crates/mv-server/src/email.rs`
 
 ### Claims that must be calibrated
 - AI features are LLM-backed only when a provider is configured and reachable; otherwise they fall back to heuristics. UI and docs must surface provider status clearly.
 - “Autonomy” is high-threshold and policy-gated; any new automation must default to deferral unless explicitly enabled.
 
 ### Active gaps (prioritized)
-- **P1** Owner profile linkage (contact linkage + relay/federation identity propagation).
+- **P1** Owner profile linkage (relay contact sync done; federation identity propagation pending).
 - **P1** Delegation auth hardening (OAuth client lifecycle, audit trails, tests, and docs).
 - **P1** Adapter hardening (email stabilization + Slack/Discord adapters on the same contract).
 - **P1** Proposal inbox UX hardening (diff clarity, undo/revoke, provenance surfacing).
@@ -221,7 +222,7 @@ This section is the operational source of truth for day-to-day execution.
 
 ### 4) Master Program Board
 - [~] `P0` Keep sovereign defaults strict (offline-first, local embeddings, explicit opt-ins)
-- [~] `P1` Owner profile as canonical identity source (API/UI implemented; contact linkage pending)
+- [~] `P1` Owner profile as canonical identity source (API/UI + relay sync implemented; federation linkage pending)
 - [~] `P1` Delegation auth (OAuth client credentials + API key lifecycle; audit/tests pending)
 - [x] `P1` Email adapter end-to-end (IMAP inbound + SMTP outbound + attachment ingestion)
 - [~] `P1` Email adapter stabilization (compile clean, test matrix, failure-path hardening)
@@ -259,7 +260,7 @@ This section is the operational source of truth for day-to-day execution.
 
 ### Phase 3 — Relay & Adapters
 - [x] Owner profile config (display name, primary email, signature)
-- [~] Owner profile API + UI (persisted profile; contact linkage pending)
+- [~] Owner profile API + UI (persisted profile; relay sync done, federation linkage pending)
 - [x] Email adapter: IMAP inbound, SMTP outbound, attachment ingest, threading
 - [~] Email adapter stabilization: compile clean, test matrix, and failure-path hardening
 - [ ] Slack adapter (webhook outbound + bot inbound)

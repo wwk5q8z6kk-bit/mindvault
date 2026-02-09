@@ -36,6 +36,8 @@ use crate::recurrence::{
 };
 
 const DAILY_NOTE_TAG: &str = "daily-note";
+const PROFILE_RELAY_CONTACT_ID_KEY: &str = "relay_contact_id";
+const PROFILE_OWNER_CONTACT_NOTES: &str = "owner";
 const DAILY_LINK_CANDIDATE_TAGS: &[&str] = &[
     "task", "tasks", "todo", "to-do", "event", "events", "meeting", "reminder",
 ];
@@ -724,7 +726,80 @@ impl MindVaultEngine {
     }
 
     pub async fn update_profile(&self, req: &UpdateProfileRequest) -> MvResult<OwnerProfile> {
-        self.store.nodes.update_profile(req).await
+        let profile = self.store.nodes.update_profile(req).await?;
+        self.sync_owner_relay_contact(profile).await
+    }
+
+    async fn sync_owner_relay_contact(&self, profile: OwnerProfile) -> MvResult<OwnerProfile> {
+        let display_name = profile.display_name.trim();
+        let display_name = if display_name.is_empty() {
+            "MindVault Owner"
+        } else {
+            display_name
+        };
+
+        let email = profile.email.as_ref().map(|value| value.trim().to_string());
+        let email = email.filter(|value| !value.is_empty());
+        let vault_address = email.map(|value| format!("mailto:{value}"));
+
+        let signature_key = profile
+            .signature_public_key
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        let contact_id = profile
+            .metadata
+            .get(PROFILE_RELAY_CONTACT_ID_KEY)
+            .and_then(|value| value.as_str())
+            .and_then(|value| Uuid::parse_str(value).ok());
+
+        if contact_id.is_none() && signature_key.is_none() {
+            return Ok(profile);
+        }
+
+        if let Some(contact_id) = contact_id {
+            if let Some(mut contact) = self.relay.get_contact(contact_id).await? {
+                contact.display_name = display_name.to_string();
+                if let Some(key) = signature_key {
+                    contact.public_key = key;
+                }
+                contact.vault_address = vault_address;
+                if contact.notes.is_none() {
+                    contact.notes = Some(PROFILE_OWNER_CONTACT_NOTES.to_string());
+                }
+
+                let _ = self.relay.update_contact(&contact).await?;
+                return Ok(profile);
+            }
+        }
+
+        let Some(signature_key) = signature_key else {
+            return Ok(profile);
+        };
+
+        let mut contact = RelayContact::new(display_name, signature_key).with_trust(TrustLevel::Full);
+        contact.vault_address = vault_address;
+        contact.notes = Some(PROFILE_OWNER_CONTACT_NOTES.to_string());
+
+        self.relay.add_contact(&contact).await?;
+
+        let mut metadata = profile.metadata.clone();
+        metadata.insert(
+            PROFILE_RELAY_CONTACT_ID_KEY.to_string(),
+            serde_json::Value::String(contact.id.to_string()),
+        );
+
+        let updated = self
+            .store
+            .nodes
+            .update_profile(&UpdateProfileRequest {
+                metadata: Some(metadata),
+                ..Default::default()
+            })
+            .await?;
+
+        Ok(updated)
     }
 
     /// Store a knowledge node.
@@ -2096,6 +2171,60 @@ impl MindVaultEngine {
         self.store.nodes.delete_insight(id).await
     }
 
+    // --- Conflict Detection ---
+
+    /// List conflict alerts.
+    pub async fn list_conflicts(
+        &self,
+        resolved: Option<bool>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<ConflictAlert>> {
+        self.store.nodes.list_conflicts(resolved, limit, offset).await
+    }
+
+    /// Get a single conflict alert.
+    pub async fn get_conflict(&self, id: Uuid) -> MvResult<Option<ConflictAlert>> {
+        self.store.nodes.get_conflict(id).await
+    }
+
+    /// Resolve (dismiss) a conflict alert.
+    pub async fn resolve_conflict(&self, id: Uuid) -> MvResult<bool> {
+        self.store.nodes.resolve_conflict(id).await
+    }
+
+    // --- Contact Identity & Trust ---
+
+    /// Add an identity to a relay contact.
+    pub async fn add_contact_identity(&self, identity: &ContactIdentity) -> MvResult<()> {
+        self.store.nodes.add_contact_identity(identity).await
+    }
+
+    /// List identities for a contact.
+    pub async fn list_contact_identities(&self, contact_id: Uuid) -> MvResult<Vec<ContactIdentity>> {
+        self.store.nodes.list_contact_identities(contact_id).await
+    }
+
+    /// Delete a contact identity.
+    pub async fn delete_contact_identity(&self, id: Uuid) -> MvResult<bool> {
+        self.store.nodes.delete_contact_identity(id).await
+    }
+
+    /// Verify a contact identity.
+    pub async fn verify_contact_identity(&self, id: Uuid) -> MvResult<bool> {
+        self.store.nodes.verify_contact_identity(id).await
+    }
+
+    /// Get trust model for a contact.
+    pub async fn get_trust_model(&self, contact_id: Uuid) -> MvResult<Option<TrustModel>> {
+        self.store.nodes.get_trust_model(contact_id).await
+    }
+
+    /// Set trust model for a contact.
+    pub async fn set_trust_model(&self, model: &TrustModel) -> MvResult<()> {
+        self.store.nodes.set_trust_model(model).await
+    }
+
     /// List chronicle entries with optional node filter.
     pub async fn list_chronicles(
         &self,
@@ -2654,6 +2783,33 @@ mod tests {
         let neighbors = engine.get_neighbors(node1.id, 1).await.unwrap();
         assert_eq!(neighbors.len(), 1);
         assert_eq!(neighbors[0], node2.id);
+    }
+
+    #[tokio::test]
+    async fn test_update_profile_syncs_owner_relay_contact() {
+        let (engine, _tmp_dir) = create_test_engine().await;
+
+        let updated = engine
+            .update_profile(&UpdateProfileRequest {
+                display_name: Some("Owner".into()),
+                email: Some("owner@example.com".into()),
+                signature_public_key: Some("pk-owner".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let contact_id = updated
+            .metadata
+            .get("relay_contact_id")
+            .and_then(|value| value.as_str())
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+            .expect("relay_contact_id set");
+
+        let contact = engine.relay.get_contact(contact_id).await.unwrap().unwrap();
+        assert_eq!(contact.display_name, "Owner");
+        assert_eq!(contact.public_key, "pk-owner");
+        assert_eq!(contact.vault_address.as_deref(), Some("mailto:owner@example.com"));
     }
 
     #[tokio::test]

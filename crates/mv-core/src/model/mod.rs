@@ -625,6 +625,10 @@ pub enum InsightType {
     General,
     TemporalPattern,
     KnowledgeGap,
+    CrossDomain,
+    UnlinkedCluster,
+    AmbientLink,
+    Conflict,
 }
 
 impl InsightType {
@@ -639,6 +643,10 @@ impl InsightType {
             Self::General => "general",
             Self::TemporalPattern => "temporal_pattern",
             Self::KnowledgeGap => "knowledge_gap",
+            Self::CrossDomain => "cross_domain",
+            Self::UnlinkedCluster => "unlinked_cluster",
+            Self::AmbientLink => "ambient_link",
+            Self::Conflict => "conflict",
         }
     }
 }
@@ -657,6 +665,10 @@ impl std::str::FromStr for InsightType {
             "general" => Ok(Self::General),
             "temporal_pattern" => Ok(Self::TemporalPattern),
             "knowledge_gap" => Ok(Self::KnowledgeGap),
+            "cross_domain" => Ok(Self::CrossDomain),
+            "unlinked_cluster" => Ok(Self::UnlinkedCluster),
+            "ambient_link" => Ok(Self::AmbientLink),
+            "conflict" => Ok(Self::Conflict),
             _ => Err(format!("unknown insight type: {s}")),
         }
     }
@@ -747,6 +759,154 @@ pub struct ChangeNotification {
     pub operation: String,
     pub timestamp: String,
     pub namespace: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge Conflict Detection
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConflictAlert {
+    pub id: Uuid,
+    pub node_a: Uuid,
+    pub node_b: Uuid,
+    pub conflict_type: ConflictType,
+    pub score: f64,
+    pub explanation: String,
+    pub resolved: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictType {
+    Contradiction,
+    Supersession,
+    Ambiguity,
+}
+
+impl ConflictType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Contradiction => "contradiction",
+            Self::Supersession => "supersession",
+            Self::Ambiguity => "ambiguity",
+        }
+    }
+}
+
+impl std::str::FromStr for ConflictType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "contradiction" => Ok(Self::Contradiction),
+            "supersession" => Ok(Self::Supersession),
+            "ambiguity" => Ok(Self::Ambiguity),
+            _ => Err(format!("unknown conflict type: {s}")),
+        }
+    }
+}
+
+impl std::fmt::Display for ConflictType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl ConflictAlert {
+    pub fn new(node_a: Uuid, node_b: Uuid, conflict_type: ConflictType, score: f64, explanation: String) -> Self {
+        Self {
+            id: Uuid::now_v7(),
+            node_a,
+            node_b,
+            conflict_type,
+            score,
+            explanation,
+            resolved: false,
+            created_at: Utc::now(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Contact Identity & Trust
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContactIdentity {
+    pub id: Uuid,
+    pub contact_id: Uuid,
+    pub identity_type: IdentityType,
+    pub identity_value: String,
+    pub verified: bool,
+    pub verified_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityType {
+    Email,
+    PublicKey,
+    OAuth,
+    Phone,
+}
+
+impl IdentityType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Email => "email",
+            Self::PublicKey => "public_key",
+            Self::OAuth => "oauth",
+            Self::Phone => "phone",
+        }
+    }
+}
+
+impl std::str::FromStr for IdentityType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "email" => Ok(Self::Email),
+            "public_key" => Ok(Self::PublicKey),
+            "oauth" => Ok(Self::OAuth),
+            "phone" => Ok(Self::Phone),
+            _ => Err(format!("unknown identity type: {s}")),
+        }
+    }
+}
+
+impl std::fmt::Display for IdentityType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustModel {
+    pub contact_id: Uuid,
+    pub can_query: bool,
+    pub can_inject_context: bool,
+    pub can_auto_reply: bool,
+    pub allowed_namespaces: Vec<String>,
+    pub max_confidence_override: Option<f64>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl Default for TrustModel {
+    fn default() -> Self {
+        Self {
+            contact_id: Uuid::nil(),
+            can_query: false,
+            can_inject_context: false,
+            can_auto_reply: false,
+            allowed_namespaces: Vec::new(),
+            max_confidence_override: None,
+            updated_at: Utc::now(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

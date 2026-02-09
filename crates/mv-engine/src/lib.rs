@@ -4,6 +4,7 @@ pub mod autonomy;
 pub mod backlinks;
 pub mod backup;
 pub mod config;
+pub mod conflict;
 pub mod daily_notes;
 pub mod engine;
 pub mod enrichment;

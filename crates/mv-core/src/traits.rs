@@ -297,6 +297,38 @@ fn _assert_relay_store_object_safe(_: &dyn RelayStore) {}
 pub trait InsightStore: AgenticStore {}
 impl<T: AgenticStore> InsightStore for T {}
 
+/// Storage for knowledge conflict alerts.
+#[async_trait]
+pub trait ConflictStore: Send + Sync {
+    async fn insert_conflict(&self, alert: &ConflictAlert) -> MvResult<()>;
+    async fn get_conflict(&self, id: Uuid) -> MvResult<Option<ConflictAlert>>;
+    async fn list_conflicts(
+        &self,
+        resolved: Option<bool>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<ConflictAlert>>;
+    async fn resolve_conflict(&self, id: Uuid) -> MvResult<bool>;
+}
+
+fn _assert_conflict_store_object_safe(_: &dyn ConflictStore) {}
+
+/// Storage for contact identities and trust models.
+#[async_trait]
+pub trait ContactIdentityStore: Send + Sync {
+    // Identities
+    async fn add_contact_identity(&self, identity: &ContactIdentity) -> MvResult<()>;
+    async fn list_contact_identities(&self, contact_id: Uuid) -> MvResult<Vec<ContactIdentity>>;
+    async fn delete_contact_identity(&self, id: Uuid) -> MvResult<bool>;
+    async fn verify_contact_identity(&self, id: Uuid) -> MvResult<bool>;
+
+    // Trust models
+    async fn get_trust_model(&self, contact_id: Uuid) -> MvResult<Option<TrustModel>>;
+    async fn set_trust_model(&self, model: &TrustModel) -> MvResult<()>;
+}
+
+fn _assert_contact_identity_store_object_safe(_: &dyn ContactIdentityStore) {}
+
 /// Storage for owner profile.
 #[async_trait]
 pub trait ProfileStore: Send + Sync {

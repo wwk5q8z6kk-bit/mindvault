@@ -48,16 +48,32 @@ struct RuntimeEmailConfig {
 }
 
 impl RuntimeEmailConfig {
-    fn from_state(state: &AppState) -> Self {
+    async fn from_state(state: &AppState) -> Self {
         let cfg = &state.engine.config;
+        let profile = state.engine.get_profile().await.ok();
+        let profile_display_name = profile
+            .as_ref()
+            .map(|p| p.display_name.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| cfg.profile.display_name.clone());
+        let profile_primary_email = profile
+            .as_ref()
+            .and_then(|p| p.email.as_ref().map(|value| value.trim().to_string()))
+            .filter(|value| !value.is_empty())
+            .or_else(|| cfg.profile.primary_email.clone());
+        let profile_signature = profile
+            .as_ref()
+            .and_then(|p| p.signature_name.as_ref().map(|value| value.trim().to_string()))
+            .filter(|value| !value.is_empty())
+            .or_else(|| cfg.profile.signature.clone());
         Self {
             namespace: cfg.email.namespace.clone(),
             max_fetch: cfg.email.max_fetch.max(1),
             max_attachment_bytes: cfg.email.max_attachment_bytes.max(1024),
             mark_seen: cfg.email.mark_seen,
-            profile_display_name: cfg.profile.display_name.clone(),
-            profile_primary_email: cfg.profile.primary_email.clone(),
-            profile_signature: cfg.profile.signature.clone(),
+            profile_display_name,
+            profile_primary_email,
+            profile_signature,
             imap_host: cfg.email.imap_host.clone(),
             imap_port: cfg.email.imap_port,
             imap_username: cfg.email.imap_username.clone(),
@@ -205,7 +221,7 @@ pub async fn send_outbound_relay_if_email_channel(
         ));
     }
 
-    let config = RuntimeEmailConfig::from_state(state);
+    let config = RuntimeEmailConfig::from_state(state).await;
     let smtp_host = config
         .smtp_host
         .clone()
@@ -340,7 +356,7 @@ async fn poll_and_ingest_emails(
     state: &Arc<AppState>,
     adapter_state: &mut EmailAdapterState,
 ) -> MvResult<()> {
-    let config = RuntimeEmailConfig::from_state(state);
+    let config = RuntimeEmailConfig::from_state(state).await;
     let imap_host = config
         .imap_host
         .clone()

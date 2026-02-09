@@ -90,6 +90,14 @@ impl SqliteNodeStore {
         conn.execute_batch(migration_013)
             .map_err(|e| MvError::Migration(format!("migration 013 failed: {e}")))?;
 
+        let migration_014 = include_str!("../../../migrations/014_conflicts.sql");
+        conn.execute_batch(migration_014)
+            .map_err(|e| MvError::Migration(format!("migration 014 failed: {e}")))?;
+
+        let migration_015 = include_str!("../../../migrations/015_contact_identity.sql");
+        conn.execute_batch(migration_015)
+            .map_err(|e| MvError::Migration(format!("migration 015 failed: {e}")))?;
+
         Ok(())
     }
 
@@ -3399,6 +3407,304 @@ fn row_to_proxy_audit(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProxyAuditEnt
         error,
         request_summary,
         response_status,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// ConflictStore
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl ConflictStore for SqliteNodeStore {
+    async fn insert_conflict(&self, alert: &ConflictAlert) -> MvResult<()> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO conflicts (id, node_a, node_b, conflict_type, score, explanation, resolved, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                alert.id.to_string(),
+                alert.node_a.to_string(),
+                alert.node_b.to_string(),
+                alert.conflict_type.as_str(),
+                alert.score,
+                alert.explanation,
+                alert.resolved as i32,
+                alert.created_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| MvError::Storage(format!("insert conflict: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_conflict(&self, id: Uuid) -> MvResult<Option<ConflictAlert>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let result = conn
+            .query_row(
+                "SELECT id, node_a, node_b, conflict_type, score, explanation, resolved, created_at
+                 FROM conflicts WHERE id = ?1",
+                params![id.to_string()],
+                row_to_conflict,
+            )
+            .optional()
+            .map_err(|e| MvError::Storage(format!("get conflict: {e}")))?;
+        Ok(result)
+    }
+
+    async fn list_conflicts(
+        &self,
+        resolved: Option<bool>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<ConflictAlert>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let limit_i = limit as i64;
+        let offset_i = offset as i64;
+        let results = match resolved {
+            Some(r) => {
+                let resolved_i = r as i32;
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, node_a, node_b, conflict_type, score, explanation, resolved, created_at
+                         FROM conflicts WHERE resolved = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
+                    )
+                    .map_err(|e| MvError::Storage(format!("list conflicts prepare: {e}")))?;
+                let rows = stmt
+                    .query_map(params![resolved_i, limit_i, offset_i], row_to_conflict)
+                    .map_err(|e| MvError::Storage(format!("list conflicts query: {e}")))?;
+                let mut v = Vec::new();
+                for row in rows {
+                    v.push(row.map_err(|e| MvError::Storage(format!("list conflicts row: {e}")))?);
+                }
+                v
+            }
+            None => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, node_a, node_b, conflict_type, score, explanation, resolved, created_at
+                         FROM conflicts ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
+                    )
+                    .map_err(|e| MvError::Storage(format!("list conflicts prepare: {e}")))?;
+                let rows = stmt
+                    .query_map(params![limit_i, offset_i], row_to_conflict)
+                    .map_err(|e| MvError::Storage(format!("list conflicts query: {e}")))?;
+                let mut v = Vec::new();
+                for row in rows {
+                    v.push(row.map_err(|e| MvError::Storage(format!("list conflicts row: {e}")))?);
+                }
+                v
+            }
+        };
+        Ok(results)
+    }
+
+    async fn resolve_conflict(&self, id: Uuid) -> MvResult<bool> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let updated = conn
+            .execute(
+                "UPDATE conflicts SET resolved = 1 WHERE id = ?1 AND resolved = 0",
+                params![id.to_string()],
+            )
+            .map_err(|e| MvError::Storage(format!("resolve conflict: {e}")))?;
+        Ok(updated > 0)
+    }
+}
+
+fn row_to_conflict(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConflictAlert> {
+    let id_str: String = row.get(0)?;
+    let node_a_str: String = row.get(1)?;
+    let node_b_str: String = row.get(2)?;
+    let conflict_type_str: String = row.get(3)?;
+    let score: f64 = row.get(4)?;
+    let explanation: String = row.get(5)?;
+    let resolved_int: i32 = row.get(6)?;
+    let created_at_str: String = row.get(7)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let node_a = parse_uuid_str(1, &node_a_str)?;
+    let node_b = parse_uuid_str(2, &node_b_str)?;
+    let conflict_type: ConflictType = conflict_type_str.parse().map_err(|e: String| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        )
+    })?;
+
+    Ok(ConflictAlert {
+        id,
+        node_a,
+        node_b,
+        conflict_type,
+        score,
+        explanation,
+        resolved: resolved_int != 0,
+        created_at: parse_dt_strict(7, &created_at_str)?,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// ContactIdentityStore
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl ContactIdentityStore for SqliteNodeStore {
+    async fn add_contact_identity(&self, identity: &ContactIdentity) -> MvResult<()> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+            "INSERT INTO contact_identities (id, contact_id, identity_type, identity_value, verified, verified_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                identity.id.to_string(),
+                identity.contact_id.to_string(),
+                identity.identity_type.as_str(),
+                identity.identity_value,
+                identity.verified as i32,
+                identity.verified_at.map(|dt| dt.to_rfc3339()),
+                identity.created_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| MvError::Storage(format!("insert contact identity: {e}")))?;
+        Ok(())
+    }
+
+    async fn list_contact_identities(&self, contact_id: Uuid) -> MvResult<Vec<ContactIdentity>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, contact_id, identity_type, identity_value, verified, verified_at, created_at
+                 FROM contact_identities WHERE contact_id = ?1 ORDER BY created_at DESC",
+            )
+            .map_err(|e| MvError::Storage(format!("list identities prepare: {e}")))?;
+        let rows = stmt
+            .query_map(params![contact_id.to_string()], row_to_contact_identity)
+            .map_err(|e| MvError::Storage(format!("list identities query: {e}")))?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| MvError::Storage(format!("list identities row: {e}")))?);
+        }
+        Ok(results)
+    }
+
+    async fn delete_contact_identity(&self, id: Uuid) -> MvResult<bool> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM contact_identities WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .map_err(|e| MvError::Storage(format!("delete identity: {e}")))?;
+        Ok(deleted > 0)
+    }
+
+    async fn verify_contact_identity(&self, id: Uuid) -> MvResult<bool> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let updated = conn
+            .execute(
+                "UPDATE contact_identities SET verified = 1, verified_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+                 WHERE id = ?1 AND verified = 0",
+                params![id.to_string()],
+            )
+            .map_err(|e| MvError::Storage(format!("verify identity: {e}")))?;
+        Ok(updated > 0)
+    }
+
+    async fn get_trust_model(&self, contact_id: Uuid) -> MvResult<Option<TrustModel>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let result = conn
+            .query_row(
+                "SELECT contact_id, can_query, can_inject_context, can_auto_reply, allowed_namespaces, max_confidence_override, updated_at
+                 FROM trust_models WHERE contact_id = ?1",
+                params![contact_id.to_string()],
+                row_to_trust_model,
+            )
+            .optional()
+            .map_err(|e| MvError::Storage(format!("get trust model: {e}")))?;
+        Ok(result)
+    }
+
+    async fn set_trust_model(&self, model: &TrustModel) -> MvResult<()> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let ns_json = serde_json::to_string(&model.allowed_namespaces)
+            .map_err(|e| MvError::Storage(format!("serialize namespaces: {e}")))?;
+        conn.execute(
+            "INSERT INTO trust_models (contact_id, can_query, can_inject_context, can_auto_reply, allowed_namespaces, max_confidence_override, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+             ON CONFLICT(contact_id) DO UPDATE SET
+               can_query = excluded.can_query,
+               can_inject_context = excluded.can_inject_context,
+               can_auto_reply = excluded.can_auto_reply,
+               allowed_namespaces = excluded.allowed_namespaces,
+               max_confidence_override = excluded.max_confidence_override,
+               updated_at = excluded.updated_at",
+            params![
+                model.contact_id.to_string(),
+                model.can_query as i32,
+                model.can_inject_context as i32,
+                model.can_auto_reply as i32,
+                ns_json,
+                model.max_confidence_override,
+            ],
+        )
+        .map_err(|e| MvError::Storage(format!("set trust model: {e}")))?;
+        Ok(())
+    }
+}
+
+fn row_to_contact_identity(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContactIdentity> {
+    let id_str: String = row.get(0)?;
+    let contact_id_str: String = row.get(1)?;
+    let identity_type_str: String = row.get(2)?;
+    let identity_value: String = row.get(3)?;
+    let verified_int: i32 = row.get(4)?;
+    let verified_at_str: Option<String> = row.get(5)?;
+    let created_at_str: String = row.get(6)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let contact_id = parse_uuid_str(1, &contact_id_str)?;
+    let identity_type: IdentityType = identity_type_str.parse().map_err(|e: String| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        )
+    })?;
+
+    let verified_at = verified_at_str
+        .as_deref()
+        .map(|s| parse_dt_strict(5, s))
+        .transpose()?;
+
+    Ok(ContactIdentity {
+        id,
+        contact_id,
+        identity_type,
+        identity_value,
+        verified: verified_int != 0,
+        verified_at,
+        created_at: parse_dt_strict(6, &created_at_str)?,
+    })
+}
+
+fn row_to_trust_model(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrustModel> {
+    let contact_id_str: String = row.get(0)?;
+    let can_query: i32 = row.get(1)?;
+    let can_inject_context: i32 = row.get(2)?;
+    let can_auto_reply: i32 = row.get(3)?;
+    let ns_json: String = row.get(4)?;
+    let max_confidence_override: Option<f64> = row.get(5)?;
+    let updated_at_str: String = row.get(6)?;
+
+    let contact_id = parse_uuid_str(0, &contact_id_str)?;
+    let allowed_namespaces: Vec<String> = serde_json::from_str(&ns_json).unwrap_or_default();
+
+    Ok(TrustModel {
+        contact_id,
+        can_query: can_query != 0,
+        can_inject_context: can_inject_context != 0,
+        can_auto_reply: can_auto_reply != 0,
+        allowed_namespaces,
+        max_confidence_override,
+        updated_at: parse_dt_strict(6, &updated_at_str)?,
     })
 }
 

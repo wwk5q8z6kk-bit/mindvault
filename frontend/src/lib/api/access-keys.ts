@@ -34,5 +34,5 @@ export async function createAccessKey(payload: CreateAccessKeyPayload): Promise<
 }
 
 export async function revokeAccessKey(id: string): Promise<void> {
-	await fetchJson<{ deleted: boolean }>(`/api/v1/access-keys/${id}`, { method: 'DELETE' });
+	await fetchJson<void>(`/api/v1/access-keys/${id}`, { method: 'DELETE' });
 }

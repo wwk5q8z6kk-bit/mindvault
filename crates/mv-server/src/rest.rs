@@ -98,6 +98,10 @@ mod policies;
 mod proxy;
 #[path = "rest/sync.rs"]
 mod sync;
+#[path = "rest/conflicts.rs"]
+mod conflicts;
+#[path = "rest/contact_identity.rs"]
+mod contact_identity;
 
 use crate::audit::{audit_middleware, list_audit_entries, AuditConfig, AuditEntry, AuditLogger};
 use crate::auth::{
@@ -483,6 +487,30 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(relay::update_message_status),
         )
         .route("/api/v1/relay/unread", get(relay::unread_count))
+        // --- Contact Identity & Trust ---
+        .route(
+            "/api/v1/relay/contacts/{id}/identities",
+            get(contact_identity::list_identities).post(contact_identity::add_identity),
+        )
+        .route(
+            "/api/v1/relay/contacts/identities/{id}",
+            delete(contact_identity::delete_identity),
+        )
+        .route(
+            "/api/v1/relay/contacts/identities/{id}/verify",
+            post(contact_identity::verify_identity),
+        )
+        .route(
+            "/api/v1/relay/contacts/{id}/trust",
+            get(contact_identity::get_trust_model).put(contact_identity::set_trust_model),
+        )
+        // --- Conflict Detection ---
+        .route("/api/v1/conflicts", get(conflicts::list_conflicts))
+        .route("/api/v1/conflicts/{id}", get(conflicts::get_conflict))
+        .route(
+            "/api/v1/conflicts/{id}/resolve",
+            post(conflicts::resolve_conflict),
+        )
         // --- Adapters ---
         .route(
             "/api/v1/adapters",
@@ -539,7 +567,6 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/diagnostics/health", get(diagnostics_health))
         .route("/api/v1/audit", get(list_audit_logs))
         .route("/metrics", get(metrics_handler))
-        .route("/api/openapi.json", get(openapi_spec_handler))
         .merge(swagger_ui())
         .layer(middleware::from_fn(audit_middleware))
         .layer(middleware::from_fn(metrics_middleware))

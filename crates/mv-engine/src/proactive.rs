@@ -696,6 +696,186 @@ impl ProactiveEngine {
         Ok(insights)
     }
 
+    // -----------------------------------------------------------------------
+    // Cross-Domain Connection Discovery (Phase 1A)
+    // -----------------------------------------------------------------------
+
+    /// Find nodes in different namespaces that are semantically similar but unlinked.
+    pub async fn detect_cross_domain_connections(
+        &self,
+        namespaces: &[String],
+        similarity_threshold: f64,
+        limit: usize,
+    ) -> MvResult<Vec<ProactiveInsight>> {
+        let engine = self.engine();
+        let mut insights = Vec::new();
+
+        if namespaces.len() < 2 {
+            return Ok(insights);
+        }
+
+        // For each namespace, get recent nodes
+        let mut ns_nodes: HashMap<String, Vec<KnowledgeNode>> = HashMap::new();
+        for ns in namespaces {
+            let filters = QueryFilters {
+                namespace: Some(ns.clone()),
+                ..Default::default()
+            };
+            let nodes = engine.list_nodes(&filters, 20, 0).await?;
+            ns_nodes.insert(ns.clone(), nodes);
+        }
+
+        // Compare nodes across namespaces using semantic search
+        for (ns_a, nodes_a) in &ns_nodes {
+            for node_a in nodes_a.iter().take(5) {
+                let query_text = node_a.title.as_deref().unwrap_or(&node_a.content);
+                // Search in other namespaces
+                for ns_b in namespaces {
+                    if ns_b == ns_a {
+                        continue;
+                    }
+                    let query = MemoryQuery::new(query_text.to_string())
+                        .with_namespace(ns_b.to_string())
+                        .with_limit(3)
+                        .with_min_score(similarity_threshold);
+
+                    let results = engine.recall(&query).await?;
+
+                    for result in &results {
+                        if result.node.id == node_a.id {
+                            continue;
+                        }
+                        // Check they're not already linked
+                        let neighbors = engine.get_neighbors(node_a.id, 1).await?;
+                        if neighbors.contains(&result.node.id) {
+                            continue;
+                        }
+
+                        let insight = ProactiveInsight::new(
+                            format!(
+                                "Cross-domain connection: {} ↔ {}",
+                                ns_a, ns_b,
+                            ),
+                            format!(
+                                "'{}' ({}) is semantically similar to '{}' ({}) with score {:.2}",
+                                node_a.title.as_deref().unwrap_or("untitled"),
+                                ns_a,
+                                result.node.title.as_deref().unwrap_or("untitled"),
+                                ns_b,
+                                result.score,
+                            ),
+                            InsightType::CrossDomain,
+                        )
+                        .with_related_nodes(vec![node_a.id, result.node.id])
+                        .with_importance(0.7);
+
+                        insights.push(insight);
+
+                        if insights.len() >= limit {
+                            return Ok(insights);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(insights)
+    }
+
+    // -----------------------------------------------------------------------
+    // Ambient Synthesis (Phase 1C)
+    // -----------------------------------------------------------------------
+
+    /// Discover and suggest relationships for recently-updated nodes.
+    /// Intended to run periodically as a background task.
+    pub async fn ambient_synthesis(
+        &self,
+        namespace: Option<&str>,
+        batch_size: usize,
+        similarity_threshold: f64,
+    ) -> MvResult<Vec<ProactiveInsight>> {
+        let engine = self.engine();
+        let filters = QueryFilters {
+            namespace: namespace.map(|s| s.to_string()),
+            ..Default::default()
+        };
+        let recent = engine.list_nodes(&filters, batch_size, 0).await?;
+
+        let mut insights = Vec::new();
+        for node in &recent {
+            let query_text = node.title.as_deref().unwrap_or(&node.content);
+            let mut query = MemoryQuery::new(query_text.to_string())
+                .with_limit(4)
+                .with_min_score(similarity_threshold);
+            if let Some(ns) = namespace {
+                query = query.with_namespace(ns.to_string());
+            }
+
+            let similar = engine.recall(&query).await?;
+
+            // Check for nodes that aren't already linked and share at least one tag
+            let neighbors = engine.get_neighbors(node.id, 1).await?;
+            let neighbor_set: HashSet<Uuid> = neighbors.into_iter().collect();
+            let node_tags: HashSet<&String> = node.tags.iter().collect();
+
+            for result in &similar {
+                if result.node.id == node.id || neighbor_set.contains(&result.node.id) {
+                    continue;
+                }
+
+                // Must share at least one tag
+                let shared_tags: Vec<_> = result
+                    .node
+                    .tags
+                    .iter()
+                    .filter(|t| node_tags.contains(t))
+                    .collect();
+
+                if shared_tags.is_empty() {
+                    continue;
+                }
+
+                let insight = ProactiveInsight::new(
+                    format!(
+                        "Link suggestion: {} → {}",
+                        node.title.as_deref().unwrap_or("untitled"),
+                        result.node.title.as_deref().unwrap_or("untitled"),
+                    ),
+                    format!(
+                        "These nodes share tags ({}) and are semantically similar ({:.2}). Consider linking them.",
+                        shared_tags.iter().map(|t| t.as_str()).collect::<Vec<_>>().join(", "),
+                        result.score,
+                    ),
+                    InsightType::AmbientLink,
+                )
+                .with_related_nodes(vec![node.id, result.node.id])
+                .with_importance(0.55);
+
+                insights.push(insight);
+            }
+        }
+
+        // Deduplicate and persist
+        let existing = engine.store.nodes.list_insights(200, 0).await?;
+        let mut seen_signatures: HashSet<String> = existing
+            .iter()
+            .filter(|i| i.dismissed_at.is_none())
+            .map(Self::insight_signature)
+            .collect();
+
+        let mut persisted = Vec::new();
+        for insight in insights {
+            let sig = Self::insight_signature(&insight);
+            if !seen_signatures.insert(sig) {
+                continue;
+            }
+            engine.store.nodes.log_insight(&insight).await?;
+            persisted.push(insight);
+        }
+
+        Ok(persisted)
+    }
+
     /// Helper: extract top tags from a slice of nodes.
     fn extract_top_tags(&self, nodes: &[&KnowledgeNode], limit: usize) -> Vec<String> {
         let mut tag_counts: HashMap<String, usize> = HashMap::new();

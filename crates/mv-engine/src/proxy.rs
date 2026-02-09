@@ -2,9 +2,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
 
-use chrono::Utc;
 use mv_core::*;
-use uuid::Uuid;
 
 use crate::engine::MindVaultEngine;
 use crate::sanitize::OutputSanitizer;

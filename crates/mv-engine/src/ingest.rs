@@ -7,6 +7,7 @@ use mv_storage::unified::UnifiedStore;
 
 use crate::ai_autotag::KnowledgeVaultIndexNoteEmbeddingAutoTagger;
 use crate::config::EngineConfig;
+use crate::conflict::ConflictDetector;
 
 /// Ingest pipeline: validates, stores, indexes, and embeds a knowledge node.
 pub struct IngestPipeline {
@@ -57,6 +58,27 @@ impl IngestPipeline {
                     tracing::warn!("embedding failed for node {}: {e}", node.id);
                     // Continue without embedding — FTS still works
                 }
+            }
+        }
+
+        // 4. Conflict detection (best-effort, non-blocking)
+        match ConflictDetector::detect_conflicts(&self.store, &node, 0.5).await {
+            Ok(alerts) => {
+                for alert in &alerts {
+                    if let Err(e) = self.store.nodes.insert_conflict(alert).await {
+                        tracing::warn!("failed to store conflict alert: {e}");
+                    }
+                }
+                if !alerts.is_empty() {
+                    tracing::info!(
+                        count = alerts.len(),
+                        node_id = %node.id,
+                        "conflict alerts generated"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("conflict detection failed for node {}: {e}", node.id);
             }
         }
 

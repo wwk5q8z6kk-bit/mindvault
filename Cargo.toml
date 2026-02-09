@@ -85,6 +85,9 @@ reqwest = { version = "0.12", features = ["json", "multipart"] }
 # System / low-level
 libc = "0.2"
 
+# URL parsing
+url = "2"
+
 # Misc
 async-trait = "0.1"
 futures = "0.3"
