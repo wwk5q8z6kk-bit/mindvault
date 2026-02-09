@@ -155,6 +155,19 @@ enum Commands {
         action: SecretAction,
     },
 
+    /// Consumer profile management (AI consumer identities)
+    Profile {
+        #[command(subcommand)]
+        action: ProfileAction,
+    },
+
+    /// Git credential helper (store/retrieve git credentials via MindVault)
+    #[command(name = "git-credential")]
+    GitCredential {
+        #[command(subcommand)]
+        action: GitCredentialAction,
+    },
+
     /// Sovereign keychain (sealed vault, credentials, delegations)
     Keychain {
         #[command(subcommand)]
@@ -359,6 +372,72 @@ enum SecretAction {
     },
     /// Show credential backend status
     Status,
+    /// Set an access policy for a consumer on a secret
+    #[command(name = "policy-set")]
+    PolicySet {
+        /// Secret key name
+        #[arg(long)]
+        key: String,
+        /// Consumer name
+        #[arg(long)]
+        consumer: String,
+        /// Allow access
+        #[arg(long)]
+        allow: bool,
+        /// Max TTL in seconds (zero-standing privilege)
+        #[arg(long)]
+        ttl: Option<i64>,
+    },
+    /// List access policies
+    #[command(name = "policy-list")]
+    PolicyList {
+        /// Filter by secret key
+        #[arg(long)]
+        secret: Option<String>,
+        /// Filter by consumer name
+        #[arg(long)]
+        consumer: Option<String>,
+    },
+    /// Delete an access policy
+    #[command(name = "policy-delete")]
+    PolicyDelete {
+        /// Policy ID
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProfileAction {
+    /// Create a consumer profile
+    Create {
+        /// Consumer name
+        name: String,
+        /// Description
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// List consumer profiles
+    List,
+    /// Revoke a consumer profile
+    Revoke {
+        /// Consumer ID
+        id: String,
+    },
+    /// Check which consumer a token belongs to
+    Whoami {
+        /// Consumer bearer token
+        token: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum GitCredentialAction {
+    /// Get credentials for a git host (reads protocol/host from stdin)
+    Get,
+    /// Install MindVault as a global git credential helper
+    Install,
+    /// Remove MindVault from git credential helpers
+    Uninstall,
 }
 
 #[derive(Subcommand)]
@@ -656,6 +735,35 @@ async fn main() -> Result<()> {
             SecretAction::List => commands::secret::list().await,
             SecretAction::Delete { key } => commands::secret::delete(&key).await,
             SecretAction::Status => commands::secret::status().await,
+            SecretAction::PolicySet {
+                key,
+                consumer,
+                allow,
+                ttl,
+            } => {
+                commands::secret::policy_set(&key, &consumer, allow, ttl).await
+            }
+            SecretAction::PolicyList { secret, consumer } => {
+                commands::secret::policy_list(secret.as_deref(), consumer.as_deref()).await
+            }
+            SecretAction::PolicyDelete { id } => {
+                commands::secret::policy_delete(&id).await
+            }
+        },
+
+        Commands::Profile { action } => match action {
+            ProfileAction::Create { name, description } => {
+                commands::profile::create(&name, description.as_deref()).await
+            }
+            ProfileAction::List => commands::profile::list().await,
+            ProfileAction::Revoke { id } => commands::profile::revoke(&id).await,
+            ProfileAction::Whoami { token } => commands::profile::whoami(&token).await,
+        },
+
+        Commands::GitCredential { action } => match action {
+            GitCredentialAction::Get => commands::git_credential::get().await,
+            GitCredentialAction::Install => commands::git_credential::install().await,
+            GitCredentialAction::Uninstall => commands::git_credential::uninstall().await,
         },
 
         Commands::Keychain { action } => match action {

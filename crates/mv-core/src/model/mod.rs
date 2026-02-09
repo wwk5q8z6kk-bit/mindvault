@@ -1,7 +1,13 @@
+pub mod consumer;
+pub use consumer::*;
 pub mod exchange;
 pub use exchange::*;
 pub mod keychain;
 pub use keychain::*;
+pub mod policy;
+pub use policy::*;
+pub mod proxy;
+pub use proxy::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

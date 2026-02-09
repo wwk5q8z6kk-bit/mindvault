@@ -78,6 +78,18 @@ impl SqliteNodeStore {
         conn.execute_batch(migration_008)
             .map_err(|e| MvError::Migration(format!("migration 008 failed: {e}")))?;
 
+        let migration_011 = include_str!("../../../migrations/011_consumer_profiles.sql");
+        conn.execute_batch(migration_011)
+            .map_err(|e| MvError::Migration(format!("migration 011 failed: {e}")))?;
+
+        let migration_012 = include_str!("../../../migrations/012_access_policies.sql");
+        conn.execute_batch(migration_012)
+            .map_err(|e| MvError::Migration(format!("migration 012 failed: {e}")))?;
+
+        let migration_013 = include_str!("../../../migrations/013_proxy_audit.sql");
+        conn.execute_batch(migration_013)
+            .map_err(|e| MvError::Migration(format!("migration 013 failed: {e}")))?;
+
         Ok(())
     }
 
@@ -2099,6 +2111,135 @@ impl FeedbackStore for SqliteNodeStore {
 }
 
 // ---------------------------------------------------------------------------
+// ProfileStore – Owner Profile
+// ---------------------------------------------------------------------------
+
+use mv_core::{OwnerProfile, ProfileStore, UpdateProfileRequest};
+
+#[async_trait]
+impl ProfileStore for SqliteNodeStore {
+    async fn get_profile(&self) -> MvResult<OwnerProfile> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT display_name, avatar_url, bio, email, preferred_namespace,
+                        default_node_kind, preferred_llm_provider, timezone,
+                        signature_name, signature_public_key, metadata,
+                        created_at, updated_at
+                 FROM owner_profile WHERE id = 'owner'",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let profile = stmt
+            .query_row([], |row| {
+                let metadata_str: String = row.get(10)?;
+                let metadata: std::collections::HashMap<String, serde_json::Value> =
+                    serde_json::from_str(&metadata_str).unwrap_or_default();
+                let created_str: String = row.get(11)?;
+                let updated_str: String = row.get(12)?;
+                Ok(OwnerProfile {
+                    display_name: row.get(0)?,
+                    avatar_url: row.get(1)?,
+                    bio: row.get(2)?,
+                    email: row.get(3)?,
+                    preferred_namespace: row.get(4)?,
+                    default_node_kind: row.get(5)?,
+                    preferred_llm_provider: row.get(6)?,
+                    timezone: row.get(7)?,
+                    signature_name: row.get(8)?,
+                    signature_public_key: row.get(9)?,
+                    metadata,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
+                        .map(|d| d.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                    updated_at: chrono::DateTime::parse_from_rfc3339(&updated_str)
+                        .map(|d| d.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                })
+            })
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        Ok(profile)
+    }
+
+    async fn update_profile(&self, req: &UpdateProfileRequest) -> MvResult<OwnerProfile> {
+        // Scope synchronous DB work so MutexGuard drops before .await.
+        // All values are String so the Vec is Send-safe.
+        {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+
+            let mut sets: Vec<&str> = Vec::new();
+            let mut values: Vec<String> = Vec::new();
+
+            if let Some(ref v) = req.display_name {
+                sets.push("display_name = ?");
+                values.push(v.clone());
+            }
+            if let Some(ref v) = req.avatar_url {
+                sets.push("avatar_url = ?");
+                values.push(v.clone());
+            }
+            if let Some(ref v) = req.bio {
+                sets.push("bio = ?");
+                values.push(v.clone());
+            }
+            if let Some(ref v) = req.email {
+                sets.push("email = ?");
+                values.push(v.clone());
+            }
+            if let Some(ref v) = req.preferred_namespace {
+                sets.push("preferred_namespace = ?");
+                values.push(v.clone());
+            }
+            if let Some(ref v) = req.default_node_kind {
+                sets.push("default_node_kind = ?");
+                values.push(v.clone());
+            }
+            if let Some(ref v) = req.preferred_llm_provider {
+                sets.push("preferred_llm_provider = ?");
+                values.push(v.clone());
+            }
+            if let Some(ref v) = req.timezone {
+                sets.push("timezone = ?");
+                values.push(v.clone());
+            }
+            if let Some(ref v) = req.signature_name {
+                sets.push("signature_name = ?");
+                values.push(v.clone());
+            }
+            if let Some(ref v) = req.signature_public_key {
+                sets.push("signature_public_key = ?");
+                values.push(v.clone());
+            }
+            if let Some(ref v) = req.metadata {
+                sets.push("metadata = ?");
+                values.push(serde_json::to_string(v).unwrap_or_default());
+            }
+
+            if !sets.is_empty() {
+                sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')");
+                let sql = format!(
+                    "UPDATE owner_profile SET {} WHERE id = 'owner'",
+                    sets.join(", ")
+                );
+                let params: Vec<&dyn rusqlite::types::ToSql> =
+                    values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                conn.execute(&sql, params.as_slice())
+                    .map_err(|e| MvError::Storage(e.to_string()))?;
+            }
+        } // conn + values dropped here
+
+        self.get_profile().await
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AutonomyStore – Autonomy & Precision Controls (Phase 3.1)
 // ---------------------------------------------------------------------------
 
@@ -2853,6 +2994,412 @@ impl RelayStore for SqliteNodeStore {
             .map_err(|e| MvError::Storage(e.to_string()))?;
         Ok(count)
     }
+}
+
+// ---------------------------------------------------------------------------
+// ConsumerStore – Consumer Profiles for AI identity
+// ---------------------------------------------------------------------------
+
+use mv_core::{ConsumerProfile, ConsumerStore};
+
+#[async_trait]
+impl ConsumerStore for SqliteNodeStore {
+    async fn create_consumer(&self, profile: &ConsumerProfile) -> MvResult<()> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let metadata_json = serde_json::to_string(&profile.metadata)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+            "INSERT INTO consumer_profiles (id, name, description, token_hash, created_at, last_used_at, revoked_at, metadata_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                profile.id.to_string(),
+                profile.name,
+                profile.description,
+                profile.token_hash,
+                profile.created_at.to_rfc3339(),
+                profile.last_used_at.map(|dt| dt.to_rfc3339()),
+                profile.revoked_at.map(|dt| dt.to_rfc3339()),
+                metadata_json,
+            ],
+        )
+        .map_err(|e| MvError::Storage(format!("insert consumer_profile failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_consumer(&self, id: Uuid) -> MvResult<Option<ConsumerProfile>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, description, token_hash, created_at, last_used_at, revoked_at, metadata_json
+                 FROM consumer_profiles WHERE id = ?1",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let result = stmt
+            .query_row(params![id.to_string()], row_to_consumer)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(result)
+    }
+
+    async fn get_consumer_by_name(&self, name: &str) -> MvResult<Option<ConsumerProfile>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, description, token_hash, created_at, last_used_at, revoked_at, metadata_json
+                 FROM consumer_profiles WHERE name = ?1",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let result = stmt
+            .query_row(params![name], row_to_consumer)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(result)
+    }
+
+    async fn get_consumer_by_token_hash(&self, token_hash: &str) -> MvResult<Option<ConsumerProfile>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, description, token_hash, created_at, last_used_at, revoked_at, metadata_json
+                 FROM consumer_profiles WHERE token_hash = ?1 AND revoked_at IS NULL",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let result = stmt
+            .query_row(params![token_hash], row_to_consumer)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(result)
+    }
+
+    async fn list_consumers(&self) -> MvResult<Vec<ConsumerProfile>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, description, token_hash, created_at, last_used_at, revoked_at, metadata_json
+                 FROM consumer_profiles ORDER BY created_at DESC",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map([], row_to_consumer)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
+    async fn revoke_consumer(&self, id: Uuid) -> MvResult<bool> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+        let affected = conn
+            .execute(
+                "UPDATE consumer_profiles SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+                params![id.to_string(), now],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn touch_consumer(&self, id: Uuid) -> MvResult<()> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE consumer_profiles SET last_used_at = ?2 WHERE id = ?1",
+            params![id.to_string(), now],
+        )
+        .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(())
+    }
+}
+
+fn row_to_consumer(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConsumerProfile> {
+    let id_str: String = row.get(0)?;
+    let name: String = row.get(1)?;
+    let description: Option<String> = row.get(2)?;
+    let token_hash: String = row.get(3)?;
+    let created_at_str: String = row.get(4)?;
+    let last_used_at_str: Option<String> = row.get(5)?;
+    let revoked_at_str: Option<String> = row.get(6)?;
+    let metadata_json: Option<String> = row.get(7)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let metadata = metadata_json
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    Ok(ConsumerProfile {
+        id,
+        name,
+        description,
+        token_hash,
+        created_at: parse_dt_strict(4, &created_at_str)?,
+        last_used_at: parse_optional_dt_strict(5, last_used_at_str)?,
+        revoked_at: parse_optional_dt_strict(6, revoked_at_str)?,
+        metadata,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// PolicyStore – Access Policies (ABAC with default-deny)
+// ---------------------------------------------------------------------------
+
+use mv_core::{AccessPolicy, PolicyStore};
+
+#[async_trait]
+impl PolicyStore for SqliteNodeStore {
+    async fn set_policy(&self, policy: &AccessPolicy) -> MvResult<()> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let scopes_json = serde_json::to_string(&policy.scopes)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO access_policies (id, secret_key, consumer, allowed, scopes_json, max_ttl_seconds, expires_at, require_approval, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                policy.id.to_string(),
+                policy.secret_key,
+                policy.consumer,
+                policy.allowed as i32,
+                scopes_json,
+                policy.max_ttl_seconds,
+                policy.expires_at.map(|dt| dt.to_rfc3339()),
+                policy.require_approval as i32,
+                policy.created_at.to_rfc3339(),
+                policy.updated_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| MvError::Storage(format!("upsert access_policy failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_policy(&self, id: Uuid) -> MvResult<Option<AccessPolicy>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, secret_key, consumer, allowed, scopes_json, max_ttl_seconds, expires_at, require_approval, created_at, updated_at
+                 FROM access_policies WHERE id = ?1",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let result = stmt
+            .query_row(params![id.to_string()], row_to_policy)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(result)
+    }
+
+    async fn get_policy_for(&self, secret_key: &str, consumer: &str) -> MvResult<Option<AccessPolicy>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, secret_key, consumer, allowed, scopes_json, max_ttl_seconds, expires_at, require_approval, created_at, updated_at
+                 FROM access_policies WHERE secret_key = ?1 AND consumer = ?2",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let result = stmt
+            .query_row(params![secret_key, consumer], row_to_policy)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(result)
+    }
+
+    async fn list_policies(
+        &self,
+        secret_key: Option<&str>,
+        consumer: Option<&str>,
+    ) -> MvResult<Vec<AccessPolicy>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut sql = "SELECT id, secret_key, consumer, allowed, scopes_json, max_ttl_seconds, expires_at, require_approval, created_at, updated_at FROM access_policies".to_string();
+        let mut conditions: Vec<String> = Vec::new();
+        let mut params_box: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(sk) = secret_key {
+            conditions.push(format!("secret_key = ?{}", params_box.len() + 1));
+            params_box.push(Box::new(sk.to_string()));
+        }
+        if let Some(c) = consumer {
+            conditions.push(format!("consumer = ?{}", params_box.len() + 1));
+            params_box.push(Box::new(c.to_string()));
+        }
+
+        if !conditions.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conditions.join(" AND "));
+        }
+        sql.push_str(" ORDER BY created_at DESC");
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_box.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query_map(params_refs.as_slice(), row_to_policy)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
+    async fn delete_policy(&self, id: Uuid) -> MvResult<bool> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let affected = conn
+            .execute("DELETE FROM access_policies WHERE id = ?1", params![id.to_string()])
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+}
+
+fn row_to_policy(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccessPolicy> {
+    let id_str: String = row.get(0)?;
+    let secret_key: String = row.get(1)?;
+    let consumer: String = row.get(2)?;
+    let allowed: i32 = row.get(3)?;
+    let scopes_json: String = row.get(4)?;
+    let max_ttl_seconds: Option<i64> = row.get(5)?;
+    let expires_at_str: Option<String> = row.get(6)?;
+    let require_approval: i32 = row.get(7)?;
+    let created_at_str: String = row.get(8)?;
+    let updated_at_str: String = row.get(9)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let scopes: Vec<String> = serde_json::from_str(&scopes_json).unwrap_or_default();
+
+    Ok(AccessPolicy {
+        id,
+        secret_key,
+        consumer,
+        allowed: allowed != 0,
+        scopes,
+        max_ttl_seconds,
+        expires_at: parse_optional_dt_strict(6, expires_at_str)?,
+        require_approval: require_approval != 0,
+        created_at: parse_dt_strict(8, &created_at_str)?,
+        updated_at: parse_dt_strict(9, &updated_at_str)?,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// ProxyAuditStore – Proxy Audit Log
+// ---------------------------------------------------------------------------
+
+use mv_core::{ProxyAuditEntry, ProxyAuditStore};
+
+#[async_trait]
+impl ProxyAuditStore for SqliteNodeStore {
+    async fn log_proxy_audit(&self, entry: &ProxyAuditEntry) -> MvResult<()> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+            "INSERT INTO proxy_audit_log (id, consumer, secret_ref, action, target, intent, timestamp, success, sanitized, error, request_summary, response_status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                entry.id.to_string(),
+                entry.consumer,
+                entry.secret_ref,
+                entry.action,
+                entry.target,
+                entry.intent,
+                entry.timestamp.to_rfc3339(),
+                entry.success.map(|v| v as i32),
+                entry.sanitized as i32,
+                entry.error,
+                entry.request_summary,
+                entry.response_status,
+            ],
+        )
+        .map_err(|e| MvError::Storage(format!("insert proxy_audit_log failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn update_proxy_audit(
+        &self,
+        id: Uuid,
+        success: bool,
+        sanitized: bool,
+        error: Option<&str>,
+        response_status: Option<i32>,
+    ) -> MvResult<()> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+            "UPDATE proxy_audit_log SET success = ?2, sanitized = ?3, error = ?4, response_status = ?5 WHERE id = ?1",
+            params![
+                id.to_string(),
+                success as i32,
+                sanitized as i32,
+                error,
+                response_status,
+            ],
+        )
+        .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn list_proxy_audit(
+        &self,
+        consumer: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<ProxyAuditEntry>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(c) = consumer {
+            (
+                "SELECT id, consumer, secret_ref, action, target, intent, timestamp, success, sanitized, error, request_summary, response_status
+                 FROM proxy_audit_log WHERE consumer = ?1 ORDER BY timestamp DESC LIMIT ?2 OFFSET ?3".to_string(),
+                vec![Box::new(c.to_string()), Box::new(limit as i64), Box::new(offset as i64)],
+            )
+        } else {
+            (
+                "SELECT id, consumer, secret_ref, action, target, intent, timestamp, success, sanitized, error, request_summary, response_status
+                 FROM proxy_audit_log ORDER BY timestamp DESC LIMIT ?1 OFFSET ?2".to_string(),
+                vec![Box::new(limit as i64), Box::new(offset as i64)],
+            )
+        };
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_box.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query_map(params_refs.as_slice(), row_to_proxy_audit)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(result)
+    }
+}
+
+fn row_to_proxy_audit(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProxyAuditEntry> {
+    let id_str: String = row.get(0)?;
+    let consumer: String = row.get(1)?;
+    let secret_ref: String = row.get(2)?;
+    let action: String = row.get(3)?;
+    let target: String = row.get(4)?;
+    let intent: String = row.get(5)?;
+    let timestamp_str: String = row.get(6)?;
+    let success: Option<i32> = row.get(7)?;
+    let sanitized: i32 = row.get(8)?;
+    let error: Option<String> = row.get(9)?;
+    let request_summary: String = row.get(10)?;
+    let response_status: Option<i32> = row.get(11)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+
+    Ok(ProxyAuditEntry {
+        id,
+        consumer,
+        secret_ref,
+        action,
+        target,
+        intent,
+        timestamp: parse_dt_strict(6, &timestamp_str)?,
+        success: success.map(|v| v != 0),
+        sanitized: sanitized != 0,
+        error,
+        request_summary,
+        response_status,
+    })
 }
 
 #[cfg(test)]

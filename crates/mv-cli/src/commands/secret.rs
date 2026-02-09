@@ -89,6 +89,135 @@ pub async fn delete(key: &str) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Policy subcommands (hit the REST API)
+// ---------------------------------------------------------------------------
+
+const BASE_URL: &str = "http://127.0.0.1:9470";
+
+fn encode_query_value(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            _ => format!("%{:02X}", c as u32),
+        })
+        .collect()
+}
+
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("failed to create HTTP client")
+}
+
+pub async fn policy_set(
+    key: &str,
+    consumer: &str,
+    allow: bool,
+    ttl: Option<i64>,
+) -> Result<()> {
+    let body = serde_json::json!({
+        "secret_key": key,
+        "consumer": consumer,
+        "allowed": allow,
+        "max_ttl_seconds": ttl,
+    });
+
+    let resp = http_client()
+        .post(format!("{BASE_URL}/api/v1/policies"))
+        .json(&body)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("server returned {status}: {body}");
+    }
+
+    let result: serde_json::Value = resp.json().await?;
+    let id = result["id"].as_str().unwrap_or("?");
+    let action = if allow { "allow" } else { "deny" };
+    println!("policy {id}: {action} {consumer} -> {key}");
+    if let Some(t) = ttl {
+        println!("  max TTL: {t}s");
+    }
+
+    Ok(())
+}
+
+pub async fn policy_list(secret: Option<&str>, consumer: Option<&str>) -> Result<()> {
+    let mut url = format!("{BASE_URL}/api/v1/policies");
+    let mut params = Vec::new();
+    if let Some(s) = secret {
+        params.push(format!("secret_key={}", encode_query_value(s)));
+    }
+    if let Some(c) = consumer {
+        params.push(format!("consumer={}", encode_query_value(c)));
+    }
+    if !params.is_empty() {
+        url = format!("{}?{}", url, params.join("&"));
+    }
+
+    let resp = http_client().get(&url).send().await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("server returned {status}: {body}");
+    }
+
+    let policies: Vec<serde_json::Value> = resp.json().await?;
+
+    if policies.is_empty() {
+        println!("no policies found");
+        return Ok(());
+    }
+
+    println!(
+        "{:<38} {:<20} {:<20} {:<8} {}",
+        "ID", "Secret", "Consumer", "Allowed", "Expires"
+    );
+    println!("{}", "-".repeat(110));
+
+    for p in &policies {
+        let id = p["id"].as_str().unwrap_or("?");
+        let secret_key = p["secret_key"].as_str().unwrap_or("?");
+        let consumer_name = p["consumer"].as_str().unwrap_or("?");
+        let allowed = if p["allowed"].as_bool().unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        };
+        let expires = p["expires_at"]
+            .as_str()
+            .unwrap_or("never");
+        println!("{:<38} {:<20} {:<20} {:<8} {}", id, secret_key, consumer_name, allowed, expires);
+    }
+
+    Ok(())
+}
+
+pub async fn policy_delete(id: &str) -> Result<()> {
+    let resp = http_client()
+        .delete(format!("{BASE_URL}/api/v1/policies/{id}"))
+        .send()
+        .await?;
+
+    if resp.status().as_u16() == 204 {
+        println!("policy {id} deleted");
+    } else if resp.status().as_u16() == 404 {
+        anyhow::bail!("policy {id} not found");
+    } else {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("server returned {status}: {body}");
+    }
+
+    Ok(())
+}
+
 pub async fn status() -> Result<()> {
     let creds = store();
     let statuses = creds.status();

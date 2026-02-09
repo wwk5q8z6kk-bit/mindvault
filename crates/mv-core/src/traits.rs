@@ -306,6 +306,58 @@ pub trait ProfileStore: Send + Sync {
 
 fn _assert_profile_store_object_safe(_: &dyn ProfileStore) {}
 
+/// Storage for consumer profiles (AI consumer identities).
+#[async_trait]
+pub trait ConsumerStore: Send + Sync {
+    async fn create_consumer(&self, profile: &ConsumerProfile) -> MvResult<()>;
+    async fn get_consumer(&self, id: Uuid) -> MvResult<Option<ConsumerProfile>>;
+    async fn get_consumer_by_name(&self, name: &str) -> MvResult<Option<ConsumerProfile>>;
+    async fn get_consumer_by_token_hash(&self, token_hash: &str) -> MvResult<Option<ConsumerProfile>>;
+    async fn list_consumers(&self) -> MvResult<Vec<ConsumerProfile>>;
+    async fn revoke_consumer(&self, id: Uuid) -> MvResult<bool>;
+    async fn touch_consumer(&self, id: Uuid) -> MvResult<()>;
+}
+
+fn _assert_consumer_store_object_safe(_: &dyn ConsumerStore) {}
+
+/// Storage for access policies (ABAC with default-deny).
+#[async_trait]
+pub trait PolicyStore: Send + Sync {
+    async fn set_policy(&self, policy: &AccessPolicy) -> MvResult<()>;
+    async fn get_policy(&self, id: Uuid) -> MvResult<Option<AccessPolicy>>;
+    async fn get_policy_for(&self, secret_key: &str, consumer: &str) -> MvResult<Option<AccessPolicy>>;
+    async fn list_policies(
+        &self,
+        secret_key: Option<&str>,
+        consumer: Option<&str>,
+    ) -> MvResult<Vec<AccessPolicy>>;
+    async fn delete_policy(&self, id: Uuid) -> MvResult<bool>;
+}
+
+fn _assert_policy_store_object_safe(_: &dyn PolicyStore) {}
+
+/// Storage for proxy audit log entries.
+#[async_trait]
+pub trait ProxyAuditStore: Send + Sync {
+    async fn log_proxy_audit(&self, entry: &ProxyAuditEntry) -> MvResult<()>;
+    async fn update_proxy_audit(
+        &self,
+        id: Uuid,
+        success: bool,
+        sanitized: bool,
+        error: Option<&str>,
+        response_status: Option<i32>,
+    ) -> MvResult<()>;
+    async fn list_proxy_audit(
+        &self,
+        consumer: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<ProxyAuditEntry>>;
+}
+
+fn _assert_proxy_audit_store_object_safe(_: &dyn ProxyAuditStore) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

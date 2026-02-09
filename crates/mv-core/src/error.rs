@@ -47,6 +47,15 @@ pub enum MvError {
 
     #[error("vault sealed: unlock the vault before accessing credentials")]
     VaultSealed,
+
+    #[error("consumer error: {0}")]
+    Consumer(String),
+
+    #[error("access denied: {0}")]
+    AccessDenied(String),
+
+    #[error("proxy error: {0}")]
+    Proxy(String),
 }
 
 pub type MvResult<T> = Result<T, MvError>;

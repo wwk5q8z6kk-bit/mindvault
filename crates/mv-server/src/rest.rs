@@ -90,6 +90,12 @@ mod adapters;
 mod plugins;
 #[path = "rest/profile.rs"]
 mod profile;
+#[path = "rest/consumers.rs"]
+mod consumers;
+#[path = "rest/policies.rs"]
+mod policies;
+#[path = "rest/proxy.rs"]
+mod proxy;
 #[path = "rest/sync.rs"]
 mod sync;
 
@@ -370,6 +376,19 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/secrets/{key}", delete(secrets::delete_secret))
         // --- Owner Profile ---
         .route("/api/v1/profile", get(profile::get_profile).put(profile::update_profile))
+        // --- Consumer Profiles ---
+        .route("/api/v1/consumers", post(consumers::create_consumer).get(consumers::list_consumers))
+        .route("/api/v1/consumers/whoami", get(consumers::whoami))
+        .route("/api/v1/consumers/{id}", get(consumers::get_consumer).delete(consumers::revoke_consumer))
+        // --- Access Policies ---
+        .route("/api/v1/policies", post(policies::set_policy).get(policies::list_policies))
+        .route("/api/v1/policies/matrix", get(policies::policy_matrix))
+        .route("/api/v1/policies/my-access", get(policies::my_access))
+        .route("/api/v1/policies/{id}", delete(policies::delete_policy))
+        // --- Credential Proxy ---
+        .route("/api/v1/proxy/http", post(proxy::proxy_http))
+        .route("/api/v1/proxy/exec", post(proxy::proxy_exec))
+        .route("/api/v1/proxy/audit", get(proxy::list_audit))
         // --- Sovereign Keychain ---
         .route("/api/v1/keychain/init", post(keychain::init_vault))
         .route("/api/v1/keychain/unseal", post(keychain::unseal_vault))
@@ -13128,6 +13147,7 @@ mod tests {
             subject: Some("user-a".into()),
             role: crate::auth::AuthRole::Write,
             namespace: Some("ops".into()),
+            consumer_name: None,
         };
 
         let err = create_saved_search(

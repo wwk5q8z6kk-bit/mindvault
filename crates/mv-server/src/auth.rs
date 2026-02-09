@@ -60,6 +60,8 @@ pub struct AuthContext {
     pub subject: Option<String>,
     pub role: AuthRole,
     pub namespace: Option<String>,
+    /// If the request was authenticated via a consumer token, this holds the consumer name.
+    pub consumer_name: Option<String>,
 }
 
 impl AuthContext {
@@ -68,6 +70,7 @@ impl AuthContext {
             subject: None,
             role: AuthRole::Admin,
             namespace: None,
+            consumer_name: None,
         }
     }
 
@@ -80,6 +83,16 @@ impl AuthContext {
             subject: Some(format!("access-key:{}", key.id)),
             role: auth_role_from_tier(template.tier),
             namespace: template.scope_namespace.clone(),
+            consumer_name: None,
+        }
+    }
+
+    pub fn from_consumer(name: &str) -> Self {
+        Self {
+            subject: Some(format!("consumer:{name}")),
+            role: AuthRole::Write,
+            namespace: None,
+            consumer_name: Some(name.to_string()),
         }
     }
 
@@ -234,6 +247,16 @@ async fn auth_context_from_authorization_header_with_state(
         return Ok(AuthContext::from_access_key(&key, &template));
     }
 
+    // Try resolving as a consumer token
+    if let Some(consumer) = state
+        .engine
+        .resolve_consumer_token(token)
+        .await
+        .map_err(|_err| AuthError::InvalidSharedToken)?
+    {
+        return Ok(AuthContext::from_consumer(&consumer.name));
+    }
+
     auth_context_from_authorization_header_with_config(auth_header, &config)
 }
 
@@ -253,6 +276,7 @@ fn auth_context_from_authorization_header_with_config(
                 subject: Some("shared-token".into()),
                 role: config.shared_role,
                 namespace: config.shared_namespace.clone(),
+                consumer_name: None,
             });
         }
     }
@@ -336,6 +360,7 @@ fn validate_jwt(token: &str, secret: &str) -> Result<AuthContext, AuthError> {
         subject: Some(token_data.claims.sub),
         role,
         namespace: token_data.claims.namespace,
+        consumer_name: None,
     })
 }
 
@@ -572,6 +597,7 @@ mod tests {
             subject: Some("user".into()),
             role: AuthRole::Write,
             namespace: Some("team-a".into()),
+            consumer_name: None,
         };
 
         assert_eq!(
@@ -639,6 +665,7 @@ mod tests {
             subject: Some("user".into()),
             role: AuthRole::Write,
             namespace: None,
+            consumer_name: None,
         };
 
         assert!(auth.allows_namespace("team-a"));

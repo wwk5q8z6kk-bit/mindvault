@@ -101,7 +101,16 @@
       "Bash(do sleep 3)",
       "Bash(CARGO_TARGET_DIR=/tmp/mv-check-clean cargo check:*)",
       "Bash(CARGO_HOME=/tmp/cargo-check-home CARGO_TARGET_DIR=/tmp/mv-check-clean cargo check:*)",
-      "Bash(CARGO_TARGET_DIR=/tmp/mv-check-isolated cargo check:*)"
+      "Bash(CARGO_TARGET_DIR=/tmp/mv-check-isolated cargo check:*)",
+      "Bash(CARGO_TARGET_DIR=/tmp/mv-final-check cargo check:*)",
+      "Bash(CARGO_TARGET_DIR=/tmp/mv-final-check2 cargo check:*)",
+      "Bash(CARGO_TARGET_DIR=/tmp/mv-final-check3 cargo check:*)",
+      "Bash(while ps aux:*)",
+      "Bash(do sleep 10:*)",
+      "Bash(CARGO_TARGET_DIR=/tmp/mv-check-now cargo check:*)",
+      "Bash(CARGO_TARGET_DIR=/tmp/mv-clean-check cargo check:*)",
+      "Bash(CARGO_HOME=/tmp/mv-isolated-cargo2 CARGO_TARGET_DIR=/tmp/mv-openapi-check2 cargo check:*)",
+      "Bash(pnpm test:*)"
     ]
   },
   "enabledMcpjsonServers": [
