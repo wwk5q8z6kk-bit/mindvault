@@ -293,6 +293,91 @@ impl Default for AdapterRegistry {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Poll Cycle
+// ---------------------------------------------------------------------------
+
+/// Run a single poll cycle across all enabled adapters, persisting cursor state.
+///
+/// For each adapter:
+/// 1. Load the last cursor from the poll state store
+/// 2. Call `poll(cursor)` on the adapter
+/// 3. Convert inbound messages to vault nodes
+/// 4. Persist the new cursor
+///
+/// Returns the total number of new messages received.
+pub async fn run_poll_cycle<S>(
+    registry: &AdapterRegistry,
+    poll_store: &S,
+    node_callback: impl Fn(AdapterInboundMessage, AdapterType) + Send + Sync,
+) -> usize
+where
+    S: mv_core::AdapterPollStore,
+{
+    let configs = registry.list_configs().await;
+    let mut total = 0;
+
+    for config in &configs {
+        if !config.enabled {
+            continue;
+        }
+
+        let adapter = match registry.get(config.id).await {
+            Some(a) => a,
+            None => continue,
+        };
+
+        let adapter_name = config.name.clone();
+
+        // Load cursor
+        let cursor = match poll_store.get_poll_state(&adapter_name).await {
+            Ok(Some(state)) => Some(state.cursor),
+            _ => None,
+        };
+
+        // Poll
+        let (messages, new_cursor) = match adapter.poll(cursor.as_deref()).await {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::warn!(
+                    adapter = %adapter_name,
+                    error = %e,
+                    "poll cycle failed"
+                );
+                continue;
+            }
+        };
+
+        let msg_count = messages.len();
+        if msg_count > 0 {
+            for msg in messages {
+                node_callback(msg, config.adapter_type);
+            }
+
+            // Persist cursor
+            if let Err(e) = poll_store
+                .upsert_poll_state(&adapter_name, &new_cursor, msg_count as u64)
+                .await
+            {
+                tracing::warn!(
+                    adapter = %adapter_name,
+                    error = %e,
+                    "failed to persist poll cursor"
+                );
+            }
+
+            total += msg_count;
+        } else if cursor.as_deref() != Some(&new_cursor) {
+            // Update cursor even if no messages (e.g., cursor changed)
+            let _ = poll_store
+                .upsert_poll_state(&adapter_name, &new_cursor, 0)
+                .await;
+        }
+    }
+
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

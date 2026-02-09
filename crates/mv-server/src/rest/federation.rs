@@ -9,6 +9,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use mv_core::UpdateProfileRequest;
 use mv_engine::federation::{FederatedResult, FederationPeer};
 
 use crate::auth::{authorize_read, authorize_write, AuthContext};
@@ -44,6 +45,15 @@ pub struct PeerHealthResponse {
     pub healthy: bool,
 }
 
+#[derive(Serialize)]
+pub struct FederationIdentityResponse {
+    pub vault_id: String,
+    pub display_name: String,
+    pub public_key: Option<String>,
+    pub vault_address: Option<String>,
+    pub updated_at: String,
+}
+
 // --- Handlers ---
 
 /// List all federation peers.
@@ -58,6 +68,71 @@ pub async fn list_peers(
         "peers": peers,
         "count": peers.len(),
     })))
+}
+
+/// Get local federation identity (owner profile + vault id).
+pub async fn federation_identity(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize_read(&auth)?;
+
+    let mut profile = state
+        .engine
+        .get_profile()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut vault_id = profile
+        .metadata
+        .get("vault_id")
+        .and_then(|value| value.as_str())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    if vault_id.is_none() {
+        let generated = Uuid::now_v7().to_string();
+        let mut metadata = profile.metadata.clone();
+        metadata.insert("vault_id".to_string(), serde_json::Value::String(generated.clone()));
+
+        profile = state
+            .engine
+            .update_profile(&UpdateProfileRequest {
+                metadata: Some(metadata),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        vault_id = Some(generated);
+    }
+
+    let display_name = profile.display_name.trim();
+    let display_name = if display_name.is_empty() {
+        "MindVault Owner"
+    } else {
+        display_name
+    };
+
+    let public_key = profile
+        .signature_public_key
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let vault_address = profile
+        .email
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("mailto:{value}"));
+
+    Ok(Json(FederationIdentityResponse {
+        vault_id: vault_id.unwrap_or_else(|| "unknown".into()),
+        display_name: display_name.to_string(),
+        public_key,
+        vault_address,
+        updated_at: profile.updated_at.to_rfc3339(),
+    }))
 }
 
 /// Add a new federation peer.

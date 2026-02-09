@@ -428,6 +428,31 @@ pub trait ApprovalStore: Send + Sync {
 
 fn _assert_approval_store_object_safe(_: &dyn ApprovalStore) {}
 
+/// Adapter poll state for cursor persistence across adapter polling cycles.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AdapterPollState {
+    pub adapter_name: String,
+    pub cursor: String,
+    pub last_poll_at: String,
+    pub messages_received: u64,
+}
+
+/// Storage for adapter poll state (cursor persistence).
+#[async_trait]
+pub trait AdapterPollStore: Send + Sync {
+    async fn get_poll_state(&self, adapter_name: &str) -> MvResult<Option<AdapterPollState>>;
+    async fn upsert_poll_state(
+        &self,
+        adapter_name: &str,
+        cursor: &str,
+        messages_received: u64,
+    ) -> MvResult<()>;
+    async fn list_poll_states(&self) -> MvResult<Vec<AdapterPollState>>;
+    async fn delete_poll_state(&self, adapter_name: &str) -> MvResult<bool>;
+}
+
+fn _assert_adapter_poll_store_object_safe(_: &dyn AdapterPollStore) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

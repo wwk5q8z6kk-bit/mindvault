@@ -178,10 +178,10 @@ This section is the factual anchor for execution: what is verified in the codeba
 - “Autonomy” is high-threshold and policy-gated; any new automation must default to deferral unless explicitly enabled.
 
 ### Active gaps (prioritized)
-- **P1** Owner profile linkage (relay contact sync done; federation identity propagation pending).
+- **P1** Owner profile linkage (relay contact sync + federation identity endpoint done; federation handshake usage pending).
 - **P1** Delegation auth hardening (OAuth client lifecycle, audit trails, tests, and docs).
-- **P1** Adapter hardening (email stabilization + Slack/Discord adapters on the same contract).
-- **P1** Proposal inbox UX hardening (diff clarity, undo/revoke, provenance surfacing).
+- **P1** Adapter hardening (email stabilization + Slack/Discord adapters on the same contract; cursor persistence added, poll orchestration pending).
+- **P1** Proposal inbox UX hardening (undo + batch actions implemented; diff clarity and provenance surfacing pending).
 - **P1** MCP scoping tests + audit linkage.
 - **P2** Device sync conflict resolution + recovery UX.
 - **P2** Multi-modal extraction quality (PDF/image/audio edge cases).
@@ -222,11 +222,11 @@ This section is the operational source of truth for day-to-day execution.
 
 ### 4) Master Program Board
 - [~] `P0` Keep sovereign defaults strict (offline-first, local embeddings, explicit opt-ins)
-- [~] `P1` Owner profile as canonical identity source (API/UI + relay sync implemented; federation linkage pending)
+- [~] `P1` Owner profile as canonical identity source (API/UI + relay sync + federation identity endpoint implemented; handshake usage pending)
 - [~] `P1` Delegation auth (OAuth client credentials + API key lifecycle; audit/tests pending)
 - [x] `P1` Email adapter end-to-end (IMAP inbound + SMTP outbound + attachment ingestion)
 - [~] `P1` Email adapter stabilization (compile clean, test matrix, failure-path hardening)
-- [ ] `P1` Exchange inbox hardening (proposal review UX, diff clarity, undo/revoke)
+- [~] `P1` Exchange inbox hardening (proposal review UX, undo/batch done; diff clarity/provenance pending)
 - [ ] `P1` MCP hardening (tool scoping tests, permission templates, audit linkage)
 - [ ] `P2` Additional relay adapters (Slack, Discord) on same adapter contract
 - [ ] `P2` Device sync hardening (conflict strategy + recovery flow)
@@ -239,7 +239,7 @@ This section is the operational source of truth for day-to-day execution.
 - inbound ingest path -> relay message -> vault registration
 - outbound delivery path <- relay outbound queue
 - contact/channel resolution with deterministic mapping
-- idempotency and cursor state persistence
+- idempotency and cursor state persistence (store added; poll loop integration pending)
 - per-adapter rate-limit and retry policy
 - email is reference implementation; Slack/Discord follow the same contract
 
@@ -260,11 +260,11 @@ This section is the operational source of truth for day-to-day execution.
 
 ### Phase 3 — Relay & Adapters
 - [x] Owner profile config (display name, primary email, signature)
-- [~] Owner profile API + UI (persisted profile; relay sync done, federation linkage pending)
+- [~] Owner profile API + UI (persisted profile; relay sync + federation identity endpoint done, handshake usage pending)
 - [x] Email adapter: IMAP inbound, SMTP outbound, attachment ingest, threading
 - [~] Email adapter stabilization: compile clean, test matrix, and failure-path hardening
 - [ ] Slack adapter (webhook outbound + bot inbound)
-- [ ] Discord adapter (webhook outbound + bot inbound)
+- [~] Discord adapter (webhook outbound + bot inbound; poll orchestration pending)
 - [~] Delegation auth (OAuth client credentials + API key lifecycle; audit/tests pending)
 
 ### Phase 4 — Ecosystem & Polish
@@ -348,10 +348,10 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 ## Remaining Work
 
 ### Phase 3: Interoperability & Enhancements
-**Status:** Near-complete (profile linkage + delegation auth hardening + adapters remaining)
+**Status:** Near-complete (delegation auth hardening + adapter orchestration remaining)
 
 Backend:
-- [~] Profile API (GET/PUT) with persisted storage (contact linkage pending)
+- [~] Profile API (GET/PUT) with persisted storage (contact linkage + federation identity endpoint done; handshake usage pending)
 - [~] Delegation auth: OAuth client credentials + API key lifecycle endpoints (audit/tests/docs pending)
 - [x] Implement MCP server (tools/resources) with scoped access
 - [x] Build relay engine (contacts, channels, messages, blocking)
@@ -368,7 +368,7 @@ Backend:
 - [x] Complete federation query transport (REST-based, parallel peer queries)
 - [x] Email adapter (IMAP inbound + SMTP outbound + attachment ingest)
 - [ ] Slack adapter (webhook outbound + bot inbound)
-- [ ] Discord adapter (webhook outbound + bot inbound)
+- [~] Discord adapter (webhook outbound + bot inbound; poll orchestration pending)
 
 Frontend:
 - [~] Profile settings UI (owner identity, signature, default contact info)

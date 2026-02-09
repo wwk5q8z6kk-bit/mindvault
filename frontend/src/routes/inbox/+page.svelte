@@ -10,7 +10,7 @@
 	import { updateNote } from '$lib/api/notes';
 	import { assistAutoTag } from '$lib/api/assist';
 	import { prioritizeTasks } from '$lib/api/ai';
-	import { listProposals, approveProposal, rejectProposal, type Proposal } from '$lib/api/exchange';
+	import { listProposals, approveProposal, rejectProposal, undoProposal, batchProposals, type Proposal } from '$lib/api/exchange';
 	import { listConflicts, resolveConflict, type ConflictAlert } from '$lib/api/conflicts';
 	import ProposalCard from '$lib/components/ProposalCard.svelte';
 	import {
@@ -51,6 +51,9 @@
 	let proposalsLoading = false;
 	let conflicts: ConflictAlert[] = [];
 	let conflictsLoading = false;
+	let selectedProposals = new Set<string>();
+	let batchProcessing = false;
+	let undoToast: { proposalId: string; timeoutId: ReturnType<typeof setTimeout> } | null = null;
 	let triageLoading = false;
 	let triageSuggestions: Map<string, InboxTriageSuggestion> = new Map();
 	let triageSettings = loadInboxTriageSettings();
@@ -155,8 +158,11 @@
 		try {
 			await approveProposal(event.detail);
 			proposals = proposals.filter((p) => p.id !== event.detail);
+			selectedProposals.delete(event.detail);
+			selectedProposals = selectedProposals;
 			processedCount++;
-			pushToast('Proposal approved', 'success');
+			// Show undo toast for 60 seconds
+			showUndoToast(event.detail);
 		} catch {
 			pushToast('Failed to approve proposal', 'danger');
 		}
@@ -166,10 +172,74 @@
 		try {
 			await rejectProposal(event.detail);
 			proposals = proposals.filter((p) => p.id !== event.detail);
+			selectedProposals.delete(event.detail);
+			selectedProposals = selectedProposals;
 			processedCount++;
 			pushToast('Proposal rejected', 'success');
 		} catch {
 			pushToast('Failed to reject proposal', 'danger');
+		}
+	}
+
+	function showUndoToast(proposalId: string) {
+		// Clear previous undo toast
+		if (undoToast) clearTimeout(undoToast.timeoutId);
+		const timeoutId = setTimeout(() => {
+			undoToast = null;
+		}, 60000);
+		undoToast = { proposalId, timeoutId };
+		pushToast('Proposal approved - click Undo within 60s to revert', 'success');
+	}
+
+	async function handleUndo() {
+		if (!undoToast) return;
+		try {
+			await undoProposal(undoToast.proposalId);
+			clearTimeout(undoToast.timeoutId);
+			undoToast = null;
+			await loadProposals();
+			pushToast('Undo successful - proposal action reverted', 'success');
+		} catch {
+			pushToast('Failed to undo proposal', 'danger');
+		}
+	}
+
+	function toggleProposalSelection(id: string) {
+		if (selectedProposals.has(id)) {
+			selectedProposals.delete(id);
+		} else {
+			selectedProposals.add(id);
+		}
+		selectedProposals = selectedProposals;
+	}
+
+	function selectAllProposals() {
+		if (selectedProposals.size === proposals.length) {
+			selectedProposals = new Set();
+		} else {
+			selectedProposals = new Set(proposals.map((p) => p.id));
+		}
+	}
+
+	async function handleBatchAction(action: 'approve' | 'reject') {
+		if (selectedProposals.size === 0) return;
+		batchProcessing = true;
+		try {
+			const result = await batchProposals(action, [...selectedProposals]);
+			const successIds = result.results
+				.filter((r) => r.success)
+				.map((r) => r.id);
+			proposals = proposals.filter((p) => !successIds.includes(p.id));
+			selectedProposals = new Set();
+			processedCount += result.succeeded;
+			pushToast(
+				`Batch ${action}: ${result.succeeded}/${result.total} succeeded`,
+				result.succeeded === result.total ? 'success' : 'warning'
+			);
+		} catch {
+			pushToast(`Batch ${action} failed`, 'danger');
+		} finally {
+			batchProcessing = false;
 		}
 	}
 
@@ -432,21 +502,69 @@
 		</div>
 	</div>
 
+	{#if undoToast}
+		<div class="mt-3 flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-900/20 px-4 py-2">
+			<span class="text-xs text-amber-200">Proposal approved</span>
+			<button
+				class="rounded-lg bg-amber-600 px-3 py-1 text-[11px] font-medium text-white transition hover:bg-amber-500"
+				on:click={handleUndo}
+			>
+				Undo
+			</button>
+		</div>
+	{/if}
+
 	{#if proposals.length > 0}
 		<div class="mt-4">
-			<div class="mb-2 flex items-center gap-2">
-				<span class="text-xs font-semibold text-slate-300">Pending Proposals</span>
-				<span class="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-300">
-					{proposals.length}
-				</span>
+			<div class="mb-2 flex items-center justify-between">
+				<div class="flex items-center gap-2">
+					<span class="text-xs font-semibold text-slate-300">Pending Proposals</span>
+					<span class="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+						{proposals.length}
+					</span>
+				</div>
+				<div class="flex items-center gap-1.5">
+					{#if selectedProposals.size > 0}
+						<button
+							class="rounded-lg border border-emerald-500/30 px-2.5 py-1 text-[10px] font-medium text-emerald-300 transition hover:bg-emerald-500/10 disabled:opacity-50"
+							disabled={batchProcessing}
+							on:click={() => handleBatchAction('approve')}
+						>
+							Approve ({selectedProposals.size})
+						</button>
+						<button
+							class="rounded-lg border border-red-500/30 px-2.5 py-1 text-[10px] font-medium text-red-300 transition hover:bg-red-500/10 disabled:opacity-50"
+							disabled={batchProcessing}
+							on:click={() => handleBatchAction('reject')}
+						>
+							Reject ({selectedProposals.size})
+						</button>
+					{/if}
+					<button
+						class="rounded-lg border border-slate-700 px-2.5 py-1 text-[10px] text-slate-400 transition hover:bg-slate-800"
+						on:click={selectAllProposals}
+					>
+						{selectedProposals.size === proposals.length ? 'Deselect All' : 'Select All'}
+					</button>
+				</div>
 			</div>
 			<div class="space-y-2">
 				{#each proposals as proposal (proposal.id)}
-					<ProposalCard
-						{proposal}
-						on:approve={handleApproveProposal}
-						on:reject={handleRejectProposal}
-					/>
+					<div class="flex items-start gap-2">
+						<input
+							type="checkbox"
+							class="mt-3 h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500/30"
+							checked={selectedProposals.has(proposal.id)}
+							on:change={() => toggleProposalSelection(proposal.id)}
+						/>
+						<div class="flex-1">
+							<ProposalCard
+								{proposal}
+								on:approve={handleApproveProposal}
+								on:reject={handleRejectProposal}
+							/>
+						</div>
+					</div>
 				{/each}
 			</div>
 		</div>

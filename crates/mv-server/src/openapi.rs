@@ -142,6 +142,7 @@ use utoipa_swagger_ui::SwaggerUi;
         approve_proposal,
         reject_proposal,
         inbox_count,
+        batch_proposals,
         // Autonomy
         list_autonomy_rules,
         create_autonomy_rule,
@@ -198,6 +199,11 @@ use utoipa_swagger_ui::SwaggerUi;
         list_hook_points_api,
         reload_plugins_api,
         uninstall_plugin_api,
+        plugins_runtime_list,
+        plugins_runtime_get,
+        plugins_runtime_reload,
+        plugins_runtime_unload,
+        plugins_runtime_hooks,
         // Sync
         sync_export,
         sync_import,
@@ -207,6 +213,7 @@ use utoipa_swagger_ui::SwaggerUi;
         federation_add_peer,
         federation_remove_peer,
         federation_peer_health,
+        federation_identity,
         federation_query,
         // Adapters
         adapters_list,
@@ -264,6 +271,7 @@ use utoipa_swagger_ui::SwaggerUi;
             OAuthClientCreateResponse,
             OAuthTokenRequest,
             OAuthTokenResponse,
+            FederationIdentityResponse,
         )
     )
 )]
@@ -630,6 +638,9 @@ async fn reject_proposal() {}
 #[utoipa::path(get, path = "/api/v1/exchange/inbox/count", tag = "exchange", responses((status = 200)))]
 async fn inbox_count() {}
 
+#[utoipa::path(post, path = "/api/v1/exchange/proposals/batch", tag = "exchange", responses((status = 200)))]
+async fn batch_proposals() {}
+
 #[utoipa::path(get, path = "/api/v1/autonomy/rules", tag = "autonomy", responses((status = 200)))]
 async fn list_autonomy_rules() {}
 
@@ -747,6 +758,17 @@ async fn reload_plugins_api() {}
 #[utoipa::path(delete, path = "/api/v1/plugins/{name}", tag = "plugins", params(("name" = String, Path)), responses((status = 204, description = "Plugin uninstalled")))]
 async fn uninstall_plugin_api() {}
 
+#[utoipa::path(get, path = "/api/v1/plugins/runtime", tag = "plugins", responses((status = 200, description = "List runtime plugins")))]
+async fn plugins_runtime_list() {}
+#[utoipa::path(get, path = "/api/v1/plugins/runtime/{name}", tag = "plugins", params(("name" = String, Path)), responses((status = 200, description = "Runtime plugin details")))]
+async fn plugins_runtime_get() {}
+#[utoipa::path(post, path = "/api/v1/plugins/runtime/{name}/reload", tag = "plugins", params(("name" = String, Path)), responses((status = 200, description = "Runtime plugin reloaded")))]
+async fn plugins_runtime_reload() {}
+#[utoipa::path(delete, path = "/api/v1/plugins/runtime/{name}", tag = "plugins", params(("name" = String, Path)), responses((status = 200, description = "Runtime plugin unloaded")))]
+async fn plugins_runtime_unload() {}
+#[utoipa::path(get, path = "/api/v1/plugins/runtime/{name}/hooks", tag = "plugins", params(("name" = String, Path)), responses((status = 200, description = "Runtime plugin hooks")))]
+async fn plugins_runtime_hooks() {}
+
 // --- Sync ---
 #[utoipa::path(post, path = "/api/v1/sync/export", tag = "sync", responses((status = 200, description = "Sync export bundle")))]
 async fn sync_export() {}
@@ -764,6 +786,8 @@ async fn federation_add_peer() {}
 async fn federation_remove_peer() {}
 #[utoipa::path(get, path = "/api/v1/federation/peers/{id}/health", tag = "federation", params(("id" = String, Path)), responses((status = 200)))]
 async fn federation_peer_health() {}
+#[utoipa::path(get, path = "/api/v1/federation/identity", tag = "federation", responses((status = 200, body = FederationIdentityResponse)))]
+async fn federation_identity() {}
 #[utoipa::path(post, path = "/api/v1/federation/query", tag = "federation", responses((status = 200, description = "Federated query results")))]
 async fn federation_query() {}
 
@@ -861,6 +885,15 @@ pub struct ProfileResponse {
     pub signature_public_key: Option<String>,
     pub metadata: std::collections::HashMap<String, serde_json::Value>,
     pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct FederationIdentityResponse {
+    pub vault_id: String,
+    pub display_name: String,
+    pub public_key: Option<String>,
+    pub vault_address: Option<String>,
     pub updated_at: String,
 }
 

@@ -3,6 +3,7 @@
 //! Configuration keys:
 //! - `webhook_url`: Discord webhook URL for outbound messages
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -20,6 +21,7 @@ pub struct DiscordAdapter {
     config: AdapterConfig,
     client: reqwest::Client,
     last_send: Mutex<Option<DateTime<Utc>>>,
+    last_receive: Mutex<Option<DateTime<Utc>>>,
     last_error: Mutex<Option<String>>,
 }
 
@@ -37,6 +39,7 @@ impl DiscordAdapter {
                 .build()
                 .map_err(|e| MvError::Internal(e.to_string()))?,
             last_send: Mutex::new(None),
+            last_receive: Mutex::new(None),
             last_error: Mutex::new(None),
         })
     }
@@ -95,10 +98,94 @@ impl ExternalAdapter for DiscordAdapter {
         &self,
         cursor: Option<&str>,
     ) -> MvResult<(Vec<AdapterInboundMessage>, String)> {
-        // Discord webhooks are outbound-only. Inbound requires a bot with
-        // gateway connection, which is beyond the scope of this adapter.
-        // Inbound Discord messages would need a separate bot adapter.
-        Ok((vec![], cursor.unwrap_or("0").to_string()))
+        // If a bot_token and channel_id are configured, use the Discord REST
+        // API to poll for messages. Otherwise, fall back to empty (webhook-only).
+        let bot_token = match self.config.get_setting("bot_token") {
+            Some(t) => t,
+            None => return Ok((vec![], cursor.unwrap_or("0").to_string())),
+        };
+
+        let channel_id = match self.config.get_setting("channel_id") {
+            Some(c) => c,
+            None => return Ok((vec![], cursor.unwrap_or("0").to_string())),
+        };
+
+        // Discord GET /channels/{channel_id}/messages?after={snowflake}&limit=50
+        let url = format!(
+            "https://discord.com/api/v10/channels/{channel_id}/messages"
+        );
+
+        let mut params: Vec<(&str, String)> = vec![("limit", "50".into())];
+        if let Some(after_id) = cursor {
+            if after_id != "0" {
+                params.push(("after", after_id.to_string()));
+            }
+        }
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bot {bot_token}"))
+            .query(&params)
+            .send()
+            .await
+            .map_err(|e| MvError::Internal(format!("discord poll failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(MvError::Internal(format!(
+                "discord API returned {status}: {body}"
+            )));
+        }
+
+        let body: Vec<serde_json::Value> = resp
+            .json()
+            .await
+            .map_err(|e| MvError::Internal(format!("discord poll parse failed: {e}")))?;
+
+        let messages: Vec<AdapterInboundMessage> = body
+            .iter()
+            .filter_map(|m| {
+                let id = m.get("id")?.as_str()?;
+                let content = m.get("content")?.as_str()?;
+                let author = m.get("author")?.get("username")?.as_str()?;
+                let timestamp_str = m.get("timestamp")?.as_str()?;
+                let timestamp = chrono::DateTime::parse_from_rfc3339(timestamp_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+
+                // Check for thread reference
+                let thread_id = m
+                    .get("message_reference")
+                    .and_then(|r| r.get("message_id"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
+                Some(AdapterInboundMessage {
+                    external_id: id.to_string(),
+                    channel: channel_id.to_string(),
+                    sender: author.to_string(),
+                    content: content.to_string(),
+                    thread_id,
+                    timestamp,
+                    metadata: HashMap::new(),
+                })
+            })
+            .collect();
+
+        // Discord returns messages newest-first; the highest snowflake ID
+        // is the newest message, which becomes our next cursor.
+        let new_cursor = messages
+            .first()
+            .map(|m| m.external_id.clone())
+            .unwrap_or_else(|| cursor.unwrap_or("0").to_string());
+
+        if !messages.is_empty() {
+            *self.last_receive.lock().unwrap() = Some(Utc::now());
+        }
+
+        Ok((messages, new_cursor))
     }
 
     async fn health_check(&self) -> MvResult<bool> {
@@ -124,7 +211,7 @@ impl ExternalAdapter for DiscordAdapter {
             name: self.config.name.clone(),
             connected: self.last_error.lock().unwrap().is_none(),
             last_send: *self.last_send.lock().unwrap(),
-            last_receive: None, // Discord webhooks are outbound-only
+            last_receive: *self.last_receive.lock().unwrap(),
             error: self.last_error.lock().unwrap().clone(),
         }
     }
@@ -173,13 +260,13 @@ mod tests {
         let status = adapter.status();
         assert!(status.connected);
         assert!(status.last_send.is_none());
-        assert!(status.last_receive.is_none()); // outbound-only
+        assert!(status.last_receive.is_none());
         assert!(status.error.is_none());
         assert_eq!(status.adapter_type, AdapterType::Discord);
     }
 
     #[tokio::test]
-    async fn poll_always_returns_empty() {
+    async fn poll_without_bot_token_returns_empty() {
         let adapter = DiscordAdapter::new(discord_config_with_webhook()).unwrap();
         let (messages, cursor) = adapter.poll(None).await.unwrap();
         assert!(messages.is_empty());
@@ -188,6 +275,16 @@ mod tests {
         let (messages, cursor) = adapter.poll(Some("custom-cursor")).await.unwrap();
         assert!(messages.is_empty());
         assert_eq!(cursor, "custom-cursor");
+    }
+
+    #[tokio::test]
+    async fn poll_without_channel_id_returns_empty() {
+        let config = discord_config_with_webhook()
+            .with_setting("bot_token", "test-bot-token");
+        let adapter = DiscordAdapter::new(config).unwrap();
+        let (messages, cursor) = adapter.poll(Some("123")).await.unwrap();
+        assert!(messages.is_empty());
+        assert_eq!(cursor, "123");
     }
 
     #[test]

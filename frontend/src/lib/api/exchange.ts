@@ -92,3 +92,40 @@ export async function getInboxCount(): Promise<number> {
 	const res = await fetchJson<ProposalCountResponse>('/api/v1/exchange/inbox/count');
 	return res.count;
 }
+
+/** Undo an approved proposal (if within the undo window). */
+export async function undoProposal(
+	id: string
+): Promise<{ id: string; action: string; undone: boolean }> {
+	return fetchJson(`/api/v1/exchange/proposals/${encodeURIComponent(id)}/undo`, {
+		method: 'POST'
+	});
+}
+
+export interface BatchResult {
+	id: string;
+	success: boolean;
+	state?: ProposalState;
+	error?: string;
+	created_node_id?: string;
+	updated_node_id?: string;
+	deleted_node_id?: string;
+}
+
+export interface BatchResponse {
+	total: number;
+	succeeded: number;
+	failed: number;
+	results: BatchResult[];
+}
+
+/** Batch approve or reject multiple proposals. */
+export async function batchProposals(
+	action: 'approve' | 'reject',
+	proposalIds: string[]
+): Promise<BatchResponse> {
+	return fetchJson<BatchResponse>('/api/v1/exchange/proposals/batch', {
+		method: 'POST',
+		body: JSON.stringify({ action, ids: proposalIds })
+	});
+}

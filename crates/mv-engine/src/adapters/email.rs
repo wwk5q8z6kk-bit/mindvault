@@ -8,12 +8,14 @@
 //! - `from_address`: Sender email address
 //! - `default_to`: (optional) Default recipient email
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use uuid::Uuid;
 
-use mv_core::{MvError, MvResult};
+use mv_core::{MemoryQuery, MvError, MvResult, Proposal, ProposalAction, ProposalSender};
 
 use super::{
     AdapterConfig, AdapterInboundMessage, AdapterOutboundMessage, AdapterStatus, AdapterType,
@@ -307,4 +309,154 @@ fn base64_encode(data: &[u8]) -> String {
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     STANDARD.encode(data)
+}
+
+// ---------------------------------------------------------------------------
+// Email Reply Proposal
+// ---------------------------------------------------------------------------
+
+use crate::engine::MindVaultEngine;
+use crate::llm;
+
+impl EmailAdapter {
+    /// Generate a context-aware reply proposal for an inbound email.
+    ///
+    /// Searches the vault for related content and creates an exchange inbox
+    /// proposal with `ProposalAction::Custom("email_reply")`.
+    ///
+    /// Returns `None` if no relevant context is found above the threshold.
+    pub async fn generate_reply_proposal(
+        engine: &MindVaultEngine,
+        inbound_content: &str,
+        channel_id: Uuid,
+        sender_contact_id: Option<Uuid>,
+        confidence_threshold: f32,
+    ) -> MvResult<Option<Proposal>> {
+        // 1. Search vault for related nodes using hybrid search
+        let query_text = if inbound_content.len() > 500 {
+            &inbound_content[..500]
+        } else {
+            inbound_content
+        };
+
+        let query = MemoryQuery::new(query_text).with_limit(6).with_min_score(0.0);
+
+        let results = match engine.recall(&query).await {
+            Ok(r) => r,
+            Err(err) => {
+                tracing::warn!(error = %err, "email_reply_context_recall_failed");
+                return Ok(None);
+            }
+        };
+
+        // 2. Extract context snippets
+        let context_snippets = llm::extract_context_snippets(&results, 4);
+        if context_snippets.is_empty() {
+            return Ok(None);
+        }
+
+        // 3. Build reply content — use LLM if available, else template
+        let mut suggestion_text = None;
+        let mut used_llm = false;
+
+        if let Some(ref llm_provider) = engine.llm {
+            match llm::llm_completion_suggestions(
+                llm_provider.as_ref(),
+                inbound_content,
+                &context_snippets,
+                1,
+            )
+            .await
+            {
+                Ok(mut suggestions) => {
+                    if let Some(first) = suggestions.pop() {
+                        suggestion_text = Some(first);
+                        used_llm = true;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "email_reply_llm_suggestion_failed"
+                    );
+                }
+            }
+        }
+
+        if suggestion_text.is_none() {
+            let preview = context_snippets
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n");
+            suggestion_text = Some(format!(
+                "I have related notes that might help:\n{preview}\n\nWant me to share details?"
+            ));
+        }
+
+        // Calculate confidence
+        let mut confidence: f32 = if used_llm { 0.6 } else { 0.4 };
+        if context_snippets.len() >= 3 {
+            confidence += 0.1;
+        }
+        confidence = confidence.clamp(0.0, 1.0);
+
+        // Check against threshold
+        if confidence < confidence_threshold {
+            return Ok(None);
+        }
+
+        // 4. Build proposal payload with source node IDs for citation
+        let source_node_ids: Vec<String> = results.iter().map(|r| r.node.id.to_string()).collect();
+
+        let mut payload = HashMap::new();
+        payload.insert(
+            "channel_id".to_string(),
+            serde_json::Value::String(channel_id.to_string()),
+        );
+        payload.insert(
+            "content".to_string(),
+            serde_json::Value::String(suggestion_text.unwrap_or_default()),
+        );
+        payload.insert(
+            "context_snippets".to_string(),
+            serde_json::Value::Array(
+                context_snippets
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect(),
+            ),
+        );
+        payload.insert(
+            "source_node_ids".to_string(),
+            serde_json::Value::Array(
+                source_node_ids
+                    .iter()
+                    .map(|id| serde_json::Value::String(id.clone()))
+                    .collect(),
+            ),
+        );
+        if let Some(contact_id) = sender_contact_id {
+            payload.insert(
+                "sender_contact_id".to_string(),
+                serde_json::Value::String(contact_id.to_string()),
+            );
+        }
+
+        // 5. Create proposal
+        let reply_content = payload
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let proposal =
+            Proposal::new(ProposalSender::Agent, ProposalAction::Custom("email_reply".into()))
+                .with_confidence(confidence)
+                .with_diff(reply_content)
+                .with_payload(payload);
+
+        Ok(Some(proposal))
+    }
 }

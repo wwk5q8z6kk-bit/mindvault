@@ -846,7 +846,7 @@ impl ProactiveEngine {
                         shared_tags.iter().map(|t| t.as_str()).collect::<Vec<_>>().join(", "),
                         result.score,
                     ),
-                    InsightType::AmbientLink,
+                    InsightType::Connection,
                 )
                 .with_related_nodes(vec![node.id, result.node.id])
                 .with_importance(0.55);
@@ -874,6 +874,12 @@ impl ProactiveEngine {
         }
 
         Ok(persisted)
+    }
+
+    /// Convenience wrapper: run ambient synthesis for the "default" namespace
+    /// with standard defaults (batch_size=10, similarity_threshold=0.78).
+    pub async fn ambient_synthesis_batch(&self) -> MvResult<Vec<ProactiveInsight>> {
+        self.ambient_synthesis(Some("default"), 10, 0.78).await
     }
 
     /// Helper: extract top tags from a slice of nodes.

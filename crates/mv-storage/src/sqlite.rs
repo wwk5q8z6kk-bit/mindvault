@@ -135,6 +135,10 @@ impl SqliteNodeStore {
         conn.execute_batch(migration_016)
             .map_err(|e| MvError::Migration(format!("migration 016 failed: {e}")))?;
 
+        let migration_022 = include_str!("../../../migrations/022_adapter_poll_state.sql");
+        conn.execute_batch(migration_022)
+            .map_err(|e| MvError::Migration(format!("migration 022 failed: {e}")))?;
+
         Ok(())
     }
 
@@ -3910,6 +3914,94 @@ fn row_to_trust_model(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrustModel> {
         max_confidence_override,
         updated_at: parse_dt_strict(6, &updated_at_str)?,
     })
+}
+
+// ---------------------------------------------------------------------------
+// AdapterPollStore
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl AdapterPollStore for SqliteNodeStore {
+    async fn get_poll_state(&self, adapter_name: &str) -> MvResult<Option<AdapterPollState>> {
+        let name = adapter_name.to_string();
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT adapter_name, cursor, last_poll_at, messages_received FROM adapter_poll_state WHERE adapter_name = ?1")
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+            let result = stmt
+                .query_row(params![name], |row| {
+                    Ok(AdapterPollState {
+                        adapter_name: row.get(0)?,
+                        cursor: row.get(1)?,
+                        last_poll_at: row.get(2)?,
+                        messages_received: row.get::<_, i64>(3)? as u64,
+                    })
+                })
+                .optional()
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+            Ok(result)
+        })
+    }
+
+    async fn upsert_poll_state(
+        &self,
+        adapter_name: &str,
+        cursor: &str,
+        messages_received: u64,
+    ) -> MvResult<()> {
+        let name = adapter_name.to_string();
+        let cursor = cursor.to_string();
+        let now = Utc::now().to_rfc3339();
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO adapter_poll_state (adapter_name, cursor, last_poll_at, messages_received)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(adapter_name) DO UPDATE SET
+                     cursor = excluded.cursor,
+                     last_poll_at = excluded.last_poll_at,
+                     messages_received = adapter_poll_state.messages_received + excluded.messages_received",
+                params![name, cursor, now, messages_received as i64],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    async fn list_poll_states(&self) -> MvResult<Vec<AdapterPollState>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT adapter_name, cursor, last_poll_at, messages_received FROM adapter_poll_state ORDER BY adapter_name")
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(AdapterPollState {
+                        adapter_name: row.get(0)?,
+                        cursor: row.get(1)?,
+                        last_poll_at: row.get(2)?,
+                        messages_received: row.get::<_, i64>(3)? as u64,
+                    })
+                })
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+            let mut result = Vec::new();
+            for row in rows {
+                result.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+            }
+            Ok(result)
+        })
+    }
+
+    async fn delete_poll_state(&self, adapter_name: &str) -> MvResult<bool> {
+        let name = adapter_name.to_string();
+        self.with_conn(|conn| {
+            let affected = conn
+                .execute(
+                    "DELETE FROM adapter_poll_state WHERE adapter_name = ?1",
+                    params![name],
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+            Ok(affected > 0)
+        })
+    }
 }
 
 #[cfg(test)]

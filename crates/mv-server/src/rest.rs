@@ -173,6 +173,12 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(insight_cross_namespace),
         )
         .route(
+            "/api/v1/insights/{id}/dismiss",
+            post(dismiss_insight),
+        )
+        .route("/api/v1/insights/scan", post(insight_full_scan))
+        .route("/api/v1/insights/clusters", get(insight_embedding_clusters))
+        .route(
             "/api/v1/agent/feedback",
             post(feedback::record_feedback).get(feedback::list_feedback),
         )
@@ -215,6 +221,10 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(exchange::list_proposals).post(exchange::submit_proposal),
         )
         .route(
+            "/api/v1/exchange/proposals/batch",
+            post(exchange::batch_proposals),
+        )
+        .route(
             "/api/v1/exchange/proposals/{id}",
             get(exchange::get_proposal),
         )
@@ -226,7 +236,11 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             "/api/v1/exchange/proposals/{id}/reject",
             post(exchange::reject_proposal),
         )
-        .route("/api/v1/exchange/inbox/count", get(exchange::inbox_count));
+        .route("/api/v1/exchange/inbox/count", get(exchange::inbox_count))
+        .route(
+            "/api/v1/exchange/proposals/{id}/undo",
+            post(exchange::undo_proposal),
+        );
 
     let router = router
         .route("/api/v1/tasks/prioritize", post(prioritize_tasks))
@@ -575,10 +589,19 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/plugins/hooks", get(plugins::list_hook_points))
         .route("/api/v1/plugins/reload", post(plugins::reload_plugins))
         .route("/api/v1/plugins/{name}", delete(plugins::uninstall_plugin))
+        // --- Plugin Runtime ---
+        .route("/api/v1/plugins/runtime", get(plugins::runtime_list))
+        .route("/api/v1/plugins/runtime/{name}", get(plugins::runtime_get_plugin).delete(plugins::runtime_unload_plugin))
+        .route("/api/v1/plugins/runtime/{name}/reload", post(plugins::runtime_reload_plugin))
+        .route("/api/v1/plugins/runtime/{name}/hooks", get(plugins::runtime_plugin_hooks))
         // --- Federation ---
         .route(
             "/api/v1/federation/peers",
             get(federation::list_peers).post(federation::add_peer),
+        )
+        .route(
+            "/api/v1/federation/identity",
+            get(federation::federation_identity),
         )
         .route(
             "/api/v1/federation/peers/{id}",
@@ -6446,6 +6469,72 @@ async fn insight_cross_namespace(
         .await
         .map_err(map_mv_error)?;
 
+    Ok(Json(insights))
+}
+
+/// POST /api/v1/insights/{id}/dismiss
+async fn dismiss_insight(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    authorize_write(&auth)?;
+    let uuid = Uuid::parse_str(&id)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid insight id".to_string()))?;
+
+    let ok = state
+        .engine
+        .delete_insight(uuid)
+        .await
+        .map_err(map_mv_error)?;
+    if ok {
+        Ok(StatusCode::OK)
+    } else {
+        Err((StatusCode::NOT_FOUND, "insight not found".to_string()))
+    }
+}
+
+#[derive(Deserialize)]
+struct InsightScanQuery {
+    namespace: Option<String>,
+}
+
+/// POST /api/v1/insights/scan — trigger a full insight scan
+async fn insight_full_scan(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<InsightScanQuery>,
+) -> Result<Json<Vec<ProactiveInsight>>, (StatusCode, String)> {
+    authorize_write(&auth)?;
+    let ns = params.namespace.or_else(|| auth.namespace.clone());
+    let insights = state
+        .engine
+        .insight
+        .full_scan(ns.as_deref())
+        .await
+        .map_err(map_mv_error)?;
+    Ok(Json(insights))
+}
+
+#[derive(Deserialize)]
+struct EmbeddingClusterQuery {
+    namespace: Option<String>,
+}
+
+/// GET /api/v1/insights/clusters — detect embedding-space clusters
+async fn insight_embedding_clusters(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<EmbeddingClusterQuery>,
+) -> Result<Json<Vec<ProactiveInsight>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let ns = params.namespace.or_else(|| auth.namespace.clone());
+    let insights = state
+        .engine
+        .insight
+        .detect_embedding_clusters(ns.as_deref())
+        .await
+        .map_err(map_mv_error)?;
     Ok(Json(insights))
 }
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use mv_engine::engine::MindVaultEngine;
-use mv_plugin::{PluginManager, PluginRegistry};
+use mv_plugin::{PluginManager, PluginRegistry, PluginRuntime};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 
@@ -19,6 +19,7 @@ pub struct AppState {
     pub webhook_config: WebhookConfig,
     pub plugin_registry: Arc<RwLock<PluginRegistry>>,
     pub plugin_manager: Arc<RwLock<PluginManager>>,
+    pub plugin_runtime: Arc<RwLock<PluginRuntime>>,
 }
 
 /// Notification for task reminders.
@@ -129,6 +130,8 @@ impl AppState {
         let plugins_dir = std::env::var("MINDVAULT_PLUGINS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("plugins"));
+        let plugin_manager = PluginManager::new(plugins_dir);
+        let plugin_runtime = PluginRuntime::new(plugin_manager.clone());
         Self {
             engine,
             change_tx,
@@ -136,7 +139,8 @@ impl AppState {
             agent_tx,
             webhook_config: WebhookConfig::from_env(),
             plugin_registry: Arc::new(RwLock::new(PluginRegistry::new())),
-            plugin_manager: Arc::new(RwLock::new(PluginManager::new(plugins_dir))),
+            plugin_manager: Arc::new(RwLock::new(plugin_manager)),
+            plugin_runtime: Arc::new(RwLock::new(plugin_runtime)),
         }
     }
 

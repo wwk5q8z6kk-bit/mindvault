@@ -259,18 +259,112 @@ pub async fn reload_plugins(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     authorize_admin(&auth)?;
 
-    let mgr = state.plugin_manager.read().await.clone();
-    let discovered = tokio::task::spawn_blocking(move || mgr.discover())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("reload task failed: {e}")))?
+    let mut runtime = state.plugin_runtime.write().await;
+    let loaded = runtime
+        .scan_and_load()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    let count = discovered.len();
-    let names: Vec<String> = discovered.into_iter().map(|(name, _, _)| name).collect();
+    let plugins: Vec<String> = runtime
+        .list_plugins()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
 
     Ok(Json(serde_json::json!({
         "status": "reloaded",
-        "count": count,
-        "plugins": names,
+        "count": loaded,
+        "plugins": plugins,
     })))
+}
+
+/// GET /api/v1/plugins/runtime — list all loaded plugins from the runtime.
+pub async fn runtime_list(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize_read(&auth)?;
+
+    let runtime = state.plugin_runtime.read().await;
+    let plugins = runtime.list_plugins();
+    let count = plugins.len();
+
+    Ok(Json(serde_json::json!({
+        "plugins": plugins,
+        "count": count,
+    })))
+}
+
+/// GET /api/v1/plugins/runtime/:name — get info about a specific loaded plugin.
+pub async fn runtime_get_plugin(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    validate_plugin_name(&name)?;
+
+    let runtime = state.plugin_runtime.read().await;
+    match runtime.get_plugin(&name) {
+        Some(info) => Ok(Json(serde_json::json!(info))),
+        None => Err((StatusCode::NOT_FOUND, format!("plugin '{name}' not loaded"))),
+    }
+}
+
+/// POST /api/v1/plugins/runtime/:name/reload — reload a specific plugin.
+pub async fn runtime_reload_plugin(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize_admin(&auth)?;
+    validate_plugin_name(&name)?;
+
+    let mut runtime = state.plugin_runtime.write().await;
+    runtime
+        .reload_plugin(&name)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let info = runtime.get_plugin(&name);
+    Ok(Json(serde_json::json!({
+        "status": "reloaded",
+        "plugin": info,
+    })))
+}
+
+/// DELETE /api/v1/plugins/runtime/:name — unload a plugin from the runtime.
+pub async fn runtime_unload_plugin(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize_admin(&auth)?;
+    validate_plugin_name(&name)?;
+
+    let mut runtime = state.plugin_runtime.write().await;
+    let unloaded = runtime.unload_plugin(&name);
+
+    if unloaded {
+        Ok(Json(serde_json::json!({
+            "name": name,
+            "status": "unloaded",
+        })))
+    } else {
+        Err((StatusCode::NOT_FOUND, format!("plugin '{name}' not loaded")))
+    }
+}
+
+/// GET /api/v1/plugins/runtime/:name/hooks — list hooks a plugin subscribes to.
+pub async fn runtime_plugin_hooks(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    validate_plugin_name(&name)?;
+
+    let runtime = state.plugin_runtime.read().await;
+    match runtime.get_plugin_hooks(&name) {
+        Some(hooks) => Ok(Json(serde_json::json!({ "plugin": name, "hooks": hooks }))),
+        None => Err((StatusCode::NOT_FOUND, format!("plugin '{name}' not loaded"))),
+    }
 }

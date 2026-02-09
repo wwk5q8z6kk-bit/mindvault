@@ -149,6 +149,7 @@ pub struct MindVaultEngine {
     pub sync: crate::sync::SyncEngine,
     pub federation: crate::federation::FederationEngine,
     pub metrics: crate::metrics_collector::MetricsCollector,
+    pub insight: Arc<crate::insight::InsightEngine>,
     embedding_runtime_status: KnowledgeVaultIndexNoteEmbeddingProviderRuntimeStatus,
 }
 
@@ -271,6 +272,7 @@ impl MindVaultEngine {
                 pipeline
             },
             metrics: crate::metrics_collector::MetricsCollector::new(),
+            insight: Arc::new(crate::insight::InsightEngine::default()),
             embedding_runtime_status: selection.runtime_status,
         };
 
@@ -284,6 +286,7 @@ impl MindVaultEngine {
     pub async fn init_arc(config: EngineConfig) -> MvResult<Arc<Self>> {
         let engine = Arc::new(Self::init(config).await?);
         engine.proactive.set_engine(Arc::clone(&engine));
+        engine.insight.set_engine(Arc::clone(&engine));
         Ok(engine)
     }
 

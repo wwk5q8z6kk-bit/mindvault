@@ -11,6 +11,7 @@ pub mod hooks;
 pub mod manager;
 pub mod manifest;
 pub mod registry;
+pub mod runtime;
 pub mod sandbox;
 #[cfg(feature = "wasm-runtime")]
 pub mod wasm_plugin;
@@ -19,6 +20,7 @@ pub use hooks::{HookContext, HookPoint, HookResult};
 pub use manager::PluginManager;
 pub use manifest::{PluginManifest, PluginPermission};
 pub use registry::PluginRegistry;
+pub use runtime::{PluginRuntime, PluginInfo};
 #[cfg(feature = "wasm-runtime")]
 pub use host::{HostState, register_host_functions, create_dispatch};
 #[cfg(feature = "wasm-runtime")]

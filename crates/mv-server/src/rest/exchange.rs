@@ -776,6 +776,122 @@ pub async fn reject_proposal(
     ))
 }
 
+/// POST /api/v1/exchange/proposals/:id/undo
+pub async fn undo_proposal(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize_write(&auth)?;
+
+    let uuid =
+        Uuid::parse_str(&id).map_err(|_| (StatusCode::BAD_REQUEST, "invalid uuid".to_string()))?;
+
+    // Retrieve the undo snapshot
+    let snapshot = state
+        .engine
+        .store
+        .nodes
+        .get_undo_snapshot(uuid)
+        .await
+        .map_err(map_mv_error)?
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "no undo snapshot for this proposal".to_string(),
+        ))?;
+
+    if snapshot.used {
+        return Err((
+            StatusCode::CONFLICT,
+            "undo already applied for this proposal".to_string(),
+        ));
+    }
+
+    if Utc::now() > snapshot.expires_at {
+        return Err((StatusCode::GONE, "undo window has expired".to_string()));
+    }
+
+    // Execute the undo based on snapshot data
+    let action = snapshot
+        .snapshot_data
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    match action {
+        "create_node" => {
+            // Undo a create by deleting the created node
+            if let Some(node_id_str) = snapshot.snapshot_data.get("node_id").and_then(|v| v.as_str())
+            {
+                if let Ok(node_id) = Uuid::parse_str(node_id_str) {
+                    state
+                        .engine
+                        .delete_node(node_id)
+                        .await
+                        .map_err(map_mv_error)?;
+                    state.notify_change(node_id_str, "undo_delete", None);
+                }
+            }
+        }
+        "update_node" => {
+            // Undo an update by restoring the previous version
+            if let Some(previous) = snapshot.snapshot_data.get("previous") {
+                let node: KnowledgeNode = serde_json::from_value(previous.clone()).map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("failed to deserialize previous node: {e}"),
+                    )
+                })?;
+                authorize_namespace(&auth, &node.namespace)?;
+                let saved = state.engine.update_node(node).await.map_err(map_mv_error)?;
+                state.notify_change(&saved.id.to_string(), "undo_restore", Some(&saved.namespace));
+            }
+        }
+        "delete_node" => {
+            // Undo a delete by re-inserting the node
+            if let Some(node_data) = snapshot.snapshot_data.get("node") {
+                let node: KnowledgeNode =
+                    serde_json::from_value(node_data.clone()).map_err(|e| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("failed to deserialize deleted node: {e}"),
+                        )
+                    })?;
+                authorize_namespace(&auth, &node.namespace)?;
+                state.engine.store_node(node).await.map_err(map_mv_error)?;
+            }
+        }
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("cannot undo action type: {action}"),
+            ));
+        }
+    }
+
+    // Mark snapshot as used
+    state
+        .engine
+        .store
+        .nodes
+        .mark_undo_used(snapshot.id)
+        .await
+        .map_err(map_mv_error)?;
+
+    // Log chronicle
+    let chronicle = ChronicleEntry::new(
+        "exchange.undo",
+        format!("User undid proposal {uuid} (action: {action})"),
+    );
+    let _ = state.engine.log_chronicle(&chronicle).await;
+
+    Ok(Json(serde_json::json!({
+        "id": uuid.to_string(),
+        "action": action,
+        "undone": true,
+    })))
+}
+
 /// GET /api/v1/exchange/inbox/count
 pub async fn inbox_count(
     Extension(auth): Extension<AuthContext>,
@@ -790,4 +906,254 @@ pub async fn inbox_count(
         .map_err(map_mv_error)?;
 
     Ok(Json(ProposalCountResponse { count }))
+}
+
+// ---------------------------------------------------------------------------
+// Batch Operations
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct BatchProposalRequest {
+    pub ids: Vec<String>,
+    pub action: String, // "approve" or "reject"
+}
+
+#[derive(Serialize)]
+struct BatchProposalResultItem {
+    id: String,
+    success: bool,
+    state: Option<String>,
+    error: Option<String>,
+    created_node_id: Option<String>,
+    updated_node_id: Option<String>,
+    deleted_node_id: Option<String>,
+}
+
+/// POST /api/v1/exchange/proposals/batch
+///
+/// Approve or reject multiple proposals in a single request.
+pub async fn batch_proposals(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<BatchProposalRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize_write(&auth)?;
+
+    let target_state = match body.action.as_str() {
+        "approve" => ProposalState::Approved,
+        "reject" => ProposalState::Rejected,
+        other => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("invalid batch action: {other} (expected \"approve\" or \"reject\")"),
+            ))
+        }
+    };
+
+    if body.ids.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "ids array must not be empty".to_string(),
+        ));
+    }
+
+    if body.ids.len() > 100 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "batch size exceeds maximum of 100".to_string(),
+        ));
+    }
+
+    let mut results = Vec::with_capacity(body.ids.len());
+
+    for id_str in &body.ids {
+        let uuid = match Uuid::parse_str(id_str) {
+            Ok(u) => u,
+            Err(_) => {
+                results.push(BatchProposalResultItem {
+                    id: id_str.clone(),
+                    success: false,
+                    state: None,
+                    error: Some("invalid uuid".to_string()),
+                    created_node_id: None,
+                    updated_node_id: None,
+                    deleted_node_id: None,
+                });
+                continue;
+            }
+        };
+
+        let mut action_result: Option<ProposalActionResult> = None;
+
+        // For approvals, execute the proposal action first
+        if target_state == ProposalState::Approved {
+            let proposal = match state.engine.get_proposal(uuid).await {
+                Ok(Some(p)) => p,
+                Ok(None) => {
+                    results.push(BatchProposalResultItem {
+                        id: id_str.clone(),
+                        success: false,
+                        state: None,
+                        error: Some("proposal not found".to_string()),
+                        created_node_id: None,
+                        updated_node_id: None,
+                        deleted_node_id: None,
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    results.push(BatchProposalResultItem {
+                        id: id_str.clone(),
+                        success: false,
+                        state: None,
+                        error: Some(e.to_string()),
+                        created_node_id: None,
+                        updated_node_id: None,
+                        deleted_node_id: None,
+                    });
+                    continue;
+                }
+            };
+
+            let mut snapshot_data = match build_undo_snapshot_data(&state, &auth, &proposal).await {
+                Ok(data) => data,
+                Err((_, err)) => {
+                    results.push(BatchProposalResultItem {
+                        id: id_str.clone(),
+                        success: false,
+                        state: None,
+                        error: Some(err),
+                        created_node_id: None,
+                        updated_node_id: None,
+                        deleted_node_id: None,
+                    });
+                    continue;
+                }
+            };
+
+            let exec_result = match execute_proposal_action(&state, &auth, &proposal).await {
+                Ok(result) => result,
+                Err((_, err)) => {
+                    results.push(BatchProposalResultItem {
+                        id: id_str.clone(),
+                        success: false,
+                        state: None,
+                        error: Some(format!("action failed: {err}")),
+                        created_node_id: None,
+                        updated_node_id: None,
+                        deleted_node_id: None,
+                    });
+                    continue;
+                }
+            };
+
+            if let Some(ref mut data) = snapshot_data {
+                if let Some(created_id) = exec_result.created_node_id.as_ref() {
+                    data["node_id"] = serde_json::json!(created_id);
+                }
+            } else if let Some(created_id) = exec_result.created_node_id.as_ref() {
+                snapshot_data = Some(serde_json::json!({
+                    "action": "create_node",
+                    "node_id": created_id
+                }));
+            }
+
+            if let Some(snapshot_data) = snapshot_data {
+                let now = Utc::now();
+                let snapshot = UndoSnapshot {
+                    id: Uuid::now_v7(),
+                    proposal_id: uuid,
+                    snapshot_data,
+                    created_at: now,
+                    expires_at: now + Duration::days(7),
+                    used: false,
+                };
+                if let Err(err) = state
+                    .engine
+                    .store
+                    .nodes
+                    .save_undo_snapshot(&snapshot)
+                    .await
+                {
+                    results.push(BatchProposalResultItem {
+                        id: id_str.clone(),
+                        success: false,
+                        state: None,
+                        error: Some(err.to_string()),
+                        created_node_id: None,
+                        updated_node_id: None,
+                        deleted_node_id: None,
+                    });
+                    continue;
+                }
+            }
+
+            action_result = Some(exec_result);
+        }
+
+        match state.engine.resolve_proposal(uuid, target_state).await {
+            Ok(true) => {
+                let (created_node_id, updated_node_id, deleted_node_id) = match action_result {
+                    Some(result) => (
+                        result.created_node_id,
+                        result.updated_node_id,
+                        result.deleted_node_id,
+                    ),
+                    None => (None, None, None),
+                };
+
+                let chronicle = ChronicleEntry::new(
+                    if target_state == ProposalState::Approved {
+                        "exchange.batch_approve"
+                    } else {
+                        "exchange.batch_reject"
+                    },
+                    format!("Batch {}: proposal {uuid}", body.action),
+                );
+                let _ = state.engine.log_chronicle(&chronicle).await;
+
+                results.push(BatchProposalResultItem {
+                    id: id_str.clone(),
+                    success: true,
+                    state: Some(target_state.as_str().to_string()),
+                    error: None,
+                    created_node_id,
+                    updated_node_id,
+                    deleted_node_id,
+                });
+            }
+            Ok(false) => {
+                results.push(BatchProposalResultItem {
+                    id: id_str.clone(),
+                    success: false,
+                    state: None,
+                    error: Some("proposal not found".to_string()),
+                    created_node_id: None,
+                    updated_node_id: None,
+                    deleted_node_id: None,
+                });
+            }
+            Err(e) => {
+                results.push(BatchProposalResultItem {
+                    id: id_str.clone(),
+                    success: false,
+                    state: None,
+                    error: Some(e.to_string()),
+                    created_node_id: None,
+                    updated_node_id: None,
+                    deleted_node_id: None,
+                });
+            }
+        }
+    }
+
+    let succeeded = results.iter().filter(|r| r.success).count();
+    let failed = results.len() - succeeded;
+
+    Ok(Json(serde_json::json!({
+        "total": results.len(),
+        "succeeded": succeeded,
+        "failed": failed,
+        "results": results
+    })))
 }

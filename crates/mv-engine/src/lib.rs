@@ -11,6 +11,7 @@ pub mod enrichment;
 pub mod federation;
 pub mod import;
 pub mod ingest;
+pub mod insight;
 pub mod intent;
 pub mod intent_executor;
 pub mod keychain;
