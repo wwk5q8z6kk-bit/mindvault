@@ -109,7 +109,7 @@ pub async fn init_vault(from_env: bool, macos_bridge: bool, config_path: &str) -
     };
 
     engine
-        .initialize_vault(&password, macos_bridge)
+        .initialize_vault(&password, macos_bridge, "cli")
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -149,7 +149,7 @@ pub async fn unseal(
         }
     } else if from_macos_keychain {
         engine
-            .unseal_from_macos_keychain()
+            .unseal_from_macos_keychain("cli")
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         println!("vault unsealed (from macOS Keychain)");
@@ -160,7 +160,7 @@ pub async fn unseal(
             prompt_password("Enter vault password: ")?
         };
         engine
-            .unseal(&password)
+            .unseal(&password, "cli")
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         println!("vault unsealed");
@@ -174,7 +174,7 @@ pub async fn unseal(
 
 pub async fn seal(config_path: &str) -> Result<()> {
     let engine = build_engine(config_path).await?;
-    engine.seal().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    engine.seal("cli").await.map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("vault sealed");
     Ok(())
 }
@@ -223,7 +223,7 @@ pub async fn rotate_key(grace_hours: u32, config_path: &str) -> Result<()> {
     }
 
     engine
-        .rotate_master_key(&new_password, grace_hours)
+        .rotate_master_key(&new_password, grace_hours, "cli")
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -238,7 +238,7 @@ pub async fn rotate_key(grace_hours: u32, config_path: &str) -> Result<()> {
 pub async fn domain_create(name: &str, description: Option<&str>, config_path: &str) -> Result<()> {
     let engine = build_engine(config_path).await?;
     let domain = engine
-        .create_domain(name, description)
+        .create_domain(name, description, "cli")
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("domain created: {} ({})", domain.name, domain.id);
@@ -277,7 +277,7 @@ pub async fn domain_revoke(id: &str, config_path: &str) -> Result<()> {
     let engine = build_engine(config_path).await?;
     let uuid = uuid::Uuid::parse_str(id).context("invalid UUID")?;
     engine
-        .revoke_domain(uuid)
+        .revoke_domain(uuid, "cli")
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("domain {id} revoked");
@@ -326,6 +326,7 @@ pub async fn store_credential(
             value.as_bytes(),
             tags.to_vec(),
             expires,
+            "cli",
         )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -336,7 +337,7 @@ pub async fn store_credential(
 pub async fn get_credential(id: &str, config_path: &str) -> Result<()> {
     let engine = build_engine(config_path).await?;
     let uuid = uuid::Uuid::parse_str(id).context("invalid UUID")?;
-    let (_cred, plaintext) = engine
+    let (_cred, plaintext, _alerts) = engine
         .read_credential(uuid, "cli")
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -397,7 +398,7 @@ pub async fn archive_credential(id: &str, config_path: &str) -> Result<()> {
     let engine = build_engine(config_path).await?;
     let uuid = uuid::Uuid::parse_str(id).context("invalid UUID")?;
     engine
-        .archive_credential(uuid)
+        .archive_credential(uuid, "cli")
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("credential {id} archived");
@@ -411,7 +412,7 @@ pub async fn destroy_credential(id: &str, confirm: bool, config_path: &str) -> R
     let engine = build_engine(config_path).await?;
     let uuid = uuid::Uuid::parse_str(id).context("invalid UUID")?;
     engine
-        .destroy_credential(uuid)
+        .destroy_credential(uuid, "cli")
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("credential {id} destroyed (cryptographic shred)");
@@ -442,7 +443,7 @@ pub async fn delegate_create(
     };
 
     let delegation = engine
-        .create_delegation(cred_uuid, delegatee, perms, Some(expires), max_depth)
+        .create_delegation(cred_uuid, delegatee, perms, Some(expires), max_depth, "cli")
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("delegation created: {}", delegation.id);
@@ -487,7 +488,7 @@ pub async fn delegate_revoke(id: &str, config_path: &str) -> Result<()> {
     let engine = build_engine(config_path).await?;
     let uuid = uuid::Uuid::parse_str(id).context("invalid UUID")?;
     engine
-        .revoke_delegation(uuid)
+        .revoke_delegation(uuid, "cli")
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("delegation {id} revoked");
@@ -502,7 +503,7 @@ pub async fn prove(credential_id: &str, nonce: &str, config_path: &str) -> Resul
     let engine = build_engine(config_path).await?;
     let cred_uuid = uuid::Uuid::parse_str(credential_id).context("invalid credential UUID")?;
     let proof = engine
-        .generate_proof(cred_uuid, nonce)
+        .generate_proof(cred_uuid, nonce, "cli")
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("proof:      {}", proof.proof);
@@ -517,15 +518,21 @@ pub async fn prove(credential_id: &str, nonce: &str, config_path: &str) -> Resul
 
 pub async fn audit_verify(config_path: &str) -> Result<()> {
     let engine = build_engine(config_path).await?;
-    let ok = engine
+    let result = engine
         .verify_audit_integrity()
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    if ok {
-        println!("audit chain integrity: OK");
-    } else {
-        println!("audit chain integrity: FAILED");
-        std::process::exit(1);
+    match result.as_str() {
+        "fully_verified" => {
+            println!("audit chain integrity: OK (signatures verified)");
+        }
+        "chain_only_valid" => {
+            println!("audit chain integrity: OK (chain valid, vault sealed — signatures not checked)");
+        }
+        _ => {
+            println!("audit chain integrity: FAILED");
+            std::process::exit(1);
+        }
     }
     Ok(())
 }
@@ -601,5 +608,98 @@ pub async fn vault_restore(input: &str, config_path: &str) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     println!("vault restored from {input}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shamir secret sharing
+// ---------------------------------------------------------------------------
+
+pub async fn shamir_enable(threshold: u8, total: u8, config_path: &str) -> Result<()> {
+    if threshold < 2 {
+        bail!("threshold must be at least 2");
+    }
+    if total < threshold {
+        bail!("total must be >= threshold");
+    }
+
+    let engine = build_engine(config_path).await?;
+    let shares = engine
+        .enable_shamir(threshold, total, "cli", None)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Shamir {threshold}-of-{total} enabled. Save each share separately:");
+    println!();
+    for (i, share) in shares.iter().enumerate() {
+        println!("Share {}: {share}", i + 1);
+    }
+    println!();
+    println!("WARNING: Store shares in different locations. Any {threshold} can reconstruct the master key.");
+    Ok(())
+}
+
+pub async fn shamir_submit(share: &str, config_path: &str) -> Result<()> {
+    let engine = build_engine(config_path).await?;
+    let status = engine
+        .submit_shamir_share(share, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!(
+        "share accepted ({}/{} collected, threshold: {})",
+        status.shares_collected, status.total, status.threshold
+    );
+    if status.ready {
+        println!("ready to unseal — run: mv keychain shamir-unseal");
+    }
+    Ok(())
+}
+
+pub async fn shamir_unseal(config_path: &str) -> Result<()> {
+    let engine = build_engine(config_path).await?;
+    engine
+        .unseal_from_shares("cli")
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("vault unsealed (from Shamir shares)");
+    Ok(())
+}
+
+pub async fn shamir_rotate(config_path: &str) -> Result<()> {
+    let engine = build_engine(config_path).await?;
+    let shares = engine
+        .rotate_shamir_shares("cli", None)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Shamir shares rotated. {} new shares:", shares.len());
+    for (i, share) in shares.iter().enumerate() {
+        println!("  Share {}: {}", i + 1, share);
+    }
+    println!("\nOld shares are now INVALIDATED. Distribute these new shares securely.");
+    Ok(())
+}
+
+pub async fn shamir_status(config_path: &str) -> Result<()> {
+    let engine = build_engine(config_path).await?;
+    let status = engine
+        .shamir_status()
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    match status {
+        Some(s) => {
+            println!("Shamir Status");
+            println!("=============");
+            println!("Threshold:        {}", s.threshold);
+            println!("Total shares:     {}", s.total);
+            println!("Shares collected: {}", s.shares_collected);
+            println!("Ready to unseal:  {}", if s.ready { "yes" } else { "no" });
+        }
+        None => {
+            println!("Shamir not enabled on this vault");
+        }
+    }
     Ok(())
 }

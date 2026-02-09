@@ -2,10 +2,43 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
 
-use mv_core::*;
+use mv_core::{ApprovalRequest, PolicyDecision, *};
+use zeroize::Zeroizing;
 
 use crate::engine::MindVaultEngine;
+use crate::intent_check;
 use crate::sanitize::OutputSanitizer;
+
+// ---------------------------------------------------------------------------
+// Proxy Error
+// ---------------------------------------------------------------------------
+
+/// Typed error for proxy operations, enabling the REST layer to map errors
+/// to appropriate HTTP status codes.
+#[derive(Debug)]
+pub enum ProxyError {
+    /// Access denied by policy, scope, constitutional rule, or intent check.
+    Denied(String),
+    /// Policy exists but requires HITL approval. Contains the approval request ID.
+    ApprovalRequired {
+        approval_id: uuid::Uuid,
+        message: String,
+    },
+    /// Operational failure (HTTP error, spawn error, timeout, etc).
+    Failed(String),
+}
+
+impl std::fmt::Display for ProxyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Denied(msg) => write!(f, "denied: {msg}"),
+            Self::ApprovalRequired { message, .. } => write!(f, "approval required: {message}"),
+            Self::Failed(msg) => write!(f, "failed: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for ProxyError {}
 
 /// Default commands allowed in exec proxy.
 const DEFAULT_EXEC_ALLOWLIST: &[&str] = &[
@@ -96,45 +129,184 @@ fn check_constitutional_rules(description: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Scope enforcement
+// ---------------------------------------------------------------------------
+
+/// Derive the required scopes for an HTTP request based on its method.
+fn derive_http_scopes(method: &str) -> Vec<String> {
+    match method.to_ascii_uppercase().as_str() {
+        "GET" | "HEAD" | "OPTIONS" => vec!["read".into()],
+        _ => vec!["write".into()],
+    }
+}
+
+/// Derive the required scopes for an exec request based on the command.
+fn derive_exec_scopes(command: &str) -> Vec<String> {
+    vec![format!("exec:{command}")]
+}
+
+/// Check whether the required scopes are satisfied by the allowed scopes.
+///
+/// - Empty `allowed` = unrestricted (backward compatible with pre-scope policies).
+/// - Each required scope must match at least one allowed scope.
+/// - Matching is hierarchical prefix: allowed `"read"` matches required `"read"`,
+///   allowed `"exec"` matches required `"exec:git"`, allowed `"exec:git"` matches `"exec:git"`.
+fn check_scopes(required: &[String], allowed: &[String]) -> Result<(), String> {
+    if allowed.is_empty() {
+        return Ok(()); // unrestricted
+    }
+
+    for req in required {
+        if !allowed.iter().any(|a| scope_matches(req, a)) {
+            return Err(format!(
+                "scope mismatch: operation requires '{req}' but policy allows {:?}",
+                allowed
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Returns true if `required` scope is covered by `allowed` pattern.
+///
+/// - Exact match: `"read"` matches `"read"`
+/// - Prefix match: `"exec"` matches `"exec:git"` (allowed is a prefix of required)
+/// - Wildcard: `"exec:*"` matches `"exec:git"`
+fn scope_matches(required: &str, allowed: &str) -> bool {
+    if required == allowed {
+        return true;
+    }
+    // allowed "exec" covers required "exec:git"
+    if required.starts_with(allowed) && required.as_bytes().get(allowed.len()) == Some(&b':') {
+        return true;
+    }
+    // Wildcard: allowed "exec:*" covers required "exec:git"
+    if let Some(prefix) = allowed.strip_suffix(":*") {
+        if required == prefix || (required.starts_with(prefix) && required.as_bytes().get(prefix.len()) == Some(&b':')) {
+            return true;
+        }
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
+// Proxy Engine
+// ---------------------------------------------------------------------------
+
 /// Proxy engine for HTTP and command operations with credential injection.
 pub struct ProxyEngine;
 
 impl ProxyEngine {
     /// Execute an HTTP proxy request with credential injection.
     ///
-    /// Flow: constitutional check -> SSRF check -> policy check -> inject -> execute -> sanitize -> audit
+    /// Flow: constitutional check -> SSRF check -> intent check -> policy check -> scope check -> inject -> execute -> sanitize -> audit
     pub async fn execute_http(
         req: &HttpProxyRequest,
         consumer: &str,
         engine: &MindVaultEngine,
-    ) -> Result<HttpProxyResponse, String> {
+    ) -> Result<HttpProxyResponse, ProxyError> {
         // 1. Constitutional rules
         let description = format!("{} {} intent={}", req.method, req.url, req.intent);
-        check_constitutional_rules(&description)?;
+        check_constitutional_rules(&description).map_err(ProxyError::Denied)?;
 
         // 2. SSRF prevention
-        check_ssrf(&req.url)?;
+        check_ssrf(&req.url).map_err(ProxyError::Denied)?;
+
+        // 2b. Intent alignment check (rules-based, always runs)
+        let intent_result = intent_check::check_intent_rules(&req.intent);
+        if intent_result.is_denied() {
+            return Err(ProxyError::Denied(format!(
+                "intent check failed: {}",
+                intent_result.denial_reason().unwrap_or("suspicious intent")
+            )));
+        }
+
+        // 2c. Optional LLM intent alignment check
+        if let Some(ref llm) = engine.llm {
+            let llm_result = intent_check::check_intent_llm(
+                &req.intent,
+                &format!("{} {}", req.method, req.url),
+                &req.secret_ref,
+                llm.as_ref(),
+            )
+            .await;
+
+            if llm_result.is_denied() {
+                tracing::warn!(
+                    consumer = consumer,
+                    intent = req.intent,
+                    reason = ?llm_result.denial_reason(),
+                    "intent flagged by LLM alignment check"
+                );
+            }
+        }
 
         // 3. Policy check
         let decision = engine
             .check_policy(&req.secret_ref, consumer)
             .await
-            .map_err(|e| format!("policy check failed: {e}"))?;
+            .map_err(|e| ProxyError::Failed(format!("policy check failed: {e}")))?;
 
-        if !decision.is_allowed() {
-            return Err(format!(
+        // 3a. Handle RequiresApproval
+        if let PolicyDecision::RequiresApproval { ttl_seconds, ref scopes } = decision {
+            // Check if there's an existing approved approval
+            let existing = engine
+                .find_active_approval(consumer, &req.secret_ref)
+                .await
+                .map_err(|e| ProxyError::Failed(format!("approval lookup failed: {e}")))?;
+
+            if existing.is_none() {
+                // Create a new approval request
+                let approval = ApprovalRequest::new(
+                    consumer,
+                    &req.secret_ref,
+                    &req.intent,
+                    format!("{} {}", req.method, req.url),
+                    ttl_seconds,
+                    scopes.clone(),
+                );
+                let approval_id = approval.id;
+                engine
+                    .create_approval(&approval)
+                    .await
+                    .map_err(|e| ProxyError::Failed(format!("create approval failed: {e}")))?;
+
+                return Err(ProxyError::ApprovalRequired {
+                    approval_id,
+                    message: format!(
+                        "policy requires approval; approval_id={approval_id}, expires in {ttl_seconds}s"
+                    ),
+                });
+            }
+            // If approved, fall through to execute
+        }
+
+        if !decision.is_allowed() && !decision.requires_approval() {
+            return Err(ProxyError::Denied(format!(
                 "access denied: consumer '{consumer}' has no policy granting access to '{}'",
                 req.secret_ref
-            ));
+            )));
         }
+
+        // 3b. Scope enforcement
+        let scopes = match &decision {
+            PolicyDecision::Allow { scopes, .. } => scopes,
+            PolicyDecision::RequiresApproval { scopes, .. } => scopes,
+            _ => unreachable!(),
+        };
+        let required = derive_http_scopes(&req.method);
+        check_scopes(&required, scopes).map_err(|e| {
+            ProxyError::Denied(format!("access denied for '{}': {e}", req.secret_ref))
+        })?;
 
         // 4. Resolve the secret value
         let secret_value = engine
             .credential_store
             .get(&req.secret_ref)
-            .map_err(|e| format!("credential lookup failed: {e}"))?
-            .ok_or_else(|| format!("secret '{}' not found", req.secret_ref))?;
-        let secret_str = secret_value.expose().to_string();
+            .map_err(|e| ProxyError::Failed(format!("credential lookup failed: {e}")))?
+            .ok_or_else(|| ProxyError::Failed(format!("secret '{}' not found", req.secret_ref)))?;
+        let secret_str = Zeroizing::new(secret_value.expose().to_string());
 
         // 5. Create audit entry
         let audit = ProxyAuditEntry::new(
@@ -153,10 +325,10 @@ impl ProxyEngine {
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()
-            .map_err(|e| format!("failed to create HTTP client: {e}"))?;
+            .map_err(|e| ProxyError::Failed(format!("failed to create HTTP client: {e}")))?;
 
         let method = reqwest::Method::from_bytes(req.method.as_bytes())
-            .map_err(|e| format!("invalid HTTP method: {e}"))?;
+            .map_err(|e| ProxyError::Failed(format!("invalid HTTP method: {e}")))?;
 
         let mut request_builder = client.request(method.clone(), &req.url);
 
@@ -168,12 +340,12 @@ impl ProxyEngine {
         // Inject credential
         request_builder = match &req.inject_as {
             SecretInjection::BearerHeader => {
-                request_builder.header("Authorization", format!("Bearer {secret_str}"))
+                request_builder.header("Authorization", format!("Bearer {}", &*secret_str))
             }
             SecretInjection::BasicAuth { username } => {
                 use base64::engine::general_purpose::STANDARD;
                 use base64::Engine;
-                let encoded = STANDARD.encode(format!("{username}:{secret_str}"));
+                let encoded = STANDARD.encode(format!("{}:{}", username, &*secret_str));
                 request_builder.header("Authorization", format!("Basic {encoded}"))
             }
             SecretInjection::Header { name } => {
@@ -181,8 +353,8 @@ impl ProxyEngine {
             }
             SecretInjection::QueryParam { name } => {
                 let mut url =
-                    url::Url::parse(&req.url).map_err(|e| format!("invalid URL: {e}"))?;
-                url.query_pairs_mut().append_pair(name, &secret_str);
+                    url::Url::parse(&req.url).map_err(|e| ProxyError::Failed(format!("invalid URL: {e}")))?;
+                url.query_pairs_mut().append_pair(name, &*secret_str);
                 // Rebuild the request with the modified URL
                 let mut rebuilt = client.request(method, url.as_str());
                 for (key, value) in &req.headers {
@@ -218,8 +390,8 @@ impl ProxyEngine {
                     .await
                     .unwrap_or_else(|e| format!("<error reading body: {e}>"));
 
-                // Sanitize output
-                let secrets_for_sanitize = vec![(req.secret_ref.clone(), secret_str)];
+                // Sanitize output — clone into sanitizer; secret_str is zeroized on drop
+                let secrets_for_sanitize = vec![(req.secret_ref.clone(), (*secret_str).clone())];
                 let (sanitized_body, was_sanitized) =
                     OutputSanitizer::sanitize(&body_text, &secrets_for_sanitize);
 
@@ -240,19 +412,19 @@ impl ProxyEngine {
                 let _ = engine
                     .update_proxy_audit(audit.id, false, false, Some(&err_msg), None)
                     .await;
-                Err(err_msg)
+                Err(ProxyError::Failed(err_msg))
             }
         }
     }
 
     /// Execute a command proxy request with credential env injection.
     ///
-    /// Flow: constitutional check -> allowlist check -> policy check -> inject env -> run -> sanitize -> audit
+    /// Flow: constitutional check -> intent check -> allowlist check -> policy check -> scope check -> inject env -> run -> sanitize -> audit
     pub async fn execute_exec(
         req: &ExecProxyRequest,
         consumer: &str,
         engine: &MindVaultEngine,
-    ) -> Result<ExecProxyResponse, String> {
+    ) -> Result<ExecProxyResponse, ProxyError> {
         // 1. Constitutional rules
         let description = format!(
             "{} {} intent={}",
@@ -260,37 +432,108 @@ impl ProxyEngine {
             req.args.join(" "),
             req.intent
         );
-        check_constitutional_rules(&description)?;
+        check_constitutional_rules(&description).map_err(ProxyError::Denied)?;
 
-        // 2. Command allowlist check
-        if !DEFAULT_EXEC_ALLOWLIST.contains(&req.command.as_str()) {
-            return Err(format!(
-                "command '{}' is not in the allowed list: {:?}",
-                req.command, DEFAULT_EXEC_ALLOWLIST
-            ));
+        // 2. Intent alignment check (rules-based, always runs)
+        let intent_result = intent_check::check_intent_rules(&req.intent);
+        if intent_result.is_denied() {
+            return Err(ProxyError::Denied(format!(
+                "intent check failed: {}",
+                intent_result.denial_reason().unwrap_or("suspicious intent")
+            )));
         }
 
-        // 3. Policy check for each secret being injected
-        let mut resolved_secrets: Vec<(String, String)> = Vec::new();
+        // 2b. Optional LLM intent alignment check
+        if let Some(ref llm) = engine.llm {
+            let llm_result = intent_check::check_intent_llm(
+                &req.intent,
+                &format!("{} {}", req.command, req.args.join(" ")),
+                &req.env_inject.values().map(|s| s.as_str()).collect::<Vec<_>>().join(","),
+                llm.as_ref(),
+            )
+            .await;
+
+            if llm_result.is_denied() {
+                tracing::warn!(
+                    consumer = consumer,
+                    intent = req.intent,
+                    reason = ?llm_result.denial_reason(),
+                    "intent flagged by LLM alignment check for command proxy"
+                );
+            }
+        }
+
+        // 3. Command allowlist check
+        if !DEFAULT_EXEC_ALLOWLIST.contains(&req.command.as_str()) {
+            return Err(ProxyError::Denied(format!(
+                "command '{}' is not in the allowed list: {:?}",
+                req.command, DEFAULT_EXEC_ALLOWLIST
+            )));
+        }
+
+        // 4. Policy check for each secret being injected
+        let mut resolved_secrets: Vec<(String, Zeroizing<String>)> = Vec::new();
         for (env_var, secret_key) in &req.env_inject {
             let decision = engine
                 .check_policy(secret_key, consumer)
                 .await
-                .map_err(|e| format!("policy check failed for '{secret_key}': {e}"))?;
+                .map_err(|e| ProxyError::Failed(format!("policy check failed for '{secret_key}': {e}")))?;
 
-            if !decision.is_allowed() {
-                return Err(format!(
-                    "access denied: consumer '{consumer}' cannot access secret '{secret_key}'"
-                ));
+            // Handle RequiresApproval
+            if let PolicyDecision::RequiresApproval { ttl_seconds, ref scopes } = decision {
+                let existing = engine
+                    .find_active_approval(consumer, secret_key)
+                    .await
+                    .map_err(|e| ProxyError::Failed(format!("approval lookup failed: {e}")))?;
+
+                if existing.is_none() {
+                    let approval = ApprovalRequest::new(
+                        consumer,
+                        secret_key,
+                        &req.intent,
+                        format!("{} {}", req.command, req.args.join(" ")),
+                        ttl_seconds,
+                        scopes.clone(),
+                    );
+                    let approval_id = approval.id;
+                    engine
+                        .create_approval(&approval)
+                        .await
+                        .map_err(|e| ProxyError::Failed(format!("create approval failed: {e}")))?;
+
+                    return Err(ProxyError::ApprovalRequired {
+                        approval_id,
+                        message: format!(
+                            "policy requires approval for '{secret_key}'; approval_id={approval_id}"
+                        ),
+                    });
+                }
             }
+
+            if !decision.is_allowed() && !decision.requires_approval() {
+                return Err(ProxyError::Denied(format!(
+                    "access denied: consumer '{consumer}' cannot access secret '{secret_key}'"
+                )));
+            }
+
+            // Scope enforcement
+            let scopes = match &decision {
+                PolicyDecision::Allow { scopes, .. } => scopes,
+                PolicyDecision::RequiresApproval { scopes, .. } => scopes,
+                _ => unreachable!(),
+            };
+            let required = derive_exec_scopes(&req.command);
+            check_scopes(&required, scopes).map_err(|e| {
+                ProxyError::Denied(format!("access denied for '{secret_key}': {e}"))
+            })?;
 
             let secret_value = engine
                 .credential_store
                 .get(secret_key)
-                .map_err(|e| format!("credential lookup failed for '{secret_key}': {e}"))?
-                .ok_or_else(|| format!("secret '{secret_key}' not found"))?;
+                .map_err(|e| ProxyError::Failed(format!("credential lookup failed for '{secret_key}': {e}")))?
+                .ok_or_else(|| ProxyError::Failed(format!("secret '{secret_key}' not found")))?;
 
-            resolved_secrets.push((env_var.clone(), secret_value.expose().to_string()));
+            resolved_secrets.push((env_var.clone(), Zeroizing::new(secret_value.expose().to_string())));
         }
 
         // Build secret ref string for audit
@@ -313,9 +556,9 @@ impl ProxyEngine {
         let mut cmd = tokio::process::Command::new(&req.command);
         cmd.args(&req.args);
 
-        // Inject secret env vars
+        // Inject secret env vars (deref Zeroizing to get &str)
         for (env_var, value) in &resolved_secrets {
-            cmd.env(env_var, value);
+            cmd.env(env_var, &**value);
         }
 
         // Set working directory if specified
@@ -331,28 +574,29 @@ impl ProxyEngine {
 
         let child = cmd
             .spawn()
-            .map_err(|e| format!("failed to spawn command '{}': {e}", req.command))?;
+            .map_err(|e| ProxyError::Failed(format!("failed to spawn command '{}': {e}", req.command)))?;
 
         let output = tokio::time::timeout(timeout, child.wait_with_output())
             .await
             .map_err(|_| {
-                format!(
+                ProxyError::Failed(format!(
                     "command '{}' timed out after {}s",
                     req.command, req.timeout_seconds
-                )
+                ))
             })?
-            .map_err(|e| format!("command '{}' failed: {e}", req.command))?;
+            .map_err(|e| ProxyError::Failed(format!("command '{}' failed: {e}", req.command)))?;
 
         let stdout_raw = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
         let exit_code = output.status.code().unwrap_or(-1);
 
         // 6. Sanitize output — redact all injected secret values
+        // Clone plaintext out of Zeroizing for sanitizer; sanitizer will zeroize its own copies
         let all_secrets: Vec<(String, String)> = req
             .env_inject
             .values()
             .zip(resolved_secrets.iter().map(|(_, v)| v))
-            .map(|(key, val)| (key.clone(), val.clone()))
+            .map(|(key, val)| (key.clone(), val.as_str().to_string()))
             .collect();
 
         let (sanitized_stdout, stdout_redacted) =
@@ -431,5 +675,80 @@ mod tests {
     fn constitutional_allows_safe_commands() {
         assert!(check_constitutional_rules("git status").is_ok());
         assert!(check_constitutional_rules("cargo build").is_ok());
+    }
+
+    // --- Scope enforcement tests ---
+
+    #[test]
+    fn derive_http_scopes_read_methods() {
+        assert_eq!(derive_http_scopes("GET"), vec!["read".to_string()]);
+        assert_eq!(derive_http_scopes("HEAD"), vec!["read".to_string()]);
+        assert_eq!(derive_http_scopes("OPTIONS"), vec!["read".to_string()]);
+    }
+
+    #[test]
+    fn derive_http_scopes_write_methods() {
+        assert_eq!(derive_http_scopes("POST"), vec!["write".to_string()]);
+        assert_eq!(derive_http_scopes("PUT"), vec!["write".to_string()]);
+        assert_eq!(derive_http_scopes("PATCH"), vec!["write".to_string()]);
+        assert_eq!(derive_http_scopes("DELETE"), vec!["write".to_string()]);
+    }
+
+    #[test]
+    fn derive_exec_scopes_command() {
+        assert_eq!(derive_exec_scopes("gh"), vec!["exec:gh".to_string()]);
+        assert_eq!(derive_exec_scopes("git"), vec!["exec:git".to_string()]);
+    }
+
+    #[test]
+    fn check_scopes_empty_allowed_is_unrestricted() {
+        assert!(check_scopes(&["read".into()], &[]).is_ok());
+        assert!(check_scopes(&["exec:gh".into()], &[]).is_ok());
+    }
+
+    #[test]
+    fn check_scopes_exact_match() {
+        assert!(check_scopes(&["read".into()], &["read".into()]).is_ok());
+        assert!(check_scopes(&["write".into()], &["write".into()]).is_ok());
+    }
+
+    #[test]
+    fn check_scopes_prefix_match() {
+        // Allowed "exec" covers required "exec:git"
+        assert!(check_scopes(&["exec:git".into()], &["exec".into()]).is_ok());
+    }
+
+    #[test]
+    fn check_scopes_wildcard_match() {
+        assert!(check_scopes(&["exec:git".into()], &["exec:*".into()]).is_ok());
+        assert!(check_scopes(&["exec:gh".into()], &["exec:*".into()]).is_ok());
+    }
+
+    #[test]
+    fn check_scopes_mismatch() {
+        // Policy allows read only, but request requires write
+        assert!(check_scopes(&["write".into()], &["read".into()]).is_err());
+        // Policy allows exec:gh, but request requires exec:git
+        assert!(check_scopes(&["exec:git".into()], &["exec:gh".into()]).is_err());
+    }
+
+    #[test]
+    fn check_scopes_read_policy_blocks_post() {
+        let required = derive_http_scopes("POST");
+        assert!(check_scopes(&required, &["read".into()]).is_err());
+    }
+
+    #[test]
+    fn check_scopes_read_policy_allows_get() {
+        let required = derive_http_scopes("GET");
+        assert!(check_scopes(&required, &["read".into()]).is_ok());
+    }
+
+    #[test]
+    fn scope_matches_no_partial_prefix_confusion() {
+        // "rea" should NOT match "read"
+        assert!(!scope_matches("read", "rea"));
+        // "exec:g" should NOT match "exec:git"
+        assert!(!scope_matches("exec:git", "exec:g"));
     }
 }

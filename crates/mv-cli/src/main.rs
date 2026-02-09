@@ -602,6 +602,31 @@ enum KeychainAction {
         /// Backup file path
         input: String,
     },
+    /// Enable Shamir secret sharing on the vault (splits master key into shares)
+    #[command(name = "shamir-enable")]
+    ShamirEnable {
+        /// Minimum shares needed to reconstruct (M)
+        #[arg(long)]
+        threshold: u8,
+        /// Total shares to create (N)
+        #[arg(long)]
+        total: u8,
+    },
+    /// Submit a Shamir share for vault reconstruction
+    #[command(name = "shamir-submit")]
+    ShamirSubmit {
+        /// Base64-encoded share
+        share: String,
+    },
+    /// Unseal the vault using collected Shamir shares
+    #[command(name = "shamir-unseal")]
+    ShamirUnseal,
+    /// Re-split the master key into new Shamir shares (invalidates old shares)
+    #[command(name = "shamir-rotate")]
+    ShamirRotate,
+    /// Show Shamir share collection status
+    #[command(name = "shamir-status")]
+    ShamirStatus,
 }
 
 #[tokio::main]
@@ -871,6 +896,21 @@ async fn main() -> Result<()> {
             }
             KeychainAction::VaultRestore { input } => {
                 commands::keychain::vault_restore(&input, &cli.config).await
+            }
+            KeychainAction::ShamirEnable { threshold, total } => {
+                commands::keychain::shamir_enable(threshold, total, &cli.config).await
+            }
+            KeychainAction::ShamirSubmit { share } => {
+                commands::keychain::shamir_submit(&share, &cli.config).await
+            }
+            KeychainAction::ShamirUnseal => {
+                commands::keychain::shamir_unseal(&cli.config).await
+            }
+            KeychainAction::ShamirRotate => {
+                commands::keychain::shamir_rotate(&cli.config).await
+            }
+            KeychainAction::ShamirStatus => {
+                commands::keychain::shamir_status(&cli.config).await
             }
         },
 

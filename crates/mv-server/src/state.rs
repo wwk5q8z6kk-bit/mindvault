@@ -82,6 +82,7 @@ impl AgentNotification {
 pub struct WebhookConfig {
     pub reminder_url: Option<String>,
     pub change_url: Option<String>,
+    pub keychain_alert_url: Option<String>,
     pub timeout_secs: u64,
 }
 
@@ -92,6 +93,9 @@ impl WebhookConfig {
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
             change_url: std::env::var("MINDVAULT_WEBHOOK_CHANGE_URL")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
+            keychain_alert_url: std::env::var("MINDVAULT_WEBHOOK_KEYCHAIN_ALERT_URL")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
             timeout_secs: std::env::var("MINDVAULT_WEBHOOK_TIMEOUT_SECS")
@@ -172,6 +176,29 @@ impl AppState {
 
     pub fn notify_agent(&self, notification: AgentNotification) {
         let _ = self.agent_tx.send(notification);
+    }
+
+    /// Fire-and-forget webhook dispatch for keychain breach alerts.
+    pub fn notify_keychain_alert(&self, alert: &mv_core::model::keychain::BreachAlert) {
+        if let Some(ref url) = self.webhook_config.keychain_alert_url {
+            let url = url.clone();
+            let timeout = self.webhook_config.timeout_secs;
+            let payload = serde_json::json!(alert);
+            tokio::spawn(async move {
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(timeout))
+                    .build()
+                    .ok();
+                if let Some(client) = client {
+                    let _ = client
+                        .post(&url)
+                        .header("Content-Type", "application/json")
+                        .json(&payload)
+                        .send()
+                        .await;
+                }
+            });
+        }
     }
 }
 

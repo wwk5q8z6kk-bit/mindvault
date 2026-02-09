@@ -5,10 +5,8 @@
 //! to [`RelayMessage`] objects and flow through the relay engine, automatically
 //! creating vault nodes for searchability.
 
-#[allow(unused)]
 pub mod discord;
 pub mod email;
-#[allow(unused)]
 pub mod slack;
 
 use std::collections::HashMap;

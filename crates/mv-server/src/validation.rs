@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use mv_core::NodeKind;
+use mv_core::{HttpProxyRequest, ExecProxyRequest, NodeKind};
 use mv_engine::recurrence::validate_recurrence_metadata_for_kind;
 use serde_json::Value;
 
@@ -15,6 +15,24 @@ const MAX_QUERY_TEXT_LEN: usize = 4096;
 const MAX_RECALL_LIMIT: usize = 200;
 const MAX_LIST_LIMIT: usize = 500;
 const MAX_NEIGHBOR_DEPTH: usize = 8;
+
+// --- Proxy validation constants ---
+const MAX_PROXY_URL_LEN: usize = 8192;
+const MAX_PROXY_BODY_LEN: usize = 1024 * 1024; // 1 MB
+const MAX_PROXY_HEADERS: usize = 32;
+const MAX_PROXY_HEADER_NAME_LEN: usize = 256;
+const MAX_PROXY_HEADER_VALUE_LEN: usize = 8192;
+const MAX_PROXY_ARGS: usize = 64;
+const MAX_PROXY_ARG_LEN: usize = 4096;
+const MAX_PROXY_TIMEOUT_SECS: u64 = 300;
+const MIN_PROXY_INTENT_LEN: usize = 10;
+const MAX_PROXY_INTENT_LEN: usize = 500;
+const MAX_PROXY_SECRET_REF_LEN: usize = 256;
+const MAX_PROXY_COMMAND_LEN: usize = 256;
+
+const ALLOWED_HTTP_METHODS: &[&str] = &[
+    "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS",
+];
 
 #[allow(clippy::too_many_arguments)]
 pub fn validate_node_payload(
@@ -140,6 +158,142 @@ fn validate_tags(tags: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Proxy validation
+// ---------------------------------------------------------------------------
+
+/// Validate an HTTP proxy request before passing to ProxyEngine.
+pub fn validate_http_proxy_request(req: &HttpProxyRequest) -> Result<(), String> {
+    // URL
+    if req.url.trim().is_empty() {
+        return Err("url cannot be empty".into());
+    }
+    if req.url.len() > MAX_PROXY_URL_LEN {
+        return Err(format!("url exceeds max length of {MAX_PROXY_URL_LEN}"));
+    }
+
+    // Method
+    let method_upper = req.method.to_ascii_uppercase();
+    if !ALLOWED_HTTP_METHODS.contains(&method_upper.as_str()) {
+        return Err(format!(
+            "method '{}' is not allowed; permitted: {}",
+            req.method,
+            ALLOWED_HTTP_METHODS.join(", ")
+        ));
+    }
+
+    // Body
+    if let Some(ref body) = req.body {
+        if body.len() > MAX_PROXY_BODY_LEN {
+            return Err(format!(
+                "body exceeds max size of {} bytes",
+                MAX_PROXY_BODY_LEN
+            ));
+        }
+    }
+
+    // Headers
+    if req.headers.len() > MAX_PROXY_HEADERS {
+        return Err(format!(
+            "headers cannot exceed {MAX_PROXY_HEADERS} entries"
+        ));
+    }
+    for (name, value) in &req.headers {
+        if name.len() > MAX_PROXY_HEADER_NAME_LEN {
+            return Err(format!(
+                "header name '{}' exceeds max length of {MAX_PROXY_HEADER_NAME_LEN}",
+                &name[..64.min(name.len())]
+            ));
+        }
+        if value.len() > MAX_PROXY_HEADER_VALUE_LEN {
+            return Err(format!(
+                "header value for '{}' exceeds max length of {MAX_PROXY_HEADER_VALUE_LEN}",
+                name
+            ));
+        }
+    }
+
+    // Secret ref
+    validate_proxy_secret_ref(&req.secret_ref)?;
+
+    // Intent
+    validate_proxy_intent(&req.intent)?;
+
+    Ok(())
+}
+
+/// Validate an exec proxy request before passing to ProxyEngine.
+pub fn validate_exec_proxy_request(req: &ExecProxyRequest) -> Result<(), String> {
+    // Command
+    if req.command.trim().is_empty() {
+        return Err("command cannot be empty".into());
+    }
+    if req.command.len() > MAX_PROXY_COMMAND_LEN {
+        return Err(format!(
+            "command exceeds max length of {MAX_PROXY_COMMAND_LEN}"
+        ));
+    }
+
+    // Args
+    if req.args.len() > MAX_PROXY_ARGS {
+        return Err(format!("args cannot exceed {MAX_PROXY_ARGS} entries"));
+    }
+    for (i, arg) in req.args.iter().enumerate() {
+        if arg.len() > MAX_PROXY_ARG_LEN {
+            return Err(format!(
+                "arg[{i}] exceeds max length of {MAX_PROXY_ARG_LEN}"
+            ));
+        }
+    }
+
+    // Env inject: validate secret refs
+    for (env_var, secret_key) in &req.env_inject {
+        if env_var.trim().is_empty() {
+            return Err("env_inject key cannot be empty".into());
+        }
+        validate_proxy_secret_ref(secret_key)?;
+    }
+
+    // Timeout
+    if req.timeout_seconds > MAX_PROXY_TIMEOUT_SECS {
+        return Err(format!(
+            "timeout_seconds cannot exceed {MAX_PROXY_TIMEOUT_SECS}"
+        ));
+    }
+
+    // Intent
+    validate_proxy_intent(&req.intent)?;
+
+    Ok(())
+}
+
+fn validate_proxy_secret_ref(secret_ref: &str) -> Result<(), String> {
+    if secret_ref.trim().is_empty() {
+        return Err("secret_ref cannot be empty".into());
+    }
+    if secret_ref.len() > MAX_PROXY_SECRET_REF_LEN {
+        return Err(format!(
+            "secret_ref exceeds max length of {MAX_PROXY_SECRET_REF_LEN}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_proxy_intent(intent: &str) -> Result<(), String> {
+    let trimmed = intent.trim();
+    if trimmed.len() < MIN_PROXY_INTENT_LEN {
+        return Err(format!(
+            "intent must be at least {MIN_PROXY_INTENT_LEN} characters"
+        ));
+    }
+    if intent.len() > MAX_PROXY_INTENT_LEN {
+        return Err(format!(
+            "intent exceeds max length of {MAX_PROXY_INTENT_LEN}"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_metadata(metadata: Option<&HashMap<String, Value>>) -> Result<(), String> {
     let Some(metadata) = metadata else {
         return Ok(());
@@ -244,5 +398,109 @@ mod tests {
     fn validate_depth_checks_boundaries() {
         assert!(validate_depth(1).is_ok());
         assert!(validate_depth(9).is_err());
+    }
+
+    // --- Proxy validation tests ---
+
+    fn make_http_proxy_req() -> HttpProxyRequest {
+        HttpProxyRequest {
+            method: "GET".into(),
+            url: "https://api.example.com/v1/data".into(),
+            headers: HashMap::new(),
+            body: None,
+            secret_ref: "MY_API_KEY".into(),
+            inject_as: mv_core::SecretInjection::BearerHeader,
+            intent: "fetch user profile data for dashboard display".into(),
+        }
+    }
+
+    fn make_exec_proxy_req() -> ExecProxyRequest {
+        ExecProxyRequest {
+            command: "gh".into(),
+            args: vec!["pr".into(), "list".into()],
+            env_inject: {
+                let mut m = HashMap::new();
+                m.insert("GH_TOKEN".into(), "GITHUB_TOKEN".into());
+                m
+            },
+            working_dir: None,
+            timeout_seconds: 30,
+            intent: "list open pull requests for review".into(),
+        }
+    }
+
+    #[test]
+    fn proxy_http_valid_request_passes() {
+        assert!(validate_http_proxy_request(&make_http_proxy_req()).is_ok());
+    }
+
+    #[test]
+    fn proxy_http_rejects_bad_method() {
+        let mut req = make_http_proxy_req();
+        req.method = "CONNECT".into();
+        assert!(validate_http_proxy_request(&req)
+            .unwrap_err()
+            .contains("not allowed"));
+    }
+
+    #[test]
+    fn proxy_http_rejects_oversized_body() {
+        let mut req = make_http_proxy_req();
+        req.body = Some("x".repeat(MAX_PROXY_BODY_LEN + 1));
+        assert!(validate_http_proxy_request(&req)
+            .unwrap_err()
+            .contains("body exceeds"));
+    }
+
+    #[test]
+    fn proxy_http_rejects_too_many_headers() {
+        let mut req = make_http_proxy_req();
+        for i in 0..MAX_PROXY_HEADERS + 1 {
+            req.headers.insert(format!("X-Header-{i}"), "v".into());
+        }
+        assert!(validate_http_proxy_request(&req)
+            .unwrap_err()
+            .contains("headers cannot exceed"));
+    }
+
+    #[test]
+    fn proxy_http_rejects_short_intent() {
+        let mut req = make_http_proxy_req();
+        req.intent = "short".into();
+        assert!(validate_http_proxy_request(&req)
+            .unwrap_err()
+            .contains("at least"));
+    }
+
+    #[test]
+    fn proxy_http_rejects_long_intent() {
+        let mut req = make_http_proxy_req();
+        req.intent = "x".repeat(MAX_PROXY_INTENT_LEN + 1);
+        assert!(validate_http_proxy_request(&req)
+            .unwrap_err()
+            .contains("exceeds max"));
+    }
+
+    #[test]
+    fn proxy_exec_valid_request_passes() {
+        assert!(validate_exec_proxy_request(&make_exec_proxy_req()).is_ok());
+    }
+
+    #[test]
+    fn proxy_exec_rejects_too_many_args() {
+        let mut req = make_exec_proxy_req();
+        req.args = (0..MAX_PROXY_ARGS + 1).map(|i| format!("arg{i}")).collect();
+        assert!(validate_exec_proxy_request(&req)
+            .unwrap_err()
+            .contains("args cannot exceed"));
+    }
+
+    #[test]
+    fn proxy_exec_rejects_oversized_timeout() {
+        let mut req = make_exec_proxy_req();
+        req.timeout_seconds = MAX_PROXY_TIMEOUT_SECS + 1;
+        assert!(validate_exec_proxy_request(&req)
+            .unwrap_err()
+            .contains("timeout_seconds"));
     }
 }

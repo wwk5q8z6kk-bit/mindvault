@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "description": "Allowed import/call direction matrix for proprietary RLM core modules.",
+  "modules": [
+    "runtime",
+    "scheduler",
+    "policy",
+    "context",
+    "repl",
+    "audit",
+    "eval",
+    "adapters"
+  ],
+  "allowed_dependencies": {
+    "runtime": ["scheduler", "policy", "context", "repl", "audit", "adapters"],
+    "scheduler": ["policy", "audit"],
+    "policy": ["audit"],
+    "context": ["audit", "adapters"],
+    "repl": ["policy", "audit", "context"],
+    "audit": [],
+    "eval": ["runtime", "audit", "adapters"],
+    "adapters": []
+  },
+  "prohibited_examples": [
+    "adapters -> runtime",
+    "adapters -> policy",
+    "audit -> runtime",
+    "scheduler -> adapters",
+    "policy -> adapters",
+    "eval -> context (direct mutable access)"
+  ],
+  "linting_rules": {
+    "no_cycle_across_core_modules": true,
+    "no_vendor_sdk_types_in_core_domain": true,
+    "child_policy_must_not_exceed_parent": true,
+    "adapter_to_core_direction_forbidden": true
+  }
+}

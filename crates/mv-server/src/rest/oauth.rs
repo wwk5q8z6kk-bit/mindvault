@@ -203,7 +203,7 @@ async fn ensure_template_exists(
 }
 
 async fn oauth_domain_id(engine: &MindVaultEngine) -> Result<Uuid, MvError> {
-    engine.keychain.find_or_create_domain(OAUTH_CLIENT_DOMAIN).await
+    engine.keychain.find_or_create_domain(OAUTH_CLIENT_DOMAIN, "system").await
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +232,7 @@ pub async fn create_oauth_client(
         .await
         .map_err(map_keychain_error)?;
 
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let stored = state
         .engine
         .keychain
@@ -242,6 +243,7 @@ pub async fn create_oauth_client(
             client_secret.as_bytes(),
             vec!["oauth".into(), "client".into()],
             expires_at,
+            subject,
         )
         .await
         .map_err(map_keychain_error)?;
@@ -274,6 +276,7 @@ pub async fn create_oauth_client(
             Some(stored.tags.clone()),
             Some(metadata),
             stored.expires_at,
+            subject,
         )
         .await
         .map_err(map_keychain_error)?;
@@ -343,6 +346,7 @@ pub async fn revoke_oauth_client(
     Path(client_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
 
     let domain_id = oauth_domain_id(&state.engine)
         .await
@@ -361,7 +365,7 @@ pub async fn revoke_oauth_client(
     state
         .engine
         .keychain
-        .destroy_credential(cred.id)
+        .destroy_credential(cred.id, subject)
         .await
         .map_err(map_keychain_error)?;
 

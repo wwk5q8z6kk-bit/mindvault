@@ -1,5 +1,6 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
+use zeroize::Zeroize;
 
 /// Redacts secret values from output text.
 ///
@@ -54,6 +55,11 @@ impl OutputSanitizer {
                 result = result.replace(needle.as_str(), replacement);
                 any_redacted = true;
             }
+        }
+
+        // Zeroize plaintext secret needles before dropping
+        for pair in &mut pairs {
+            pair.0.zeroize();
         }
 
         (result, any_redacted)

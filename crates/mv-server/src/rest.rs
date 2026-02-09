@@ -110,7 +110,7 @@ use crate::auth::{
 };
 use crate::limits::{enforce_namespace_quota, enforce_rate_limit, NamespaceQuotaError};
 use crate::metrics::{init_metrics, metrics_handler, metrics_middleware};
-use crate::openapi::{openapi_json, swagger_ui};
+use crate::openapi::swagger_ui;
 use crate::state::AppState;
 use crate::validation::{
     validate_depth, validate_list_limit, validate_node_payload, validate_query_text,
@@ -393,6 +393,11 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/proxy/http", post(proxy::proxy_http))
         .route("/api/v1/proxy/exec", post(proxy::proxy_exec))
         .route("/api/v1/proxy/audit", get(proxy::list_audit))
+        .route("/api/v1/proxy/approvals", get(proxy::list_approvals))
+        .route(
+            "/api/v1/proxy/approvals/{id}",
+            get(proxy::get_approval).post(proxy::decide_approval),
+        )
         // --- Sovereign Keychain ---
         .route("/api/v1/keychain/init", post(keychain::init_vault))
         .route("/api/v1/keychain/unseal", post(keychain::unseal_vault))
@@ -455,6 +460,34 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route(
             "/api/v1/keychain/lifecycle/run",
             post(keychain::run_lifecycle),
+        )
+        .route(
+            "/api/v1/keychain/shamir/enable",
+            post(keychain::enable_shamir),
+        )
+        .route(
+            "/api/v1/keychain/shamir/submit",
+            post(keychain::submit_share),
+        )
+        .route(
+            "/api/v1/keychain/shamir/unseal",
+            post(keychain::shamir_unseal),
+        )
+        .route(
+            "/api/v1/keychain/shamir/rotate",
+            post(keychain::rotate_shamir),
+        )
+        .route(
+            "/api/v1/keychain/shamir/status",
+            get(keychain::shamir_status),
+        )
+        .route(
+            "/api/v1/keychain/domains/{id}/acls",
+            post(keychain::set_domain_acl).get(keychain::list_domain_acls),
+        )
+        .route(
+            "/api/v1/keychain/acls/{id}",
+            delete(keychain::delete_domain_acl),
         )
         .route("/api/v1/keychain/backup", post(keychain::backup_vault))
         .route("/api/v1/keychain/restore", post(keychain::restore_vault))
@@ -5061,14 +5094,6 @@ impl AssistTransformMode {
 }
 
 // --- Handlers ---
-
-async fn openapi_spec_handler() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        [("content-type", "application/json")],
-        openapi_json(),
-    )
-}
 
 async fn health(
     Extension(auth): Extension<AuthContext>,

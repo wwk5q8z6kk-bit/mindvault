@@ -1,7 +1,7 @@
 use mv_core::*;
 use mv_storage::unified::UnifiedStore;
 use std::sync::Arc;
-use uuid::Uuid;
+
 
 /// Heuristic conflict detection: finds contradictions between knowledge nodes.
 pub struct ConflictDetector;

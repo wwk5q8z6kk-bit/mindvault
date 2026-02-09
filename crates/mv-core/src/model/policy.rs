@@ -41,10 +41,19 @@ pub enum PolicyDecision {
     Deny {
         reason: String,
     },
+    /// Policy grants access but requires human-in-the-loop approval first.
+    RequiresApproval {
+        ttl_seconds: i64,
+        scopes: Vec<String>,
+    },
 }
 
 impl PolicyDecision {
     pub fn is_allowed(&self) -> bool {
         matches!(self, Self::Allow { .. })
+    }
+
+    pub fn requires_approval(&self) -> bool {
+        matches!(self, Self::RequiresApproval { .. })
     }
 }

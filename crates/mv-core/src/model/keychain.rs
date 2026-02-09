@@ -56,6 +56,12 @@ pub struct VaultMeta {
     pub created_at: DateTime<Utc>,
     pub last_rotated_at: Option<DateTime<Utc>>,
     pub macos_keychain_service: Option<String>,
+    /// Shamir threshold (M): minimum shares needed to reconstruct the key.
+    pub shamir_threshold: Option<u8>,
+    /// Shamir total (N): total shares created.
+    pub shamir_total: Option<u8>,
+    /// When Shamir shares were last rotated (re-split).
+    pub shamir_last_rotated_at: Option<DateTime<Utc>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +191,8 @@ pub struct StoredCredential {
     pub destroyed_at: Option<DateTime<Utc>>,
     pub delegation_id: Option<Uuid>,
     pub version: u32,
+    /// Whether `name` and `description` are encrypted at rest.
+    pub metadata_encrypted: bool,
 }
 
 impl StoredCredential {
@@ -217,6 +225,7 @@ impl StoredCredential {
             destroyed_at: None,
             delegation_id: None,
             version: 1,
+            metadata_encrypted: false,
         }
     }
 
@@ -239,6 +248,22 @@ impl StoredCredential {
         self.expires_at = Some(expires_at);
         self
     }
+}
+
+// ---------------------------------------------------------------------------
+// Domain ACLs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainAcl {
+    pub id: Uuid,
+    pub domain_id: Uuid,
+    pub subject: String,
+    pub can_read: bool,
+    pub can_write: bool,
+    pub can_admin: bool,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +330,9 @@ pub enum KeychainAuditAction {
     ProofVerified,
     BreachDetected,
     LifecycleTransition,
+    ShamirEnabled,
+    ShamirUnseal,
+    ShamirRotated,
 }
 
 impl KeychainAuditAction {
@@ -331,6 +359,9 @@ impl KeychainAuditAction {
             Self::ProofVerified => "proof_verified",
             Self::BreachDetected => "breach_detected",
             Self::LifecycleTransition => "lifecycle_transition",
+            Self::ShamirEnabled => "shamir_enabled",
+            Self::ShamirUnseal => "shamir_unseal",
+            Self::ShamirRotated => "shamir_rotated",
         }
     }
 }
@@ -361,6 +392,9 @@ impl std::str::FromStr for KeychainAuditAction {
             "proof_verified" => Ok(Self::ProofVerified),
             "breach_detected" => Ok(Self::BreachDetected),
             "lifecycle_transition" => Ok(Self::LifecycleTransition),
+            "shamir_enabled" => Ok(Self::ShamirEnabled),
+            "shamir_unseal" => Ok(Self::ShamirUnseal),
+            "shamir_rotated" => Ok(Self::ShamirRotated),
             _ => Err(format!("unknown keychain audit action: {s}")),
         }
     }
@@ -385,6 +419,48 @@ pub struct KeychainAuditEntry {
     pub timestamp: DateTime<Utc>,
     pub source_ip: Option<String>,
     pub signature: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Audit Verification Result
+// ---------------------------------------------------------------------------
+
+/// Outcome of `verify_audit_integrity()` with distinct sealed/unsealed semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditVerificationResult {
+    /// All checks passed: hash chain valid **and** HMAC signatures verified.
+    FullyVerified,
+    /// Hash chain is valid, but vault was sealed so HMAC signatures could not be checked.
+    ChainOnlyValid,
+    /// Either the hash chain is broken or at least one HMAC signature is invalid.
+    Failed,
+}
+
+impl AuditVerificationResult {
+    /// Backward-compatible boolean: `true` for `FullyVerified` and `ChainOnlyValid`.
+    pub fn is_valid(&self) -> bool {
+        matches!(self, Self::FullyVerified | Self::ChainOnlyValid)
+    }
+
+    /// Whether HMAC signatures were actually checked.
+    pub fn signatures_checked(&self) -> bool {
+        matches!(self, Self::FullyVerified)
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::FullyVerified => "fully_verified",
+            Self::ChainOnlyValid => "chain_only_valid",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::fmt::Display for AuditVerificationResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 // ---------------------------------------------------------------------------

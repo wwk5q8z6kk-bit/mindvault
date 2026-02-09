@@ -116,12 +116,81 @@ impl RequestRateLimiter {
 }
 
 static RATE_LIMITER: OnceLock<RequestRateLimiter> = OnceLock::new();
+static PROXY_RATE_LIMITER: OnceLock<RequestRateLimiter> = OnceLock::new();
 static NAMESPACE_NODE_QUOTA: OnceLock<Option<usize>> = OnceLock::new();
 
 pub fn enforce_rate_limit(auth: &AuthContext) -> Result<(), RateLimitExceeded> {
     let key = rate_limit_key(auth);
     RATE_LIMITER
         .get_or_init(|| RequestRateLimiter::new(RateLimitConfig::from_env()))
+        .check(&key)
+}
+
+const ENV_PROXY_RATE_LIMIT_REQUESTS: &str = "MINDVAULT_PROXY_RATE_LIMIT_REQUESTS";
+const ENV_PROXY_RATE_LIMIT_WINDOW_SECS: &str = "MINDVAULT_PROXY_RATE_LIMIT_WINDOW_SECS";
+
+const DEFAULT_PROXY_RATE_LIMIT_REQUESTS: usize = 60;
+const DEFAULT_PROXY_RATE_LIMIT_WINDOW_SECS: u64 = 3600;
+
+/// Enforce per-consumer per-secret rate limiting for proxy requests.
+///
+/// Key format: `proxy:{consumer}:{secret_ref}` — so each consumer gets its own
+/// rate limit bucket for each secret they access via the proxy.
+pub fn enforce_proxy_rate_limit(
+    consumer: &str,
+    secret_ref: &str,
+) -> Result<(), RateLimitExceeded> {
+    let key = format!("proxy:{consumer}:{secret_ref}");
+    PROXY_RATE_LIMITER
+        .get_or_init(|| {
+            let max_requests = read_env_usize(ENV_PROXY_RATE_LIMIT_REQUESTS)
+                .unwrap_or(DEFAULT_PROXY_RATE_LIMIT_REQUESTS);
+            let window_secs = read_env_u64(ENV_PROXY_RATE_LIMIT_WINDOW_SECS)
+                .filter(|v| *v > 0)
+                .unwrap_or(DEFAULT_PROXY_RATE_LIMIT_WINDOW_SECS);
+            RequestRateLimiter::new(RateLimitConfig {
+                enabled: max_requests > 0,
+                max_requests,
+                window: Duration::from_secs(window_secs),
+            })
+        })
+        .check(&key)
+}
+
+// ---------------------------------------------------------------------------
+// Keychain credential read rate limiting
+// ---------------------------------------------------------------------------
+
+const ENV_KEYCHAIN_READ_RATE_LIMIT: &str = "MINDVAULT_KEYCHAIN_READ_RATE_LIMIT";
+const ENV_KEYCHAIN_READ_RATE_LIMIT_WINDOW: &str = "MINDVAULT_KEYCHAIN_READ_RATE_LIMIT_WINDOW";
+
+const DEFAULT_KEYCHAIN_READ_RATE_LIMIT: usize = 30;
+const DEFAULT_KEYCHAIN_READ_RATE_LIMIT_WINDOW: u64 = 60;
+
+static KEYCHAIN_READ_RATE_LIMITER: OnceLock<RequestRateLimiter> = OnceLock::new();
+
+/// Enforce per-subject per-credential rate limiting for keychain credential reads.
+///
+/// Key format: `kc-read:{subject}:{credential_id}` — each subject gets a separate
+/// rate limit bucket for each credential they decrypt.
+pub fn enforce_keychain_read_rate_limit(
+    subject: &str,
+    credential_id: &str,
+) -> Result<(), RateLimitExceeded> {
+    let key = format!("kc-read:{subject}:{credential_id}");
+    KEYCHAIN_READ_RATE_LIMITER
+        .get_or_init(|| {
+            let max_requests = read_env_usize(ENV_KEYCHAIN_READ_RATE_LIMIT)
+                .unwrap_or(DEFAULT_KEYCHAIN_READ_RATE_LIMIT);
+            let window_secs = read_env_u64(ENV_KEYCHAIN_READ_RATE_LIMIT_WINDOW)
+                .filter(|v| *v > 0)
+                .unwrap_or(DEFAULT_KEYCHAIN_READ_RATE_LIMIT_WINDOW);
+            RequestRateLimiter::new(RateLimitConfig {
+                enabled: max_requests > 0,
+                max_requests,
+                window: Duration::from_secs(window_secs),
+            })
+        })
         .check(&key)
 }
 
@@ -220,6 +289,25 @@ mod tests {
         assert!(limiter.check_at("k", now).is_ok());
         assert!(limiter.check_at("k", now + Duration::from_secs(1)).is_err());
         assert!(limiter.check_at("k", now + Duration::from_secs(11)).is_ok());
+    }
+
+    #[test]
+    fn proxy_rate_limiter_separate_keys() {
+        let limiter = RequestRateLimiter::new(RateLimitConfig {
+            enabled: true,
+            max_requests: 1,
+            window: Duration::from_secs(3600),
+        });
+        let now = Instant::now();
+
+        // Different consumers get separate buckets
+        assert!(limiter.check_at("proxy:alice:KEY", now).is_ok());
+        assert!(limiter.check_at("proxy:bob:KEY", now).is_ok());
+
+        // Same consumer, same key is blocked
+        assert!(limiter
+            .check_at("proxy:alice:KEY", now + Duration::from_secs(1))
+            .is_err());
     }
 
     #[test]

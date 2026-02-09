@@ -64,6 +64,46 @@ impl SqliteKeychainStore {
                 )));
             }
         }
+
+        // Shamir VEK splitting migration (idempotent)
+        let shamir_sql = include_str!("../../../migrations/017_shamir.sql");
+        if let Err(e) = conn.execute_batch(shamir_sql) {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column") {
+                return Err(MvError::Migration(format!(
+                    "shamir migration failed: {e}"
+                )));
+            }
+        }
+
+        // Breach alert deduplication index (idempotent — CREATE INDEX IF NOT EXISTS)
+        let dedup_sql = include_str!("../../../migrations/018_breach_alert_dedup.sql");
+        conn.execute_batch(dedup_sql)
+            .map_err(|e| MvError::Migration(format!("breach alert dedup migration failed: {e}")))?;
+
+        // Metadata encryption column (idempotent — column may already exist)
+        let meta_enc_sql = include_str!("../../../migrations/019_metadata_encryption.sql");
+        if let Err(e) = conn.execute_batch(meta_enc_sql) {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column") {
+                return Err(MvError::Migration(format!("metadata encryption migration failed: {e}")));
+            }
+        }
+
+        // Domain ACLs (idempotent — CREATE TABLE/INDEX IF NOT EXISTS)
+        let acl_sql = include_str!("../../../migrations/020_credential_acls.sql");
+        conn.execute_batch(acl_sql)
+            .map_err(|e| MvError::Migration(format!("credential ACLs migration failed: {e}")))?;
+
+        // Shamir rotation tracking (idempotent — column may already exist)
+        let shamir_rot_sql = include_str!("../../../migrations/021_shamir_rotation.sql");
+        if let Err(e) = conn.execute_batch(shamir_rot_sql) {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column") {
+                return Err(MvError::Migration(format!("shamir rotation migration failed: {e}")));
+            }
+        }
+
         Ok(())
     }
 }
@@ -134,6 +174,7 @@ fn row_to_credential(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredCredenti
             .get::<_, Option<String>>(17)?
             .and_then(|s| Uuid::parse_str(&s).ok()),
         version: row.get::<_, i32>(18)? as u32,
+        metadata_encrypted: row.get::<_, bool>(19).unwrap_or(false),
         tags: Vec::new(), // loaded separately
     })
 }
@@ -165,6 +206,24 @@ fn row_to_delegation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Delegation> {
             .map(|dt| dt.with_timezone(&Utc)),
         max_depth: row.get::<_, i32>(11)? as u32,
         depth: row.get::<_, i32>(12)? as u32,
+    })
+}
+
+fn row_to_acl(row: &rusqlite::Row<'_>) -> rusqlite::Result<DomainAcl> {
+    Ok(DomainAcl {
+        id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap_or_default(),
+        domain_id: Uuid::parse_str(&row.get::<_, String>(1)?).unwrap_or_default(),
+        subject: row.get(2)?,
+        can_read: row.get(3)?,
+        can_write: row.get(4)?,
+        can_admin: row.get(5)?,
+        created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_default(),
+        expires_at: row
+            .get::<_, Option<String>>(7)?
+            .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+            .map(|dt| dt.with_timezone(&Utc)),
     })
 }
 
@@ -236,7 +295,9 @@ impl KeychainStore for SqliteKeychainStore {
         let mut stmt = conn
             .prepare(
                 "SELECT schema_version, master_salt, verification_blob, key_epoch, \
-                 created_at, last_rotated_at, macos_keychain_service FROM keychain_meta WHERE id = 1",
+                 created_at, last_rotated_at, macos_keychain_service, \
+                 shamir_threshold, shamir_total, shamir_last_rotated_at \
+                 FROM keychain_meta WHERE id = 1",
             )
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -255,6 +316,12 @@ impl KeychainStore for SqliteKeychainStore {
                         .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
                         .map(|dt| dt.with_timezone(&Utc)),
                     macos_keychain_service: row.get(6)?,
+                    shamir_threshold: row.get::<_, Option<i32>>(7)?.map(|v| v as u8),
+                    shamir_total: row.get::<_, Option<i32>>(8)?.map(|v| v as u8),
+                    shamir_last_rotated_at: row
+                        .get::<_, Option<String>>(9)?
+                        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                        .map(|dt| dt.with_timezone(&Utc)),
                 })
             })
             .optional()
@@ -270,11 +337,13 @@ impl KeychainStore for SqliteKeychainStore {
             .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
             "INSERT INTO keychain_meta (id, schema_version, master_salt, verification_blob, \
-             key_epoch, created_at, last_rotated_at, macos_keychain_service) \
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             key_epoch, created_at, last_rotated_at, macos_keychain_service, \
+             shamir_threshold, shamir_total, shamir_last_rotated_at) \
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
              ON CONFLICT(id) DO UPDATE SET \
              schema_version=?1, master_salt=?2, verification_blob=?3, \
-             key_epoch=?4, last_rotated_at=?6, macos_keychain_service=?7",
+             key_epoch=?4, last_rotated_at=?6, macos_keychain_service=?7, \
+             shamir_threshold=?8, shamir_total=?9, shamir_last_rotated_at=?10",
             params![
                 meta.schema_version as i32,
                 meta.master_salt,
@@ -283,6 +352,9 @@ impl KeychainStore for SqliteKeychainStore {
                 meta.created_at.to_rfc3339(),
                 meta.last_rotated_at.map(|dt| dt.to_rfc3339()),
                 meta.macos_keychain_service,
+                meta.shamir_threshold.map(|v| v as i32),
+                meta.shamir_total.map(|v| v as i32),
+                meta.shamir_last_rotated_at.map(|dt| dt.to_rfc3339()),
             ],
         )
         .map_err(|e| MvError::Storage(e.to_string()))?;
@@ -497,8 +569,8 @@ impl KeychainStore for SqliteKeychainStore {
             "INSERT INTO credentials (id, domain_id, name, description, kind, encrypted_value, \
              derivation_info, epoch, state, metadata_json, created_at, updated_at, \
              last_accessed_at, access_count, expires_at, archived_at, destroyed_at, \
-             delegation_id, version) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+             delegation_id, version, metadata_encrypted) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 cred.id.to_string(),
                 cred.domain_id.to_string(),
@@ -519,6 +591,7 @@ impl KeychainStore for SqliteKeychainStore {
                 cred.destroyed_at.map(|dt| dt.to_rfc3339()),
                 cred.delegation_id.map(|id| id.to_string()),
                 cred.version as i32,
+                cred.metadata_encrypted,
             ],
         )
         .map_err(|e| MvError::Storage(e.to_string()))?;
@@ -546,7 +619,7 @@ impl KeychainStore for SqliteKeychainStore {
                 "SELECT id, domain_id, name, description, kind, encrypted_value, \
                  derivation_info, epoch, state, metadata_json, created_at, updated_at, \
                  last_accessed_at, access_count, expires_at, archived_at, destroyed_at, \
-                 delegation_id, version FROM credentials WHERE id = ?1",
+                 delegation_id, version, metadata_encrypted FROM credentials WHERE id = ?1",
             )
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -573,8 +646,8 @@ impl KeychainStore for SqliteKeychainStore {
             "UPDATE credentials SET domain_id=?2, name=?3, description=?4, kind=?5, \
              encrypted_value=?6, derivation_info=?7, epoch=?8, state=?9, metadata_json=?10, \
              updated_at=?11, last_accessed_at=?12, access_count=?13, expires_at=?14, \
-             archived_at=?15, destroyed_at=?16, delegation_id=?17, version=?18 \
-             WHERE id = ?1",
+             archived_at=?15, destroyed_at=?16, delegation_id=?17, version=?18, \
+             metadata_encrypted=?19 WHERE id = ?1",
             params![
                 cred.id.to_string(),
                 cred.domain_id.to_string(),
@@ -594,6 +667,7 @@ impl KeychainStore for SqliteKeychainStore {
                 cred.destroyed_at.map(|dt| dt.to_rfc3339()),
                 cred.delegation_id.map(|id| id.to_string()),
                 cred.version as i32,
+                cred.metadata_encrypted,
             ],
         )
         .map_err(|e| MvError::Storage(e.to_string()))?;
@@ -620,7 +694,7 @@ impl KeychainStore for SqliteKeychainStore {
             "SELECT id, domain_id, name, description, kind, encrypted_value, \
              derivation_info, epoch, state, metadata_json, created_at, updated_at, \
              last_accessed_at, access_count, expires_at, archived_at, destroyed_at, \
-             delegation_id, version FROM credentials WHERE 1=1",
+             delegation_id, version, metadata_encrypted FROM credentials WHERE 1=1",
         );
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -1089,6 +1163,28 @@ impl KeychainStore for SqliteKeychainStore {
         Ok(())
     }
 
+    async fn has_recent_breach_alert(
+        &self,
+        credential_id: Uuid,
+        alert_type: &str,
+        within_secs: u64,
+    ) -> MvResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let cutoff = (Utc::now() - chrono::Duration::seconds(within_secs as i64)).to_rfc3339();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM breach_alerts \
+                 WHERE credential_id = ?1 AND alert_type = ?2 AND timestamp > ?3",
+                params![credential_id.to_string(), alert_type, cutoff],
+                |row| row.get(0),
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(count > 0)
+    }
+
     // -- Tags --
 
     async fn get_credential_tags(&self, credential_id: Uuid) -> MvResult<Vec<String>> {
@@ -1142,6 +1238,84 @@ impl KeychainStore for SqliteKeychainStore {
             .map_err(|e| MvError::Storage(e.to_string()))?;
         Ok(result.unwrap_or((0, None)))
     }
+
+    // --- Domain ACLs ---
+
+    async fn insert_acl(&self, acl: &DomainAcl) -> MvResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO credential_acls \
+             (id, domain_id, subject, can_read, can_write, can_admin, created_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                acl.id.to_string(),
+                acl.domain_id.to_string(),
+                acl.subject,
+                acl.can_read,
+                acl.can_write,
+                acl.can_admin,
+                acl.created_at.to_rfc3339(),
+                acl.expires_at.map(|dt| dt.to_rfc3339()),
+            ],
+        )
+        .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn get_acls_for_domain(&self, domain_id: Uuid) -> MvResult<Vec<DomainAcl>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, domain_id, subject, can_read, can_write, can_admin, \
+                 created_at, expires_at FROM credential_acls WHERE domain_id = ?1",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![domain_id.to_string()], row_to_acl)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| MvError::Storage(e.to_string()))
+    }
+
+    async fn get_acl_for_subject(
+        &self,
+        domain_id: Uuid,
+        subject: &str,
+    ) -> MvResult<Option<DomainAcl>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, domain_id, subject, can_read, can_write, can_admin, \
+                 created_at, expires_at FROM credential_acls \
+                 WHERE domain_id = ?1 AND subject = ?2",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        stmt.query_row(params![domain_id.to_string(), subject], row_to_acl)
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))
+    }
+
+    async fn delete_acl(&self, id: Uuid) -> MvResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM credential_acls WHERE id = ?1",
+            params![id.to_string()],
+        )
+        .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1169,6 +1343,9 @@ mod tests {
             created_at: Utc::now(),
             last_rotated_at: None,
             macos_keychain_service: None,
+            shamir_threshold: None,
+            shamir_total: None,
+            shamir_last_rotated_at: None,
         };
         s.save_vault_meta(&meta).await.unwrap();
 

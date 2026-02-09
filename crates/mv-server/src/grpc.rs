@@ -764,7 +764,7 @@ impl KeychainService for KeychainGrpc {
 
         engine
             .keychain
-            .initialize_vault(&req.password, req.macos_bridge)
+            .initialize_vault(&req.password, req.macos_bridge, "grpc")
             .await
             .map_err(map_keychain_status)?;
 
@@ -791,13 +791,13 @@ impl KeychainService for KeychainGrpc {
         if req.from_macos_keychain {
             engine
                 .keychain
-                .unseal_from_macos_keychain()
+                .unseal_from_macos_keychain("grpc")
                 .await
                 .map_err(map_keychain_status)?;
         } else {
             engine
                 .keychain
-                .unseal(&req.password.unwrap_or_default())
+                .unseal(&req.password.unwrap_or_default(), "grpc")
                 .await
                 .map_err(map_keychain_status)?;
         }
@@ -816,7 +816,7 @@ impl KeychainService for KeychainGrpc {
         self.state
             .engine
             .keychain
-            .seal()
+            .seal("grpc")
             .await
             .map_err(map_keychain_status)?;
 
@@ -856,7 +856,7 @@ impl KeychainService for KeychainGrpc {
         self.state
             .engine
             .keychain
-            .rotate_master_key(&req.new_password, req.grace_hours)
+            .rotate_master_key(&req.new_password, req.grace_hours, "grpc")
             .await
             .map_err(map_keychain_status)?;
 
@@ -907,6 +907,7 @@ impl KeychainService for KeychainGrpc {
                 req.value.as_bytes(),
                 req.tags,
                 expires_at,
+                "grpc",
             )
             .await
             .map_err(map_keychain_status)?;
@@ -933,7 +934,7 @@ impl KeychainService for KeychainGrpc {
             .parse()
             .map_err(|_| Status::invalid_argument("invalid credential id UUID"))?;
 
-        let (cred, plaintext) = self
+        let (cred, plaintext, _alerts) = self
             .state
             .engine
             .keychain
@@ -1023,7 +1024,7 @@ impl KeychainService for KeychainGrpc {
         self.state
             .engine
             .keychain
-            .destroy_credential(id)
+            .destroy_credential(id, "grpc")
             .await
             .map_err(map_keychain_status)?;
 
@@ -1048,7 +1049,7 @@ impl KeychainService for KeychainGrpc {
             .state
             .engine
             .keychain
-            .generate_proof(credential_id, &req.nonce)
+            .generate_proof(credential_id, &req.nonce, "grpc")
             .await
             .map_err(map_keychain_status)?;
 
@@ -1073,7 +1074,7 @@ impl KeychainService for KeychainGrpc {
             .state
             .engine
             .keychain
-            .verify_proof(&proof)
+            .verify_proof(&proof, "grpc")
             .await
             .map_err(map_keychain_status)?;
 

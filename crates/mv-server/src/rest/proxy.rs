@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Extension, Json,
@@ -9,11 +9,13 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use mv_core::{ExecProxyRequest, HttpProxyRequest, ProxyAuditEntry};
-use mv_engine::proxy::ProxyEngine;
+use mv_core::{ApprovalDecision, ApprovalRequest, ExecProxyRequest, HttpProxyRequest, ProxyAuditEntry};
+use mv_engine::proxy::{ProxyEngine, ProxyError};
 
 use crate::auth::{authorize_read, authorize_write, AuthContext};
+use crate::limits::enforce_proxy_rate_limit;
 use crate::state::AppState;
+use crate::validation::{validate_exec_proxy_request, validate_http_proxy_request};
 
 // ---------------------------------------------------------------------------
 // Response DTOs
@@ -122,21 +124,20 @@ pub async fn proxy_http(
         }
     };
 
-    if req.url.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorBody {
-                error: "url is required".into(),
-            }),
-        )
-            .into_response();
+    // Input validation
+    if let Err(e) = validate_http_proxy_request(&req) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: e })).into_response();
     }
 
-    if req.secret_ref.trim().is_empty() {
+    // Per-consumer per-secret rate limiting
+    if let Err(exceeded) = enforce_proxy_rate_limit(&consumer_name, &req.secret_ref) {
         return (
-            StatusCode::BAD_REQUEST,
+            StatusCode::TOO_MANY_REQUESTS,
             Json(ErrorBody {
-                error: "secret_ref is required".into(),
+                error: format!(
+                    "rate limit exceeded: {} requests per {}s (retry after {}s)",
+                    exceeded.max_requests, exceeded.window_secs, exceeded.retry_after_secs
+                ),
             }),
         )
             .into_response();
@@ -150,18 +151,7 @@ pub async fn proxy_http(
             sanitized: response.sanitized,
         })
         .into_response(),
-        Err(e) => {
-            let status = if e.contains("access denied") || e.contains("no policy") {
-                StatusCode::FORBIDDEN
-            } else if e.contains("blocked") {
-                StatusCode::FORBIDDEN
-            } else if e.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::BAD_GATEWAY
-            };
-            (status, Json(ErrorBody { error: e })).into_response()
-        }
+        Err(e) => proxy_error_to_response(e),
     }
 }
 
@@ -196,11 +186,21 @@ pub async fn proxy_exec(
         }
     };
 
-    if req.command.trim().is_empty() {
+    // Input validation
+    if let Err(e) = validate_exec_proxy_request(&req) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: e })).into_response();
+    }
+
+    // Per-consumer rate limiting (use first secret_ref for key)
+    let primary_secret_ref = req.env_inject.values().next().map(|s| s.as_str()).unwrap_or("*");
+    if let Err(exceeded) = enforce_proxy_rate_limit(&consumer_name, primary_secret_ref) {
         return (
-            StatusCode::BAD_REQUEST,
+            StatusCode::TOO_MANY_REQUESTS,
             Json(ErrorBody {
-                error: "command is required".into(),
+                error: format!(
+                    "rate limit exceeded: {} requests per {}s (retry after {}s)",
+                    exceeded.max_requests, exceeded.window_secs, exceeded.retry_after_secs
+                ),
             }),
         )
             .into_response();
@@ -214,20 +214,7 @@ pub async fn proxy_exec(
             sanitized: response.sanitized,
         })
         .into_response(),
-        Err(e) => {
-            let status = if e.contains("access denied") || e.contains("no policy") {
-                StatusCode::FORBIDDEN
-            } else if e.contains("blocked") || e.contains("not in the allowed list") {
-                StatusCode::FORBIDDEN
-            } else if e.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else if e.contains("timed out") {
-                StatusCode::GATEWAY_TIMEOUT
-            } else {
-                StatusCode::BAD_GATEWAY
-            };
-            (status, Json(ErrorBody { error: e })).into_response()
-        }
+        Err(e) => proxy_error_to_response(e),
     }
 }
 
@@ -269,6 +256,228 @@ pub async fn list_audit(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorBody {
                 error: format!("failed to list audit entries: {e}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProxyError → HTTP Response mapping
+// ---------------------------------------------------------------------------
+
+fn proxy_error_to_response(err: ProxyError) -> axum::response::Response {
+    match err {
+        ProxyError::Denied(reason) => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorBody { error: reason }),
+        )
+            .into_response(),
+        ProxyError::ApprovalRequired {
+            approval_id,
+            message,
+        } => (
+            StatusCode::ACCEPTED,
+            Json(ApprovalRequiredResponse {
+                approval_id,
+                message,
+                poll_url: format!("/api/v1/proxy/approvals/{approval_id}"),
+            }),
+        )
+            .into_response(),
+        ProxyError::Failed(reason) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorBody { error: reason }),
+        )
+            .into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Approval DTOs
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct ApprovalRequiredResponse {
+    pub approval_id: Uuid,
+    pub message: String,
+    pub poll_url: String,
+}
+
+#[derive(Serialize)]
+pub struct ApprovalResponse {
+    pub id: Uuid,
+    pub consumer: String,
+    pub secret_key: String,
+    pub intent: String,
+    pub request_summary: String,
+    pub state: String,
+    pub created_at: String,
+    pub expires_at: String,
+    pub decided_at: Option<String>,
+    pub decided_by: Option<String>,
+    pub deny_reason: Option<String>,
+    pub scopes: Vec<String>,
+}
+
+impl From<ApprovalRequest> for ApprovalResponse {
+    fn from(a: ApprovalRequest) -> Self {
+        Self {
+            id: a.id,
+            consumer: a.consumer,
+            secret_key: a.secret_key,
+            intent: a.intent,
+            request_summary: a.request_summary,
+            state: a.state.to_string(),
+            created_at: a.created_at.to_rfc3339(),
+            expires_at: a.expires_at.to_rfc3339(),
+            decided_at: a.decided_at.map(|t| t.to_rfc3339()),
+            decided_by: a.decided_by,
+            deny_reason: a.deny_reason,
+            scopes: a.scopes,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ApprovalListQuery {
+    pub consumer: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Approval Handlers
+// ---------------------------------------------------------------------------
+
+/// GET /api/v1/proxy/approvals
+///
+/// List pending approval requests. Admins see all; consumers see their own.
+pub async fn list_approvals(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ApprovalListQuery>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize_read(&auth) {
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
+    }
+
+    let consumer_filter = match &auth.consumer_name {
+        Some(name) => Some(name.as_str()),
+        None => query.consumer.as_deref(),
+    };
+
+    match state.engine.list_pending_approvals(consumer_filter).await {
+        Ok(approvals) => {
+            let responses: Vec<ApprovalResponse> =
+                approvals.into_iter().map(ApprovalResponse::from).collect();
+            Json(responses).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: format!("failed to list approvals: {e}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/v1/proxy/approvals/:id
+///
+/// Get a specific approval request by ID.
+pub async fn get_approval(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize_read(&auth) {
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
+    }
+
+    match state.engine.get_approval(id).await {
+        Ok(Some(approval)) => {
+            // Consumers can only see their own approvals
+            if let Some(ref consumer_name) = auth.consumer_name {
+                if approval.consumer != *consumer_name {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(ErrorBody {
+                            error: "access denied: approval belongs to a different consumer".into(),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+            Json(ApprovalResponse::from(approval)).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: format!("approval {id} not found"),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: format!("failed to get approval: {e}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/v1/proxy/approvals/:id
+///
+/// Decide on an approval request (approve or deny). Admin-only.
+pub async fn decide_approval(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(decision): Json<ApprovalDecision>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize_write(&auth) {
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
+    }
+
+    // Only admins (non-consumer auth) can decide approvals
+    if auth.consumer_name.is_some() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorBody {
+                error: "only admins can decide approvals (not consumer tokens)".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    match state
+        .engine
+        .decide_approval(
+            id,
+            decision.approved,
+            decision.decided_by.as_deref(),
+            decision.deny_reason.as_deref(),
+        )
+        .await
+    {
+        Ok(true) => {
+            // Re-fetch to return updated state
+            match state.engine.get_approval(id).await {
+                Ok(Some(approval)) => Json(ApprovalResponse::from(approval)).into_response(),
+                _ => (StatusCode::OK, Json(ErrorBody { error: "decided".into() })).into_response(),
+            }
+        }
+        Ok(false) => (
+            StatusCode::CONFLICT,
+            Json(ErrorBody {
+                error: format!("approval {id} is no longer pending (already decided or expired)"),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: format!("failed to decide approval: {e}"),
             }),
         )
             .into_response(),

@@ -27,6 +27,7 @@ fastembed = { version = "5.8", optional = true, default-features = false, featur
 sha2 = { workspace = true }
 hkdf = { workspace = true }
 hmac = { workspace = true }
+sharks = { workspace = true }
 aes-gcm = "0.10"
 argon2 = "0.5"
 rand = "0.8"

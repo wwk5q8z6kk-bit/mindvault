@@ -90,6 +90,30 @@ pub async fn start_server(
     spawn_recurrence_and_reminder_scheduler(Arc::clone(&state));
     email::spawn_email_adapter(Arc::clone(&state), shutdown_tx.subscribe());
 
+    // Background task: expire stale proxy approvals every 60 seconds
+    {
+        let engine = Arc::clone(&state.engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await; // first tick is immediate, skip it
+            loop {
+                interval.tick().await;
+                match engine.expire_approvals().await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::debug!("expired {n} stale proxy approvals"),
+                    Err(e) => tracing::warn!("failed to expire proxy approvals: {e}"),
+                }
+            }
+        });
+    }
+
+    // Keychain lifecycle scheduler (credential expiry + auto-rotation)
+    state
+        .engine
+        .keychain
+        .start_lifecycle_scheduler(&state.engine.config.keychain)
+        .await;
+
     // REST + WebSocket server
     let rest_state = Arc::clone(&state);
     let ws_state = Arc::clone(&state);

@@ -15,6 +15,31 @@ pub struct EngineConfig {
     pub recurrence: RecurrenceConfig,
     pub encryption: EncryptionConfig,
     pub watcher: WatcherConfig,
+    pub keychain: KeychainConfig,
+}
+
+/// Configuration for keychain lifecycle automation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeychainConfig {
+    /// Interval between lifecycle checks in seconds (default: 3600 = 1 hour).
+    pub lifecycle_check_interval_secs: u64,
+    /// Whether automatic key rotation is enabled.
+    pub auto_rotate_enabled: bool,
+    /// How often to rotate the master key, in days (default: 90).
+    pub auto_rotate_interval_days: u32,
+    /// Grace period for old keys after rotation, in hours (default: 24).
+    pub auto_rotate_grace_hours: u32,
+}
+
+impl Default for KeychainConfig {
+    fn default() -> Self {
+        Self {
+            lifecycle_check_interval_secs: 3600,
+            auto_rotate_enabled: false,
+            auto_rotate_interval_days: 90,
+            auto_rotate_grace_hours: 24,
+        }
+    }
 }
 
 /// Configuration for the Watcher Agent.
@@ -115,6 +140,7 @@ impl Default for EngineConfig {
             recurrence: RecurrenceConfig::default(),
             encryption: EncryptionConfig::default(),
             watcher: WatcherConfig::default(),
+            keychain: KeychainConfig::default(),
         }
     }
 }

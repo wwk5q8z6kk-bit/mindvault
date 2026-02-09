@@ -654,8 +654,9 @@ impl MindVaultEngine {
                 }
 
                 if p.require_approval {
-                    return Ok(PolicyDecision::Deny {
-                        reason: format!("policy requires human-in-the-loop approval"),
+                    return Ok(PolicyDecision::RequiresApproval {
+                        ttl_seconds: p.max_ttl_seconds.unwrap_or(300),
+                        scopes: p.scopes.clone(),
                     });
                 }
 
@@ -716,6 +717,57 @@ impl MindVaultEngine {
         self.store
             .nodes
             .list_proxy_audit(consumer, limit, offset)
+            .await
+    }
+
+    // ── Proxy Approvals ─────────────────────────────────────────────
+
+    /// Create a new approval request.
+    pub async fn create_approval(&self, request: &ApprovalRequest) -> MvResult<()> {
+        self.store.nodes.create_approval(request).await
+    }
+
+    /// Get a specific approval by ID.
+    pub async fn get_approval(&self, id: Uuid) -> MvResult<Option<ApprovalRequest>> {
+        self.store.nodes.get_approval(id).await
+    }
+
+    /// List pending approvals, optionally filtered by consumer.
+    pub async fn list_pending_approvals(
+        &self,
+        consumer: Option<&str>,
+    ) -> MvResult<Vec<ApprovalRequest>> {
+        self.store.nodes.list_pending_approvals(consumer).await
+    }
+
+    /// Approve or deny an approval request.
+    pub async fn decide_approval(
+        &self,
+        id: Uuid,
+        approved: bool,
+        decided_by: Option<&str>,
+        deny_reason: Option<&str>,
+    ) -> MvResult<bool> {
+        self.store
+            .nodes
+            .decide_approval(id, approved, decided_by, deny_reason)
+            .await
+    }
+
+    /// Expire all past-due pending approvals.
+    pub async fn expire_approvals(&self) -> MvResult<usize> {
+        self.store.nodes.expire_approvals().await
+    }
+
+    /// Find an active (approved, non-expired) approval for a consumer+secret pair.
+    pub async fn find_active_approval(
+        &self,
+        consumer: &str,
+        secret_key: &str,
+    ) -> MvResult<Option<ApprovalRequest>> {
+        self.store
+            .nodes
+            .find_active_approval(consumer, secret_key)
             .await
     }
 

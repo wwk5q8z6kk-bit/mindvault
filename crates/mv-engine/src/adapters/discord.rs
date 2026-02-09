@@ -3,7 +3,6 @@
 //! Configuration keys:
 //! - `webhook_url`: Discord webhook URL for outbound messages
 
-use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -16,6 +15,7 @@ use super::{
     ExternalAdapter,
 };
 
+#[derive(Debug)]
 pub struct DiscordAdapter {
     config: AdapterConfig,
     client: reqwest::Client,
@@ -127,5 +127,101 @@ impl ExternalAdapter for DiscordAdapter {
             last_receive: None, // Discord webhooks are outbound-only
             error: self.last_error.lock().unwrap().clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn discord_config_with_webhook() -> AdapterConfig {
+        AdapterConfig::new(AdapterType::Discord, "test-discord")
+            .with_setting("webhook_url", "https://discord.com/api/webhooks/1234/abcd")
+    }
+
+    #[test]
+    fn new_requires_webhook_url() {
+        let config = AdapterConfig::new(AdapterType::Discord, "no-webhook");
+        let result = DiscordAdapter::new(config);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("webhook_url"), "expected webhook_url error, got: {err}");
+    }
+
+    #[test]
+    fn new_succeeds_with_webhook_url() {
+        let adapter = DiscordAdapter::new(discord_config_with_webhook());
+        assert!(adapter.is_ok());
+    }
+
+    #[test]
+    fn name_returns_config_name() {
+        let adapter = DiscordAdapter::new(discord_config_with_webhook()).unwrap();
+        assert_eq!(adapter.name(), "test-discord");
+    }
+
+    #[test]
+    fn adapter_type_is_discord() {
+        let adapter = DiscordAdapter::new(discord_config_with_webhook()).unwrap();
+        assert_eq!(adapter.adapter_type(), AdapterType::Discord);
+    }
+
+    #[test]
+    fn initial_status_is_connected_no_receive() {
+        let adapter = DiscordAdapter::new(discord_config_with_webhook()).unwrap();
+        let status = adapter.status();
+        assert!(status.connected);
+        assert!(status.last_send.is_none());
+        assert!(status.last_receive.is_none()); // outbound-only
+        assert!(status.error.is_none());
+        assert_eq!(status.adapter_type, AdapterType::Discord);
+    }
+
+    #[tokio::test]
+    async fn poll_always_returns_empty() {
+        let adapter = DiscordAdapter::new(discord_config_with_webhook()).unwrap();
+        let (messages, cursor) = adapter.poll(None).await.unwrap();
+        assert!(messages.is_empty());
+        assert_eq!(cursor, "0");
+
+        let (messages, cursor) = adapter.poll(Some("custom-cursor")).await.unwrap();
+        assert!(messages.is_empty());
+        assert_eq!(cursor, "custom-cursor");
+    }
+
+    #[test]
+    fn message_truncation_at_2000_chars() {
+        // Verify the truncation logic directly
+        let long_content = "x".repeat(3000);
+        let truncated = if long_content.len() > 2000 {
+            format!("{}...", &long_content[..1997])
+        } else {
+            long_content.clone()
+        };
+        assert_eq!(truncated.len(), 2000);
+        assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn short_message_not_truncated() {
+        let content = "Hello Discord!".to_string();
+        let result = if content.len() > 2000 {
+            format!("{}...", &content[..1997])
+        } else {
+            content.clone()
+        };
+        assert_eq!(result, "Hello Discord!");
+    }
+
+    #[test]
+    fn message_exactly_2000_chars_not_truncated() {
+        let content = "x".repeat(2000);
+        let result = if content.len() > 2000 {
+            format!("{}...", &content[..1997])
+        } else {
+            content.clone()
+        };
+        assert_eq!(result.len(), 2000);
+        assert!(!result.ends_with("..."));
     }
 }

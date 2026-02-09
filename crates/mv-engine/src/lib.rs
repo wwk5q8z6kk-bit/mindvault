@@ -26,6 +26,7 @@ pub mod relay;
 #[cfg(target_os = "macos")]
 pub mod secure_enclave;
 pub mod sync;
+pub mod intent_check;
 pub mod proxy;
 pub mod sanitize;
 pub mod watcher;

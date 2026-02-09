@@ -132,6 +132,14 @@ pub trait KeychainStore: Send + Sync {
     async fn insert_breach_alert(&self, alert: &BreachAlert) -> MvResult<()>;
     async fn list_breach_alerts(&self, limit: usize, offset: usize) -> MvResult<Vec<BreachAlert>>;
     async fn acknowledge_breach_alert(&self, id: Uuid) -> MvResult<()>;
+    /// Check if a breach alert of the same type was already recorded for this
+    /// credential within the last `within_secs` seconds (dedup window).
+    async fn has_recent_breach_alert(
+        &self,
+        credential_id: Uuid,
+        alert_type: &str,
+        within_secs: u64,
+    ) -> MvResult<bool>;
 
     // --- Tags ---
     async fn get_credential_tags(&self, credential_id: Uuid) -> MvResult<Vec<String>>;
@@ -140,6 +148,12 @@ pub trait KeychainStore: Send + Sync {
     // --- Lockout State ---
     async fn set_lockout_state(&self, attempts: u32, locked_until: Option<String>) -> MvResult<()>;
     async fn get_lockout_state(&self) -> MvResult<(u32, Option<String>)>;
+
+    // --- Domain ACLs ---
+    async fn insert_acl(&self, acl: &DomainAcl) -> MvResult<()>;
+    async fn get_acls_for_domain(&self, domain_id: Uuid) -> MvResult<Vec<DomainAcl>>;
+    async fn get_acl_for_subject(&self, domain_id: Uuid, subject: &str) -> MvResult<Option<DomainAcl>>;
+    async fn delete_acl(&self, id: Uuid) -> MvResult<()>;
 }
 
 fn _assert_keychain_store_object_safe(_: &dyn KeychainStore) {}
@@ -389,6 +403,30 @@ pub trait ProxyAuditStore: Send + Sync {
 }
 
 fn _assert_proxy_audit_store_object_safe(_: &dyn ProxyAuditStore) {}
+
+/// Storage for HITL approval queue entries.
+#[async_trait]
+pub trait ApprovalStore: Send + Sync {
+    async fn create_approval(&self, request: &ApprovalRequest) -> MvResult<()>;
+    async fn get_approval(&self, id: Uuid) -> MvResult<Option<ApprovalRequest>>;
+    async fn list_pending_approvals(&self, consumer: Option<&str>) -> MvResult<Vec<ApprovalRequest>>;
+    async fn decide_approval(
+        &self,
+        id: Uuid,
+        approved: bool,
+        decided_by: Option<&str>,
+        deny_reason: Option<&str>,
+    ) -> MvResult<bool>;
+    async fn expire_approvals(&self) -> MvResult<usize>;
+    /// Check if there's an approved (non-expired) approval for a consumer+secret pair.
+    async fn find_active_approval(
+        &self,
+        consumer: &str,
+        secret_key: &str,
+    ) -> MvResult<Option<ApprovalRequest>>;
+}
+
+fn _assert_approval_store_object_safe(_: &dyn ApprovalStore) {}
 
 #[cfg(test)]
 mod tests {

@@ -371,6 +371,15 @@ impl CredentialStore {
             .flatten()
             .map(|sv| sv.expose().to_string())
     }
+
+    /// Like `get_secret_string`, but wraps the result in `Zeroizing<String>` so the
+    /// plaintext is scrubbed from memory on drop. Prefer this for new code paths.
+    pub fn get_secret_zeroized(&self, key: &str) -> Option<Zeroizing<String>> {
+        self.get(key)
+            .ok()
+            .flatten()
+            .map(|sv| Zeroizing::new(sv.expose().to_string()))
+    }
 }
 
 impl fmt::Debug for CredentialStore {

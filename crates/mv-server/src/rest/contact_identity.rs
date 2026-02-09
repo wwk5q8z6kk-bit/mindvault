@@ -31,7 +31,6 @@ pub struct ContactIdentityResponse {
 
 #[derive(Deserialize)]
 pub struct AddIdentityRequest {
-    pub contact_id: Uuid,
     pub identity_type: String,
     pub identity_value: String,
 }

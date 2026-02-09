@@ -14,6 +14,39 @@ pub struct SqliteNodeStore {
 }
 
 impl SqliteNodeStore {
+    /// Execute a synchronous closure with the database connection.
+    ///
+    /// This is the **only** way async code should access the connection.
+    /// Because the closure is `FnOnce` (not async), the `MutexGuard` is
+    /// guaranteed to drop before any `.await` — making the enclosing future
+    /// `Send`.  This prevents the classic "non-Send MutexGuard held across
+    /// await" compilation error at the type level.
+    ///
+    /// ```ignore
+    /// // GOOD — lock scoped to closure
+    /// let count = self.with_conn(|conn| {
+    ///     conn.query_row("SELECT count(*) FROM t", [], |r| r.get(0))
+    /// })?;
+    /// self.some_async_call().await?;
+    ///
+    /// // WON'T COMPILE — cannot .await inside FnOnce
+    /// self.with_conn(|conn| {
+    ///     self.other_async_fn().await  // ← error
+    /// });
+    /// ```
+    fn with_conn<F, T>(&self, f: F) -> MvResult<T>
+    where
+        F: FnOnce(&Connection) -> MvResult<T>,
+    {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        f(&conn)
+    }
+}
+
+impl SqliteNodeStore {
     pub fn open(path: &Path) -> MvResult<Self> {
         let conn = Connection::open(path)
             .map_err(|e| MvError::Storage(format!("failed to open sqlite: {e}")))?;
@@ -97,6 +130,10 @@ impl SqliteNodeStore {
         let migration_015 = include_str!("../../../migrations/015_contact_identity.sql");
         conn.execute_batch(migration_015)
             .map_err(|e| MvError::Migration(format!("migration 015 failed: {e}")))?;
+
+        let migration_016 = include_str!("../../../migrations/016_approval_queue.sql");
+        conn.execute_batch(migration_016)
+            .map_err(|e| MvError::Migration(format!("migration 016 failed: {e}")))?;
 
         Ok(())
     }
@@ -237,38 +274,36 @@ fn parse_metadata_json(
 #[async_trait]
 impl NodeStore for SqliteNodeStore {
     async fn insert(&self, node: &KnowledgeNode) -> MvResult<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| MvError::Storage(e.to_string()))?;
-        let metadata_json = serde_json::to_string(&node.metadata)?;
+        self.with_conn(|conn| {
+            let metadata_json = serde_json::to_string(&node.metadata)?;
 
-        conn.execute(
-            "INSERT INTO knowledge_nodes (id, kind, title, content, source, namespace, importance,
-             created_at, updated_at, last_accessed_at, access_count, version, expires_at, metadata_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-            params![
-                node.id.to_string(),
-                node.kind.as_str(),
-                node.title,
-                node.content,
-                node.source,
-                node.namespace,
-                node.importance,
-                node.temporal.created_at.to_rfc3339(),
-                node.temporal.updated_at.to_rfc3339(),
-                node.temporal.last_accessed_at.to_rfc3339(),
-                node.temporal.access_count,
-                node.temporal.version,
-                node.temporal.expires_at.map(|dt| dt.to_rfc3339()),
-                metadata_json,
-            ],
-        )
-        .map_err(|e| MvError::Storage(format!("insert failed: {e}")))?;
+            conn.execute(
+                "INSERT INTO knowledge_nodes (id, kind, title, content, source, namespace, importance,
+                 created_at, updated_at, last_accessed_at, access_count, version, expires_at, metadata_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                params![
+                    node.id.to_string(),
+                    node.kind.as_str(),
+                    node.title,
+                    node.content,
+                    node.source,
+                    node.namespace,
+                    node.importance,
+                    node.temporal.created_at.to_rfc3339(),
+                    node.temporal.updated_at.to_rfc3339(),
+                    node.temporal.last_accessed_at.to_rfc3339(),
+                    node.temporal.access_count,
+                    node.temporal.version,
+                    node.temporal.expires_at.map(|dt| dt.to_rfc3339()),
+                    metadata_json,
+                ],
+            )
+            .map_err(|e| MvError::Storage(format!("insert failed: {e}")))?;
 
-        Self::save_tags(&conn, node.id, &node.tags)?;
-        Self::log_change(&conn, node.id, ChangeOp::Create, None)?;
-        Ok(())
+            Self::save_tags(conn, node.id, &node.tags)?;
+            Self::log_change(conn, node.id, ChangeOp::Create, None)?;
+            Ok(())
+        })
     }
 
     async fn get(&self, id: Uuid) -> MvResult<Option<KnowledgeNode>> {
@@ -2174,14 +2209,7 @@ impl ProfileStore for SqliteNodeStore {
     }
 
     async fn update_profile(&self, req: &UpdateProfileRequest) -> MvResult<OwnerProfile> {
-        // Scope synchronous DB work so MutexGuard drops before .await.
-        // All values are String so the Vec is Send-safe.
-        {
-            let conn = self
-                .conn
-                .lock()
-                .map_err(|e| MvError::Storage(e.to_string()))?;
-
+        self.with_conn(|conn| {
             let mut sets: Vec<&str> = Vec::new();
             let mut values: Vec<String> = Vec::new();
 
@@ -2241,7 +2269,8 @@ impl ProfileStore for SqliteNodeStore {
                 conn.execute(&sql, params.as_slice())
                     .map_err(|e| MvError::Storage(e.to_string()))?;
             }
-        } // conn + values dropped here
+            Ok(())
+        })?;
 
         self.get_profile().await
     }
@@ -3407,6 +3436,181 @@ fn row_to_proxy_audit(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProxyAuditEnt
         error,
         request_summary,
         response_status,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// ApprovalStore
+// ---------------------------------------------------------------------------
+
+#[async_trait::async_trait]
+impl ApprovalStore for SqliteNodeStore {
+    async fn create_approval(&self, request: &ApprovalRequest) -> MvResult<()> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let scopes_json = serde_json::to_string(&request.scopes)
+            .map_err(|e| MvError::Storage(format!("serialize scopes: {e}")))?;
+        conn.execute(
+            "INSERT INTO proxy_approvals (id, consumer, secret_key, intent, request_summary, state, created_at, expires_at, scopes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                request.id.to_string(),
+                request.consumer,
+                request.secret_key,
+                request.intent,
+                request.request_summary,
+                request.state.as_str(),
+                request.created_at.to_rfc3339(),
+                request.expires_at.to_rfc3339(),
+                scopes_json,
+            ],
+        )
+        .map_err(|e| MvError::Storage(format!("insert proxy_approvals failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_approval(&self, id: Uuid) -> MvResult<Option<ApprovalRequest>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, consumer, secret_key, intent, request_summary, state, created_at, expires_at, decided_at, decided_by, deny_reason, scopes
+             FROM proxy_approvals WHERE id = ?1"
+        ).map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut rows = stmt.query_map(params![id.to_string()], row_to_approval)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        match rows.next() {
+            Some(Ok(a)) => Ok(Some(a)),
+            Some(Err(e)) => Err(MvError::Storage(e.to_string())),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_pending_approvals(&self, consumer: Option<&str>) -> MvResult<Vec<ApprovalRequest>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(c) = consumer {
+            (
+                "SELECT id, consumer, secret_key, intent, request_summary, state, created_at, expires_at, decided_at, decided_by, deny_reason, scopes
+                 FROM proxy_approvals WHERE state = 'pending' AND consumer = ?1 ORDER BY created_at DESC".to_string(),
+                vec![Box::new(c.to_string())],
+            )
+        } else {
+            (
+                "SELECT id, consumer, secret_key, intent, request_summary, state, created_at, expires_at, decided_at, decided_by, deny_reason, scopes
+                 FROM proxy_approvals WHERE state = 'pending' ORDER BY created_at DESC".to_string(),
+                vec![],
+            )
+        };
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_box.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query_map(params_refs.as_slice(), row_to_approval)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
+    async fn decide_approval(
+        &self,
+        id: Uuid,
+        approved: bool,
+        decided_by: Option<&str>,
+        deny_reason: Option<&str>,
+    ) -> MvResult<bool> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let new_state = if approved { "approved" } else { "denied" };
+        let now = chrono::Utc::now().to_rfc3339();
+        let affected = conn.execute(
+            "UPDATE proxy_approvals SET state = ?2, decided_at = ?3, decided_by = ?4, deny_reason = ?5
+             WHERE id = ?1 AND state = 'pending'",
+            params![
+                id.to_string(),
+                new_state,
+                now,
+                decided_by,
+                deny_reason,
+            ],
+        )
+        .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn expire_approvals(&self) -> MvResult<usize> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let affected = conn.execute(
+            "UPDATE proxy_approvals SET state = 'expired' WHERE state = 'pending' AND expires_at <= ?1",
+            params![now],
+        )
+        .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected)
+    }
+
+    async fn find_active_approval(
+        &self,
+        consumer: &str,
+        secret_key: &str,
+    ) -> MvResult<Option<ApprovalRequest>> {
+        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut stmt = conn.prepare(
+            "SELECT id, consumer, secret_key, intent, request_summary, state, created_at, expires_at, decided_at, decided_by, deny_reason, scopes
+             FROM proxy_approvals
+             WHERE consumer = ?1 AND secret_key = ?2 AND state = 'approved' AND expires_at > ?3
+             ORDER BY decided_at DESC LIMIT 1"
+        ).map_err(|e| MvError::Storage(e.to_string()))?;
+
+        let mut rows = stmt.query_map(params![consumer, secret_key, now], row_to_approval)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+
+        match rows.next() {
+            Some(Ok(a)) => Ok(Some(a)),
+            Some(Err(e)) => Err(MvError::Storage(e.to_string())),
+            None => Ok(None),
+        }
+    }
+}
+
+fn row_to_approval(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApprovalRequest> {
+    let id_str: String = row.get(0)?;
+    let consumer: String = row.get(1)?;
+    let secret_key: String = row.get(2)?;
+    let intent: String = row.get(3)?;
+    let request_summary: String = row.get(4)?;
+    let state_str: String = row.get(5)?;
+    let created_at_str: String = row.get(6)?;
+    let expires_at_str: String = row.get(7)?;
+    let decided_at_str: Option<String> = row.get(8)?;
+    let decided_by: Option<String> = row.get(9)?;
+    let deny_reason: Option<String> = row.get(10)?;
+    let scopes_json: String = row.get(11)?;
+
+    let id = parse_uuid_str(0, &id_str)?;
+    let state: ApprovalState = state_str.parse().map_err(|e: String| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+        ))
+    })?;
+    let scopes: Vec<String> = serde_json::from_str(&scopes_json).unwrap_or_default();
+
+    Ok(ApprovalRequest {
+        id,
+        consumer,
+        secret_key,
+        intent,
+        request_summary,
+        state,
+        created_at: parse_dt_strict(6, &created_at_str)?,
+        expires_at: parse_dt_strict(7, &expires_at_str)?,
+        decided_at: decided_at_str.as_deref().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&chrono::Utc))),
+        decided_by,
+        deny_reason,
+        scopes,
     })
 }
 

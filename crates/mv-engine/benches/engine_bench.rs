@@ -80,11 +80,57 @@ fn bench_engine_update_node(c: &mut Criterion) {
     });
 }
 
+fn bench_engine_store_1000(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let (engine, _tmp) = create_engine(&rt);
+
+    let mut group = c.benchmark_group("engine_batch_store");
+    group.sample_size(10);
+    group.bench_function("1000_nodes", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                for i in 0..1000 {
+                    let node = KnowledgeNode::new(NodeKind::Fact, format!("Batch content {i}"));
+                    engine.store_node(node).await.unwrap();
+                }
+            });
+        });
+    });
+    group.finish();
+}
+
+fn bench_engine_list_in_1000(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let (engine, _tmp) = create_engine(&rt);
+
+    // Pre-populate with 1000 nodes of mixed kinds
+    rt.block_on(async {
+        for i in 0..1000 {
+            let kind = if i % 3 == 0 {
+                NodeKind::Task
+            } else {
+                NodeKind::Fact
+            };
+            let node = KnowledgeNode::new(kind, format!("Content {i}"));
+            engine.store_node(node).await.unwrap();
+        }
+    });
+
+    c.bench_function("engine_list_in_1000_nodes", |b| {
+        let filters = QueryFilters::default();
+        b.iter(|| {
+            rt.block_on(async { engine.list_nodes(&filters, 100, 0).await.unwrap() });
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_engine_store_node,
     bench_engine_get_node,
     bench_engine_list_nodes,
-    bench_engine_update_node
+    bench_engine_update_node,
+    bench_engine_store_1000,
+    bench_engine_list_in_1000
 );
 criterion_main!(benches);

@@ -15,6 +15,7 @@ use mv_core::model::keychain::*;
 use mv_core::MvError;
 
 use crate::auth::{authorize_write, AuthContext};
+use crate::limits::enforce_keychain_read_rate_limit;
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,8 @@ pub struct VaultStatusResponse {
     pub created_at: Option<String>,
     pub last_rotated_at: Option<String>,
     pub auto_seal_remaining_secs: Option<u64>,
+    pub shamir_enabled: bool,
+    pub last_lifecycle_run: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -188,10 +191,11 @@ pub async fn init_vault(
     Json(body): Json<InitVaultRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     state
         .engine
         .keychain
-        .initialize_vault(&body.password, body.macos_bridge)
+        .initialize_vault(&body.password, body.macos_bridge, subject)
         .await
         .map_err(map_keychain_error)?;
     Ok(Json(serde_json::json!({"status": "initialized"})))
@@ -203,6 +207,7 @@ pub async fn unseal_vault(
     Json(body): Json<UnsealRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     if body.from_secure_enclave {
         #[cfg(target_os = "macos")]
         {
@@ -224,7 +229,7 @@ pub async fn unseal_vault(
         state
             .engine
             .keychain
-            .unseal_from_macos_keychain()
+            .unseal_from_macos_keychain(subject)
             .await
             .map_err(map_keychain_error)?;
     } else {
@@ -234,7 +239,7 @@ pub async fn unseal_vault(
         state
             .engine
             .keychain
-            .unseal(&password)
+            .unseal(&password, subject)
             .await
             .map_err(map_keychain_error)?;
     }
@@ -248,10 +253,11 @@ pub async fn seal_vault(
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     state
         .engine
         .keychain
-        .seal()
+        .seal(subject)
         .await
         .map_err(map_keychain_error)?;
     Ok(Json(serde_json::json!({"status": "sealed"})))
@@ -289,6 +295,13 @@ pub async fn vault_status(
     };
 
     let seal_remaining = state.engine.keychain.auto_seal_remaining().await;
+    let shamir_enabled = meta.as_ref().and_then(|m| m.shamir_threshold).is_some();
+    let last_lifecycle = state
+        .engine
+        .keychain
+        .last_lifecycle_run()
+        .await
+        .map(|dt| dt.to_rfc3339());
 
     Ok(Json(VaultStatusResponse {
         state: vault_state.to_string(),
@@ -300,6 +313,8 @@ pub async fn vault_status(
             .as_ref()
             .and_then(|m| m.last_rotated_at.map(|dt| dt.to_rfc3339())),
         auto_seal_remaining_secs: seal_remaining,
+        shamir_enabled,
+        last_lifecycle_run: last_lifecycle,
     }))
 }
 
@@ -309,10 +324,11 @@ pub async fn rotate_key(
     Json(body): Json<RotateKeyRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     state
         .engine
         .keychain
-        .rotate_master_key(&body.new_password, body.grace_hours)
+        .rotate_master_key(&body.new_password, body.grace_hours, subject)
         .await
         .map_err(map_keychain_error)?;
     Ok(Json(serde_json::json!({"status": "rotated"})))
@@ -339,10 +355,11 @@ pub async fn create_domain(
     Json(body): Json<CreateDomainRequest>,
 ) -> Result<(StatusCode, Json<DomainKey>), (StatusCode, String)> {
     require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let domain = state
         .engine
         .keychain
-        .create_domain(&body.name, body.description.as_deref())
+        .create_domain(&body.name, body.description.as_deref(), subject)
         .await
         .map_err(map_keychain_error)?;
     Ok((StatusCode::CREATED, Json(domain)))
@@ -368,11 +385,12 @@ pub async fn revoke_domain(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     state
         .engine
         .keychain
-        .revoke_domain(uuid)
+        .revoke_domain(uuid, subject)
         .await
         .map_err(map_keychain_error)?;
     Ok(Json(serde_json::json!({"status": "revoked"})))
@@ -384,6 +402,7 @@ pub async fn store_credential(
     Json(body): Json<StoreCredentialRequest>,
 ) -> Result<(StatusCode, Json<StoredCredential>), (StatusCode, String)> {
     require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let domain_id =
         Uuid::parse_str(&body.domain_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let expires_at = match body.expires_at {
@@ -404,6 +423,7 @@ pub async fn store_credential(
             body.value.as_bytes(),
             body.tags,
             expires_at,
+            subject,
         )
         .await
         .map_err(map_keychain_error)?;
@@ -445,12 +465,28 @@ pub async fn read_credential(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_admin(&auth)?;
     let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let (cred, plaintext) = state
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
+    if let Err(exceeded) = enforce_keychain_read_rate_limit(subject, &id) {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "rate limit exceeded: {} requests per {}s (retry after {}s)",
+                exceeded.max_requests, exceeded.window_secs, exceeded.retry_after_secs
+            ),
+        ));
+    }
+    let (cred, plaintext, alerts) = state
         .engine
         .keychain
-        .read_credential(uuid, auth.subject.as_deref().unwrap_or("anonymous"))
+        .read_credential(uuid, subject)
         .await
         .map_err(map_keychain_error)?;
+
+    // Dispatch webhook for any new breach alerts
+    for alert in &alerts {
+        state.notify_keychain_alert(alert);
+    }
+
     let value = String::from_utf8_lossy(&plaintext).to_string();
     Ok(Json(serde_json::json!({
         "credential": cred,
@@ -465,11 +501,12 @@ pub async fn update_credential(
     Json(body): Json<UpdateCredentialRequest>,
 ) -> Result<Json<StoredCredential>, (StatusCode, String)> {
     require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let cred = state
         .engine
         .keychain
-        .update_credential_value(uuid, body.value.as_bytes())
+        .update_credential_value(uuid, body.value.as_bytes(), subject)
         .await
         .map_err(map_keychain_error)?;
     Ok(Json(cred))
@@ -481,11 +518,12 @@ pub async fn archive_credential(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     state
         .engine
         .keychain
-        .archive_credential(uuid)
+        .archive_credential(uuid, subject)
         .await
         .map_err(map_keychain_error)?;
     Ok(Json(serde_json::json!({"status": "archived"})))
@@ -497,11 +535,12 @@ pub async fn destroy_credential(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     state
         .engine
         .keychain
-        .destroy_credential(uuid)
+        .destroy_credential(uuid, subject)
         .await
         .map_err(map_keychain_error)?;
     Ok(Json(serde_json::json!({"status": "destroyed"})))
@@ -528,10 +567,11 @@ pub async fn create_delegation(
         can_use: body.can_use,
         can_delegate: body.can_delegate,
     };
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let delegation = state
         .engine
         .keychain
-        .create_delegation(cred_id, &body.delegatee, perms, expires_at, body.max_depth)
+        .create_delegation(cred_id, &body.delegatee, perms, expires_at, body.max_depth, subject)
         .await
         .map_err(map_keychain_error)?;
     Ok((StatusCode::CREATED, Json(delegation)))
@@ -560,11 +600,12 @@ pub async fn revoke_delegation(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     state
         .engine
         .keychain
-        .revoke_delegation(uuid)
+        .revoke_delegation(uuid, subject)
         .await
         .map_err(map_keychain_error)?;
     Ok(Json(serde_json::json!({"status": "revoked"})))
@@ -591,10 +632,11 @@ pub async fn sub_delegate(
         can_use: body.can_use,
         can_delegate: body.can_delegate,
     };
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let delegation = state
         .engine
         .keychain
-        .sub_delegate(parent_id, &body.delegatee, perms, expires_at)
+        .sub_delegate(parent_id, &body.delegatee, perms, expires_at, subject)
         .await
         .map_err(map_keychain_error)?;
     Ok((StatusCode::CREATED, Json(delegation)))
@@ -606,12 +648,13 @@ pub async fn generate_proof(
     Json(body): Json<GenerateProofRequest>,
 ) -> Result<Json<AccessProof>, (StatusCode, String)> {
     require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let cred_id = Uuid::parse_str(&body.credential_id)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let proof = state
         .engine
         .keychain
-        .generate_proof(cred_id, &body.challenge_nonce)
+        .generate_proof(cred_id, &body.challenge_nonce, subject)
         .await
         .map_err(map_keychain_error)?;
     Ok(Json(proof))
@@ -644,10 +687,11 @@ pub async fn verify_proof(
         generated_at,
         expires_at,
     };
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let valid = state
         .engine
         .keychain
-        .verify_proof(&zk_proof)
+        .verify_proof(&zk_proof, subject)
         .await
         .map_err(map_keychain_error)?;
     Ok(Json(serde_json::json!({"valid": valid})))
@@ -673,13 +717,17 @@ pub async fn verify_audit_integrity(
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_admin(&auth)?;
-    let valid = state
+    let result = state
         .engine
         .keychain
         .verify_audit_integrity()
         .await
         .map_err(map_keychain_error)?;
-    Ok(Json(serde_json::json!({"valid": valid})))
+    Ok(Json(serde_json::json!({
+        "result": result.as_str(),
+        "valid": result.is_valid(),
+        "signatures_checked": result.signatures_checked(),
+    })))
 }
 
 pub async fn list_alerts(
@@ -728,6 +776,117 @@ pub async fn run_lifecycle(
 }
 
 // ---------------------------------------------------------------------------
+// Shamir VEK Splitting
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct EnableShamirRequest {
+    pub threshold: u8,
+    pub total: u8,
+    pub passphrases: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+pub struct SubmitShareRequest {
+    pub share: String,
+    pub passphrase: Option<String>,
+}
+
+pub async fn enable_shamir(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(body): Json<EnableShamirRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
+    let shares = state
+        .engine
+        .keychain
+        .enable_shamir(body.threshold, body.total, subject, body.passphrases)
+        .await
+        .map_err(map_keychain_error)?;
+    Ok(Json(serde_json::json!({
+        "status": "enabled",
+        "threshold": body.threshold,
+        "total": body.total,
+        "shares": shares,
+    })))
+}
+
+pub async fn submit_share(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(body): Json<SubmitShareRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_admin(&auth)?;
+    let status = state
+        .engine
+        .keychain
+        .submit_shamir_share(&body.share, body.passphrase.as_deref())
+        .await
+        .map_err(map_keychain_error)?;
+    Ok(Json(serde_json::to_value(status).unwrap()))
+}
+
+pub async fn shamir_unseal(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
+    state
+        .engine
+        .keychain
+        .unseal_from_shares(subject)
+        .await
+        .map_err(map_keychain_error)?;
+    // Start auto-seal timer after successful unseal
+    state.engine.keychain.start_auto_seal().await;
+    Ok(Json(serde_json::json!({"status": "unsealed"})))
+}
+
+#[derive(Deserialize)]
+pub struct RotateShamirRequest {
+    pub passphrases: Option<Vec<String>>,
+}
+
+pub async fn rotate_shamir(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(body): Json<RotateShamirRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
+    let shares = state
+        .engine
+        .keychain
+        .rotate_shamir_shares(subject, body.passphrases)
+        .await
+        .map_err(map_keychain_error)?;
+    Ok(Json(serde_json::json!({
+        "shares": shares,
+        "count": shares.len(),
+    })))
+}
+
+pub async fn shamir_status(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_admin(&auth)?;
+    let status = state
+        .engine
+        .keychain
+        .shamir_status()
+        .await
+        .map_err(map_keychain_error)?;
+    match status {
+        Some(s) => Ok(Json(serde_json::to_value(s).unwrap())),
+        None => Ok(Json(serde_json::json!({"enabled": false}))),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Backup / Restore
 // ---------------------------------------------------------------------------
 
@@ -740,6 +899,98 @@ pub struct BackupRequest {
 pub struct RestoreRequest {
     pub password: String,
     pub data: String, // base64-encoded backup data
+}
+
+// ---------------------------------------------------------------------------
+// Domain ACLs
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct SetAclRequest {
+    pub subject: String,
+    #[serde(default = "default_true")]
+    pub can_read: bool,
+    #[serde(default)]
+    pub can_write: bool,
+    #[serde(default)]
+    pub can_admin: bool,
+    pub expires_at: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+pub async fn set_domain_acl(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(domain_id): Path<String>,
+    Json(body): Json<SetAclRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_admin(&auth)?;
+    let domain_uuid =
+        Uuid::parse_str(&domain_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let expires_at = body
+        .expires_at
+        .as_deref()
+        .map(|s| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid expires_at: {e}")))
+        })
+        .transpose()?;
+
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
+    let acl = state
+        .engine
+        .keychain
+        .set_domain_acl(
+            domain_uuid,
+            &body.subject,
+            body.can_read,
+            body.can_write,
+            body.can_admin,
+            expires_at,
+            subject,
+        )
+        .await
+        .map_err(map_keychain_error)?;
+
+    Ok(Json(serde_json::json!(acl)))
+}
+
+pub async fn list_domain_acls(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(domain_id): Path<String>,
+) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, String)> {
+    require_admin(&auth)?;
+    let domain_uuid =
+        Uuid::parse_str(&domain_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let acls = state
+        .engine
+        .keychain
+        .list_domain_acls(domain_uuid)
+        .await
+        .map_err(map_keychain_error)?;
+    Ok(Json(acls.into_iter().map(|a| serde_json::json!(a)).collect()))
+}
+
+pub async fn delete_domain_acl(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(acl_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    require_admin(&auth)?;
+    let uuid = Uuid::parse_str(&acl_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
+    state
+        .engine
+        .keychain
+        .remove_domain_acl(uuid, subject)
+        .await
+        .map_err(map_keychain_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn backup_vault(

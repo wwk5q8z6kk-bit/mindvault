@@ -18,6 +18,7 @@ use super::{
     ExternalAdapter,
 };
 
+#[derive(Debug)]
 pub struct SlackAdapter {
     config: AdapterConfig,
     client: reqwest::Client,
@@ -217,5 +218,71 @@ impl ExternalAdapter for SlackAdapter {
             last_receive: *self.last_receive.lock().unwrap(),
             error: self.last_error.lock().unwrap().clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slack_config_with_webhook() -> AdapterConfig {
+        AdapterConfig::new(AdapterType::Slack, "test-slack")
+            .with_setting("webhook_url", "https://hooks.slack.com/services/T00/B00/xxx")
+    }
+
+    #[test]
+    fn new_requires_webhook_url() {
+        let config = AdapterConfig::new(AdapterType::Slack, "no-webhook");
+        let result = SlackAdapter::new(config);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("webhook_url"), "expected webhook_url error, got: {err}");
+    }
+
+    #[test]
+    fn new_succeeds_with_webhook_url() {
+        let adapter = SlackAdapter::new(slack_config_with_webhook());
+        assert!(adapter.is_ok());
+    }
+
+    #[test]
+    fn name_returns_config_name() {
+        let adapter = SlackAdapter::new(slack_config_with_webhook()).unwrap();
+        assert_eq!(adapter.name(), "test-slack");
+    }
+
+    #[test]
+    fn adapter_type_is_slack() {
+        let adapter = SlackAdapter::new(slack_config_with_webhook()).unwrap();
+        assert_eq!(adapter.adapter_type(), AdapterType::Slack);
+    }
+
+    #[test]
+    fn initial_status_is_connected_with_no_error() {
+        let adapter = SlackAdapter::new(slack_config_with_webhook()).unwrap();
+        let status = adapter.status();
+        assert!(status.connected);
+        assert!(status.last_send.is_none());
+        assert!(status.last_receive.is_none());
+        assert!(status.error.is_none());
+        assert_eq!(status.adapter_type, AdapterType::Slack);
+    }
+
+    #[tokio::test]
+    async fn poll_without_bot_token_returns_empty() {
+        let adapter = SlackAdapter::new(slack_config_with_webhook()).unwrap();
+        let (messages, cursor) = adapter.poll(None).await.unwrap();
+        assert!(messages.is_empty());
+        assert_eq!(cursor, "0");
+    }
+
+    #[tokio::test]
+    async fn poll_without_channel_id_returns_empty() {
+        let config = slack_config_with_webhook()
+            .with_setting("bot_token", "xoxb-test-token");
+        let adapter = SlackAdapter::new(config).unwrap();
+        let (messages, cursor) = adapter.poll(Some("123")).await.unwrap();
+        assert!(messages.is_empty());
+        assert_eq!(cursor, "123");
     }
 }

@@ -98,6 +98,9 @@ tokio-stream = "0.1"
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "8", features = ["axum"] }
 
+# Secret sharing
+sharks = "0.5"
+
 # Encryption
 aes-gcm = "0.10"
 argon2 = "0.5"

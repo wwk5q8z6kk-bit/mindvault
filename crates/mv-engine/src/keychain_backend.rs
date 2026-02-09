@@ -52,7 +52,7 @@ impl KeychainBackend {
         let kc = Arc::clone(&self.keychain);
         let domain_id = self
             .runtime
-            .block_on(async move { kc.find_or_create_domain(API_KEYS_DOMAIN).await })
+            .block_on(async move { kc.find_or_create_domain(API_KEYS_DOMAIN, "system").await })
             .map_err(|e| CredentialError::EncryptedFile(e.to_string()))?;
 
         // Cache it
@@ -127,6 +127,7 @@ impl CredentialBackend for KeychainBackend {
                     value_owned.as_bytes(),
                     vec![],
                     None,
+                    "system",
                 )
                 .await
             })
@@ -155,7 +156,7 @@ impl CredentialBackend for KeychainBackend {
             Ok(Some((cred, _))) => {
                 let kc = Arc::clone(&self.keychain);
                 self.runtime
-                    .block_on(async move { kc.destroy_credential(cred.id).await })
+                    .block_on(async move { kc.destroy_credential(cred.id, "system").await })
                     .map_err(|e| CredentialError::EncryptedFile(e.to_string()))?;
                 Ok(())
             }
