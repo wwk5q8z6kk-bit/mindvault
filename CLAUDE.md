@@ -2,37 +2,33 @@
 
 ## Build Coordination (CRITICAL)
 
-**NEVER run `cargo check`, `cargo build`, or `cargo test` directly.**
+**NEVER run `cargo check`, `cargo build`, `cargo test`, or `cargo clippy` directly.**
 
-This is a multi-session environment on a 16GB machine. Multiple concurrent cargo
-processes cause OOM kills, lock contention, and a death spiral of processes killing
-each other. Use the build coordinator instead:
+This is a multi-session environment on a 16GB machine. Running raw `cargo` causes
+OOM kills (SIGKILL/exit 137), lock contention (21+ minute waits), and a death
+spiral where sessions kill each other's builds. Use the build coordinator for ALL
+cargo operations:
 
 ```bash
-# Instead of: cargo check -p mv-storage
+# check (default subcommand)
 ~/.mindvault/scripts/mv-check -p mv-storage
-
-# Instead of: cargo check --workspace
 ~/.mindvault/scripts/mv-check --workspace
 
-# Instead of: cargo check -p mv-engine -p mv-server
-~/.mindvault/scripts/mv-check -p mv-engine -p mv-server
+# test (also coordinated — prevents OOM during test compilation)
+~/.mindvault/scripts/mv-check test -p mv-engine -- test_name
+
+# build
+~/.mindvault/scripts/mv-check build -p mv-cli --release
 ```
 
-The coordinator:
-- Queues builds (only 1 cargo process runs at a time — prevents OOM)
-- Caches results by source hash (skips check if code hasn't changed)
-- Deduplicates identical checks (second caller waits for first's result)
-- Uses a renamed binary (immune to `pkill -f cargo` from other sessions)
+The coordinator provides:
+- **Global lock**: only 1 cargo process at a time (prevents OOM on 16GB RAM)
+- **Source-mtime cache**: returns instantly (~150ms) if no .rs files changed
+- **Deduplication**: identical concurrent requests share one build's result
+- **pkill immunity**: uses a renamed binary that survives `pkill -f cargo`
 
-**NEVER run `pkill -f cargo` or `kill` on cargo processes.** Other sessions depend on them.
-Use `~/.mindvault/scripts/mv-check-cleanup --status` to see what's running.
-
-For `cargo test`, run tests directly (the test binary doesn't need the coordinator):
-```bash
-~/.mindvault/scripts/mv-check -p mv-engine  # check first
-cargo test -p mv-engine -- test_name         # then test
-```
+**NEVER run `pkill -f cargo` or `kill` on cargo processes.** Other sessions depend
+on them. Use `~/.mindvault/scripts/mv-check-cleanup --status` to see what's running.
 
 ## Project Structure
 
