@@ -366,7 +366,7 @@ impl InsightEngine {
             None => return Ok(Vec::new()),
         };
 
-        let existing = engine.store.nodes.list_insights(500, 0).await?;
+        let existing = mv_core::AgenticStore::list_insights(&*engine.store.nodes, 500, 0).await?;
         let mut seen: HashSet<String> = existing
             .iter()
             .filter(|i| i.dismissed_at.is_none())
@@ -379,7 +379,7 @@ impl InsightEngine {
             if !seen.insert(sig) {
                 continue;
             }
-            engine.store.nodes.log_insight(&insight).await?;
+            mv_core::AgenticStore::log_insight(&*engine.store.nodes, &insight).await?;
             persisted.push(insight);
         }
 
