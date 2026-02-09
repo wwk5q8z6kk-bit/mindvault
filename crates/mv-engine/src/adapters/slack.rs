@@ -232,6 +232,7 @@ mod tests {
 
     #[test]
     fn new_requires_webhook_url() {
+        // No reqwest::Client created on the error path, so #[test] is fine
         let config = AdapterConfig::new(AdapterType::Slack, "no-webhook");
         let result = SlackAdapter::new(config);
         assert!(result.is_err());
@@ -239,26 +240,26 @@ mod tests {
         assert!(err.contains("webhook_url"), "expected webhook_url error, got: {err}");
     }
 
-    #[test]
-    fn new_succeeds_with_webhook_url() {
+    #[tokio::test]
+    async fn new_succeeds_with_webhook_url() {
         let adapter = SlackAdapter::new(slack_config_with_webhook());
         assert!(adapter.is_ok());
     }
 
-    #[test]
-    fn name_returns_config_name() {
+    #[tokio::test]
+    async fn name_returns_config_name() {
         let adapter = SlackAdapter::new(slack_config_with_webhook()).unwrap();
         assert_eq!(adapter.name(), "test-slack");
     }
 
-    #[test]
-    fn adapter_type_is_slack() {
+    #[tokio::test]
+    async fn adapter_type_is_slack() {
         let adapter = SlackAdapter::new(slack_config_with_webhook()).unwrap();
         assert_eq!(adapter.adapter_type(), AdapterType::Slack);
     }
 
-    #[test]
-    fn initial_status_is_connected_with_no_error() {
+    #[tokio::test]
+    async fn initial_status_is_connected_with_no_error() {
         let adapter = SlackAdapter::new(slack_config_with_webhook()).unwrap();
         let status = adapter.status();
         assert!(status.connected);

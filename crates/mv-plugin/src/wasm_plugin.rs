@@ -69,6 +69,88 @@ mod inner {
 			&self.gate
 		}
 
+		/// Execute a hook with host function support.
+		///
+		/// Uses a `Linker` to provide `mv_host_call` to the plugin, enabling
+		/// plugins to read/write nodes, search, and log via the host.
+		pub fn execute_hook_with_host(
+			&self,
+			engine: &Engine,
+			ctx: &HookContext,
+			host_state: crate::host::HostState,
+		) -> Result<HookResult, String> {
+			let mut linker = Linker::new(engine);
+			crate::host::register_host_functions(&mut linker)?;
+
+			let mut store = Store::new(engine, host_state);
+			let _ = store.set_fuel(DEFAULT_FUEL);
+
+			let instance = linker
+				.instantiate(&mut store, &self.module)
+				.map_err(|e| format!("instantiation failed: {e}"))?;
+
+			let memory = instance
+				.get_memory(&mut store, "memory")
+				.ok_or("plugin does not export 'memory'")?;
+			let alloc_fn = instance
+				.get_typed_func::<i32, i32>(&mut store, "mv_alloc")
+				.map_err(|e| format!("missing mv_alloc export: {e}"))?;
+			let hook_fn = instance
+				.get_typed_func::<(i32, i32), i64>(&mut store, "mv_plugin_hook")
+				.map_err(|e| format!("missing mv_plugin_hook export: {e}"))?;
+
+			let ctx_json = serde_json::to_vec(ctx)
+				.map_err(|e| format!("failed to serialize HookContext: {e}"))?;
+			let ctx_len = ctx_json.len() as i32;
+			let ctx_ptr = alloc_fn
+				.call(&mut store, ctx_len)
+				.map_err(|e| format!("mv_alloc failed: {e}"))?;
+			if ctx_ptr < 0 {
+				return Err("mv_alloc returned negative pointer".into());
+			}
+			let start = ctx_ptr as usize;
+			let end = start + ctx_json.len();
+			{
+				let mem_data = memory.data_mut(&mut store);
+				if end > mem_data.len() {
+					return Err(format!(
+						"guest memory too small: need {} bytes, have {}",
+						end,
+						mem_data.len()
+					));
+				}
+				mem_data[start..end].copy_from_slice(&ctx_json);
+			}
+
+			let packed = hook_fn
+				.call(&mut store, (ctx_ptr, ctx_len))
+				.map_err(|e| format!("mv_plugin_hook failed: {e}"))?;
+
+			let result_ptr = (packed >> 32) as u32;
+			let result_len = (packed & 0xFFFF_FFFF) as u32;
+			if result_len == 0 {
+				return Ok(HookResult::ok());
+			}
+			if result_len as usize > MAX_RESULT_SIZE {
+				return Err(format!(
+					"plugin result too large: {} bytes (max {})",
+					result_len, MAX_RESULT_SIZE
+				));
+			}
+			let r_start = result_ptr as usize;
+			let r_end = r_start + result_len as usize;
+			let mem_data = memory.data(&store);
+			if r_end > mem_data.len() {
+				return Err(format!(
+					"result exceeds guest memory: need {} bytes, have {}",
+					r_end,
+					mem_data.len()
+				));
+			}
+			serde_json::from_slice(&mem_data[r_start..r_end])
+				.map_err(|e| format!("failed to deserialize HookResult: {e}"))
+		}
+
 		/// Execute a hook by instantiating the module and calling the
 		/// `mv_plugin_hook` export with the JSON-serialized `HookContext`.
 		///

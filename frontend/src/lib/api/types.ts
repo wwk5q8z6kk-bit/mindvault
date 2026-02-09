@@ -90,7 +90,13 @@ export type InsightType =
 	| 'stale'
 	| 'reminder'
 	| 'cluster'
-	| 'general';
+	| 'general'
+	| 'temporal_pattern'
+	| 'knowledge_gap'
+	| 'cross_domain'
+	| 'unlinked_cluster'
+	| 'ambient_link'
+	| 'conflict';
 
 export interface CapturedIntent {
 	id: string;

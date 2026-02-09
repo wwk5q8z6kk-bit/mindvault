@@ -11,6 +11,7 @@
 	import { assistAutoTag } from '$lib/api/assist';
 	import { prioritizeTasks } from '$lib/api/ai';
 	import { listProposals, approveProposal, rejectProposal, type Proposal } from '$lib/api/exchange';
+	import { listConflicts, resolveConflict, type ConflictAlert } from '$lib/api/conflicts';
 	import ProposalCard from '$lib/components/ProposalCard.svelte';
 	import {
 		buildInboxTriagePatch,
@@ -48,6 +49,8 @@
 	let suggestedTags: Map<string, string[]> = new Map();
 	let proposals: Proposal[] = [];
 	let proposalsLoading = false;
+	let conflicts: ConflictAlert[] = [];
+	let conflictsLoading = false;
 	let triageLoading = false;
 	let triageSuggestions: Map<string, InboxTriageSuggestion> = new Map();
 	let triageSettings = loadInboxTriageSettings();
@@ -96,6 +99,7 @@
 		window.addEventListener(INBOX_TRIAGE_SETTINGS_UPDATED_EVENT_NAME, refreshTriageSettings);
 		window.addEventListener('storage', handleStorageEvent);
 		void loadProposals();
+		void loadConflicts();
 		void Promise.all([loadTasks(), loadNotes()]).finally(() => {
 			triageSettings = loadInboxTriageSettings();
 			loading = false;
@@ -122,6 +126,28 @@
 			// Silently fail — proposals are supplementary
 		} finally {
 			proposalsLoading = false;
+		}
+	}
+
+	async function loadConflicts() {
+		conflictsLoading = true;
+		try {
+			conflicts = await listConflicts(false, 20);
+		} catch {
+			// Silently fail — conflicts are supplementary
+		} finally {
+			conflictsLoading = false;
+		}
+	}
+
+	async function handleResolveConflict(id: string) {
+		try {
+			await resolveConflict(id);
+			conflicts = conflicts.filter((c) => c.id !== id);
+			processedCount++;
+			pushToast('Conflict resolved', 'success');
+		} catch {
+			pushToast('Failed to resolve conflict', 'danger');
 		}
 	}
 
@@ -421,6 +447,45 @@
 						on:approve={handleApproveProposal}
 						on:reject={handleRejectProposal}
 					/>
+				{/each}
+			</div>
+		</div>
+	{/if}
+
+	{#if conflicts.length > 0}
+		<div class="mt-4">
+			<div class="mb-2 flex items-center gap-2">
+				<span class="text-xs font-semibold text-slate-300">Conflict Alerts</span>
+				<span class="rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-medium text-red-300">
+					{conflicts.length}
+				</span>
+			</div>
+			<div class="space-y-2">
+				{#each conflicts as conflict (conflict.id)}
+					<div class="rounded-xl border border-red-900/40 bg-red-950/20 p-4">
+						<div class="flex items-start justify-between gap-3">
+							<div class="min-w-0 flex-1">
+								<div class="flex items-center gap-2 mb-1">
+									<span class="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] font-medium text-red-300">
+										{conflict.conflict_type}
+									</span>
+									<span class="text-[10px] text-slate-500">
+										score: {conflict.score.toFixed(2)}
+									</span>
+								</div>
+								<p class="text-xs text-slate-300">{conflict.explanation}</p>
+								<p class="mt-1 text-[10px] text-slate-500">
+									Nodes: {conflict.node_a.slice(0, 8)}... vs {conflict.node_b.slice(0, 8)}...
+								</p>
+							</div>
+							<button
+								class="shrink-0 rounded-lg border border-slate-700 px-2.5 py-1 text-[11px] text-slate-300 transition hover:bg-slate-800"
+								on:click={() => handleResolveConflict(conflict.id)}
+							>
+								Dismiss
+							</button>
+						</div>
+					</div>
 				{/each}
 			</div>
 		</div>
