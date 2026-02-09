@@ -77,6 +77,21 @@ impl SqliteNodeStore {
         Ok(store)
     }
 
+    pub fn open_read_only(path: &Path) -> MvResult<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(|e| MvError::Storage(format!("failed to open sqlite (read-only): {e}")))?;
+
+        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA query_only=ON;")
+            .map_err(|e| MvError::Storage(format!("pragma error: {e}")))?;
+
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
     fn run_migrations(&self) -> MvResult<()> {
         let conn = self
             .conn
