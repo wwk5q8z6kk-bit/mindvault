@@ -1,18 +1,27 @@
 use chrono::{Datelike, Utc, Weekday};
+use crate::llm::{ChatMessage, CompletionParams, LlmProvider};
 use mv_core::*;
 use mv_storage::unified::UnifiedStore;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
+use serde::Deserialize;
 
 /// The IntentEngine analyzes knowledge nodes to suggest autonomous actions.
 #[derive(Clone)]
 pub struct IntentEngine {
     store: Arc<UnifiedStore>,
+    llm: Option<Arc<dyn LlmProvider>>,
 }
 
 impl IntentEngine {
     pub fn new(store: Arc<UnifiedStore>) -> Self {
-        Self { store }
+        Self { store, llm: None }
+    }
+
+    pub fn with_llm(mut self, llm: Option<Arc<dyn LlmProvider>>) -> Self {
+        self.llm = llm;
+        self
     }
 
     /// Extract possible intents from a node and store them.
@@ -33,6 +42,17 @@ impl IntentEngine {
 
         detected.extend(self.detect_link_intents(node));
         detected.extend(self.detect_tag_intents(node));
+
+        let has_primary_intent = detected.iter().any(|intent| {
+            matches!(intent.intent_type, IntentType::ScheduleReminder | IntentType::ExtractTask)
+        });
+
+        if !has_primary_intent {
+            if let Some(llm) = self.llm.clone() {
+                let llm_intents = self.detect_llm_intents(node, llm.as_ref()).await;
+                detected.extend(llm_intents);
+            }
+        }
 
         // Apply learned confidence adjustments
         for intent in &mut detected {
@@ -296,6 +316,153 @@ impl IntentEngine {
         }
         intents.extend(self.detect_link_intents(node));
         intents.extend(self.detect_tag_intents(node));
+
+        intents
+    }
+
+    async fn detect_llm_intents(
+        &self,
+        node: &KnowledgeNode,
+        llm: &dyn LlmProvider,
+    ) -> Vec<CapturedIntent> {
+        let content = node.content.trim();
+        if content.len() < 20 {
+            return Vec::new();
+        }
+
+        let truncated = if content.len() > 4000 {
+            content.chars().take(4000).collect::<String>()
+        } else {
+            content.to_string()
+        };
+
+        let prompt = format!(
+            "Extract intents from the note. Return JSON only in this schema:\n\
+{{\"intents\":[{{\"type\":\"extract_task|schedule_reminder\",\"confidence\":0.0-1.0,\"parameters\":{{...}}}}]}}\n\
+Use schedule_reminder parameters: relative_time (today, tomorrow, next_week, next_month, in_2_days, in_3_days, in_N_days) \
+or reminder_at (RFC3339). Optionally include subject.\n\
+Use extract_task parameters: task (short text), priority (low|medium|high), deadline_relative, deadline (RFC3339).\n\
+If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
+        );
+
+        let messages = vec![
+            ChatMessage::system(
+                "You are a strict JSON generator for a personal knowledge system. \
+                 Only output valid JSON. No extra text.",
+            ),
+            ChatMessage::user(prompt),
+        ];
+
+        let params = CompletionParams {
+            max_tokens: Some(300),
+            temperature: Some(0.0),
+            ..CompletionParams::default()
+        };
+
+        let response = match tokio::time::timeout(Duration::from_secs(8), llm.complete(&messages, &params)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => {
+                tracing::warn!(error = %err, node_id = %node.id, "LLM intent detection failed");
+                return Vec::new();
+            }
+            Err(_) => {
+                tracing::warn!(node_id = %node.id, "LLM intent detection timed out");
+                return Vec::new();
+            }
+        };
+
+        #[derive(Deserialize)]
+        struct LlmIntentResponse {
+            intents: Vec<LlmIntent>,
+        }
+
+        #[derive(Deserialize)]
+        struct LlmIntent {
+            #[serde(rename = "type")]
+            intent_type: String,
+            confidence: Option<f32>,
+            parameters: Option<serde_json::Value>,
+        }
+
+        let trimmed = response.trim();
+        let json_str = if trimmed.starts_with('{') {
+            trimmed
+        } else if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+            &trimmed[start..=end]
+        } else {
+            tracing::warn!(node_id = %node.id, "LLM intent detection returned non-JSON response");
+            return Vec::new();
+        };
+
+        let parsed: LlmIntentResponse = match serde_json::from_str(json_str) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                tracing::warn!(error = %err, node_id = %node.id, "Failed to parse LLM intent JSON");
+                return Vec::new();
+            }
+        };
+
+        let content_lower = content.to_lowercase();
+        let mut intents = Vec::new();
+
+        for candidate in parsed.intents {
+            let intent_type: IntentType = match candidate.intent_type.parse() {
+                Ok(intent_type) => intent_type,
+                Err(_) => continue,
+            };
+
+            if !matches!(intent_type, IntentType::ExtractTask | IntentType::ScheduleReminder) {
+                continue;
+            }
+
+            let mut intent = CapturedIntent::new(node.id, intent_type.clone());
+            intent.confidence = candidate.confidence.unwrap_or(0.6).clamp(0.0, 1.0);
+
+            let mut params = match candidate.parameters {
+                Some(serde_json::Value::Object(map)) => map,
+                _ => serde_json::Map::new(),
+            };
+
+            match intent_type {
+                IntentType::ScheduleReminder => {
+                    if !params.contains_key("relative_time") && !params.contains_key("reminder_at") {
+                        if let Some(relative) = self.parse_relative_date(&content_lower) {
+                            params.insert("relative_time".into(), relative.into());
+                        }
+                    }
+                    if !params.contains_key("subject") {
+                        if let Some(subject) = self.extract_reminder_subject(&content_lower) {
+                            params.insert("subject".into(), subject.into());
+                        }
+                    }
+                }
+                IntentType::ExtractTask => {
+                    if !params.contains_key("priority") {
+                        if let Some((priority, label)) = self.detect_priority(&content_lower) {
+                            params.insert("priority".into(), serde_json::json!(priority));
+                            params.insert("priority_label".into(), label.into());
+                        }
+                    }
+                    if !params.contains_key("deadline_relative") && !params.contains_key("deadline") {
+                        if let Some(deadline) = self.detect_deadline(&content_lower) {
+                            params.insert("deadline_relative".into(), deadline.into());
+                        }
+                    }
+                    if !params.contains_key("depends_on") {
+                        if let Some(dep) = self.detect_dependency(&content_lower) {
+                            params.insert("depends_on".into(), dep.into());
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            if !params.is_empty() {
+                intent.parameters = serde_json::Value::Object(params);
+            }
+
+            intents.push(intent);
+        }
 
         intents
     }

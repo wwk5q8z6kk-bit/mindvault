@@ -180,7 +180,7 @@ This section is the factual anchor for execution: what is verified in the codeba
 ### Active gaps (prioritized)
 - **P1** Owner profile linkage (relay contact sync + federation identity endpoint done; federation handshake usage pending).
 - **P1** Delegation auth hardening (OAuth client lifecycle, audit trails, tests, and docs).
-- **P1** Adapter hardening (email stabilization + Slack/Discord adapters on the same contract; cursor persistence added, poll orchestration pending).
+- **P1** Adapter hardening (email stabilization + Slack/Discord adapters on the same contract; cursor persistence + poll orchestration done).
 - **P1** Proposal inbox UX hardening (undo + batch actions implemented; diff clarity and provenance surfacing pending).
 - **P1** MCP scoping tests + audit linkage.
 - **P2** Device sync conflict resolution + recovery UX.
@@ -239,7 +239,7 @@ This section is the operational source of truth for day-to-day execution.
 - inbound ingest path -> relay message -> vault registration
 - outbound delivery path <- relay outbound queue
 - contact/channel resolution with deterministic mapping
-- idempotency and cursor state persistence (store added; poll loop integration pending)
+- idempotency and cursor state persistence (store + poll loop integration done)
 - per-adapter rate-limit and retry policy
 - email is reference implementation; Slack/Discord follow the same contract
 
@@ -264,7 +264,7 @@ This section is the operational source of truth for day-to-day execution.
 - [x] Email adapter: IMAP inbound, SMTP outbound, attachment ingest, threading
 - [~] Email adapter stabilization: compile clean, test matrix, and failure-path hardening
 - [ ] Slack adapter (webhook outbound + bot inbound)
-- [~] Discord adapter (webhook outbound + bot inbound; poll orchestration pending)
+- [~] Discord adapter (webhook outbound + bot inbound; orchestration wired)
 - [~] Delegation auth (OAuth client credentials + API key lifecycle; audit/tests pending)
 
 ### Phase 4 — Ecosystem & Polish
@@ -368,7 +368,7 @@ Backend:
 - [x] Complete federation query transport (REST-based, parallel peer queries)
 - [x] Email adapter (IMAP inbound + SMTP outbound + attachment ingest)
 - [ ] Slack adapter (webhook outbound + bot inbound)
-- [~] Discord adapter (webhook outbound + bot inbound; poll orchestration pending)
+- [~] Discord adapter (webhook outbound + bot inbound; orchestration wired)
 
 Frontend:
 - [~] Profile settings UI (owner identity, signature, default contact info)

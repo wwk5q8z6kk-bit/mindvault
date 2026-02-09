@@ -287,25 +287,28 @@ mod tests {
         assert_eq!(cursor, "123");
     }
 
-    // --- wiremock-based integration tests ---
-
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-    use wiremock::matchers::method;
-
-    fn slack_config_with_mock(mock_url: &str) -> AdapterConfig {
-        AdapterConfig::new(AdapterType::Slack, "test-slack")
-            .with_setting("webhook_url", mock_url)
+    #[tokio::test]
+    async fn health_check_webhook_only() {
+        let adapter = SlackAdapter::new(slack_config_with_webhook()).unwrap();
+        // Webhook-only health check returns true if configured
+        let healthy = adapter.health_check().await.unwrap();
+        assert!(healthy);
     }
+
+    // --- mockito-based integration tests ---
 
     #[tokio::test]
     async fn send_success() {
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
-            .mount(&mock)
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_body("ok")
+            .create_async()
             .await;
 
-        let config = slack_config_with_mock(&mock.uri());
+        let config = AdapterConfig::new(AdapterType::Slack, "test-slack")
+            .with_setting("webhook_url", &server.url());
         let adapter = SlackAdapter::new(config).unwrap();
         let msg = AdapterOutboundMessage {
             channel: "#test".into(),
@@ -314,19 +317,23 @@ mod tests {
             metadata: HashMap::new(),
         };
         adapter.send(&msg).await.unwrap();
+        mock.assert_async().await;
         let status = adapter.status();
         assert!(status.last_send.is_some());
     }
 
     #[tokio::test]
     async fn send_failure() {
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("error"))
-            .mount(&mock)
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/")
+            .with_status(500)
+            .with_body("error")
+            .create_async()
             .await;
 
-        let config = slack_config_with_mock(&mock.uri());
+        let config = AdapterConfig::new(AdapterType::Slack, "test-slack")
+            .with_setting("webhook_url", &server.url());
         let adapter = SlackAdapter::new(config).unwrap();
         let msg = AdapterOutboundMessage {
             channel: "#test".into(),
@@ -342,13 +349,16 @@ mod tests {
 
     #[tokio::test]
     async fn send_with_thread_ts() {
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
-            .mount(&mock)
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_body("ok")
+            .create_async()
             .await;
 
-        let config = slack_config_with_mock(&mock.uri());
+        let config = AdapterConfig::new(AdapterType::Slack, "test-slack")
+            .with_setting("webhook_url", &server.url());
         let adapter = SlackAdapter::new(config).unwrap();
         let msg = AdapterOutboundMessage {
             channel: "#test".into(),
@@ -357,13 +367,5 @@ mod tests {
             metadata: HashMap::new(),
         };
         adapter.send(&msg).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn health_check_webhook_only() {
-        let adapter = SlackAdapter::new(slack_config_with_webhook()).unwrap();
-        // Webhook-only health check returns true if configured
-        let healthy = adapter.health_check().await.unwrap();
-        assert!(healthy);
     }
 }

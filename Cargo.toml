@@ -58,7 +58,7 @@ tantivy = "0.22"
 petgraph = "0.6"
 
 # IDs & time
-uuid = { version = "1", features = ["v7", "serde"] }
+uuid = { version = "1", features = ["v5", "v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # CLI

@@ -323,25 +323,19 @@ mod tests {
         assert!(!result.ends_with("..."));
     }
 
-    // --- wiremock-based integration tests ---
-
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-    use wiremock::matchers::method;
-
-    fn discord_config_with_mock(mock_url: &str) -> AdapterConfig {
-        AdapterConfig::new(AdapterType::Discord, "test-discord")
-            .with_setting("webhook_url", mock_url)
-    }
+    // --- mockito-based integration tests ---
 
     #[tokio::test]
     async fn send_success() {
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(204))
-            .mount(&mock)
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(204)
+            .create_async()
             .await;
 
-        let config = discord_config_with_mock(&mock.uri());
+        let config = AdapterConfig::new(AdapterType::Discord, "test-discord")
+            .with_setting("webhook_url", &server.url());
         let adapter = DiscordAdapter::new(config).unwrap();
         let msg = AdapterOutboundMessage {
             channel: "#test".into(),
@@ -350,6 +344,7 @@ mod tests {
             metadata: HashMap::new(),
         };
         adapter.send(&msg).await.unwrap();
+        mock.assert_async().await;
         let status = adapter.status();
         assert!(status.last_send.is_some());
         assert!(status.error.is_none());
@@ -357,13 +352,16 @@ mod tests {
 
     #[tokio::test]
     async fn send_failure_status() {
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
-            .mount(&mock)
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/")
+            .with_status(500)
+            .with_body("server error")
+            .create_async()
             .await;
 
-        let config = discord_config_with_mock(&mock.uri());
+        let config = AdapterConfig::new(AdapterType::Discord, "test-discord")
+            .with_setting("webhook_url", &server.url());
         let adapter = DiscordAdapter::new(config).unwrap();
         let msg = AdapterOutboundMessage {
             channel: "#test".into(),
@@ -380,13 +378,15 @@ mod tests {
 
     #[tokio::test]
     async fn send_truncates_long_message() {
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(204))
-            .mount(&mock)
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/")
+            .with_status(204)
+            .create_async()
             .await;
 
-        let config = discord_config_with_mock(&mock.uri());
+        let config = AdapterConfig::new(AdapterType::Discord, "test-discord")
+            .with_setting("webhook_url", &server.url());
         let adapter = DiscordAdapter::new(config).unwrap();
         let msg = AdapterOutboundMessage {
             channel: "#test".into(),
@@ -400,16 +400,16 @@ mod tests {
 
     #[tokio::test]
     async fn health_check_success() {
-        let mock = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"name": "test webhook"})),
-            )
-            .mount(&mock)
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/")
+            .with_status(200)
+            .with_body("{\"name\": \"test webhook\"}")
+            .create_async()
             .await;
 
-        let config = discord_config_with_mock(&mock.uri());
+        let config = AdapterConfig::new(AdapterType::Discord, "test-discord")
+            .with_setting("webhook_url", &server.url());
         let adapter = DiscordAdapter::new(config).unwrap();
         let healthy = adapter.health_check().await.unwrap();
         assert!(healthy);
@@ -417,13 +417,15 @@ mod tests {
 
     #[tokio::test]
     async fn health_check_failure() {
-        let mock = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&mock)
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/")
+            .with_status(404)
+            .create_async()
             .await;
 
-        let config = discord_config_with_mock(&mock.uri());
+        let config = AdapterConfig::new(AdapterType::Discord, "test-discord")
+            .with_setting("webhook_url", &server.url());
         let adapter = DiscordAdapter::new(config).unwrap();
         let healthy = adapter.health_check().await.unwrap();
         assert!(!healthy);

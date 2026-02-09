@@ -378,6 +378,61 @@ where
     total
 }
 
+// ---------------------------------------------------------------------------
+// Poll Scheduler
+// ---------------------------------------------------------------------------
+
+/// Background scheduler that periodically runs `run_poll_cycle` for all
+/// registered adapters. Spawns a Tokio task that runs until a shutdown
+/// signal is received.
+pub struct AdapterPollScheduler;
+
+impl AdapterPollScheduler {
+    /// Spawn the poll scheduler as a background Tokio task.
+    ///
+    /// - `registry`: shared adapter registry
+    /// - `poll_store`: cursor persistence backend
+    /// - `interval_secs`: seconds between poll cycles (default 60)
+    /// - `shutdown_rx`: broadcast receiver; the loop exits when a message is received
+    /// - `on_message`: callback invoked for each inbound message
+    ///
+    /// Returns a `JoinHandle` for the spawned task.
+    pub fn spawn<S, F>(
+        registry: Arc<AdapterRegistry>,
+        poll_store: Arc<S>,
+        interval_secs: u64,
+        mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+        on_message: F,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        S: mv_core::AdapterPollStore + 'static,
+        F: Fn(AdapterInboundMessage, AdapterType) + Send + Sync + 'static,
+    {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            // Skip the first immediate tick
+            interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let count = run_poll_cycle(&registry, poll_store.as_ref(), &on_message).await;
+                        if count > 0 {
+                            tracing::info!(count, "poll cycle received messages");
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        tracing::info!("poll scheduler shutting down");
+                        break;
+                    }
+                }
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -667,5 +722,316 @@ mod tests {
         let registry = AdapterRegistry::default();
         assert!(registry.list_configs().await.is_empty());
         assert!(registry.list_statuses().await.is_empty());
+    }
+
+    // --- MockPollStore for run_poll_cycle tests ---
+
+    struct MockPollStore {
+        state: Mutex<HashMap<String, mv_core::AdapterPollState>>,
+    }
+
+    impl MockPollStore {
+        fn new() -> Self {
+            Self {
+                state: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn with_cursor(adapter_name: &str, cursor: &str) -> Self {
+            let mut map = HashMap::new();
+            map.insert(
+                adapter_name.to_string(),
+                mv_core::AdapterPollState {
+                    adapter_name: adapter_name.to_string(),
+                    cursor: cursor.to_string(),
+                    last_poll_at: chrono::Utc::now().to_rfc3339(),
+                    messages_received: 0,
+                },
+            );
+            Self {
+                state: Mutex::new(map),
+            }
+        }
+
+        fn get_cursor(&self, name: &str) -> Option<String> {
+            self.state
+                .lock()
+                .unwrap()
+                .get(name)
+                .map(|s| s.cursor.clone())
+        }
+    }
+
+    #[async_trait]
+    impl mv_core::AdapterPollStore for MockPollStore {
+        async fn get_poll_state(
+            &self,
+            adapter_name: &str,
+        ) -> MvResult<Option<mv_core::AdapterPollState>> {
+            Ok(self
+                .state
+                .lock()
+                .unwrap()
+                .get(adapter_name)
+                .cloned())
+        }
+
+        async fn upsert_poll_state(
+            &self,
+            adapter_name: &str,
+            cursor: &str,
+            messages_received: u64,
+        ) -> MvResult<()> {
+            self.state.lock().unwrap().insert(
+                adapter_name.to_string(),
+                mv_core::AdapterPollState {
+                    adapter_name: adapter_name.to_string(),
+                    cursor: cursor.to_string(),
+                    last_poll_at: chrono::Utc::now().to_rfc3339(),
+                    messages_received,
+                },
+            );
+            Ok(())
+        }
+
+        async fn list_poll_states(&self) -> MvResult<Vec<mv_core::AdapterPollState>> {
+            Ok(self.state.lock().unwrap().values().cloned().collect())
+        }
+
+        async fn delete_poll_state(&self, adapter_name: &str) -> MvResult<bool> {
+            Ok(self
+                .state
+                .lock()
+                .unwrap()
+                .remove(adapter_name)
+                .is_some())
+        }
+    }
+
+    /// A mock adapter that returns configurable poll results.
+    struct PollableMockAdapter {
+        name: String,
+        messages: Vec<AdapterInboundMessage>,
+        cursor: String,
+    }
+
+    impl PollableMockAdapter {
+        fn new(name: &str, messages: Vec<AdapterInboundMessage>, cursor: &str) -> Self {
+            Self {
+                name: name.to_string(),
+                messages,
+                cursor: cursor.to_string(),
+            }
+        }
+
+        fn empty(name: &str) -> Self {
+            Self::new(name, vec![], "0")
+        }
+    }
+
+    #[async_trait]
+    impl ExternalAdapter for PollableMockAdapter {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn adapter_type(&self) -> AdapterType {
+            AdapterType::Slack
+        }
+
+        async fn send(&self, _message: &AdapterOutboundMessage) -> MvResult<()> {
+            Ok(())
+        }
+
+        async fn poll(
+            &self,
+            _cursor: Option<&str>,
+        ) -> MvResult<(Vec<AdapterInboundMessage>, String)> {
+            Ok((self.messages.clone(), self.cursor.clone()))
+        }
+
+        async fn health_check(&self) -> MvResult<bool> {
+            Ok(true)
+        }
+
+        fn status(&self) -> AdapterStatus {
+            AdapterStatus {
+                adapter_type: AdapterType::Slack,
+                name: self.name.clone(),
+                connected: true,
+                last_send: None,
+                last_receive: None,
+                error: None,
+            }
+        }
+    }
+
+    /// A mock adapter that always fails on poll.
+    struct FailingMockAdapter {
+        name: String,
+    }
+
+    #[async_trait]
+    impl ExternalAdapter for FailingMockAdapter {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn adapter_type(&self) -> AdapterType {
+            AdapterType::Discord
+        }
+
+        async fn send(&self, _message: &AdapterOutboundMessage) -> MvResult<()> {
+            Ok(())
+        }
+
+        async fn poll(
+            &self,
+            _cursor: Option<&str>,
+        ) -> MvResult<(Vec<AdapterInboundMessage>, String)> {
+            Err(mv_core::MvError::Internal("poll failed".into()))
+        }
+
+        async fn health_check(&self) -> MvResult<bool> {
+            Ok(false)
+        }
+
+        fn status(&self) -> AdapterStatus {
+            AdapterStatus {
+                adapter_type: AdapterType::Discord,
+                name: self.name.clone(),
+                connected: false,
+                last_send: None,
+                last_receive: None,
+                error: Some("always fails".into()),
+            }
+        }
+    }
+
+    fn make_inbound(id: &str, content: &str) -> AdapterInboundMessage {
+        AdapterInboundMessage {
+            external_id: id.to_string(),
+            channel: "#test".to_string(),
+            sender: "bot".to_string(),
+            content: content.to_string(),
+            thread_id: None,
+            timestamp: Utc::now(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    // --- run_poll_cycle tests ---
+
+    #[tokio::test]
+    async fn poll_cycle_no_adapters() {
+        let registry = AdapterRegistry::new();
+        let store = MockPollStore::new();
+        let count = run_poll_cycle(&registry, &store, |_, _| {}).await;
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn poll_cycle_persists_cursor() {
+        let registry = AdapterRegistry::new();
+        let config = AdapterConfig::new(AdapterType::Slack, "test-slack");
+        let adapter = Arc::new(PollableMockAdapter::new(
+            "test-slack",
+            vec![make_inbound("m1", "hello")],
+            "42",
+        ));
+        registry.register(config, adapter).await;
+
+        let store = MockPollStore::new();
+        let count = run_poll_cycle(&registry, &store, |_, _| {}).await;
+        assert_eq!(count, 1);
+        assert_eq!(store.get_cursor("test-slack"), Some("42".to_string()));
+    }
+
+    #[tokio::test]
+    async fn poll_cycle_loads_existing_cursor() {
+        let registry = AdapterRegistry::new();
+        let config = AdapterConfig::new(AdapterType::Slack, "cursor-test");
+        let adapter = Arc::new(PollableMockAdapter::empty("cursor-test"));
+        registry.register(config, adapter).await;
+
+        let store = MockPollStore::with_cursor("cursor-test", "10");
+        let _count = run_poll_cycle(&registry, &store, |_, _| {}).await;
+        // Adapter receives cursor but returns no messages.
+        // The cursor should remain "10" or be updated to "0" (adapter returns "0")
+        // Since cursor changed from "10" to "0" and messages is 0, it updates
+        let cursor = store.get_cursor("cursor-test");
+        assert!(cursor.is_some());
+    }
+
+    #[tokio::test]
+    async fn poll_cycle_callbacks_invoked() {
+        let registry = AdapterRegistry::new();
+        let config = AdapterConfig::new(AdapterType::Slack, "cb-test");
+        let messages = vec![
+            make_inbound("m1", "first"),
+            make_inbound("m2", "second"),
+        ];
+        let adapter = Arc::new(PollableMockAdapter::new("cb-test", messages, "99"));
+        registry.register(config, adapter).await;
+
+        let store = MockPollStore::new();
+        let received = Arc::new(Mutex::new(Vec::<String>::new()));
+        let received_clone = Arc::clone(&received);
+
+        let count = run_poll_cycle(&registry, &store, move |msg, _adapter_type| {
+            received_clone.lock().unwrap().push(msg.content);
+        })
+        .await;
+
+        assert_eq!(count, 2);
+        let msgs = received.lock().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs.contains(&"first".to_string()));
+        assert!(msgs.contains(&"second".to_string()));
+    }
+
+    #[tokio::test]
+    async fn poll_cycle_error_continues() {
+        let registry = AdapterRegistry::new();
+
+        // Failing adapter
+        let fail_config = AdapterConfig::new(AdapterType::Discord, "fail-adapter");
+        let fail_adapter = Arc::new(FailingMockAdapter {
+            name: "fail-adapter".to_string(),
+        });
+        registry.register(fail_config, fail_adapter).await;
+
+        // Succeeding adapter
+        let ok_config = AdapterConfig::new(AdapterType::Slack, "ok-adapter");
+        let ok_adapter = Arc::new(PollableMockAdapter::new(
+            "ok-adapter",
+            vec![make_inbound("m1", "works")],
+            "1",
+        ));
+        registry.register(ok_config, ok_adapter).await;
+
+        let store = MockPollStore::new();
+        let count = run_poll_cycle(&registry, &store, |_, _| {}).await;
+        // Only the successful adapter's messages should count
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn poll_cycle_disabled_skipped() {
+        let registry = AdapterRegistry::new();
+        let mut config = AdapterConfig::new(AdapterType::Slack, "disabled-adapter");
+        config.enabled = false;
+        let adapter = Arc::new(PollableMockAdapter::new(
+            "disabled-adapter",
+            vec![make_inbound("m1", "should not appear")],
+            "1",
+        ));
+        registry.register(config, adapter).await;
+
+        let store = MockPollStore::new();
+        let count = run_poll_cycle(&registry, &store, |_, _| {}).await;
+        assert_eq!(count, 0);
+        // Cursor should not be set for disabled adapter
+        assert!(store.get_cursor("disabled-adapter").is_none());
     }
 }

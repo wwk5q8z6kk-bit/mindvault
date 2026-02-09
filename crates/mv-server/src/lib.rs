@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod adapter_poll;
 pub mod auth;
 pub mod email;
 pub mod grpc;
@@ -88,6 +89,7 @@ pub async fn start_server(
     let state = Arc::new(AppState::new_with_channels(engine, change_tx, agent_tx));
     spawn_agent_change_processor(Arc::clone(&state), shutdown_tx.subscribe());
     spawn_recurrence_and_reminder_scheduler(Arc::clone(&state));
+    adapter_poll::spawn_adapter_polling(Arc::clone(&state), shutdown_tx.subscribe());
     email::spawn_email_adapter(Arc::clone(&state), shutdown_tx.subscribe());
 
     // Background task: expire stale proxy approvals every 60 seconds
@@ -232,7 +234,7 @@ fn spawn_watcher_agent(
         return;
     }
 
-    let intent_engine = IntentEngine::new(Arc::clone(&engine.store));
+    let intent_engine = IntentEngine::new(Arc::clone(&engine.store)).with_llm(engine.llm.clone());
     let proactive_engine = Arc::clone(&engine.proactive);
 
     // Build notifier that forwards discoveries to WebSocket via agent_tx
@@ -272,7 +274,8 @@ fn spawn_agent_change_processor(
         return;
     }
 
-    let intent_engine = IntentEngine::new(Arc::clone(&state.engine.store));
+    let intent_engine =
+        IntentEngine::new(Arc::clone(&state.engine.store)).with_llm(state.engine.llm.clone());
     let mut change_rx = state.change_tx.subscribe();
 
     tokio::spawn(async move {

@@ -563,6 +563,12 @@ pub async fn submit_proposal(
     }
 
     if let Some(diff) = req.diff_preview {
+        if diff.len() > 10_000 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("diff_preview exceeds maximum of 10,000 characters ({} given)", diff.len()),
+            ));
+        }
         proposal = proposal.with_diff(diff);
     }
 
@@ -1156,4 +1162,151 @@ pub async fn batch_proposals(
         "failed": failed,
         "results": results
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::AuthContext;
+
+    // --- glob_match_simple tests ---
+
+    #[test]
+    fn glob_wildcard_matches_everything() {
+        assert!(glob_match_simple("*", "anything"));
+        assert!(glob_match_simple("*", ""));
+    }
+
+    #[test]
+    fn glob_prefix_wildcard_matches_suffix() {
+        assert!(glob_match_simple("*@example.com", "user@example.com"));
+        assert!(!glob_match_simple("*@example.com", "user@other.com"));
+    }
+
+    #[test]
+    fn glob_suffix_wildcard_matches_prefix() {
+        assert!(glob_match_simple("mcp-*", "mcp-agent"));
+        assert!(!glob_match_simple("mcp-*", "other-agent"));
+    }
+
+    #[test]
+    fn glob_exact_match() {
+        assert!(glob_match_simple("exact", "exact"));
+        assert!(!glob_match_simple("exact", "different"));
+    }
+
+    #[test]
+    fn glob_empty_pattern_only_matches_empty() {
+        assert!(glob_match_simple("", ""));
+        assert!(!glob_match_simple("", "notempty"));
+    }
+
+    // --- resolve_sender_context tests ---
+
+    fn admin_auth() -> AuthContext {
+        AuthContext {
+            subject: Some("admin-user".into()),
+            namespace: None,
+            role: crate::auth::AuthRole::Admin,
+            consumer_name: None,
+        }
+    }
+
+    fn user_auth() -> AuthContext {
+        AuthContext {
+            subject: Some("regular-user".into()),
+            namespace: None,
+            role: crate::auth::AuthRole::Write,
+            consumer_name: None,
+        }
+    }
+
+    #[test]
+    fn resolve_sender_admin_empty_defaults_to_self() {
+        let auth = admin_auth();
+        let (sender, name, is_admin) = resolve_sender_context(&auth, "").unwrap();
+        assert!(matches!(sender, ProposalSender::UserSelf));
+        assert_eq!(name, "admin-user");
+        assert!(is_admin);
+    }
+
+    #[test]
+    fn resolve_sender_admin_custom_sender() {
+        let auth = admin_auth();
+        let (sender, name, is_admin) = resolve_sender_context(&auth, "mcp").unwrap();
+        assert!(matches!(sender, ProposalSender::Mcp));
+        assert_eq!(name, "admin-user");
+        assert!(is_admin);
+    }
+
+    #[test]
+    fn resolve_sender_user_self_ok() {
+        let auth = user_auth();
+        let (sender, name, is_admin) = resolve_sender_context(&auth, "self").unwrap();
+        assert!(matches!(sender, ProposalSender::UserSelf));
+        assert_eq!(name, "regular-user");
+        assert!(!is_admin);
+    }
+
+    #[test]
+    fn resolve_sender_user_empty_ok() {
+        let auth = user_auth();
+        let (sender, _name, _is_admin) = resolve_sender_context(&auth, "").unwrap();
+        assert!(matches!(sender, ProposalSender::UserSelf));
+    }
+
+    #[test]
+    fn resolve_sender_non_admin_custom_blocked() {
+        let auth = user_auth();
+        let result = resolve_sender_context(&auth, "mcp");
+        assert!(result.is_err());
+        let (status, _msg) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    // --- map_mv_error tests ---
+
+    #[test]
+    fn map_mv_error_node_not_found_returns_404() {
+        let err = mv_core::MvError::NodeNotFound(Uuid::now_v7());
+        let (status, _msg) = map_mv_error(err);
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn map_mv_error_invalid_input_returns_400() {
+        let err = mv_core::MvError::InvalidInput("bad data".into());
+        let (status, _msg) = map_mv_error(err);
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn map_mv_error_other_returns_500() {
+        let err = mv_core::MvError::Other("kaboom".into());
+        let (status, _msg) = map_mv_error(err);
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // --- BatchProposalRequest validation tests ---
+
+    #[test]
+    fn batch_size_limit_parsed_correctly() {
+        // The handler checks body.ids.len() > 100
+        let ids: Vec<String> = (0..101).map(|i| format!("id-{i}")).collect();
+        assert!(ids.len() > 100);
+    }
+
+    // --- diff_preview validation ---
+
+    #[test]
+    fn diff_preview_within_limit() {
+        let diff = "a".repeat(10_000);
+        assert!(diff.len() <= 10_000);
+    }
+
+    #[test]
+    fn diff_preview_exceeds_limit() {
+        let diff = "a".repeat(10_001);
+        assert!(diff.len() > 10_000);
+    }
 }

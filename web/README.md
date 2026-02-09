@@ -176,6 +176,12 @@ The web interface communicates with MindVault's REST API endpoints:
 - `GET /api/v1/files/{node_id}/{attachment_id}` - Download an attachment (`?inline=true` for preview)
 - `DELETE /api/v1/files/{node_id}/{attachment_id}` - Remove an attachment from a node
 
+## Development Notes
+
+- `web/app.js` is the source-of-truth for the admin UI and is intentionally a single file right now.
+- UI dependencies are loaded from CDN modules (unpkg), so offline deployments will require bundling.
+- If you want an offline-first build, add a bundler (Vite/Rollup) and split `web/app.js` by feature area.
+
 ## Browser Support
 
 - Chrome 90+

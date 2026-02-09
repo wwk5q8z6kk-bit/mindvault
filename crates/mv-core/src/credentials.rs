@@ -876,21 +876,39 @@ mod tests {
 
     // --- Encrypted file backend tests ---
 
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     fn temp_secrets_path() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let mut path = std::env::temp_dir();
         path.push(format!(
-            "mv_test_secrets_{}.enc",
-            std::process::id()
+            "mv_test_secrets_{}_{}.enc",
+            std::process::id(),
+            id,
         ));
         // Clean up any leftover from a previous test run
         let _ = std::fs::remove_file(&path);
         path
     }
 
+    /// Low-cost Argon2 params for fast tests.
+    fn test_params() -> Argon2Params {
+        Argon2Params {
+            memory_kib: 256,
+            iterations: 1,
+            parallelism: 1,
+        }
+    }
+
+    fn init_test_file(path: &Path, password: &str) {
+        EncryptedFileBackend::init_with_params(path, password, test_params()).unwrap();
+    }
+
     #[test]
     fn encrypted_file_init_creates_file() {
         let path = temp_secrets_path();
-        EncryptedFileBackend::init(&path, "test-password").unwrap();
+        init_test_file(&path, "test-password");
         assert!(path.exists());
 
         // Verify the file is valid JSON with expected fields
@@ -907,7 +925,7 @@ mod tests {
     #[test]
     fn encrypted_file_init_rejects_existing() {
         let path = temp_secrets_path();
-        EncryptedFileBackend::init(&path, "pw").unwrap();
+        init_test_file(&path, "pw");
         let result = EncryptedFileBackend::init(&path, "pw");
         assert!(result.is_err());
         std::fs::remove_file(&path).unwrap();
@@ -916,7 +934,7 @@ mod tests {
     #[test]
     fn encrypted_file_unlock_and_read_empty() {
         let path = temp_secrets_path();
-        EncryptedFileBackend::init(&path, "pw123").unwrap();
+        init_test_file(&path, "pw123");
 
         let backend = EncryptedFileBackend::new(path.clone());
         assert!(backend.is_available());
@@ -939,7 +957,7 @@ mod tests {
     #[test]
     fn encrypted_file_wrong_password() {
         let path = temp_secrets_path();
-        EncryptedFileBackend::init(&path, "correct").unwrap();
+        init_test_file(&path, "correct");
 
         let backend = EncryptedFileBackend::new(path.clone());
         let result = backend.unlock("wrong");
@@ -951,7 +969,7 @@ mod tests {
     #[test]
     fn encrypted_file_set_get_delete() {
         let path = temp_secrets_path();
-        EncryptedFileBackend::init(&path, "pass").unwrap();
+        init_test_file(&path, "pass");
 
         let backend = EncryptedFileBackend::new(path.clone());
         backend.unlock("pass").unwrap();
@@ -979,7 +997,7 @@ mod tests {
     #[test]
     fn encrypted_file_set_while_locked_fails() {
         let path = temp_secrets_path();
-        EncryptedFileBackend::init(&path, "pw").unwrap();
+        init_test_file(&path, "pw");
 
         let backend = EncryptedFileBackend::new(path.clone());
         // Don't unlock — set should fail
@@ -992,7 +1010,7 @@ mod tests {
     #[test]
     fn encrypted_file_lock_clears_state() {
         let path = temp_secrets_path();
-        EncryptedFileBackend::init(&path, "pw").unwrap();
+        init_test_file(&path, "pw");
 
         let backend = EncryptedFileBackend::new(path.clone());
         backend.unlock("pw").unwrap();
@@ -1017,7 +1035,7 @@ mod tests {
     #[test]
     fn encrypted_file_data_not_plaintext_on_disk() {
         let path = temp_secrets_path();
-        EncryptedFileBackend::init(&path, "pw").unwrap();
+        init_test_file(&path, "pw");
 
         let backend = EncryptedFileBackend::new(path.clone());
         backend.unlock("pw").unwrap();

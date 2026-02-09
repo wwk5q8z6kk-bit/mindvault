@@ -22,6 +22,7 @@ use super::{
     ExternalAdapter,
 };
 
+#[derive(Debug)]
 pub struct EmailAdapter {
     config: AdapterConfig,
     last_send: Mutex<Option<DateTime<Utc>>>,

@@ -122,8 +122,8 @@ impl IntentExecutor {
             .await?
             .ok_or_else(|| MvError::InvalidInput(format!("Node {} not found", intent.node_id)))?;
 
-        // Extract task content from the node
-        let task_content = self.extract_task_content(&node.content);
+        // Extract task content from intent or fallback to node content
+        let task_content = self.extract_task_content_from_intent(intent, &node);
 
         if task_content.is_empty() {
             return Ok(ExecutionResult::failure("No task content could be extracted"));
@@ -334,6 +334,21 @@ impl IntentExecutor {
         };
 
         Ok(chrono::DateTime::<Utc>::from_naive_utc_and_offset(reminder_at, Utc))
+    }
+
+    fn extract_task_content_from_intent(
+        &self,
+        intent: &CapturedIntent,
+        node: &KnowledgeNode,
+    ) -> String {
+        if let Some(task) = intent.parameters.get("task").and_then(|v| v.as_str()) {
+            let trimmed = task.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+
+        self.extract_task_content(&node.content)
     }
 
     fn extract_task_content(&self, content: &str) -> String {
