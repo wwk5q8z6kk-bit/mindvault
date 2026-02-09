@@ -6,7 +6,7 @@
 //! than tags alone.
 
 use crate::engine::MindVaultEngine;
-use mv_core::{AgenticStore, InsightType, KnowledgeNode, MvResult, ProactiveInsight, QueryFilters};
+use mv_core::{InsightType, KnowledgeNode, MvResult, ProactiveInsight, QueryFilters};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 use uuid::Uuid;
