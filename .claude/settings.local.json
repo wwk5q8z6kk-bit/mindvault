@@ -110,7 +110,12 @@
       "Bash(CARGO_TARGET_DIR=/tmp/mv-check-now cargo check:*)",
       "Bash(CARGO_TARGET_DIR=/tmp/mv-clean-check cargo check:*)",
       "Bash(CARGO_HOME=/tmp/mv-isolated-cargo2 CARGO_TARGET_DIR=/tmp/mv-openapi-check2 cargo check:*)",
-      "Bash(pnpm test:*)"
+      "Bash(pnpm test:*)",
+      "Bash(CARGO_TARGET_DIR=/tmp/mv-ws-final cargo check:*)",
+      "Bash(CARGO_TARGET_DIR=/tmp/mv-with-conn cargo check:*)",
+      "Bash(CARGO_TARGET_DIR=/tmp/mv-ws-final cargo test:*)",
+      "Bash(CARGO_TARGET_DIR=/tmp/mv-with-conn2 cargo check:*)",
+      "Bash(git push:*)"
     ]
   },
   "enabledMcpjsonServers": [
