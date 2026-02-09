@@ -322,4 +322,110 @@ mod tests {
         assert_eq!(result.len(), 2000);
         assert!(!result.ends_with("..."));
     }
+
+    // --- wiremock-based integration tests ---
+
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::method;
+
+    fn discord_config_with_mock(mock_url: &str) -> AdapterConfig {
+        AdapterConfig::new(AdapterType::Discord, "test-discord")
+            .with_setting("webhook_url", mock_url)
+    }
+
+    #[tokio::test]
+    async fn send_success() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock)
+            .await;
+
+        let config = discord_config_with_mock(&mock.uri());
+        let adapter = DiscordAdapter::new(config).unwrap();
+        let msg = AdapterOutboundMessage {
+            channel: "#test".into(),
+            content: "hello".into(),
+            thread_id: None,
+            metadata: HashMap::new(),
+        };
+        adapter.send(&msg).await.unwrap();
+        let status = adapter.status();
+        assert!(status.last_send.is_some());
+        assert!(status.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn send_failure_status() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
+            .mount(&mock)
+            .await;
+
+        let config = discord_config_with_mock(&mock.uri());
+        let adapter = DiscordAdapter::new(config).unwrap();
+        let msg = AdapterOutboundMessage {
+            channel: "#test".into(),
+            content: "fail".into(),
+            thread_id: None,
+            metadata: HashMap::new(),
+        };
+        let result = adapter.send(&msg).await;
+        assert!(result.is_err());
+        let status = adapter.status();
+        assert!(!status.connected);
+        assert!(status.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn send_truncates_long_message() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock)
+            .await;
+
+        let config = discord_config_with_mock(&mock.uri());
+        let adapter = DiscordAdapter::new(config).unwrap();
+        let msg = AdapterOutboundMessage {
+            channel: "#test".into(),
+            content: "x".repeat(3000),
+            thread_id: None,
+            metadata: HashMap::new(),
+        };
+        // Should not error — message gets truncated internally
+        adapter.send(&msg).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn health_check_success() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"name": "test webhook"})),
+            )
+            .mount(&mock)
+            .await;
+
+        let config = discord_config_with_mock(&mock.uri());
+        let adapter = DiscordAdapter::new(config).unwrap();
+        let healthy = adapter.health_check().await.unwrap();
+        assert!(healthy);
+    }
+
+    #[tokio::test]
+    async fn health_check_failure() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock)
+            .await;
+
+        let config = discord_config_with_mock(&mock.uri());
+        let adapter = DiscordAdapter::new(config).unwrap();
+        let healthy = adapter.health_check().await.unwrap();
+        assert!(!healthy);
+    }
 }

@@ -1,6 +1,9 @@
 use anyhow::Result;
-use mv_core::credentials::CredentialStore;
+use mv_core::credentials::{CredentialStore, EncryptedFileBackend};
 use std::io::{self, Write};
+use std::path::PathBuf;
+
+use crate::FileUnlockAction;
 
 fn store() -> CredentialStore {
     CredentialStore::new("mindvault")
@@ -86,6 +89,135 @@ pub async fn delete(key: &str) -> Result<()> {
         let sources: Vec<String> = deleted_from.iter().map(|s| s.to_string()).collect();
         println!("deleted {key} from: {}", sources.join(", "));
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Encrypted file subcommands
+// ---------------------------------------------------------------------------
+
+fn secrets_enc_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".mindvault").join("secrets.enc")
+}
+
+fn prompt_password(prompt: &str) -> Result<String> {
+    eprint!("{prompt}");
+    io::stderr().flush()?;
+    let mut buf = String::new();
+    io::stdin().read_line(&mut buf)?;
+    Ok(buf.trim_end().to_string())
+}
+
+pub async fn file_init() -> Result<()> {
+    let path = secrets_enc_path();
+    if path.exists() {
+        anyhow::bail!(
+            "encrypted secrets file already exists at {}",
+            path.display()
+        );
+    }
+
+    let password = prompt_password("Enter master password: ")?;
+    if password.is_empty() {
+        anyhow::bail!("password cannot be empty");
+    }
+    let confirm = prompt_password("Confirm master password: ")?;
+    if password != confirm {
+        anyhow::bail!("passwords do not match");
+    }
+
+    EncryptedFileBackend::init(&path, &password)?;
+    println!("initialized encrypted secrets file at {}", path.display());
+    Ok(())
+}
+
+pub async fn file_unlock(action: FileUnlockAction) -> Result<()> {
+    let path = secrets_enc_path();
+    if !path.exists() {
+        anyhow::bail!(
+            "no encrypted secrets file at {} — run `mv secret file-init` first",
+            path.display()
+        );
+    }
+
+    let password = prompt_password("Master password: ")?;
+
+    // Build a credential store and unlock the encrypted file backend.
+    let creds = store();
+    match creds.unlock_encrypted_file(&password) {
+        Ok(true) => {}
+        Ok(false) => anyhow::bail!("encrypted file backend not found in credential store"),
+        Err(e) => anyhow::bail!("unlock failed: {e}"),
+    }
+
+    // Now dispatch the inner action using the unlocked store.
+    match action {
+        FileUnlockAction::Set { key, value } => {
+            let secret_value = match value {
+                Some(v) => v,
+                None => {
+                    let v = prompt_password(&format!("Enter secret value for {key}: "))?;
+                    if v.is_empty() {
+                        anyhow::bail!("secret value cannot be empty");
+                    }
+                    v
+                }
+            };
+            let source = creds.set(&key, &secret_value)?;
+            println!("stored {key} in {source}");
+        }
+        FileUnlockAction::Get { key } => match creds.get(&key)? {
+            Some(sv) => println!("{}", sv.expose()),
+            None => anyhow::bail!("{key} not found in any credential backend"),
+        },
+        FileUnlockAction::List => {
+            let statuses = creds.status();
+            let mut found_any = false;
+            for status in &statuses {
+                if !status.keys.is_empty() {
+                    found_any = true;
+                }
+            }
+            if !found_any {
+                println!("no secrets stored");
+                return Ok(());
+            }
+            let mut seen = std::collections::HashSet::new();
+            for status in &statuses {
+                for key in &status.keys {
+                    if seen.insert(key.clone()) {
+                        println!("{key}  ({name})", name = status.name);
+                    }
+                }
+            }
+        }
+        FileUnlockAction::Delete { key } => {
+            let deleted_from = creds.delete(&key)?;
+            if deleted_from.is_empty() {
+                println!("{key} not found in any backend");
+            } else {
+                let sources: Vec<String> =
+                    deleted_from.iter().map(|s| s.to_string()).collect();
+                println!("deleted {key} from: {}", sources.join(", "));
+            }
+        }
+        FileUnlockAction::Status => {
+            let statuses = creds.status();
+            println!("{:<20} {:<10} {}", "Backend", "Available", "Keys");
+            println!("{}", "\u{2500}".repeat(60));
+            for status in &statuses {
+                let avail = if status.available { "yes" } else { "no" };
+                let keys = if status.keys.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    status.keys.join(", ")
+                };
+                println!("{:<20} {:<10} {}", status.name, avail, keys);
+            }
+        }
+    }
+
     Ok(())
 }
 

@@ -243,3 +243,90 @@ impl McpServer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- RateLimiter tests ---
+
+    #[test]
+    fn rate_limiter_allows_within_limit() {
+        let limiter = RateLimiter::new(5);
+        for _ in 0..5 {
+            assert!(limiter.check("test-key").is_ok());
+        }
+    }
+
+    #[test]
+    fn rate_limiter_blocks_over_limit() {
+        let limiter = RateLimiter::new(3);
+        for _ in 0..3 {
+            limiter.check("test-key").unwrap();
+        }
+        let result = limiter.check("test-key");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("rate limit exceeded"));
+    }
+
+    #[test]
+    fn rate_limiter_isolates_keys() {
+        let limiter = RateLimiter::new(2);
+        limiter.check("key-a").unwrap();
+        limiter.check("key-a").unwrap();
+        assert!(limiter.check("key-a").is_err());
+        // key-b should still be allowed
+        assert!(limiter.check("key-b").is_ok());
+    }
+
+    // --- JsonRpcResponse tests ---
+
+    #[test]
+    fn initialize_returns_capabilities() {
+        let response = JsonRpcResponse::success(
+            json!(1),
+            json!({
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {
+                    "tools": {},
+                    "resources": {},
+                    "prompts": {}
+                },
+                "serverInfo": {
+                    "name": SERVER_NAME,
+                    "version": SERVER_VERSION,
+                }
+            }),
+        );
+        let result = response.result.unwrap();
+        assert_eq!(result["protocolVersion"], PROTOCOL_VERSION);
+        assert!(result["capabilities"]["tools"].is_object());
+        assert!(result["capabilities"]["resources"].is_object());
+        assert!(result["capabilities"]["prompts"].is_object());
+        assert_eq!(result["serverInfo"]["name"], SERVER_NAME);
+    }
+
+    #[test]
+    fn unknown_method_returns_error() {
+        let response = JsonRpcResponse::error(json!(1), -32601, "Method not found: bogus");
+        assert!(response.error.is_some());
+        let err = response.error.unwrap();
+        assert_eq!(err.code, -32601);
+        assert!(err.message.contains("bogus"));
+    }
+
+    #[test]
+    fn success_response_has_no_error() {
+        let response = JsonRpcResponse::success(json!(1), json!({"ok": true}));
+        assert!(response.result.is_some());
+        assert!(response.error.is_none());
+        assert_eq!(response.jsonrpc, "2.0");
+    }
+
+    #[test]
+    fn error_response_has_no_result() {
+        let response = JsonRpcResponse::error(json!(1), -32700, "parse error");
+        assert!(response.result.is_none());
+        assert!(response.error.is_some());
+    }
+}

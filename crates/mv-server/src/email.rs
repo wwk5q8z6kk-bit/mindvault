@@ -1100,3 +1100,133 @@ fn sync_attachment_search_blob_metadata(node: &mut KnowledgeNode) {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_from_header ---
+
+    #[test]
+    fn parse_from_header_with_name() {
+        let (name, email) = parse_from_header("John Doe <john@example.com>");
+        assert_eq!(name, Some("John Doe".to_string()));
+        assert_eq!(email, "john@example.com");
+    }
+
+    #[test]
+    fn parse_from_header_bare_email() {
+        let (name, email) = parse_from_header("user@example.com");
+        assert!(name.is_none());
+        assert_eq!(email, "user@example.com");
+    }
+
+    #[test]
+    fn parse_from_header_quoted_name() {
+        let (name, email) = parse_from_header("\"Doe, John\" <john@example.com>");
+        assert_eq!(name, Some("Doe, John".to_string()));
+        assert_eq!(email, "john@example.com");
+    }
+
+    #[test]
+    fn parse_from_header_no_at_sign() {
+        let (name, email) = parse_from_header("invalid");
+        assert!(name.is_none());
+        assert_eq!(email, "unknown@local");
+    }
+
+    // --- normalize_message_id ---
+
+    #[test]
+    fn normalize_message_id_strips_angles() {
+        assert_eq!(normalize_message_id("<abc@example.com>"), "abc@example.com");
+    }
+
+    #[test]
+    fn normalize_message_id_trims_whitespace() {
+        assert_eq!(normalize_message_id("  <ABC@EX.COM>  "), "abc@ex.com");
+    }
+
+    // --- build_message_content ---
+
+    #[test]
+    fn build_message_content_subject_and_body() {
+        let result = build_message_content("Hello", "World");
+        assert_eq!(result, "Hello\n\nWorld");
+    }
+
+    #[test]
+    fn build_message_content_empty_body() {
+        let result = build_message_content("Subject Only", "");
+        assert_eq!(result, "Subject Only");
+    }
+
+    #[test]
+    fn build_message_content_empty_subject() {
+        let result = build_message_content("", "Body Only");
+        assert_eq!(result, "Body Only");
+    }
+
+    // --- sanitize_file_name ---
+
+    #[test]
+    fn sanitize_file_name_strips_special_chars() {
+        assert_eq!(sanitize_file_name("hello world!@#.txt"), "hello_world___.txt");
+    }
+
+    #[test]
+    fn sanitize_file_name_truncates_long() {
+        let long_name = "a".repeat(200);
+        let result = sanitize_file_name(&long_name);
+        assert_eq!(result.len(), 120);
+    }
+
+    #[test]
+    fn sanitize_file_name_empty_returns_default() {
+        assert_eq!(sanitize_file_name(""), "attachment.bin");
+    }
+
+    // --- html_to_text ---
+
+    #[test]
+    fn html_to_text_strips_tags() {
+        assert_eq!(html_to_text("<p>Hello</p>"), "Hello");
+    }
+
+    #[test]
+    fn html_to_text_preserves_text() {
+        assert_eq!(html_to_text("No tags here"), "No tags here");
+    }
+
+    #[test]
+    fn html_to_text_nested_tags() {
+        assert_eq!(
+            html_to_text("<div><b>Bold</b> and <i>italic</i></div>"),
+            "Bold and italic"
+        );
+    }
+
+    // --- extract_email_from_contact ---
+
+    #[test]
+    fn extract_email_from_contact_mailto() {
+        let mut contact = RelayContact::new("Test", "test-key");
+        contact.vault_address = Some("mailto:user@example.com".to_string());
+        let result = extract_email_from_contact(&contact);
+        assert_eq!(result, Some("user@example.com".to_string()));
+    }
+
+    #[test]
+    fn extract_email_from_contact_public_key_email() {
+        let contact = RelayContact::new("Test", "user@example.com");
+        let result = extract_email_from_contact(&contact);
+        assert_eq!(result, Some("user@example.com".to_string()));
+    }
+
+    #[test]
+    fn extract_email_from_contact_no_email() {
+        let contact = RelayContact::new("Test", "not-an-email");
+        let result = extract_email_from_contact(&contact);
+        assert!(result.is_none());
+    }
+}

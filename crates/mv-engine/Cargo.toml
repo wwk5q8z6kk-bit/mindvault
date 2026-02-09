@@ -48,6 +48,7 @@ core-foundation = "0.10"
 criterion = { version = "0.5", features = ["async_tokio"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
+wiremock = "0.6"
 
 [[bench]]
 name = "engine_bench"

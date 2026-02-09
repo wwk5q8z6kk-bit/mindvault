@@ -762,3 +762,303 @@ fn truncate(s: &str, max_len: usize) -> String {
         format!("{truncated}...")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mv_core::{NodeKind, PermissionTier};
+    use mv_engine::config::EngineConfig;
+    use tempfile::TempDir;
+
+    use crate::auth::{McpContext, McpScope};
+
+    async fn test_engine() -> (Arc<MindVaultEngine>, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let config = EngineConfig {
+            data_dir: tmp.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        let engine = MindVaultEngine::init(config).await.unwrap();
+        (Arc::new(engine), tmp)
+    }
+
+    fn writable_ctx() -> McpContext {
+        McpContext::with_scope(McpScope {
+            namespace: None,
+            tags: Vec::new(),
+            kinds: Vec::new(),
+            allow_write: true,
+            allow_actions: vec!["mcp.read".into(), "mcp.propose".into()],
+            resource_limit: 1000,
+            tier: PermissionTier::Edit,
+        })
+    }
+
+    fn read_only_ctx() -> McpContext {
+        McpContext::unscoped_read_only()
+    }
+
+    fn scoped_ctx(namespace: &str) -> McpContext {
+        McpContext::with_scope(McpScope {
+            namespace: Some(namespace.to_string()),
+            tags: Vec::new(),
+            kinds: Vec::new(),
+            allow_write: true,
+            allow_actions: vec!["mcp.read".into(), "mcp.propose".into()],
+            resource_limit: 1000,
+            tier: PermissionTier::Edit,
+        })
+    }
+
+    // --- list_tools ---
+
+    #[test]
+    fn list_tools_read_only_shows_read_tools_only() {
+        let ctx = read_only_ctx();
+        let tools = list_tools(&ctx);
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"mindvault_search_vault"));
+        assert!(names.contains(&"mindvault_get_node"));
+        assert!(names.contains(&"mindvault_list_recent"));
+        // propose tools should NOT be listed
+        assert!(!names.contains(&"mindvault_propose_node"));
+        assert!(!names.contains(&"mindvault_propose_tag"));
+        assert!(!names.contains(&"mindvault_propose_update"));
+    }
+
+    #[test]
+    fn list_tools_writable_shows_all_tools() {
+        let ctx = writable_ctx();
+        let tools = list_tools(&ctx);
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"mindvault_search_vault"));
+        assert!(names.contains(&"mindvault_propose_node"));
+        assert!(names.contains(&"mindvault_propose_tag"));
+        assert!(names.contains(&"mindvault_propose_update"));
+    }
+
+    // --- search_vault ---
+
+    #[tokio::test]
+    async fn search_vault_missing_query() {
+        let (engine, _tmp) = test_engine().await;
+        let ctx = read_only_ctx();
+        let result = call_tool(&engine, &ctx, "mindvault_search_vault", json!({})).await;
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn search_vault_returns_results() {
+        let (engine, _tmp) = test_engine().await;
+        // Store a node first
+        let node = mv_core::KnowledgeNode::new(NodeKind::Fact, "Rust is a systems language".into())
+            .with_title("Rust Facts")
+            .with_tags(vec!["rust".into()]);
+        engine.store_node(node).await.unwrap();
+
+        let ctx = read_only_ctx();
+        let result = call_tool(
+            &engine,
+            &ctx,
+            "mindvault_search_vault",
+            json!({"query": "rust systems", "strategy": "fulltext"}),
+        )
+        .await;
+        assert!(!result.is_error());
+    }
+
+    // --- get_node ---
+
+    #[tokio::test]
+    async fn get_node_not_found() {
+        let (engine, _tmp) = test_engine().await;
+        let ctx = read_only_ctx();
+        let random_id = Uuid::now_v7().to_string();
+        let result = call_tool(
+            &engine,
+            &ctx,
+            "mindvault_get_node",
+            json!({"id": random_id}),
+        )
+        .await;
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn get_node_scope_blocks_namespace() {
+        let (engine, _tmp) = test_engine().await;
+        let mut node = mv_core::KnowledgeNode::new(NodeKind::Fact, "private info".into());
+        node.namespace = "private".to_string();
+        let stored = engine.store_node(node).await.unwrap();
+
+        let ctx = scoped_ctx("work");
+        let result = call_tool(
+            &engine,
+            &ctx,
+            "mindvault_get_node",
+            json!({"id": stored.id.to_string()}),
+        )
+        .await;
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn get_node_invalid_uuid() {
+        let (engine, _tmp) = test_engine().await;
+        let ctx = read_only_ctx();
+        let result = call_tool(
+            &engine,
+            &ctx,
+            "mindvault_get_node",
+            json!({"id": "not-a-uuid"}),
+        )
+        .await;
+        assert!(result.is_error());
+    }
+
+    // --- propose_node ---
+
+    #[tokio::test]
+    async fn propose_node_read_only_blocked() {
+        let (engine, _tmp) = test_engine().await;
+        let ctx = read_only_ctx();
+        let result = call_tool(
+            &engine,
+            &ctx,
+            "mindvault_propose_node",
+            json!({"content": "new fact"}),
+        )
+        .await;
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn propose_node_creates_pending() {
+        let (engine, _tmp) = test_engine().await;
+        let ctx = writable_ctx();
+        let result = call_tool(
+            &engine,
+            &ctx,
+            "mindvault_propose_node",
+            json!({"content": "a new knowledge node", "kind": "fact"}),
+        )
+        .await;
+        assert!(!result.is_error());
+        // Check the response contains a proposal_id
+        if let Some(crate::protocol::ToolContent::Text { text }) = result.content.first() {
+            let parsed: Value = serde_json::from_str(text).unwrap();
+            assert!(parsed.get("proposal_id").is_some());
+            assert_eq!(parsed["state"], "pending");
+        } else {
+            panic!("expected text content");
+        }
+    }
+
+    #[tokio::test]
+    async fn propose_node_missing_content() {
+        let (engine, _tmp) = test_engine().await;
+        let ctx = writable_ctx();
+        let result = call_tool(&engine, &ctx, "mindvault_propose_node", json!({})).await;
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn propose_node_invalid_confidence() {
+        let (engine, _tmp) = test_engine().await;
+        let ctx = writable_ctx();
+        let result = call_tool(
+            &engine,
+            &ctx,
+            "mindvault_propose_node",
+            json!({"content": "test", "confidence": 2.0}),
+        )
+        .await;
+        assert!(result.is_error());
+    }
+
+    // --- propose_update ---
+
+    #[tokio::test]
+    async fn propose_update_no_fields() {
+        let (engine, _tmp) = test_engine().await;
+        let node = mv_core::KnowledgeNode::new(NodeKind::Fact, "original".into());
+        let stored = engine.store_node(node).await.unwrap();
+
+        let ctx = writable_ctx();
+        let result = call_tool(
+            &engine,
+            &ctx,
+            "mindvault_propose_update",
+            json!({"id": stored.id.to_string()}),
+        )
+        .await;
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn propose_update_nonexistent_node() {
+        let (engine, _tmp) = test_engine().await;
+        let ctx = writable_ctx();
+        let result = call_tool(
+            &engine,
+            &ctx,
+            "mindvault_propose_update",
+            json!({"id": Uuid::now_v7().to_string(), "content": "new"}),
+        )
+        .await;
+        assert!(result.is_error());
+    }
+
+    // --- propose_tag ---
+
+    #[tokio::test]
+    async fn propose_tag_nonexistent_node() {
+        let (engine, _tmp) = test_engine().await;
+        let ctx = writable_ctx();
+        let result = call_tool(
+            &engine,
+            &ctx,
+            "mindvault_propose_tag",
+            json!({"target_node_id": Uuid::now_v7().to_string(), "tag": "new-tag"}),
+        )
+        .await;
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn propose_tag_missing_tag() {
+        let (engine, _tmp) = test_engine().await;
+        let ctx = writable_ctx();
+        let result = call_tool(
+            &engine,
+            &ctx,
+            "mindvault_propose_tag",
+            json!({"target_node_id": Uuid::now_v7().to_string()}),
+        )
+        .await;
+        assert!(result.is_error());
+    }
+
+    // --- unknown tool ---
+
+    #[tokio::test]
+    async fn unknown_tool_returns_error() {
+        let (engine, _tmp) = test_engine().await;
+        let ctx = read_only_ctx();
+        let result = call_tool(&engine, &ctx, "nonexistent_tool", json!({})).await;
+        assert!(result.is_error());
+    }
+
+    // --- truncate helper ---
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_long_string_adds_ellipsis() {
+        let result = truncate("hello world", 5);
+        assert_eq!(result, "hello...");
+    }
+}

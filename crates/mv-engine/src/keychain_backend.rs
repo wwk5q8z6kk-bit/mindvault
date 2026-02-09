@@ -165,6 +165,10 @@ impl CredentialBackend for KeychainBackend {
         }
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn list_keys(&self) -> Result<Vec<String>, CredentialError> {
         if !self.keychain.is_unsealed_sync() {
             return Ok(vec![]);

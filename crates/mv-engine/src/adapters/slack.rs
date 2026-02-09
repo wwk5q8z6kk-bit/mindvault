@@ -286,4 +286,84 @@ mod tests {
         assert!(messages.is_empty());
         assert_eq!(cursor, "123");
     }
+
+    // --- wiremock-based integration tests ---
+
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::method;
+
+    fn slack_config_with_mock(mock_url: &str) -> AdapterConfig {
+        AdapterConfig::new(AdapterType::Slack, "test-slack")
+            .with_setting("webhook_url", mock_url)
+    }
+
+    #[tokio::test]
+    async fn send_success() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&mock)
+            .await;
+
+        let config = slack_config_with_mock(&mock.uri());
+        let adapter = SlackAdapter::new(config).unwrap();
+        let msg = AdapterOutboundMessage {
+            channel: "#test".into(),
+            content: "hello slack".into(),
+            thread_id: None,
+            metadata: HashMap::new(),
+        };
+        adapter.send(&msg).await.unwrap();
+        let status = adapter.status();
+        assert!(status.last_send.is_some());
+    }
+
+    #[tokio::test]
+    async fn send_failure() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("error"))
+            .mount(&mock)
+            .await;
+
+        let config = slack_config_with_mock(&mock.uri());
+        let adapter = SlackAdapter::new(config).unwrap();
+        let msg = AdapterOutboundMessage {
+            channel: "#test".into(),
+            content: "fail".into(),
+            thread_id: None,
+            metadata: HashMap::new(),
+        };
+        let result = adapter.send(&msg).await;
+        assert!(result.is_err());
+        let status = adapter.status();
+        assert!(status.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn send_with_thread_ts() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&mock)
+            .await;
+
+        let config = slack_config_with_mock(&mock.uri());
+        let adapter = SlackAdapter::new(config).unwrap();
+        let msg = AdapterOutboundMessage {
+            channel: "#test".into(),
+            content: "reply".into(),
+            thread_id: Some("1234567890.123456".into()),
+            metadata: HashMap::new(),
+        };
+        adapter.send(&msg).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn health_check_webhook_only() {
+        let adapter = SlackAdapter::new(slack_config_with_webhook()).unwrap();
+        // Webhook-only health check returns true if configured
+        let healthy = adapter.health_check().await.unwrap();
+        assert!(healthy);
+    }
 }

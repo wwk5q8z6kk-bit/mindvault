@@ -390,6 +390,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(safeguards::undo_proposal),
         )
         .route("/api/v1/secrets/status", get(secrets::secret_status))
+        .route("/api/v1/secrets/unlock", post(secrets::unlock_encrypted_file))
         .route("/api/v1/secrets", post(secrets::set_secret))
         .route("/api/v1/secrets/{key}", delete(secrets::delete_secret))
         // --- Owner Profile ---

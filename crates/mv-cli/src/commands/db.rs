@@ -3,11 +3,16 @@
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::env;
 
 use super::load_config;
-use mv_core::{NodeStore, QueryFilters};
-use mv_engine::engine::MindVaultEngine;
-use mv_storage::vector::LanceVectorStore;
+use mv_core::{Embedder, NodeStore, QueryFilters};
+use mv_engine::config::EngineConfig;
+use mv_storage::vector::{
+    KnowledgeVaultIndexNoteEmbeddingFastembedLocalEmbedder, LanceVectorStore, NoopEmbedder,
+    OpenAiEmbedder,
+};
 
 const SQLITE_DB_FILE: &str = "mindvault.sqlite";
 
@@ -267,31 +272,26 @@ pub async fn rebuild_vectors(
     }
 
     println!("Initializing embedding provider...");
-    let engine = MindVaultEngine::init(config.clone()).await?;
-    let embedding_status = engine.embedding_runtime_status();
-    let nodes = std::sync::Arc::clone(&engine.store.nodes);
-    let embedder = std::sync::Arc::clone(&engine.store.embedder);
-    drop(engine);
+    let runtime = resolve_embedder_for_rebuild(&config);
+    let nodes = std::sync::Arc::new(node_store);
 
-    if embedding_status.fallback_to_noop {
+    if runtime.fallback_to_noop {
         println!(
             "Warning: embedding provider fell back to noop (reason: {}). Rebuilt vectors will be zeroed.",
-            embedding_status
-                .reason
-                .as_deref()
-                .unwrap_or("unknown")
+            runtime.reason.as_deref().unwrap_or("unknown")
         );
     } else {
         println!(
             "Embedding provider: {} ({}, dims={})",
-            embedding_status.effective_provider,
-            embedding_status.effective_model,
-            embedding_status.effective_dimensions
+            runtime.provider, runtime.model, runtime.dimensions
         );
+        if let Some(reason) = &runtime.reason {
+            println!("Note: {reason}");
+        }
     }
 
     println!("Creating new LanceDB index...");
-    let vectors = LanceVectorStore::open(&rebuild_dir, embedder.dimensions()).await?;
+    let vectors = LanceVectorStore::open(&rebuild_dir, runtime.dimensions).await?;
 
     let mut offset = 0usize;
     let mut processed = 0usize;
@@ -304,7 +304,7 @@ pub async fn rebuild_vectors(
         }
 
         let texts: Vec<String> = batch.iter().map(|node| node.content.clone()).collect();
-        let embeddings = embedder.embed_batch(&texts).await?;
+        let embeddings = runtime.embedder.embed_batch(&texts).await?;
 
         if embeddings.len() != batch.len() {
             return Err(anyhow!(
@@ -359,5 +359,152 @@ fn format_size(size: u64) -> String {
         format!("{:.2} KB", size as f64 / 1024.0)
     } else {
         format!("{size} bytes")
+    }
+}
+
+struct EmbedderRuntime {
+    embedder: Arc<dyn Embedder>,
+    provider: String,
+    model: String,
+    dimensions: usize,
+    fallback_to_noop: bool,
+    reason: Option<String>,
+}
+
+fn resolve_embedder_for_rebuild(config: &EngineConfig) -> EmbedderRuntime {
+    let provider = config.embedding.provider.trim().to_ascii_lowercase();
+    let configured_model = config.embedding.model.clone();
+    let configured_dimensions = config.embedding.dimensions;
+
+    let noop = |reason: Option<String>| EmbedderRuntime {
+        embedder: Arc::new(NoopEmbedder::new(configured_dimensions)),
+        provider: "noop".to_string(),
+        model: "noop".to_string(),
+        dimensions: configured_dimensions,
+        fallback_to_noop: true,
+        reason,
+    };
+
+    match provider.as_str() {
+        "openai" => {
+            let base_url = config
+                .embedding
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com/v1".into());
+            let api_key = env::var("OPENAI_API_KEY").ok();
+            if api_key.is_none() && base_url.contains("api.openai.com") {
+                return noop(Some(
+                    "OPENAI_API_KEY not found; falling back to noop embeddings".to_string(),
+                ));
+            }
+            let embedder = OpenAiEmbedder::for_compatible(
+                base_url,
+                api_key,
+                config.embedding.model.clone(),
+                configured_dimensions,
+            );
+            EmbedderRuntime {
+                embedder: Arc::new(embedder),
+                provider: "openai".to_string(),
+                model: configured_model,
+                dimensions: configured_dimensions,
+                fallback_to_noop: false,
+                reason: None,
+            }
+        }
+        "openai-compatible" | "openai_compatible" => {
+            let base_url = config
+                .embedding
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:8080/v1".into());
+            let api_key = env::var("MINDVAULT_EMBEDDING_API_KEY")
+                .ok()
+                .or_else(|| env::var("OPENAI_API_KEY").ok());
+            let embedder = OpenAiEmbedder::for_compatible(
+                base_url,
+                api_key,
+                config.embedding.model.clone(),
+                configured_dimensions,
+            );
+            EmbedderRuntime {
+                embedder: Arc::new(embedder),
+                provider: "openai-compatible".to_string(),
+                model: configured_model,
+                dimensions: configured_dimensions,
+                fallback_to_noop: false,
+                reason: None,
+            }
+        }
+        "ollama" => {
+            let base_url = config
+                .embedding
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:11434/v1".into());
+            let model = if config.embedding.model.starts_with("text-embedding-") {
+                "nomic-embed-text".to_string()
+            } else {
+                config.embedding.model.clone()
+            };
+            let embedder = OpenAiEmbedder::for_ollama(
+                Some(base_url),
+                model.clone(),
+                configured_dimensions,
+            );
+            let reason = if model != configured_model {
+                Some(format!(
+                    "model '{configured_model}' auto-mapped to '{model}' for ollama"
+                ))
+            } else {
+                None
+            };
+            EmbedderRuntime {
+                embedder: Arc::new(embedder),
+                provider: "ollama".to_string(),
+                model,
+                dimensions: configured_dimensions,
+                fallback_to_noop: false,
+                reason,
+            }
+        }
+        "local_fastembed" | "fastembed" | "local" => {
+            let local_model = default_local_model_if_needed(&config.embedding.model);
+            match KnowledgeVaultIndexNoteEmbeddingFastembedLocalEmbedder::try_new(&local_model) {
+                Ok(embedder) => {
+                    let dimensions = embedder.dimensions();
+                    let reason = if local_model != configured_model {
+                        Some(format!(
+                            "model '{configured_model}' auto-mapped to '{local_model}' for local_fastembed"
+                        ))
+                    } else {
+                        None
+                    };
+                    EmbedderRuntime {
+                        embedder: Arc::new(embedder),
+                        provider: "local_fastembed".to_string(),
+                        model: local_model,
+                        dimensions,
+                        fallback_to_noop: false,
+                        reason,
+                    }
+                }
+                Err(err) => noop(Some(format!(
+                    "local_fastembed initialization failed: {err}"
+                ))),
+            }
+        }
+        other => noop(Some(format!(
+            "unknown embedding provider '{other}', falling back to noop"
+        ))),
+    }
+}
+
+fn default_local_model_if_needed(config_model: &str) -> String {
+    if config_model.starts_with("text-embedding-") {
+        "bge-small-en-v1.5".to_string()
+    } else {
+        config_model.to_string()
     }
 }

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use mv_core::MvError;
+use mv_core::{ChronicleEntry, MvError};
 use mv_engine::engine::MindVaultEngine;
 
 use crate::auth::{authorize_read, authorize_write, AuthContext};
@@ -291,6 +291,12 @@ pub async fn create_oauth_client(
         updated.destroyed_at.or(updated.archived_at),
     );
 
+    let chronicle = ChronicleEntry::new(
+        "oauth.client_create",
+        format!("Created OAuth client '{}' (id: {})", payload.name, updated.name),
+    );
+    let _ = state.engine.log_chronicle(&chronicle).await;
+
     Ok(Json(OAuthClientCreateResponse {
         client: response,
         client_secret,
@@ -369,6 +375,12 @@ pub async fn revoke_oauth_client(
         .await
         .map_err(map_keychain_error)?;
 
+    let chronicle = ChronicleEntry::new(
+        "oauth.client_revoke",
+        format!("Revoked OAuth client '{}'", client_id),
+    );
+    let _ = state.engine.log_chronicle(&chronicle).await;
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -424,6 +436,11 @@ pub async fn oauth_token(
         .await
         .map_err(map_keychain_error)?
     else {
+        let chronicle = ChronicleEntry::new(
+            "oauth.token_denied",
+            format!("Token request denied for client '{}'", client_id),
+        );
+        let _ = state.engine.log_chronicle(&chronicle).await;
         return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
     };
 
@@ -431,6 +448,11 @@ pub async fn oauth_token(
         .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid client".into()))?;
 
     if !constant_time_eq(&stored_secret, &client_secret) {
+        let chronicle = ChronicleEntry::new(
+            "oauth.token_denied",
+            format!("Token request denied for client '{}'", client_id),
+        );
+        let _ = state.engine.log_chronicle(&chronicle).await;
         return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
     }
 
@@ -463,6 +485,12 @@ pub async fn oauth_token(
 
     let _ = access_key;
 
+    let chronicle = ChronicleEntry::new(
+        "oauth.token_issued",
+        format!("Issued OAuth token for client '{}'", client_id),
+    );
+    let _ = state.engine.log_chronicle(&chronicle).await;
+
     Ok(Json(OAuthTokenResponse {
         access_token: token,
         token_type: "Bearer".into(),
@@ -477,4 +505,157 @@ fn generate_client_secret() -> String {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constant_time_eq_same_strings() {
+        assert!(constant_time_eq("hello", "hello"));
+    }
+
+    #[test]
+    fn constant_time_eq_different_strings() {
+        assert!(!constant_time_eq("hello", "world"));
+    }
+
+    #[test]
+    fn constant_time_eq_different_lengths() {
+        assert!(!constant_time_eq("short", "longer string"));
+    }
+
+    #[test]
+    fn constant_time_eq_empty_strings() {
+        assert!(constant_time_eq("", ""));
+    }
+
+    #[test]
+    fn extract_basic_auth_valid() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("client_id:client_secret");
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Basic {encoded}").parse().unwrap(),
+        );
+        let result = extract_basic_auth(&headers);
+        assert!(result.is_some());
+        let (id, secret) = result.unwrap();
+        assert_eq!(id, "client_id");
+        assert_eq!(secret, "client_secret");
+    }
+
+    #[test]
+    fn extract_basic_auth_missing_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_basic_auth(&headers).is_none());
+    }
+
+    #[test]
+    fn extract_basic_auth_bearer_not_basic() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer some-token".parse().unwrap(),
+        );
+        assert!(extract_basic_auth(&headers).is_none());
+    }
+
+    #[test]
+    fn extract_basic_auth_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Basic not-valid-base64!!!".parse().unwrap(),
+        );
+        assert!(extract_basic_auth(&headers).is_none());
+    }
+
+    #[test]
+    fn extract_basic_auth_no_colon_separator() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Basic {encoded}").parse().unwrap(),
+        );
+        assert!(extract_basic_auth(&headers).is_none());
+    }
+
+    #[test]
+    fn parse_rfc3339_valid() {
+        let result = parse_rfc3339("expires_at", Some("2026-12-31T23:59:59Z".into()));
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[test]
+    fn parse_rfc3339_none() {
+        let result = parse_rfc3339("expires_at", None);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_rfc3339_invalid() {
+        let result = parse_rfc3339("expires_at", Some("not-a-date".into()));
+        assert!(result.is_err());
+        let (status, msg) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(msg.contains("expires_at"));
+    }
+
+    #[test]
+    fn generate_client_secret_is_unique_and_correct_length() {
+        let s1 = generate_client_secret();
+        let s2 = generate_client_secret();
+        assert_ne!(s1, s2);
+        // 32 bytes base64url-no-pad = 43 chars
+        assert_eq!(s1.len(), 43);
+    }
+
+    #[test]
+    fn require_admin_rejects_non_admin() {
+        use crate::auth::{AuthContext, AuthRole};
+        // Write role passes authorize_write but fails is_admin
+        let auth = AuthContext {
+            subject: Some("user".into()),
+            role: AuthRole::Write,
+            namespace: None,
+            consumer_name: None,
+        };
+        let result = require_admin(&auth);
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn build_client_response_populates_fields() {
+        let mut metadata = HashMap::new();
+        metadata.insert(METADATA_TEMPLATE_ID.into(), Value::String("tmpl-1".into()));
+        metadata.insert(METADATA_DISPLAY_NAME.into(), Value::String("My Client".into()));
+        metadata.insert(METADATA_TOKEN_TTL_SECS.into(), Value::Number(7200.into()));
+        metadata.insert(METADATA_DESCRIPTION.into(), Value::String("A test client".into()));
+
+        let now = Utc::now();
+        let resp = build_client_response(
+            "client-123".into(),
+            &metadata,
+            now,
+            now,
+            now,
+            None,
+            None,
+        );
+
+        assert_eq!(resp.client_id, "client-123");
+        assert_eq!(resp.name, "My Client");
+        assert_eq!(resp.template_id, "tmpl-1");
+        assert_eq!(resp.token_ttl_seconds, 7200);
+        assert_eq!(resp.description, Some("A test client".into()));
+        assert!(resp.expires_at.is_none());
+        assert!(resp.revoked_at.is_none());
+    }
 }

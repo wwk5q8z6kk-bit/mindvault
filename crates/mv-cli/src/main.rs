@@ -372,6 +372,16 @@ enum SecretAction {
     },
     /// Show credential backend status
     Status,
+    /// Initialize encrypted file backend (~/.mindvault/secrets.enc)
+    #[command(name = "file-init")]
+    FileInit,
+    /// Unlock encrypted file backend (prompts for master password, then runs a secret subcommand)
+    #[command(name = "file-unlock")]
+    FileUnlock {
+        /// Action to perform after unlocking: get, set, list, delete, status
+        #[command(subcommand)]
+        action: Box<FileUnlockAction>,
+    },
     /// Set an access policy for a consumer on a secret
     #[command(name = "policy-set")]
     PolicySet {
@@ -404,6 +414,31 @@ enum SecretAction {
         /// Policy ID
         id: String,
     },
+}
+
+#[derive(Subcommand)]
+enum FileUnlockAction {
+    /// Store a secret in the encrypted file
+    Set {
+        /// Secret key name (e.g., OPENAI_API_KEY)
+        key: String,
+        /// Secret value (omit to be prompted securely)
+        value: Option<String>,
+    },
+    /// Retrieve a secret
+    Get {
+        /// Secret key name
+        key: String,
+    },
+    /// List stored secret names
+    List,
+    /// Delete a secret
+    Delete {
+        /// Secret key name
+        key: String,
+    },
+    /// Show credential backend status
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -760,6 +795,10 @@ async fn main() -> Result<()> {
             SecretAction::List => commands::secret::list().await,
             SecretAction::Delete { key } => commands::secret::delete(&key).await,
             SecretAction::Status => commands::secret::status().await,
+            SecretAction::FileInit => commands::secret::file_init().await,
+            SecretAction::FileUnlock { action } => {
+                commands::secret::file_unlock(*action).await
+            }
             SecretAction::PolicySet {
                 key,
                 consumer,

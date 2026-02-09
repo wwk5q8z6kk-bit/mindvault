@@ -115,7 +115,11 @@
       "Bash(CARGO_TARGET_DIR=/tmp/mv-with-conn cargo check:*)",
       "Bash(CARGO_TARGET_DIR=/tmp/mv-ws-final cargo test:*)",
       "Bash(CARGO_TARGET_DIR=/tmp/mv-with-conn2 cargo check:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(CARGO_TARGET_DIR=/tmp/mv-wc3 cargo check:*)",
+      "Bash(~/.mindvault/scripts/mv-check:*)",
+      "Bash(CARGO_HOME=/tmp/cargo-test-home CARGO_TARGET_DIR=/tmp/mv-test-isolated cargo test:*)",
+      "Bash(CARGO_TARGET_DIR=/tmp/mv-wc4 cargo check:*)"
     ]
   },
   "enabledMcpjsonServers": [

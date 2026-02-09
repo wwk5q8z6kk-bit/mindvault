@@ -318,6 +318,77 @@ fn base64_encode(data: &[u8]) -> String {
 use crate::engine::MindVaultEngine;
 use crate::llm;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn email_config_full() -> AdapterConfig {
+        AdapterConfig::new(AdapterType::Email, "test-email")
+            .with_setting("smtp_host", "smtp.example.com")
+            .with_setting("smtp_user", "user@example.com")
+            .with_setting("smtp_pass", "password123")
+            .with_setting("from_address", "noreply@example.com")
+    }
+
+    #[test]
+    fn new_requires_all_settings() {
+        let config = AdapterConfig::new(AdapterType::Email, "missing");
+        assert!(EmailAdapter::new(config).is_err());
+    }
+
+    #[test]
+    fn new_requires_smtp_host() {
+        let config = AdapterConfig::new(AdapterType::Email, "no-host")
+            .with_setting("smtp_user", "u")
+            .with_setting("smtp_pass", "p")
+            .with_setting("from_address", "a@b.com");
+        let err = EmailAdapter::new(config).unwrap_err();
+        assert!(err.to_string().contains("smtp_host"));
+    }
+
+    #[test]
+    fn smtp_port_defaults_to_587() {
+        let adapter = EmailAdapter::new(email_config_full()).unwrap();
+        assert_eq!(adapter.smtp_port(), 587);
+    }
+
+    #[test]
+    fn smtp_port_custom() {
+        let config = email_config_full().with_setting("smtp_port", "465");
+        let adapter = EmailAdapter::new(config).unwrap();
+        assert_eq!(adapter.smtp_port(), 465);
+    }
+
+    #[tokio::test]
+    async fn poll_returns_empty() {
+        let adapter = EmailAdapter::new(email_config_full()).unwrap();
+        let (messages, cursor) = adapter.poll(None).await.unwrap();
+        assert!(messages.is_empty());
+        assert_eq!(cursor, "0");
+    }
+
+    #[test]
+    fn status_reflects_no_error_initially() {
+        let adapter = EmailAdapter::new(email_config_full()).unwrap();
+        let status = adapter.status();
+        assert!(status.connected);
+        assert!(status.error.is_none());
+        assert_eq!(status.adapter_type, AdapterType::Email);
+    }
+
+    #[test]
+    fn adapter_type_is_email() {
+        let adapter = EmailAdapter::new(email_config_full()).unwrap();
+        assert_eq!(adapter.adapter_type(), AdapterType::Email);
+    }
+
+    #[test]
+    fn name_returns_config_name() {
+        let adapter = EmailAdapter::new(email_config_full()).unwrap();
+        assert_eq!(adapter.name(), "test-email");
+    }
+}
+
 impl EmailAdapter {
     /// Generate a context-aware reply proposal for an inbound email.
     ///

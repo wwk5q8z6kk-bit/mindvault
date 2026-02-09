@@ -42,6 +42,16 @@ impl McpContext {
         }
     }
 
+    /// Test-only constructor that allows arbitrary scope configuration.
+    #[cfg(test)]
+    pub(crate) fn with_scope(scope: McpScope) -> Self {
+        Self {
+            scope,
+            template_name: Some("test-template".into()),
+            key_id: Some("test-key".into()),
+        }
+    }
+
     pub fn scope(&self) -> &McpScope {
         &self.scope
     }
@@ -245,4 +255,352 @@ fn action_matches(allowed: &str, action: &str) -> bool {
         return action.starts_with(prefix);
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mv_core::{NodeKind, PermissionTemplate, PermissionTier, QueryFilters};
+
+    fn scope_read_only() -> McpScope {
+        McpScope::read_only()
+    }
+
+    fn scope_with_namespace(ns: &str) -> McpScope {
+        McpScope {
+            namespace: Some(ns.to_string()),
+            tags: Vec::new(),
+            kinds: Vec::new(),
+            allow_write: true,
+            allow_actions: Vec::new(),
+            resource_limit: 1000,
+            tier: PermissionTier::Edit,
+        }
+    }
+
+    fn scope_with_kinds(kinds: Vec<NodeKind>) -> McpScope {
+        McpScope {
+            namespace: None,
+            tags: Vec::new(),
+            kinds,
+            allow_write: true,
+            allow_actions: Vec::new(),
+            resource_limit: 1000,
+            tier: PermissionTier::Edit,
+        }
+    }
+
+    fn scope_with_tags(tags: Vec<&str>) -> McpScope {
+        McpScope {
+            namespace: None,
+            tags: tags.into_iter().map(String::from).collect(),
+            kinds: Vec::new(),
+            allow_write: true,
+            allow_actions: Vec::new(),
+            resource_limit: 1000,
+            tier: PermissionTier::Edit,
+        }
+    }
+
+    fn scope_with_actions(actions: Vec<&str>) -> McpScope {
+        McpScope {
+            namespace: None,
+            tags: Vec::new(),
+            kinds: Vec::new(),
+            allow_write: true,
+            allow_actions: actions.into_iter().map(String::from).collect(),
+            resource_limit: 1000,
+            tier: PermissionTier::Action,
+        }
+    }
+
+    // --- read_only_scope_blocks_write ---
+
+    #[test]
+    fn read_only_scope_blocks_write() {
+        let scope = scope_read_only();
+        assert!(!scope.allow_write);
+        assert!(scope.ensure_write_allowed().is_err());
+    }
+
+    // --- namespace_isolation ---
+
+    #[test]
+    fn namespace_isolation() {
+        let scope = scope_with_namespace("private");
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "test".into());
+        node.namespace = "default".to_string();
+        assert!(scope.check_node(&node).is_err());
+    }
+
+    #[test]
+    fn namespace_allows_matching() {
+        let scope = scope_with_namespace("private");
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "test".into());
+        node.namespace = "private".to_string();
+        assert!(scope.check_node(&node).is_ok());
+    }
+
+    // --- kind_restriction ---
+
+    #[test]
+    fn kind_restriction_blocks_disallowed() {
+        let scope = scope_with_kinds(vec![NodeKind::Fact]);
+        let node = KnowledgeNode::new(NodeKind::Task, "test".into());
+        assert!(scope.check_node(&node).is_err());
+    }
+
+    #[test]
+    fn kind_restriction_allows_permitted() {
+        let scope = scope_with_kinds(vec![NodeKind::Fact, NodeKind::Task]);
+        let node = KnowledgeNode::new(NodeKind::Fact, "test".into());
+        assert!(scope.check_node(&node).is_ok());
+    }
+
+    // --- tag_restriction ---
+
+    #[test]
+    fn tag_restriction_blocks_untagged() {
+        let scope = scope_with_tags(vec!["project-a"]);
+        let node = KnowledgeNode::new(NodeKind::Fact, "test".into());
+        // node has no tags
+        assert!(scope.check_node(&node).is_err());
+    }
+
+    #[test]
+    fn tag_restriction_allows_matching() {
+        let scope = scope_with_tags(vec!["project-a"]);
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "test".into());
+        node.tags = vec!["project-a".to_string()];
+        assert!(scope.check_node(&node).is_ok());
+    }
+
+    // --- apply_filters_enforces_namespace ---
+
+    #[test]
+    fn apply_filters_enforces_namespace() {
+        let scope = scope_with_namespace("work");
+        let mut filters = QueryFilters::default();
+        filters.namespace = Some("personal".to_string());
+        assert!(scope.apply_filters(&mut filters).is_err());
+    }
+
+    #[test]
+    fn apply_filters_injects_namespace() {
+        let scope = scope_with_namespace("work");
+        let mut filters = QueryFilters::default();
+        scope.apply_filters(&mut filters).unwrap();
+        assert_eq!(filters.namespace, Some("work".to_string()));
+    }
+
+    // --- apply_filters_injects_kinds ---
+
+    #[test]
+    fn apply_filters_injects_kinds() {
+        let scope = scope_with_kinds(vec![NodeKind::Fact, NodeKind::Task]);
+        let mut filters = QueryFilters::default();
+        scope.apply_filters(&mut filters).unwrap();
+        assert_eq!(filters.kinds, Some(vec![NodeKind::Fact, NodeKind::Task]));
+    }
+
+    #[test]
+    fn apply_filters_rejects_unpermitted_kinds() {
+        let scope = scope_with_kinds(vec![NodeKind::Fact]);
+        let mut filters = QueryFilters::default();
+        filters.kinds = Some(vec![NodeKind::Task]);
+        assert!(scope.apply_filters(&mut filters).is_err());
+    }
+
+    // --- ensure_action_blocks_unpermitted ---
+
+    #[test]
+    fn ensure_action_blocks_unpermitted() {
+        let scope = scope_with_actions(vec!["mcp.read"]);
+        assert!(scope.ensure_action("mcp.propose").is_err());
+    }
+
+    #[test]
+    fn ensure_action_allows_permitted() {
+        let scope = scope_with_actions(vec!["mcp.read", "mcp.propose"]);
+        assert!(scope.ensure_action("mcp.read").is_ok());
+        assert!(scope.ensure_action("mcp.propose").is_ok());
+    }
+
+    // --- action_wildcard ---
+
+    #[test]
+    fn action_wildcard_allows_all() {
+        let scope = scope_with_actions(vec!["mcp:*"]);
+        assert!(scope.ensure_action("mcp.read").is_ok());
+        assert!(scope.ensure_action("mcp.propose").is_ok());
+        assert!(scope.ensure_action("anything").is_ok());
+    }
+
+    #[test]
+    fn action_star_allows_all() {
+        let scope = scope_with_actions(vec!["*"]);
+        assert!(scope.ensure_action("mcp.read").is_ok());
+    }
+
+    #[test]
+    fn action_empty_allows_all() {
+        // Empty allow_actions means "allow everything"
+        let scope = McpScope {
+            allow_actions: Vec::new(),
+            ..scope_read_only()
+        };
+        assert!(scope.ensure_action("anything").is_ok());
+    }
+
+    // --- ensure_tags_injects_scope_tags ---
+
+    #[test]
+    fn ensure_tags_injects_scope_tags() {
+        let scope = scope_with_tags(vec!["scope-tag"]);
+        let tags = scope.ensure_tags_for_proposal(vec!["user-tag".to_string()]);
+        assert!(tags.contains(&"user-tag".to_string()));
+        assert!(tags.contains(&"scope-tag".to_string()));
+    }
+
+    #[test]
+    fn ensure_tags_no_duplicates() {
+        let scope = scope_with_tags(vec!["shared"]);
+        let tags = scope.ensure_tags_for_proposal(vec!["shared".to_string()]);
+        assert_eq!(tags.len(), 1);
+    }
+
+    // --- from_template_tiers ---
+
+    #[test]
+    fn from_template_view_tier_no_write() {
+        let template = PermissionTemplate {
+            id: uuid::Uuid::now_v7(),
+            name: "viewer".into(),
+            tier: PermissionTier::View,
+            scope_namespace: None,
+            scope_tags: Vec::new(),
+            allow_kinds: Vec::new(),
+            allow_actions: Vec::new(),
+            created_at: chrono::Utc::now(),
+        };
+        let scope = McpScope::from_template(&template);
+        assert!(!scope.allow_write);
+        assert_eq!(scope.tier, PermissionTier::View);
+    }
+
+    #[test]
+    fn from_template_edit_tier_allows_write() {
+        let template = PermissionTemplate {
+            id: uuid::Uuid::now_v7(),
+            name: "editor".into(),
+            tier: PermissionTier::Edit,
+            scope_namespace: Some("work".into()),
+            scope_tags: vec!["team".into()],
+            allow_kinds: vec![NodeKind::Fact],
+            allow_actions: vec!["mcp.read".into(), "mcp.propose".into()],
+            created_at: chrono::Utc::now(),
+        };
+        let scope = McpScope::from_template(&template);
+        assert!(scope.allow_write);
+        assert_eq!(scope.namespace, Some("work".into()));
+        assert_eq!(scope.tags, vec!["team".to_string()]);
+        assert_eq!(scope.kinds, vec![NodeKind::Fact]);
+        assert_eq!(scope.tier, PermissionTier::Edit);
+    }
+
+    #[test]
+    fn from_template_admin_tier_allows_write() {
+        let template = PermissionTemplate {
+            id: uuid::Uuid::now_v7(),
+            name: "admin".into(),
+            tier: PermissionTier::Admin,
+            scope_namespace: None,
+            scope_tags: Vec::new(),
+            allow_kinds: Vec::new(),
+            allow_actions: Vec::new(),
+            created_at: chrono::Utc::now(),
+        };
+        let scope = McpScope::from_template(&template);
+        assert!(scope.allow_write);
+        assert!(scope.is_admin());
+    }
+
+    // --- action_matches helper ---
+
+    #[test]
+    fn action_matches_exact() {
+        assert!(action_matches("mcp.read", "mcp.read"));
+        assert!(!action_matches("mcp.read", "mcp.write"));
+    }
+
+    #[test]
+    fn action_matches_prefix_wildcard() {
+        assert!(action_matches("mcp.*", "mcp.read"));
+        assert!(action_matches("mcp.*", "mcp.propose"));
+    }
+
+    // --- McpContext ---
+
+    #[test]
+    fn unscoped_read_only_context() {
+        let ctx = McpContext::unscoped_read_only();
+        assert!(ctx.can_read());
+        assert!(!ctx.can_write());
+        assert!(ctx.key_id().is_none());
+        assert!(ctx.summary().contains("unscoped"));
+    }
+
+    // --- McpScope helpers ---
+
+    #[test]
+    fn is_unscoped_when_empty() {
+        let scope = scope_read_only();
+        assert!(scope.is_unscoped());
+    }
+
+    #[test]
+    fn is_scoped_with_namespace() {
+        let scope = scope_with_namespace("ns");
+        assert!(!scope.is_unscoped());
+    }
+
+    #[test]
+    fn ensure_kind_allows_when_empty() {
+        let scope = scope_read_only();
+        assert!(scope.ensure_kind(NodeKind::Task).is_ok());
+    }
+
+    #[test]
+    fn ensure_kind_blocks_when_restricted() {
+        let scope = scope_with_kinds(vec![NodeKind::Fact]);
+        assert!(scope.ensure_kind(NodeKind::Task).is_err());
+    }
+
+    #[test]
+    fn normalize_namespace_uses_scope() {
+        let scope = scope_with_namespace("scoped");
+        let result = scope.normalize_namespace(None).unwrap();
+        assert_eq!(result, Some("scoped".to_string()));
+    }
+
+    #[test]
+    fn normalize_namespace_rejects_mismatch() {
+        let scope = scope_with_namespace("scoped");
+        let result = scope.normalize_namespace(Some("other"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn normalize_namespace_allows_match() {
+        let scope = scope_with_namespace("scoped");
+        let result = scope.normalize_namespace(Some("scoped")).unwrap();
+        assert_eq!(result, Some("scoped".to_string()));
+    }
+
+    #[test]
+    fn normalize_namespace_passthrough_unscoped() {
+        let scope = scope_read_only();
+        let result = scope.normalize_namespace(Some("anything")).unwrap();
+        assert_eq!(result, Some("anything".to_string()));
+    }
 }

@@ -40,6 +40,16 @@ pub struct DeleteSecretResponse {
     pub deleted_from: Vec<String>,
 }
 
+#[derive(Deserialize)]
+pub struct UnlockRequest {
+    pub password: String,
+}
+
+#[derive(Serialize)]
+pub struct UnlockResponse {
+    pub unlocked: bool,
+}
+
 #[derive(Serialize)]
 struct ErrorBody {
     error: String,
@@ -106,6 +116,34 @@ pub async fn delete_secret(
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             err_json(format!("failed to delete secret: {e}")),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/v1/secrets/unlock
+pub async fn unlock_encrypted_file(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UnlockRequest>,
+) -> impl IntoResponse {
+    if req.password.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            err_json("password is required"),
+        )
+            .into_response();
+    }
+
+    match state.engine.credential_store.unlock_encrypted_file(&req.password) {
+        Ok(true) => Json(UnlockResponse { unlocked: true }).into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            err_json("no encrypted file backend configured"),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::UNAUTHORIZED,
+            err_json(format!("unlock failed: {e}")),
         )
             .into_response(),
     }
