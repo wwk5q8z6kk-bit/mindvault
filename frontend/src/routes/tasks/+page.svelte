@@ -96,7 +96,10 @@
 				// continue
 			}
 		}
-		pushToast(`Moved ${moved} task${moved === 1 ? '' : 's'} to ${bulkMoveStatus.replace('_', ' ')}`, 'success');
+		pushToast(
+			`Moved ${moved} task${moved === 1 ? '' : 's'} to ${bulkMoveStatus.replace('_', ' ')}`,
+			'success'
+		);
 		clearSelection();
 	}
 
@@ -125,7 +128,10 @@
 				// continue
 			}
 		}
-		pushToast(`Set priority P${bulkPriority} on ${updated} task${updated === 1 ? '' : 's'}`, 'success');
+		pushToast(
+			`Set priority P${bulkPriority} on ${updated} task${updated === 1 ? '' : 's'}`,
+			'success'
+		);
 		clearSelection();
 	}
 
@@ -151,7 +157,10 @@
 				// continue
 			}
 		}
-		pushToast(`Added ${newLabels.length} label${newLabels.length === 1 ? '' : 's'} to ${updated} task${updated === 1 ? '' : 's'}`, 'success');
+		pushToast(
+			`Added ${newLabels.length} label${newLabels.length === 1 ? '' : 's'} to ${updated} task${updated === 1 ? '' : 's'}`,
+			'success'
+		);
 		bulkLabelInput = '';
 		clearSelection();
 	}
@@ -171,8 +180,11 @@
 		if (date.toDateString() === tomorrow.toDateString()) {
 			return 'Tomorrow ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 		}
-		return date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) +
-			' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+		return (
+			date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) +
+			' ' +
+			date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+		);
 	}
 
 	const statusOptions: Array<TaskStatus | 'all'> = [
@@ -223,7 +235,11 @@
 	$: selectedTask = $tasksStore.find((task) => task.id === $selectedTaskId) ?? null;
 
 	$: urlTaskId = $page.url.searchParams.get('task');
-	$: if (urlTaskId && $tasksStore.some((task) => task.id === urlTaskId) && $selectedTaskId !== urlTaskId) {
+	$: if (
+		urlTaskId &&
+		$tasksStore.some((task) => task.id === urlTaskId) &&
+		$selectedTaskId !== urlTaskId
+	) {
 		selectedTaskId.set(urlTaskId);
 	}
 
@@ -278,7 +294,7 @@
 	function handleSelect(id: string) {
 		selectedTaskId.set(id);
 		// Track in recent items
-		const task = $tasksStore.find(t => t.id === id);
+		const task = $tasksStore.find((t) => t.id === id);
 		if (task) {
 			recentItems.addTask(task.id, task.title);
 		}
@@ -386,17 +402,29 @@
 		const allActive = $tasksStore.filter((t) => t.status !== 'done');
 		return [
 			{ key: 'all' as TaskView, label: 'All', count: allActive.length },
-			{ key: 'inbox' as TaskView, label: 'Inbox', count: $tasksStore.filter((t) => t.status === 'inbox').length },
-			{ key: 'today' as TaskView, label: 'Today', count: $tasksStore.filter((t) => {
-				if (!t.due_at || t.status === 'done') return false;
-				const d = new Date(t.due_at);
-				return d >= todayStart && d < todayEnd;
-			}).length },
-			{ key: 'upcoming' as TaskView, label: 'Upcoming', count: $tasksStore.filter((t) => {
-				if (!t.due_at || t.status === 'done') return false;
-				const d = new Date(t.due_at);
-				return d >= now && d <= weekEnd;
-			}).length }
+			{
+				key: 'inbox' as TaskView,
+				label: 'Inbox',
+				count: $tasksStore.filter((t) => t.status === 'inbox').length
+			},
+			{
+				key: 'today' as TaskView,
+				label: 'Today',
+				count: $tasksStore.filter((t) => {
+					if (!t.due_at || t.status === 'done') return false;
+					const d = new Date(t.due_at);
+					return d >= todayStart && d < todayEnd;
+				}).length
+			},
+			{
+				key: 'upcoming' as TaskView,
+				label: 'Upcoming',
+				count: $tasksStore.filter((t) => {
+					if (!t.due_at || t.status === 'done') return false;
+					const d = new Date(t.due_at);
+					return d >= now && d <= weekEnd;
+				}).length
+			}
 		];
 	})();
 
@@ -407,11 +435,14 @@
 		selectedTask?.dependencies
 			?.map((id) => taskById.get(id))
 			.filter((task): task is TaskRecord => Boolean(task)) ?? [];
-	$: selectedDependentTasks =
-		(selectedTask ? planning.dependentsByTask[selectedTask.id] ?? [] : [])
-			.map((id) => taskById.get(id))
-			.filter((task): task is TaskRecord => Boolean(task));
-	$: selectedBlockedReason = selectedTask ? planning.blockedReasonByTask[selectedTask.id] ?? null : null;
+	$: selectedDependentTasks = (
+		selectedTask ? (planning.dependentsByTask[selectedTask.id] ?? []) : []
+	)
+		.map((id) => taskById.get(id))
+		.filter((task): task is TaskRecord => Boolean(task));
+	$: selectedBlockedReason = selectedTask
+		? (planning.blockedReasonByTask[selectedTask.id] ?? null)
+		: null;
 	$: criticalPathTitles = planning.criticalPathTaskIds
 		.map((taskId) => taskById.get(taskId)?.title)
 		.filter((title): title is string => Boolean(title));
@@ -436,8 +467,8 @@
 	<section class="lg:col-span-5">
 		<div class="flex items-center justify-between">
 			<div>
-				<h2 class="text-lg font-semibold text-white">Tasks</h2>
-				<p class="text-xs text-slate-400">Total {$tasksStore.length} tasks</p>
+				<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">Tasks</h2>
+				<p class="text-sm text-[rgb(var(--mv-muted))]">Total {$tasksStore.length} tasks</p>
 			</div>
 			<div class="flex gap-2">
 				<button
@@ -463,7 +494,7 @@
 			</label>
 			<input
 				id="quick-add"
-				class="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-white"
+				class="mt-2 w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-2 text-sm text-[rgb(var(--mv-text))]"
 				placeholder="buy milk tomorrow 5pm p2 #home @alex 30m every week"
 				bind:value={quickAddText}
 				bind:this={quickAddInput}
@@ -474,16 +505,20 @@
 					}
 				}}
 			/>
-			<p class="mt-2 text-[11px] text-slate-500">
+			<p class="mt-2 text-xs text-[rgb(var(--mv-muted))]">
 				Use Cmd/Ctrl+K for the command palette. Quick add supports p1–p5, #tags, @assignee, 30m/1h,
 				and simple recurrence (every week/month).
 			</p>
 
 			{#if quickAddPreview && quickAddText.trim()}
-				<div class="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-slate-800/60 bg-slate-800/30 px-3 py-2 text-[11px]">
-					<span class="text-slate-500">Preview:</span>
+				<div
+					class="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-[rgb(var(--mv-border))]/70 bg-[rgb(var(--mv-panel-strong))]/30 px-3 py-2 text-xs"
+				>
+					<span class="text-[rgb(var(--mv-muted))]">Preview:</span>
 					{#if quickAddPreview.priority !== 3}
-						<span class={`rounded px-1.5 py-0.5 ${quickAddPreview.priority <= 2 ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'}`}>
+						<span
+							class={`rounded px-1.5 py-0.5 ${quickAddPreview.priority <= 2 ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'}`}
+						>
 							P{quickAddPreview.priority}
 						</span>
 					{/if}
@@ -494,7 +529,9 @@
 					{/if}
 					{#if quickAddPreview.estimate_min}
 						<span class="rounded bg-violet-500/20 px-1.5 py-0.5 text-violet-300">
-							{quickAddPreview.estimate_min >= 60 ? `${Math.floor(quickAddPreview.estimate_min / 60)}h${quickAddPreview.estimate_min % 60 ? ` ${quickAddPreview.estimate_min % 60}m` : ''}` : `${quickAddPreview.estimate_min}m`}
+							{quickAddPreview.estimate_min >= 60
+								? `${Math.floor(quickAddPreview.estimate_min / 60)}h${quickAddPreview.estimate_min % 60 ? ` ${quickAddPreview.estimate_min % 60}m` : ''}`
+								: `${quickAddPreview.estimate_min}m`}
 						</span>
 					{/if}
 					{#if quickAddPreview.assignee}
@@ -519,17 +556,25 @@
 		</div>
 
 		<!-- View tabs -->
-		<div class="mt-4 flex gap-1 rounded-lg border border-slate-800 bg-slate-900/60 p-1">
+		<div
+			class="mt-4 flex gap-1 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/70 p-1"
+		>
 			{#each viewTabs as tab (tab.key)}
 				<button
-					class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-medium transition {view === tab.key
-						? 'bg-slate-700 text-white'
-						: 'text-slate-400 hover:text-slate-200'}"
+					class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition {view ===
+					tab.key
+						? 'bg-[rgb(var(--mv-panel-strong))] text-[rgb(var(--mv-text))]'
+						: 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]'}"
 					on:click={() => applyFilter({ view: tab.key, status: 'all' })}
 				>
 					{tab.label}
 					{#if tab.count > 0}
-						<span class="rounded-full bg-slate-800 px-1.5 py-0.5 text-[9px] {view === tab.key ? 'text-white' : 'text-slate-500'}">
+						<span
+							class="rounded-full bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-[11px] {view ===
+							tab.key
+								? 'text-[rgb(var(--mv-text))]'
+								: 'text-[rgb(var(--mv-muted))]'}"
+						>
 							{tab.count}
 						</span>
 					{/if}
@@ -539,14 +584,14 @@
 
 		<div class="mt-3 flex flex-wrap gap-2">
 			<input
-				class="flex-1 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-white"
+				class="flex-1 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-2 text-sm text-[rgb(var(--mv-text))]"
 				placeholder="Search tasks"
 				aria-label="Search tasks"
 				bind:value={query}
 				on:input={() => applyFilter({ query })}
 			/>
 			<select
-				class="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-white"
+				class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-2 text-sm text-[rgb(var(--mv-text))]"
 				aria-label="Filter tasks by status"
 				bind:value={status}
 				on:change={() => applyFilter({ status, view: 'all' })}
@@ -557,16 +602,21 @@
 			</select>
 		</div>
 
-		<div class="mt-3 rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+		<div
+			class="mt-3 rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/70 p-3"
+		>
 			<div class="flex items-center justify-between">
 				<div>
-					<p class="text-[10px] uppercase tracking-wide text-slate-500">Planning Radar</p>
-					<p class="mt-1 text-xs text-slate-300">
-						{planning.readyTaskIds.length} ready · {planning.blockedTaskIds.length} blocked · {planning.cycles.length} cycles
+					<p class="text-[11px] uppercase tracking-wide text-[rgb(var(--mv-muted))]">
+						Planning Radar
+					</p>
+					<p class="mt-1 text-sm text-[rgb(var(--mv-text))]">
+						{planning.readyTaskIds.length} ready · {planning.blockedTaskIds.length} blocked · {planning
+							.cycles.length} cycles
 					</p>
 				</div>
 				<button
-					class="rounded-lg border border-slate-700 px-2 py-1 text-[10px] text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-xs text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-panel-strong))] disabled:opacity-40"
 					on:click={autoScheduleDependencies}
 					disabled={$tasksStore.length === 0}
 				>
@@ -574,14 +624,14 @@
 				</button>
 			</div>
 			{#if planning.cycles.length > 0}
-				<p class="mt-2 text-[11px] text-red-300">
+				<p class="mt-2 text-xs text-red-300">
 					Cycles detected: {planning.cycles.length}. Break circular dependencies first.
 				</p>
 			{/if}
 			{#if criticalPathTitles.length > 0}
-				<p class="mt-2 text-[11px] text-slate-400">
+				<p class="mt-2 text-xs text-[rgb(var(--mv-muted))]">
 					Critical path ({formatMinutes(planning.criticalPathMinutes)}):
-					<span class="text-slate-200">{criticalPathTitles.join(' -> ')}</span>
+					<span class="text-[rgb(var(--mv-text))]">{criticalPathTitles.join(' -> ')}</span>
 				</p>
 			{/if}
 		</div>
@@ -590,31 +640,45 @@
 		{#if $filteredTasks.length > 0}
 			<div class="mt-3 flex items-center gap-2">
 				<button
-					class="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-slate-400 hover:text-slate-200 transition"
+					class="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-[rgb(var(--mv-muted))] transition hover:text-[rgb(var(--mv-text))]"
 					on:click={toggleSelectAll}
 				>
-					<span class="flex h-4 w-4 items-center justify-center rounded border {selectedIds.size === $filteredTasks.length && $filteredTasks.length > 0
-						? 'border-sky-500 bg-sky-500/20 text-sky-300'
-						: 'border-slate-700'}">
+					<span
+						class="flex h-4 w-4 items-center justify-center rounded border {selectedIds.size ===
+							$filteredTasks.length && $filteredTasks.length > 0
+							? 'border-sky-500 bg-sky-500/20 text-sky-300'
+							: 'border-slate-700'}"
+					>
 						{#if selectedIds.size === $filteredTasks.length && $filteredTasks.length > 0}
 							<svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+								<path
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									stroke-width="3"
+									d="M5 13l4 4L19 7"
+								/>
 							</svg>
 						{/if}
 					</span>
-					{selectedIds.size === $filteredTasks.length && $filteredTasks.length > 0 ? 'Deselect all' : 'Select all'}
+					{selectedIds.size === $filteredTasks.length && $filteredTasks.length > 0
+						? 'Deselect all'
+						: 'Select all'}
 				</button>
 				{#if selectionCount > 0}
-					<span class="text-[11px] text-slate-500">{selectionCount} selected</span>
+					<span class="text-xs text-[rgb(var(--mv-muted))]">{selectionCount} selected</span>
 				{/if}
 			</div>
 		{/if}
 
 		<div class="mt-3">
 			{#if $filteredTasks.length === 0}
-				<div class="rounded-xl border border-dashed border-slate-800 bg-slate-900/20 p-8 text-center">
+				<div
+					class="rounded-xl border border-dashed border-slate-800 bg-slate-900/20 p-8 text-center"
+				>
 					{#if $tasksStore.length === 0}
-						<div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-violet-500/20 text-lg text-violet-300">
+						<div
+							class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-violet-500/20 text-lg text-violet-300"
+						>
 							+
 						</div>
 						<h3 class="text-sm font-medium text-white">No tasks yet</h3>
@@ -629,8 +693,10 @@
 								Create your first task
 							</button>
 						</div>
-						<p class="mt-3 text-[10px] text-slate-600">
-							Or use <kbd class="rounded border border-slate-700 bg-slate-800 px-1 py-0.5">Cmd+Shift+N</kbd> for quick capture
+						<p class="mt-3 text-xs text-[rgb(var(--mv-muted))]">
+							Or use <kbd class="rounded border border-slate-700 bg-slate-800 px-1 py-0.5"
+								>Cmd+Shift+N</kbd
+							> for quick capture
 						</p>
 					{:else}
 						<p class="text-sm text-slate-400">No tasks match your current filter.</p>
@@ -644,7 +710,9 @@
 				</div>
 			{:else}
 				<div bind:this={taskListParentRef} style="max-height: 70vh; overflow-y: auto;">
-					<div style="height: {$taskVirtualizer.getTotalSize()}px; width: 100%; position: relative;">
+					<div
+						style="height: {$taskVirtualizer.getTotalSize()}px; width: 100%; position: relative;"
+					>
 						{#each $taskVirtualizer.getVirtualItems() as row (row.key)}
 							{@const task = $filteredTasks[row.index]}
 							<div
@@ -652,15 +720,27 @@
 							>
 								<div class="flex items-start gap-2 pb-3">
 									<button
-										class="mt-3 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition {selectedIds.has(task.id)
+										class="mt-3 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition {selectedIds.has(
+											task.id
+										)
 											? 'border-sky-500 bg-sky-500/20 text-sky-300'
 											: 'border-slate-700 hover:border-slate-500'}"
 										on:click|stopPropagation={() => toggleSelection(task.id)}
 										aria-label={selectedIds.has(task.id) ? 'Deselect task' : 'Select task'}
 									>
 										{#if selectedIds.has(task.id)}
-											<svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+											<svg
+												class="h-2.5 w-2.5"
+												fill="none"
+												stroke="currentColor"
+												viewBox="0 0 24 24"
+											>
+												<path
+													stroke-linecap="round"
+													stroke-linejoin="round"
+													stroke-width="3"
+													d="M5 13l4 4L19 7"
+												/>
 											</svg>
 										{/if}
 									</button>
@@ -712,7 +792,9 @@
 
 <!-- Bulk action bar -->
 {#if selectionCount > 0}
-	<div class="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/95 px-5 py-3 shadow-xl backdrop-blur">
+	<div
+		class="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/95 px-5 py-3 shadow-xl backdrop-blur"
+	>
 		<span class="text-xs font-medium text-white">{selectionCount} selected</span>
 
 		<div class="flex items-center gap-1.5">
@@ -786,10 +868,7 @@
 			Trash
 		</button>
 
-		<button
-			class="text-[11px] text-slate-400 hover:text-slate-200"
-			on:click={clearSelection}
-		>
+		<button class="text-[11px] text-slate-400 hover:text-slate-200" on:click={clearSelection}>
 			Clear
 		</button>
 	</div>
@@ -799,7 +878,9 @@
 {#if showDeleteConfirm}
 	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
 		<div class="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-6 shadow-xl">
-			<h3 class="text-sm font-semibold text-white">Trash {selectionCount} task{selectionCount === 1 ? '' : 's'}?</h3>
+			<h3 class="text-sm font-semibold text-white">
+				Trash {selectionCount} task{selectionCount === 1 ? '' : 's'}?
+			</h3>
 			<p class="mt-2 text-xs text-slate-400">
 				Items will be moved to trash and can be restored later.
 			</p>

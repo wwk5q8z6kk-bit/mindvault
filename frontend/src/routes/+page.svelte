@@ -109,27 +109,31 @@
 
 	<!-- Stats row -->
 	<div class="grid grid-cols-2 gap-3 md:grid-cols-5">
-		<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-			<div class="text-2xl font-bold text-white">{allTasks.length}</div>
-			<div class="text-[11px] text-slate-400">Total Tasks</div>
+		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-4">
+			<div class="text-2xl font-bold text-[rgb(var(--mv-text))]">{allTasks.length}</div>
+			<div class="text-xs text-[rgb(var(--mv-muted))]">Total Tasks</div>
 		</div>
-		<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-4">
 			<div class="text-2xl font-bold text-sky-300">{inboxCount}</div>
-			<div class="text-[11px] text-slate-400">Inbox</div>
+			<div class="text-xs text-[rgb(var(--mv-muted))]">Inbox</div>
 		</div>
-		<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-4">
 			<div class="text-2xl font-bold text-amber-300">{dueTodayCount}</div>
-			<div class="text-[11px] text-slate-400">Due Today</div>
+			<div class="text-xs text-[rgb(var(--mv-muted))]">Due Today</div>
 		</div>
-		<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-			<div class="text-2xl font-bold {overdueCount > 0 ? 'text-red-400' : 'text-slate-300'}">
+		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-4">
+			<div
+				class="text-2xl font-bold {overdueCount > 0
+					? 'text-red-400'
+					: 'text-[rgb(var(--mv-text))]'}"
+			>
 				{overdueCount}
 			</div>
-			<div class="text-[11px] text-slate-400">Overdue</div>
+			<div class="text-xs text-[rgb(var(--mv-muted))]">Overdue</div>
 		</div>
-		<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-4">
 			<div class="text-2xl font-bold text-emerald-300">{doneThisWeek}</div>
-			<div class="text-[11px] text-slate-400">Done This Week</div>
+			<div class="text-xs text-[rgb(var(--mv-muted))]">Done This Week</div>
 		</div>
 	</div>
 
@@ -143,26 +147,29 @@
 			/>
 
 			{#if (briefing?.overdue ?? []).length > 0}
-				<DueTasksWidget
-					tasks={briefing?.overdue ?? []}
-					title="Overdue"
-					loading={briefingLoading}
-				/>
+				<DueTasksWidget tasks={briefing?.overdue ?? []} title="Overdue" loading={briefingLoading} />
 			{/if}
 
 			<!-- In Progress -->
 			{#if inProgressCount > 0}
-				<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-					<h3 class="text-sm font-semibold text-white">In Progress</h3>
+				<div
+					class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-5"
+				>
+					<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">In Progress</h3>
 					<div class="mt-3 space-y-2">
 						{#each allTasks.filter((t) => t.status === 'in_progress').slice(0, 5) as task (task.id)}
-							<div class="flex items-center gap-2.5 rounded-lg border border-slate-800/60 px-3 py-2">
+							<div
+								class="flex items-center gap-2.5 rounded-lg border border-[rgb(var(--mv-border))]/80 bg-[rgb(var(--mv-panel-strong))]/30 px-3 py-2"
+							>
 								<span class="h-2 w-2 rounded-full bg-blue-400"></span>
-								<span class="truncate text-xs text-white">{task.title}</span>
+								<span class="truncate text-sm text-[rgb(var(--mv-text))]">{task.title}</span>
 								{#if task.labels?.length}
 									<div class="ml-auto flex gap-1">
 										{#each task.labels.slice(0, 2) as label}
-											<span class="rounded-full bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-400">{label}</span>
+											<span
+												class="rounded-full bg-[rgb(var(--mv-panel-strong))] px-2 py-0.5 text-[11px] text-[rgb(var(--mv-muted))]"
+												>{label}</span
+											>
 										{/each}
 									</div>
 								{/if}
@@ -179,26 +186,27 @@
 			<WhatsNextWidget />
 
 			<!-- Habits -->
-			<HabitsWidget
-				habits={briefing?.habits_today ?? []}
-				loading={briefingLoading}
-			/>
+			<HabitsWidget habits={briefing?.habits_today ?? []} loading={briefingLoading} />
 
 			<!-- Quick actions -->
-			<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-				<h3 class="text-sm font-semibold text-white">Quick Actions</h3>
+			<div
+				class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-5"
+			>
+				<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Quick Actions</h3>
 				<div class="mt-3 grid grid-cols-3 gap-2">
 					{#each quickActions as action}
 						<a
 							href={action.href}
-							class="flex flex-col items-center gap-1.5 rounded-lg border border-slate-800/60 px-2 py-3 transition hover:border-slate-700 hover:bg-slate-800/40"
+							class="flex flex-col items-center gap-1.5 rounded-lg border border-[rgb(var(--mv-border))]/80 px-2 py-3 transition hover:bg-[rgb(var(--mv-panel-strong))]/40"
 						>
 							<div
-								class="flex h-8 w-8 items-center justify-center rounded-lg text-xs font-bold {colorMap[action.color]}"
+								class="flex h-8 w-8 items-center justify-center rounded-lg text-xs font-bold {colorMap[
+									action.color
+								]}"
 							>
 								{action.icon}
 							</div>
-							<span class="text-[10px] text-slate-400">{action.label}</span>
+							<span class="text-xs text-[rgb(var(--mv-muted))]">{action.label}</span>
 						</a>
 					{/each}
 				</div>
@@ -214,15 +222,17 @@
 			<AgentStream />
 
 			<!-- Recent Notes (from briefing API) -->
-			<RecentNotesWidget
-				notes={briefing?.recent_notes ?? []}
-				loading={briefingLoading}
-			/>
+			<RecentNotesWidget notes={briefing?.recent_notes ?? []} loading={briefingLoading} />
 
 			<!-- Keyboard hint -->
-			<div class="rounded-xl border border-slate-800/60 bg-slate-900/20 p-4">
-				<p class="text-[11px] text-slate-500">
-					<kbd class="rounded border border-slate-700 bg-slate-800 px-1 py-0.5 text-[10px] text-slate-400">Cmd+K</kbd>
+			<div
+				class="rounded-xl border border-[rgb(var(--mv-border))]/70 bg-[rgb(var(--mv-panel))]/50 p-4"
+			>
+				<p class="text-xs text-[rgb(var(--mv-muted))]">
+					<kbd
+						class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5 text-xs text-[rgb(var(--mv-muted))]"
+						>Cmd+K</kbd
+					>
 					to open command palette
 				</p>
 			</div>
