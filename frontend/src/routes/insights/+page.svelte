@@ -15,12 +15,16 @@
 	let showClusters = false;
 	let filterType: string = 'all';
 
-	onMount(async () => {
-		try {
-			await Promise.all([fetchInsights(), loadConflicts()]);
-		} finally {
-			loading = false;
-		}
+	onMount(() => {
+		void (async () => {
+			try {
+				await Promise.all([fetchInsights(), loadConflicts()]);
+			} catch {
+				pushToast('Insights are temporarily unavailable', 'warning');
+			} finally {
+				loading = false;
+			}
+		})();
 	});
 
 	async function loadConflicts() {

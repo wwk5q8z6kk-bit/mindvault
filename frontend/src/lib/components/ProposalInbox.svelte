@@ -10,6 +10,7 @@
     let activeTab: 'intents' | 'insights' | 'proposals' = 'intents';
     let proposals: Proposal[] = [];
     let proposalsLoading = false;
+    let proposalsLoadError = false;
 
     $: intentList = $intents.filter(i => i.status === 'suggested');
     $: insightList = $insights.filter(i => !i.dismissed_at);
@@ -17,10 +18,21 @@
     $: totalCount = intentList.length + insightList.length + proposalList.length;
 
     onMount(() => {
-        fetchIntents();
-        fetchInsights();
-        fetchProposalInbox();
+        void fetchIntents().catch(() => {
+            // Non-critical on startup; inbox can still function with proposals only.
+        });
+        void fetchInsights().catch(() => {
+            // Non-critical on startup; inbox can still function with intents/proposals.
+        });
+        void fetchProposalInbox({ silent: true });
     });
+
+    async function openInbox() {
+        isOpen = true;
+        if (proposalsLoadError || proposals.length === 0) {
+            await fetchProposalInbox();
+        }
+    }
 
     async function handleApply(id: string) {
         try {
@@ -39,12 +51,18 @@
         }
     }
 
-    async function fetchProposalInbox() {
+    async function fetchProposalInbox(options: { silent?: boolean } = {}) {
+        const { silent = false } = options;
         proposalsLoading = true;
+        proposalsLoadError = false;
         try {
             proposals = await listProposals('pending');
         } catch (e) {
-            pushToast('Failed to load proposals', 'danger');
+            proposals = [];
+            proposalsLoadError = true;
+            if (!silent) {
+                pushToast('Failed to load proposals', 'danger');
+            }
         } finally {
             proposalsLoading = false;
         }
@@ -116,11 +134,12 @@
 </script>
 
 <!-- Floating button -->
-<div class="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-50 md:bottom-6 md:right-6">
+<div class="fixed bottom-[calc(6.25rem+env(safe-area-inset-bottom))] right-4 z-50 md:bottom-6 md:right-6">
     {#if !isOpen}
         <button
-            on:click={() => isOpen = true}
+            on:click={openInbox}
             class="relative flex items-center justify-center w-14 h-14 bg-violet-600 hover:bg-violet-500 rounded-full shadow-xl shadow-violet-900/30 transition-all hover:scale-105 active:scale-95"
+            aria-label="Open proposal inbox"
             transition:fly={{ y: 20, duration: 200 }}
         >
             <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -138,7 +157,7 @@
 <!-- Inbox panel -->
 {#if isOpen}
     <div
-        class="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] left-4 right-4 z-50 max-h-[70vh] rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl overflow-hidden flex flex-col md:bottom-6 md:left-auto md:right-6 md:w-96"
+        class="fixed bottom-[calc(6.25rem+env(safe-area-inset-bottom))] left-4 right-4 z-50 max-h-[70vh] rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl overflow-hidden flex flex-col md:bottom-6 md:left-auto md:right-6 md:w-96"
         transition:fly={{ y: 20, duration: 200 }}
     >
         <!-- Header -->
@@ -156,6 +175,7 @@
                 on:click={() => isOpen = false}
                 title="Close"
                 class="p-1.5 text-slate-500 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+                aria-label="Close proposal inbox"
             >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
@@ -282,6 +302,19 @@
                             <span class="text-xl opacity-50">⏳</span>
                         </div>
                         <p class="text-xs text-slate-500">Loading proposals...</p>
+                    </div>
+                {:else if proposalsLoadError}
+                    <div class="flex flex-col items-center justify-center py-8 text-center">
+                        <div class="w-12 h-12 mb-3 border-2 border-dashed border-rose-500/30 rounded-full flex items-center justify-center">
+                            <span class="text-xl opacity-70">!</span>
+                        </div>
+                        <p class="text-xs text-slate-300">Proposals are unavailable right now</p>
+                        <button
+                            on:click={() => fetchProposalInbox()}
+                            class="mt-3 rounded-md bg-slate-800 px-3 py-1.5 text-[11px] font-semibold text-slate-100 transition hover:bg-slate-700"
+                        >
+                            Retry
+                        </button>
                     </div>
                 {:else if proposalList.length === 0}
                     <div class="flex flex-col items-center justify-center py-8 text-center">

@@ -17,7 +17,7 @@
 	}
 </script>
 
-<div class="fixed right-6 top-6 z-50 flex w-80 flex-col gap-2">
+<div class="fixed left-3 right-3 top-[calc(4.5rem+env(safe-area-inset-top))] z-50 flex flex-col gap-2 md:left-auto md:right-6 md:top-6 md:w-80">
 	{#each $toastStore as toast (toast.id)}
 		<div
 			class={`flex items-center justify-between rounded-xl border px-4 py-3 text-sm shadow-lg backdrop-blur ${
