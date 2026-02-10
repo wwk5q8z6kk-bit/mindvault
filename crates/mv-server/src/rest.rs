@@ -601,6 +601,10 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(federation::federation_identity),
         )
         .route(
+            "/api/v1/federation/handshake",
+            post(federation::federation_handshake),
+        )
+        .route(
             "/api/v1/federation/peers/{id}",
             delete(federation::remove_peer),
         )

@@ -56,6 +56,9 @@ pub enum MvError {
 
     #[error("proxy error: {0}")]
     Proxy(String),
+
+    #[error("federation error: {0}")]
+    Federation(String),
 }
 
 pub type MvResult<T> = Result<T, MvError>;

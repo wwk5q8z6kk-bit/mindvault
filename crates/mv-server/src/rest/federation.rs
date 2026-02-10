@@ -25,6 +25,13 @@ pub struct AddPeerDto {
     pub public_key: Option<String>,
     pub allowed_namespaces: Option<Vec<String>>,
     pub max_results: Option<usize>,
+    pub shared_secret: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct HandshakeDto {
+    pub endpoint: String,
+    pub shared_secret: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -52,6 +59,15 @@ pub struct FederationIdentityResponse {
     pub public_key: Option<String>,
     pub vault_address: Option<String>,
     pub updated_at: String,
+}
+
+#[derive(Serialize)]
+pub struct HandshakeResponse {
+    pub id: String,
+    pub status: String,
+    pub vault_id: String,
+    pub display_name: String,
+    pub public_key: Option<String>,
 }
 
 // --- Handlers ---
@@ -135,7 +151,7 @@ pub async fn federation_identity(
     }))
 }
 
-/// Add a new federation peer.
+/// Add a new federation peer (manual registration).
 pub async fn add_peer(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
@@ -154,6 +170,7 @@ pub async fn add_peer(
     if let Some(max) = body.max_results {
         peer.max_results = max;
     }
+    peer.shared_secret = body.shared_secret;
 
     let id = peer.id;
     state.engine.federation.add_peer(peer).await;
@@ -161,6 +178,44 @@ pub async fn add_peer(
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "id": id.to_string(), "status": "added" })),
+    ))
+}
+
+/// Perform a federation handshake: auto-discover a peer via their identity endpoint.
+///
+/// Calls `{endpoint}/api/v1/federation/identity`, populates vault_id and
+/// display_name from the response, and registers the peer. If `shared_secret`
+/// is provided, future queries to this peer will be HMAC-signed.
+pub async fn federation_handshake(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<HandshakeDto>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize_write(&auth)?;
+
+    let peer = state
+        .engine
+        .federation
+        .handshake(&body.endpoint, body.shared_secret)
+        .await
+        .map_err(|e| {
+            let status = if e.to_string().contains("already registered") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, e.to_string())
+        })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(HandshakeResponse {
+            id: peer.id.to_string(),
+            status: "handshake_complete".into(),
+            vault_id: peer.vault_id,
+            display_name: peer.display_name,
+            public_key: peer.public_key,
+        }),
     ))
 }
 
