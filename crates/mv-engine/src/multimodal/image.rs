@@ -238,6 +238,7 @@ impl ClipTagger {
     }
 }
 
+#[allow(unused_variables)]
 pub fn clip_tags_from_bytes(bytes: &[u8]) -> Option<Vec<ClipTag>> {
     #[cfg(feature = "image-embeddings")]
     {
@@ -299,6 +300,7 @@ fn clip_status_details() -> Option<(bool, Option<String>, Option<String>, usize,
     }
 }
 
+#[allow(dead_code)]
 fn env_flag(name: &str) -> bool {
     std::env::var(name)
         .ok()

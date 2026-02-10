@@ -439,65 +439,67 @@
 								<div class="mt-0.5 text-xs text-emerald-400">Auto-replied</div>
 							{/if}
 
-							{@const suggestion = msg.direction === 'inbound' ? suggestionForMessage(msg) : null}
-							{#if suggestion}
-								<div class="mt-2 w-full max-w-[70%] rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-2">
-									<div class="flex items-center justify-between text-[11px] text-[rgb(var(--mv-muted))]">
-										<span class="font-medium text-[rgb(var(--mv-text))]">Suggested reply</span>
-										<span>{Math.round(suggestion.confidence * 100)}% confidence</span>
-									</div>
-									<div class="mt-2 whitespace-pre-wrap text-xs text-[rgb(var(--mv-text))]">
-										{suggestion.suggestion}
-									</div>
-									{#if suggestion.contextSnippets.length > 0}
-										<button
-											class="mt-2 text-[11px] text-blue-400 hover:text-blue-300"
-											onclick={() =>
-												(expandedSuggestionMessageId =
-													expandedSuggestionMessageId === msg.id ? null : msg.id)}
-										>
-											{expandedSuggestionMessageId === msg.id ? 'Hide context' : 'Show context'}
-										</button>
-										{#if expandedSuggestionMessageId === msg.id}
-											<div class="mt-2 space-y-1">
-												{#each suggestion.contextSnippets as snippet}
-													<div class="rounded bg-[rgb(var(--mv-hover))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))]">
-														{snippet}
-													</div>
-												{/each}
-											</div>
+							{#if msg.direction === 'inbound'}
+								{@const suggestion = suggestionForMessage(msg)}
+								{#if suggestion}
+									<div class="mt-2 w-full max-w-[70%] rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-2">
+										<div class="flex items-center justify-between text-[11px] text-[rgb(var(--mv-muted))]">
+											<span class="font-medium text-[rgb(var(--mv-text))]">Suggested reply</span>
+											<span>{Math.round(suggestion.confidence * 100)}% confidence</span>
+										</div>
+										<div class="mt-2 whitespace-pre-wrap text-xs text-[rgb(var(--mv-text))]">
+											{suggestion.suggestion}
+										</div>
+										{#if suggestion.contextSnippets.length > 0}
+											<button
+												class="mt-2 text-[11px] text-blue-400 hover:text-blue-300"
+												onclick={() =>
+													(expandedSuggestionMessageId =
+														expandedSuggestionMessageId === msg.id ? null : msg.id)}
+											>
+												{expandedSuggestionMessageId === msg.id ? 'Hide context' : 'Show context'}
+											</button>
+											{#if expandedSuggestionMessageId === msg.id}
+												<div class="mt-2 space-y-1">
+													{#each suggestion.contextSnippets as snippet}
+														<div class="rounded bg-[rgb(var(--mv-hover))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))]">
+															{snippet}
+														</div>
+													{/each}
+												</div>
+											{/if}
 										{/if}
-									{/if}
-									<div class="mt-2 flex flex-wrap gap-2">
-										<button
-											class="rounded bg-emerald-600 px-2 py-1 text-[11px] text-white hover:bg-emerald-500 disabled:opacity-50"
-											onclick={() => sendSuggestedReply(suggestion)}
-											disabled={actingProposalId === suggestion.id}
-										>
-											Send suggestion
-										</button>
-										<button
-											class="rounded border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-hover))]"
-											onclick={() => editSuggestedReply(suggestion)}
-										>
-											Edit
-										</button>
-										<button
-											class="rounded border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-hover))] disabled:opacity-50"
-											onclick={() => dismissSuggestedReply(suggestion)}
-											disabled={actingProposalId === suggestion.id}
-										>
-											Dismiss
-										</button>
-										<button
-											class="rounded border border-red-500/40 px-2 py-1 text-[11px] text-red-400 hover:bg-red-500/10 disabled:opacity-50"
-											onclick={() => blockSender(msg)}
-											disabled={blockingMessageId === msg.id}
-										>
-											Block sender
-										</button>
+										<div class="mt-2 flex flex-wrap gap-2">
+											<button
+												class="rounded bg-emerald-600 px-2 py-1 text-[11px] text-white hover:bg-emerald-500 disabled:opacity-50"
+												onclick={() => sendSuggestedReply(suggestion)}
+												disabled={actingProposalId === suggestion.id}
+											>
+												Send suggestion
+											</button>
+											<button
+												class="rounded border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-hover))]"
+												onclick={() => editSuggestedReply(suggestion)}
+											>
+												Edit
+											</button>
+											<button
+												class="rounded border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-hover))] disabled:opacity-50"
+												onclick={() => dismissSuggestedReply(suggestion)}
+												disabled={actingProposalId === suggestion.id}
+											>
+												Dismiss
+											</button>
+											<button
+												class="rounded border border-red-500/40 px-2 py-1 text-[11px] text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+												onclick={() => blockSender(msg)}
+												disabled={blockingMessageId === msg.id}
+											>
+												Block sender
+											</button>
+										</div>
 									</div>
-								</div>
+								{/if}
 							{/if}
 						</div>
 					{/each}

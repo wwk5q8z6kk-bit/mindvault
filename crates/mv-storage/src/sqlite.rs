@@ -9,45 +9,53 @@ use uuid::Uuid;
 
 use mv_core::*;
 
+/// Default number of connections in the pool.
+/// SQLite WAL mode supports 1 writer + N readers, so even a small pool
+/// eliminates head-of-line blocking for concurrent read queries.
+const DEFAULT_POOL_SIZE: usize = 4;
+
 pub struct SqliteNodeStore {
-    conn: Mutex<Connection>,
+    /// Connection pool — round-robin across `DEFAULT_POOL_SIZE` connections.
+    /// Each connection is independently protected by a Mutex so callers can
+    /// run synchronous rusqlite operations without holding an async lock.
+    pool: Vec<Mutex<Connection>>,
+    /// Atomic counter for round-robin slot selection.
+    next_slot: std::sync::atomic::AtomicUsize,
 }
 
 impl SqliteNodeStore {
-    /// Execute a synchronous closure with the database connection.
+    /// Execute a synchronous closure with a pooled database connection.
     ///
-    /// This is the **only** way async code should access the connection.
-    /// Because the closure is `FnOnce` (not async), the `MutexGuard` is
-    /// guaranteed to drop before any `.await` — making the enclosing future
-    /// `Send`.  This prevents the classic "non-Send MutexGuard held across
-    /// await" compilation error at the type level.
-    ///
-    /// ```ignore
-    /// // GOOD — lock scoped to closure
-    /// let count = self.with_conn(|conn| {
-    ///     conn.query_row("SELECT count(*) FROM t", [], |r| r.get(0))
-    /// })?;
-    /// self.some_async_call().await?;
-    ///
-    /// // WON'T COMPILE — cannot .await inside FnOnce
-    /// self.with_conn(|conn| {
-    ///     self.other_async_fn().await  // ← error
-    /// });
-    /// ```
+    /// Picks the next connection via round-robin, locks it, runs the
+    /// closure, then releases. Because the closure is `FnOnce` (not async),
+    /// the `MutexGuard` is guaranteed to drop before any `.await` — making
+    /// the enclosing future `Send`.
     fn with_conn<F, T>(&self, f: F) -> MvResult<T>
     where
         F: FnOnce(&Connection) -> MvResult<T>,
     {
-        let conn = self
-            .conn
+        let idx = self
+            .next_slot
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.pool.len();
+        let conn = self.pool[idx]
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         f(&conn)
     }
+
+    /// Convenience: access the first connection directly (for migrations and
+    /// code that still uses `self.conn().lock()`). This preserves backward
+    /// compatibility with existing trait impls that haven't migrated to
+    /// `with_conn` yet.
+    #[inline]
+    fn conn(&self) -> &Mutex<Connection> {
+        &self.pool[0]
+    }
 }
 
 impl SqliteNodeStore {
-    pub fn open(path: &Path) -> MvResult<Self> {
+    fn open_connection(path: &Path) -> MvResult<Connection> {
         let conn = Connection::open(path)
             .map_err(|e| MvError::Storage(format!("failed to open sqlite: {e}")))?;
 
@@ -56,22 +64,47 @@ impl SqliteNodeStore {
         )
         .map_err(|e| MvError::Storage(format!("pragma error: {e}")))?;
 
+        Ok(conn)
+    }
+
+    pub fn open(path: &Path) -> MvResult<Self> {
+        let mut pool = Vec::with_capacity(DEFAULT_POOL_SIZE);
+        for _ in 0..DEFAULT_POOL_SIZE {
+            pool.push(Mutex::new(Self::open_connection(path)?));
+        }
+
         let store = Self {
-            conn: Mutex::new(conn),
+            pool,
+            next_slot: std::sync::atomic::AtomicUsize::new(0),
         };
         store.run_migrations()?;
         Ok(store)
     }
 
     pub fn open_in_memory() -> MvResult<Self> {
-        let conn = Connection::open_in_memory()
-            .map_err(|e| MvError::Storage(format!("failed to open in-memory sqlite: {e}")))?;
-
-        conn.execute_batch("PRAGMA foreign_keys=ON;")
-            .map_err(|e| MvError::Storage(format!("pragma error: {e}")))?;
+        // In-memory DBs: use a shared cache URI so all pool connections see
+        // the same data. Without this, each Connection::open_in_memory()
+        // gets its own isolated database.
+        //
+        // SQLITE_OPEN_URI is required for rusqlite to parse the URI; the
+        // default OpenFlags do NOT include it.
+        let uri = format!("file:memdb{}?mode=memory&cache=shared", uuid::Uuid::new_v4());
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+            | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | rusqlite::OpenFlags::SQLITE_OPEN_URI;
+        let mut pool = Vec::with_capacity(DEFAULT_POOL_SIZE);
+        for _ in 0..DEFAULT_POOL_SIZE {
+            let conn = Connection::open_with_flags(&uri, flags)
+                .map_err(|e| MvError::Storage(format!("failed to open in-memory sqlite: {e}")))?;
+            conn.execute_batch("PRAGMA foreign_keys=ON;")
+                .map_err(|e| MvError::Storage(format!("pragma error: {e}")))?;
+            pool.push(Mutex::new(conn));
+        }
 
         let store = Self {
-            conn: Mutex::new(conn),
+            pool,
+            next_slot: std::sync::atomic::AtomicUsize::new(0),
         };
         store.run_migrations()?;
         Ok(store)
@@ -87,14 +120,16 @@ impl SqliteNodeStore {
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA query_only=ON;")
             .map_err(|e| MvError::Storage(format!("pragma error: {e}")))?;
 
+        // Read-only mode: single connection is fine (no write contention)
         Ok(Self {
-            conn: Mutex::new(conn),
+            pool: vec![Mutex::new(conn)],
+            next_slot: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
     fn run_migrations(&self) -> MvResult<()> {
-        let conn = self
-            .conn
+        // Migrations run on slot 0 only — they need exclusive access
+        let conn = self.pool[0]
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -125,6 +160,11 @@ impl SqliteNodeStore {
         let migration_008 = include_str!("../../../migrations/008_relay.sql");
         conn.execute_batch(migration_008)
             .map_err(|e| MvError::Migration(format!("migration 008 failed: {e}")))?;
+
+        // 009 is keychain-only (ALTER TABLE on keychain.sqlite), applied in SqliteKeychainStore.
+        let migration_010 = include_str!("../../../migrations/010_profile.sql");
+        conn.execute_batch(migration_010)
+            .map_err(|e| MvError::Migration(format!("migration 010 failed: {e}")))?;
 
         let migration_011 = include_str!("../../../migrations/011_consumer_profiles.sql");
         conn.execute_batch(migration_011)
@@ -326,34 +366,32 @@ impl NodeStore for SqliteNodeStore {
     }
 
     async fn get(&self, id: Uuid) -> MvResult<Option<KnowledgeNode>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| MvError::Storage(e.to_string()))?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, kind, title, content, source, namespace, importance,
-                 created_at, updated_at, last_accessed_at, access_count, version,
-                 expires_at, metadata_json FROM knowledge_nodes WHERE id = ?1",
-            )
-            .map_err(|e| MvError::Storage(e.to_string()))?;
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, kind, title, content, source, namespace, importance,
+                     created_at, updated_at, last_accessed_at, access_count, version,
+                     expires_at, metadata_json FROM knowledge_nodes WHERE id = ?1",
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))?;
 
-        let node = stmt
-            .query_row(params![id.to_string()], Self::row_to_node)
-            .optional()
-            .map_err(|e| MvError::Storage(e.to_string()))?;
+            let node = stmt
+                .query_row(params![id.to_string()], Self::row_to_node)
+                .optional()
+                .map_err(|e| MvError::Storage(e.to_string()))?;
 
-        if let Some(mut node) = node {
-            node.tags = Self::load_tags(&conn, node.id)?;
-            Ok(Some(node))
-        } else {
-            Ok(None)
-        }
+            if let Some(mut node) = node {
+                node.tags = Self::load_tags(conn, node.id)?;
+                Ok(Some(node))
+            } else {
+                Ok(None)
+            }
+        })
     }
 
     async fn update(&self, node: &KnowledgeNode) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let metadata_json = serde_json::to_string(&node.metadata)?;
@@ -393,7 +431,7 @@ impl NodeStore for SqliteNodeStore {
 
     async fn delete(&self, id: Uuid) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         Self::log_change(&conn, id, ChangeOp::Delete, None)?;
@@ -412,11 +450,7 @@ impl NodeStore for SqliteNodeStore {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<KnowledgeNode>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| MvError::Storage(e.to_string()))?;
-
+        self.with_conn(|conn| {
         let mut sql = String::from(
             "SELECT id, kind, title, content, source, namespace, importance,
              created_at, updated_at, last_accessed_at, access_count, version,
@@ -508,16 +542,17 @@ impl NodeStore for SqliteNodeStore {
         let mut nodes = Vec::new();
         for row in rows {
             let mut node = row.map_err(|e| MvError::Storage(e.to_string()))?;
-            node.tags = Self::load_tags(&conn, node.id)?;
+            node.tags = Self::load_tags(conn, node.id)?;
             nodes.push(node);
         }
 
         Ok(nodes)
+        })
     }
 
     async fn touch(&self, id: Uuid) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
@@ -534,11 +569,7 @@ impl NodeStore for SqliteNodeStore {
     }
 
     async fn count(&self, filters: &QueryFilters) -> MvResult<usize> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| MvError::Storage(e.to_string()))?;
-
+        self.with_conn(|conn| {
         let mut sql = String::from("SELECT COUNT(*) FROM knowledge_nodes WHERE 1=1");
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut param_idx = 1;
@@ -613,6 +644,7 @@ impl NodeStore for SqliteNodeStore {
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
         Ok(count)
+        })
     }
 }
 
@@ -621,7 +653,7 @@ impl SqliteNodeStore {
     /// Used for dedup during imports (e.g. Obsidian vault import).
     pub async fn find_by_source(&self, source: &str) -> MvResult<Option<KnowledgeNode>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -649,7 +681,7 @@ impl SqliteNodeStore {
 
     pub async fn insert_permission_template(&self, template: &PermissionTemplate) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -684,7 +716,7 @@ impl SqliteNodeStore {
 
     pub async fn update_permission_template(&self, template: &PermissionTemplate) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -718,7 +750,7 @@ impl SqliteNodeStore {
 
     pub async fn get_permission_template(&self, id: Uuid) -> MvResult<Option<PermissionTemplate>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -743,7 +775,7 @@ impl SqliteNodeStore {
         name: &str,
     ) -> MvResult<Option<PermissionTemplate>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -767,7 +799,7 @@ impl SqliteNodeStore {
         offset: usize,
     ) -> MvResult<Vec<PermissionTemplate>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -793,7 +825,7 @@ impl SqliteNodeStore {
 
     pub async fn delete_permission_template(&self, id: Uuid) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -809,7 +841,7 @@ impl SqliteNodeStore {
 
     pub async fn insert_access_key(&self, key: &AccessKey) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -832,7 +864,7 @@ impl SqliteNodeStore {
 
     pub async fn list_access_keys(&self) -> MvResult<Vec<AccessKey>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -856,7 +888,7 @@ impl SqliteNodeStore {
 
     pub async fn get_access_key(&self, id: Uuid) -> MvResult<Option<AccessKey>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -876,7 +908,7 @@ impl SqliteNodeStore {
 
     pub async fn get_access_key_by_hash(&self, key_hash: &str) -> MvResult<Option<AccessKey>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -900,7 +932,7 @@ impl SqliteNodeStore {
         when: chrono::DateTime<chrono::Utc>,
     ) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -918,7 +950,7 @@ impl SqliteNodeStore {
         when: chrono::DateTime<chrono::Utc>,
     ) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -1030,7 +1062,7 @@ use mv_core::{
 impl AgenticStore for SqliteNodeStore {
     async fn log_intent(&self, intent: &CapturedIntent) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let params_json = serde_json::to_string(&intent.parameters)?;
@@ -1055,7 +1087,7 @@ impl AgenticStore for SqliteNodeStore {
 
     async fn get_intent(&self, id: Uuid) -> MvResult<Option<CapturedIntent>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -1080,7 +1112,7 @@ impl AgenticStore for SqliteNodeStore {
         offset: usize,
     ) -> MvResult<Vec<CapturedIntent>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -1129,7 +1161,7 @@ impl AgenticStore for SqliteNodeStore {
 
     async fn update_intent_status(&self, id: Uuid, status: IntentStatus) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
@@ -1144,7 +1176,7 @@ impl AgenticStore for SqliteNodeStore {
 
     async fn log_insight(&self, insight: &ProactiveInsight) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let related_ids_json = serde_json::to_string(&insight.related_node_ids)?;
@@ -1169,7 +1201,7 @@ impl AgenticStore for SqliteNodeStore {
 
     async fn list_insights(&self, limit: usize, offset: usize) -> MvResult<Vec<ProactiveInsight>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -1198,7 +1230,7 @@ impl AgenticStore for SqliteNodeStore {
 
     async fn delete_insight(&self, id: Uuid) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
@@ -1213,7 +1245,7 @@ impl AgenticStore for SqliteNodeStore {
 
     async fn log_chronicle(&self, entry: &ChronicleEntry) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -1241,7 +1273,7 @@ impl AgenticStore for SqliteNodeStore {
         offset: usize,
     ) -> MvResult<Vec<ChronicleEntry>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -1453,7 +1485,7 @@ fn row_to_proposal(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
 impl ExchangeStore for SqliteNodeStore {
     async fn submit_proposal(&self, proposal: &Proposal) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let payload_json = serde_json::to_string(&proposal.payload)?;
@@ -1482,7 +1514,7 @@ impl ExchangeStore for SqliteNodeStore {
 
     async fn get_proposal(&self, id: Uuid) -> MvResult<Option<Proposal>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -1506,7 +1538,7 @@ impl ExchangeStore for SqliteNodeStore {
         offset: usize,
     ) -> MvResult<Vec<Proposal>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -1549,7 +1581,7 @@ impl ExchangeStore for SqliteNodeStore {
 
     async fn resolve_proposal(&self, id: Uuid, state: ProposalState) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
@@ -1564,7 +1596,7 @@ impl ExchangeStore for SqliteNodeStore {
 
     async fn count_proposals(&self, state: Option<ProposalState>) -> MvResult<usize> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -1589,7 +1621,7 @@ impl ExchangeStore for SqliteNodeStore {
 
     async fn expire_proposals(&self, before: DateTime<Utc>) -> MvResult<usize> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
@@ -1709,7 +1741,7 @@ fn safeguard_glob_match(pattern: &str, value: &str) -> bool {
 impl SafeguardStore for SqliteNodeStore {
     async fn add_blocked_sender(&self, sender: &BlockedSender) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
@@ -1730,7 +1762,7 @@ impl SafeguardStore for SqliteNodeStore {
 
     async fn remove_blocked_sender(&self, id: Uuid) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let affected = conn
@@ -1744,7 +1776,7 @@ impl SafeguardStore for SqliteNodeStore {
 
     async fn list_blocked_senders(&self) -> MvResult<Vec<BlockedSender>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -1767,7 +1799,7 @@ impl SafeguardStore for SqliteNodeStore {
 
     async fn is_sender_blocked(&self, sender_type: &str, sender_name: &str) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
@@ -1796,7 +1828,7 @@ impl SafeguardStore for SqliteNodeStore {
 
     async fn add_auto_approve_rule(&self, rule: &AutoApproveRule) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let action_types_csv = if rule.action_types.is_empty() {
@@ -1825,7 +1857,7 @@ impl SafeguardStore for SqliteNodeStore {
 
     async fn remove_auto_approve_rule(&self, id: Uuid) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let affected = conn
@@ -1839,7 +1871,7 @@ impl SafeguardStore for SqliteNodeStore {
 
     async fn list_auto_approve_rules(&self) -> MvResult<Vec<AutoApproveRule>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -1862,7 +1894,7 @@ impl SafeguardStore for SqliteNodeStore {
 
     async fn update_auto_approve_rule(&self, rule: &AutoApproveRule) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let action_types_csv = if rule.action_types.is_empty() {
@@ -1891,7 +1923,7 @@ impl SafeguardStore for SqliteNodeStore {
 
     async fn save_undo_snapshot(&self, snapshot: &UndoSnapshot) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let snapshot_json = serde_json::to_string(&snapshot.snapshot_data)?;
@@ -1914,7 +1946,7 @@ impl SafeguardStore for SqliteNodeStore {
 
     async fn get_undo_snapshot(&self, proposal_id: Uuid) -> MvResult<Option<UndoSnapshot>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -1933,7 +1965,7 @@ impl SafeguardStore for SqliteNodeStore {
 
     async fn mark_undo_used(&self, id: Uuid) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let affected = conn
@@ -1947,7 +1979,7 @@ impl SafeguardStore for SqliteNodeStore {
 
     async fn cleanup_expired_snapshots(&self) -> MvResult<usize> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
@@ -2017,7 +2049,7 @@ fn row_to_confidence_override(row: &rusqlite::Row<'_>) -> rusqlite::Result<Confi
 impl FeedbackStore for SqliteNodeStore {
     async fn record_feedback(&self, fb: &AgentFeedback) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
@@ -2044,7 +2076,7 @@ impl FeedbackStore for SqliteNodeStore {
         limit: usize,
     ) -> MvResult<Vec<AgentFeedback>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -2083,7 +2115,7 @@ impl FeedbackStore for SqliteNodeStore {
 
     async fn get_acceptance_rate(&self, intent_type: &str) -> MvResult<(usize, usize)> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -2108,7 +2140,7 @@ impl FeedbackStore for SqliteNodeStore {
 
     async fn set_confidence_override(&self, override_: &ConfidenceOverride) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
@@ -2131,7 +2163,7 @@ impl FeedbackStore for SqliteNodeStore {
         intent_type: &str,
     ) -> MvResult<Option<ConfidenceOverride>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -2150,7 +2182,7 @@ impl FeedbackStore for SqliteNodeStore {
 
     async fn list_confidence_overrides(&self) -> MvResult<Vec<ConfidenceOverride>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -2181,50 +2213,48 @@ use mv_core::{OwnerProfile, ProfileStore, UpdateProfileRequest};
 #[async_trait]
 impl ProfileStore for SqliteNodeStore {
     async fn get_profile(&self) -> MvResult<OwnerProfile> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| MvError::Storage(e.to_string()))?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT display_name, avatar_url, bio, email, preferred_namespace,
-                        default_node_kind, preferred_llm_provider, timezone,
-                        signature_name, signature_public_key, metadata,
-                        created_at, updated_at
-                 FROM owner_profile WHERE id = 'owner'",
-            )
-            .map_err(|e| MvError::Storage(e.to_string()))?;
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT display_name, avatar_url, bio, email, preferred_namespace,
+                            default_node_kind, preferred_llm_provider, timezone,
+                            signature_name, signature_public_key, metadata,
+                            created_at, updated_at
+                     FROM owner_profile WHERE id = 'owner'",
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))?;
 
-        let profile = stmt
-            .query_row([], |row| {
-                let metadata_str: String = row.get(10)?;
-                let metadata: std::collections::HashMap<String, serde_json::Value> =
-                    serde_json::from_str(&metadata_str).unwrap_or_default();
-                let created_str: String = row.get(11)?;
-                let updated_str: String = row.get(12)?;
-                Ok(OwnerProfile {
-                    display_name: row.get(0)?,
-                    avatar_url: row.get(1)?,
-                    bio: row.get(2)?,
-                    email: row.get(3)?,
-                    preferred_namespace: row.get(4)?,
-                    default_node_kind: row.get(5)?,
-                    preferred_llm_provider: row.get(6)?,
-                    timezone: row.get(7)?,
-                    signature_name: row.get(8)?,
-                    signature_public_key: row.get(9)?,
-                    metadata,
-                    created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
-                        .map(|d| d.with_timezone(&chrono::Utc))
-                        .unwrap_or_else(|_| chrono::Utc::now()),
-                    updated_at: chrono::DateTime::parse_from_rfc3339(&updated_str)
-                        .map(|d| d.with_timezone(&chrono::Utc))
-                        .unwrap_or_else(|_| chrono::Utc::now()),
+            let profile = stmt
+                .query_row([], |row| {
+                    let metadata_str: String = row.get(10)?;
+                    let metadata: std::collections::HashMap<String, serde_json::Value> =
+                        serde_json::from_str(&metadata_str).unwrap_or_default();
+                    let created_str: String = row.get(11)?;
+                    let updated_str: String = row.get(12)?;
+                    Ok(OwnerProfile {
+                        display_name: row.get(0)?,
+                        avatar_url: row.get(1)?,
+                        bio: row.get(2)?,
+                        email: row.get(3)?,
+                        preferred_namespace: row.get(4)?,
+                        default_node_kind: row.get(5)?,
+                        preferred_llm_provider: row.get(6)?,
+                        timezone: row.get(7)?,
+                        signature_name: row.get(8)?,
+                        signature_public_key: row.get(9)?,
+                        metadata,
+                        created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
+                            .map(|d| d.with_timezone(&chrono::Utc))
+                            .unwrap_or_else(|_| chrono::Utc::now()),
+                        updated_at: chrono::DateTime::parse_from_rfc3339(&updated_str)
+                            .map(|d| d.with_timezone(&chrono::Utc))
+                            .unwrap_or_else(|_| chrono::Utc::now()),
+                    })
                 })
-            })
-            .map_err(|e| MvError::Storage(e.to_string()))?;
+                .map_err(|e| MvError::Storage(e.to_string()))?;
 
-        Ok(profile)
+            Ok(profile)
+        })
     }
 
     async fn update_profile(&self, req: &UpdateProfileRequest) -> MvResult<OwnerProfile> {
@@ -2386,7 +2416,7 @@ fn row_to_autonomy_action_log(row: &rusqlite::Row<'_>) -> rusqlite::Result<Auton
 impl AutonomyStore for SqliteNodeStore {
     async fn add_autonomy_rule(&self, rule: &AutonomyRule) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let allowed_csv = if rule.allowed_intent_types.is_empty() {
@@ -2425,7 +2455,7 @@ impl AutonomyStore for SqliteNodeStore {
 
     async fn get_autonomy_rule(&self, id: Uuid) -> MvResult<Option<AutonomyRule>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -2444,7 +2474,7 @@ impl AutonomyStore for SqliteNodeStore {
 
     async fn list_autonomy_rules(&self) -> MvResult<Vec<AutonomyRule>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -2467,7 +2497,7 @@ impl AutonomyStore for SqliteNodeStore {
 
     async fn update_autonomy_rule(&self, rule: &AutonomyRule) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let allowed_csv = if rule.allowed_intent_types.is_empty() {
@@ -2506,7 +2536,7 @@ impl AutonomyStore for SqliteNodeStore {
 
     async fn delete_autonomy_rule(&self, id: Uuid) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let affected = conn
@@ -2520,7 +2550,7 @@ impl AutonomyStore for SqliteNodeStore {
 
     async fn log_autonomy_action(&self, log: &AutonomyActionLog) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
@@ -2546,7 +2576,7 @@ impl AutonomyStore for SqliteNodeStore {
         since: DateTime<Utc>,
     ) -> MvResult<usize> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -2575,7 +2605,7 @@ impl AutonomyStore for SqliteNodeStore {
 
     async fn list_autonomy_action_log(&self, limit: usize) -> MvResult<Vec<AutonomyActionLog>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -2712,7 +2742,7 @@ impl RelayStore for SqliteNodeStore {
 
     async fn add_relay_contact(&self, contact: &RelayContact) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
@@ -2736,7 +2766,7 @@ impl RelayStore for SqliteNodeStore {
 
     async fn get_relay_contact(&self, id: Uuid) -> MvResult<Option<RelayContact>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -2755,7 +2785,7 @@ impl RelayStore for SqliteNodeStore {
 
     async fn list_relay_contacts(&self) -> MvResult<Vec<RelayContact>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -2778,7 +2808,7 @@ impl RelayStore for SqliteNodeStore {
 
     async fn update_relay_contact(&self, contact: &RelayContact) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
@@ -2802,7 +2832,7 @@ impl RelayStore for SqliteNodeStore {
 
     async fn delete_relay_contact(&self, id: Uuid) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let affected = conn
@@ -2818,7 +2848,7 @@ impl RelayStore for SqliteNodeStore {
 
     async fn add_relay_channel(&self, channel: &RelayChannel) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let member_ids_json = serde_json::to_string(&channel.member_contact_ids)
@@ -2841,7 +2871,7 @@ impl RelayStore for SqliteNodeStore {
 
     async fn get_relay_channel(&self, id: Uuid) -> MvResult<Option<RelayChannel>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -2860,7 +2890,7 @@ impl RelayStore for SqliteNodeStore {
 
     async fn list_relay_channels(&self) -> MvResult<Vec<RelayChannel>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -2883,7 +2913,7 @@ impl RelayStore for SqliteNodeStore {
 
     async fn delete_relay_channel(&self, id: Uuid) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let affected = conn
@@ -2899,7 +2929,7 @@ impl RelayStore for SqliteNodeStore {
 
     async fn add_relay_message(&self, message: &RelayMessage) -> MvResult<()> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let metadata_json = serde_json::to_string(&message.metadata)
@@ -2929,7 +2959,7 @@ impl RelayStore for SqliteNodeStore {
 
     async fn get_relay_message(&self, id: Uuid) -> MvResult<Option<RelayMessage>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -2953,7 +2983,7 @@ impl RelayStore for SqliteNodeStore {
         offset: usize,
     ) -> MvResult<Vec<RelayMessage>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -2979,7 +3009,7 @@ impl RelayStore for SqliteNodeStore {
 
     async fn update_message_status(&self, id: Uuid, status: MessageStatus) -> MvResult<bool> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
@@ -2998,7 +3028,7 @@ impl RelayStore for SqliteNodeStore {
         limit: usize,
     ) -> MvResult<Vec<RelayMessage>> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
@@ -3024,7 +3054,7 @@ impl RelayStore for SqliteNodeStore {
 
     async fn count_unread_messages(&self, channel_id: Option<Uuid>) -> MvResult<usize> {
         let conn = self
-            .conn
+            .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -3061,7 +3091,7 @@ use mv_core::{ConsumerProfile, ConsumerStore};
 #[async_trait]
 impl ConsumerStore for SqliteNodeStore {
     async fn create_consumer(&self, profile: &ConsumerProfile) -> MvResult<()> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let metadata_json = serde_json::to_string(&profile.metadata)
             .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
@@ -3083,7 +3113,7 @@ impl ConsumerStore for SqliteNodeStore {
     }
 
     async fn get_consumer(&self, id: Uuid) -> MvResult<Option<ConsumerProfile>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, description, token_hash, created_at, last_used_at, revoked_at, metadata_json
@@ -3098,7 +3128,7 @@ impl ConsumerStore for SqliteNodeStore {
     }
 
     async fn get_consumer_by_name(&self, name: &str) -> MvResult<Option<ConsumerProfile>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, description, token_hash, created_at, last_used_at, revoked_at, metadata_json
@@ -3113,7 +3143,7 @@ impl ConsumerStore for SqliteNodeStore {
     }
 
     async fn get_consumer_by_token_hash(&self, token_hash: &str) -> MvResult<Option<ConsumerProfile>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, description, token_hash, created_at, last_used_at, revoked_at, metadata_json
@@ -3128,7 +3158,7 @@ impl ConsumerStore for SqliteNodeStore {
     }
 
     async fn list_consumers(&self) -> MvResult<Vec<ConsumerProfile>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, description, token_hash, created_at, last_used_at, revoked_at, metadata_json
@@ -3146,7 +3176,7 @@ impl ConsumerStore for SqliteNodeStore {
     }
 
     async fn revoke_consumer(&self, id: Uuid) -> MvResult<bool> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
         let affected = conn
             .execute(
@@ -3158,7 +3188,7 @@ impl ConsumerStore for SqliteNodeStore {
     }
 
     async fn touch_consumer(&self, id: Uuid) -> MvResult<()> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE consumer_profiles SET last_used_at = ?2 WHERE id = ?1",
@@ -3205,7 +3235,7 @@ use mv_core::{AccessPolicy, PolicyStore};
 #[async_trait]
 impl PolicyStore for SqliteNodeStore {
     async fn set_policy(&self, policy: &AccessPolicy) -> MvResult<()> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let scopes_json = serde_json::to_string(&policy.scopes)
             .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
@@ -3229,7 +3259,7 @@ impl PolicyStore for SqliteNodeStore {
     }
 
     async fn get_policy(&self, id: Uuid) -> MvResult<Option<AccessPolicy>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, secret_key, consumer, allowed, scopes_json, max_ttl_seconds, expires_at, require_approval, created_at, updated_at
@@ -3244,7 +3274,7 @@ impl PolicyStore for SqliteNodeStore {
     }
 
     async fn get_policy_for(&self, secret_key: &str, consumer: &str) -> MvResult<Option<AccessPolicy>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, secret_key, consumer, allowed, scopes_json, max_ttl_seconds, expires_at, require_approval, created_at, updated_at
@@ -3263,7 +3293,7 @@ impl PolicyStore for SqliteNodeStore {
         secret_key: Option<&str>,
         consumer: Option<&str>,
     ) -> MvResult<Vec<AccessPolicy>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
 
         let mut sql = "SELECT id, secret_key, consumer, allowed, scopes_json, max_ttl_seconds, expires_at, require_approval, created_at, updated_at FROM access_policies".to_string();
         let mut conditions: Vec<String> = Vec::new();
@@ -3298,7 +3328,7 @@ impl PolicyStore for SqliteNodeStore {
     }
 
     async fn delete_policy(&self, id: Uuid) -> MvResult<bool> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let affected = conn
             .execute("DELETE FROM access_policies WHERE id = ?1", params![id.to_string()])
             .map_err(|e| MvError::Storage(e.to_string()))?;
@@ -3344,7 +3374,7 @@ use mv_core::{ProxyAuditEntry, ProxyAuditStore};
 #[async_trait]
 impl ProxyAuditStore for SqliteNodeStore {
     async fn log_proxy_audit(&self, entry: &ProxyAuditEntry) -> MvResult<()> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
             "INSERT INTO proxy_audit_log (id, consumer, secret_ref, action, target, intent, timestamp, success, sanitized, error, request_summary, response_status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
@@ -3375,7 +3405,7 @@ impl ProxyAuditStore for SqliteNodeStore {
         error: Option<&str>,
         response_status: Option<i32>,
     ) -> MvResult<()> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
             "UPDATE proxy_audit_log SET success = ?2, sanitized = ?3, error = ?4, response_status = ?5 WHERE id = ?1",
             params![
@@ -3396,7 +3426,7 @@ impl ProxyAuditStore for SqliteNodeStore {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<ProxyAuditEntry>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
 
         let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(c) = consumer {
             (
@@ -3465,7 +3495,7 @@ fn row_to_proxy_audit(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProxyAuditEnt
 #[async_trait::async_trait]
 impl ApprovalStore for SqliteNodeStore {
     async fn create_approval(&self, request: &ApprovalRequest) -> MvResult<()> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let scopes_json = serde_json::to_string(&request.scopes)
             .map_err(|e| MvError::Storage(format!("serialize scopes: {e}")))?;
         conn.execute(
@@ -3488,7 +3518,7 @@ impl ApprovalStore for SqliteNodeStore {
     }
 
     async fn get_approval(&self, id: Uuid) -> MvResult<Option<ApprovalRequest>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn.prepare(
             "SELECT id, consumer, secret_key, intent, request_summary, state, created_at, expires_at, decided_at, decided_by, deny_reason, scopes
              FROM proxy_approvals WHERE id = ?1"
@@ -3505,7 +3535,7 @@ impl ApprovalStore for SqliteNodeStore {
     }
 
     async fn list_pending_approvals(&self, consumer: Option<&str>) -> MvResult<Vec<ApprovalRequest>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
 
         let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(c) = consumer {
             (
@@ -3541,7 +3571,7 @@ impl ApprovalStore for SqliteNodeStore {
         decided_by: Option<&str>,
         deny_reason: Option<&str>,
     ) -> MvResult<bool> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let new_state = if approved { "approved" } else { "denied" };
         let now = chrono::Utc::now().to_rfc3339();
         let affected = conn.execute(
@@ -3560,7 +3590,7 @@ impl ApprovalStore for SqliteNodeStore {
     }
 
     async fn expire_approvals(&self) -> MvResult<usize> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let now = chrono::Utc::now().to_rfc3339();
         let affected = conn.execute(
             "UPDATE proxy_approvals SET state = 'expired' WHERE state = 'pending' AND expires_at <= ?1",
@@ -3575,7 +3605,7 @@ impl ApprovalStore for SqliteNodeStore {
         consumer: &str,
         secret_key: &str,
     ) -> MvResult<Option<ApprovalRequest>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let now = chrono::Utc::now().to_rfc3339();
         let mut stmt = conn.prepare(
             "SELECT id, consumer, secret_key, intent, request_summary, state, created_at, expires_at, decided_at, decided_by, deny_reason, scopes
@@ -3640,7 +3670,7 @@ fn row_to_approval(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApprovalRequest>
 #[async_trait]
 impl ConflictStore for SqliteNodeStore {
     async fn insert_conflict(&self, alert: &ConflictAlert) -> MvResult<()> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
             "INSERT OR IGNORE INTO conflicts (id, node_a, node_b, conflict_type, score, explanation, resolved, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -3660,7 +3690,7 @@ impl ConflictStore for SqliteNodeStore {
     }
 
     async fn get_conflict(&self, id: Uuid) -> MvResult<Option<ConflictAlert>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let result = conn
             .query_row(
                 "SELECT id, node_a, node_b, conflict_type, score, explanation, resolved, created_at
@@ -3679,7 +3709,7 @@ impl ConflictStore for SqliteNodeStore {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<ConflictAlert>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let limit_i = limit as i64;
         let offset_i = offset as i64;
         let results = match resolved {
@@ -3721,7 +3751,7 @@ impl ConflictStore for SqliteNodeStore {
     }
 
     async fn resolve_conflict(&self, id: Uuid) -> MvResult<bool> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let updated = conn
             .execute(
                 "UPDATE conflicts SET resolved = 1 WHERE id = ?1 AND resolved = 0",
@@ -3772,7 +3802,7 @@ fn row_to_conflict(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConflictAlert> {
 #[async_trait]
 impl ContactIdentityStore for SqliteNodeStore {
     async fn add_contact_identity(&self, identity: &ContactIdentity) -> MvResult<()> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
             "INSERT INTO contact_identities (id, contact_id, identity_type, identity_value, verified, verified_at, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -3791,7 +3821,7 @@ impl ContactIdentityStore for SqliteNodeStore {
     }
 
     async fn list_contact_identities(&self, contact_id: Uuid) -> MvResult<Vec<ContactIdentity>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, contact_id, identity_type, identity_value, verified, verified_at, created_at
@@ -3809,7 +3839,7 @@ impl ContactIdentityStore for SqliteNodeStore {
     }
 
     async fn delete_contact_identity(&self, id: Uuid) -> MvResult<bool> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let deleted = conn
             .execute(
                 "DELETE FROM contact_identities WHERE id = ?1",
@@ -3820,7 +3850,7 @@ impl ContactIdentityStore for SqliteNodeStore {
     }
 
     async fn verify_contact_identity(&self, id: Uuid) -> MvResult<bool> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let updated = conn
             .execute(
                 "UPDATE contact_identities SET verified = 1, verified_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
@@ -3832,7 +3862,7 @@ impl ContactIdentityStore for SqliteNodeStore {
     }
 
     async fn get_trust_model(&self, contact_id: Uuid) -> MvResult<Option<TrustModel>> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let result = conn
             .query_row(
                 "SELECT contact_id, can_query, can_inject_context, can_auto_reply, allowed_namespaces, max_confidence_override, updated_at
@@ -3846,7 +3876,7 @@ impl ContactIdentityStore for SqliteNodeStore {
     }
 
     async fn set_trust_model(&self, model: &TrustModel) -> MvResult<()> {
-        let conn = self.conn.lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
         let ns_json = serde_json::to_string(&model.allowed_namespaces)
             .map_err(|e| MvError::Storage(format!("serialize namespaces: {e}")))?;
         conn.execute(

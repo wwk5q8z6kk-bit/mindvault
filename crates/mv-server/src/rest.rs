@@ -385,10 +385,6 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             "/api/v1/exchange/auto-approve-rules/{id}",
             put(safeguards::update_auto_approve_rule).delete(safeguards::remove_auto_approve_rule),
         )
-        .route(
-            "/api/v1/exchange/proposals/{id}/undo",
-            post(safeguards::undo_proposal),
-        )
         .route("/api/v1/secrets/status", get(secrets::secret_status))
         .route("/api/v1/secrets/unlock", post(secrets::unlock_encrypted_file))
         .route("/api/v1/secrets", post(secrets::set_secret))

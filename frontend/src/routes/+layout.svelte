@@ -273,6 +273,10 @@
 	});
 
 	async function handleGlobalKeydown(event: KeyboardEvent) {
+		if (mobileMenuOpen && event.key === 'Escape') {
+			closeMobileMenu();
+			return;
+		}
 		// Handle undo/redo shortcuts (Cmd+Z, Cmd+Shift+Z, Ctrl+Y)
 		await handleUndoKeyboard(event);
 	}
@@ -295,15 +299,16 @@
 			<span>MindVault</span>
 		</div>
 
-		<nav class="mt-10 flex flex-1 flex-col gap-2 text-sm">
+		<nav class="mt-10 flex flex-1 flex-col gap-2 overflow-y-auto pr-1 text-sm">
 			{#each navItems as item (item.href)}
 				<a
 					href={item.href}
-					class={`rounded-lg px-3 py-2 transition ${
+					class={`rounded-lg px-3 py-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 ${
 						$page.url.pathname.startsWith(item.href)
 							? 'bg-slate-800 text-white'
 							: 'text-slate-300 hover:bg-slate-900/60'
 					}`}
+					aria-current={$page.url.pathname.startsWith(item.href) ? 'page' : undefined}
 				>
 					{item.label}
 				</a>
@@ -319,9 +324,10 @@
 		>
 			<div class="flex items-center gap-3">
 				<button
-					class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white md:hidden"
+					class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 md:hidden"
 					on:click={() => (mobileMenuOpen = !mobileMenuOpen)}
 					aria-label="Toggle menu"
+					aria-expanded={mobileMenuOpen}
 				>
 					<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 						{#if mobileMenuOpen}
@@ -363,14 +369,12 @@
 				class="fixed inset-0 z-30 md:hidden"
 				role="presentation"
 			>
-				<div
+				<button
+					type="button"
 					class="absolute inset-0 bg-black/50"
 					on:click={closeMobileMenu}
-					on:keydown={(e) => e.key === 'Escape' && closeMobileMenu()}
-					role="button"
-					tabindex="-1"
 					aria-label="Close menu"
-				></div>
+				></button>
 				<nav class="absolute left-0 top-0 flex h-full w-64 flex-col border-r border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-6">
 					<div class="flex items-center gap-3 text-lg font-semibold">
 						<div class="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/20 text-sky-200">
@@ -378,15 +382,16 @@
 						</div>
 						<span>MindVault</span>
 					</div>
-					<div class="mt-8 flex flex-1 flex-col gap-2 text-sm">
+					<div class="mt-8 flex flex-1 flex-col gap-2 overflow-y-auto pr-1 text-sm">
 						{#each navItems as item (item.href)}
 							<a
 								href={item.href}
-								class={`rounded-lg px-3 py-2 transition ${
+								class={`rounded-lg px-3 py-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 ${
 									$page.url.pathname.startsWith(item.href)
 										? 'bg-slate-800 text-white'
 										: 'text-slate-300 hover:bg-slate-900/60'
 								}`}
+								aria-current={$page.url.pathname.startsWith(item.href) ? 'page' : undefined}
 								on:click={closeMobileMenu}
 							>
 								{item.label}
