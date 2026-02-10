@@ -20,6 +20,8 @@ target-pi-session/
 # Node (for connectors)
 node_modules/
 connectors/*/dist/
+web/dist/
+web/.vite/
 connectors/*/*.js
 !connectors/*/*.config.js
 

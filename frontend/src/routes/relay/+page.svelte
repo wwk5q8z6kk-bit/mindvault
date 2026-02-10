@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import { pushToast } from '$lib/stores/toast';
+	import { listProposals, approveProposal, rejectProposal, type Proposal } from '$lib/api/exchange';
+	import { addBlockedSender } from '$lib/api/safeguards';
 	import {
 		listContacts,
 		listChannels,
@@ -29,6 +31,64 @@
 	let newContactKey = '';
 	let newContactAddress = '';
 	let unreadTotal = 0;
+	let relayReplyProposals: RelayReplyProposal[] = [];
+	let expandedSuggestionMessageId: string | null = null;
+	let pendingSuggestionProposalId: string | null = null;
+	let pendingSuggestionMessageId: string | null = null;
+	let actingProposalId: string | null = null;
+	let blockingMessageId: string | null = null;
+
+	type RelayReplyProposal = {
+		id: string;
+		channelId: string;
+		basisMessageId: string;
+		suggestion: string;
+		confidence: number;
+		contextSnippets: string[];
+		createdAt: string;
+	};
+
+	function parseString(value: unknown): string | null {
+		if (typeof value === 'string') {
+			const trimmed = value.trim();
+			return trimmed.length > 0 ? trimmed : null;
+		}
+		return null;
+	}
+
+	function parseStringArray(value: unknown): string[] {
+		if (!Array.isArray(value)) return [];
+		return value.map((item) => (typeof item === 'string' ? item : '')).filter((item) => item.length > 0);
+	}
+
+	function extractRelayReplyProposal(proposal: Proposal): RelayReplyProposal | null {
+		if (proposal.action !== 'relay.reply') return null;
+		const payload = proposal.payload ?? {};
+		const channelId = parseString((payload as Record<string, unknown>)['channel_id']);
+		const basisMessageId = parseString((payload as Record<string, unknown>)['basis_message_id']);
+		if (!channelId || !basisMessageId) return null;
+		const suggestion =
+			parseString((payload as Record<string, unknown>)['content']) ?? proposal.diff_preview ?? '';
+		return {
+			id: proposal.id,
+			channelId,
+			basisMessageId,
+			suggestion,
+			confidence: proposal.confidence,
+			contextSnippets: parseStringArray((payload as Record<string, unknown>)['context_snippets']),
+			createdAt: proposal.created_at
+		};
+	}
+
+	$: relayReplyMap = new Map(
+		relayReplyProposals
+			.filter((proposal) => !selectedChannelId || proposal.channelId === selectedChannelId)
+			.map((proposal) => [proposal.basisMessageId, proposal])
+	);
+
+	$: pendingSuggestionMessage = pendingSuggestionMessageId
+		? messages.find((m) => m.id === pendingSuggestionMessageId) ?? null
+		: null;
 
 	onMount(async () => {
 		await loadData();
@@ -61,11 +121,23 @@
 					await markRead(msg.id);
 				}
 			}
+			await loadRelayProposals();
 			await scrollToBottom();
 		} catch {
 			pushToast('Failed to load messages', 'danger');
 		} finally {
 			loadingMessages = false;
+		}
+	}
+
+	async function loadRelayProposals() {
+		try {
+			const proposals = await listProposals('pending', 50, 0);
+			relayReplyProposals = proposals
+				.map(extractRelayReplyProposal)
+				.filter((proposal): proposal is RelayReplyProposal => Boolean(proposal));
+		} catch {
+			relayReplyProposals = [];
 		}
 	}
 
@@ -77,6 +149,12 @@
 	}
 
 	async function selectChannel(channelId: string) {
+		if (pendingSuggestionProposalId) {
+			pendingSuggestionProposalId = null;
+			pendingSuggestionMessageId = null;
+			input = '';
+			pushToast('Cleared pending suggestion after channel switch', 'info');
+		}
 		selectedChannelId = channelId;
 		await loadMessages();
 		await tick();
@@ -87,10 +165,23 @@
 		const text = input.trim();
 		if (!text || !selectedChannelId) return;
 
+		const pendingProposalId = pendingSuggestionProposalId;
 		input = '';
 		try {
 			const sent = await sendMessage(selectedChannelId, text);
 			messages = [...messages, sent];
+			if (pendingProposalId) {
+				try {
+					await rejectProposal(pendingProposalId);
+					await loadRelayProposals();
+					pushToast('Suggestion dismissed after manual reply', 'info');
+				} catch {
+					pushToast('Sent reply, but failed to dismiss suggestion', 'warning');
+				} finally {
+					pendingSuggestionProposalId = null;
+					pendingSuggestionMessageId = null;
+				}
+			}
 			await scrollToBottom();
 		} catch {
 			pushToast('Failed to send message', 'danger');
@@ -101,6 +192,70 @@
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
 			handleSend();
+		}
+	}
+
+	function suggestionForMessage(message: RelayMessage): RelayReplyProposal | null {
+		return relayReplyMap.get(message.id) ?? null;
+	}
+
+	async function sendSuggestedReply(proposal: RelayReplyProposal) {
+		actingProposalId = proposal.id;
+		try {
+			await approveProposal(proposal.id);
+			await loadMessages();
+			pushToast('Suggestion sent', 'success');
+		} catch {
+			pushToast('Failed to send suggestion', 'danger');
+		} finally {
+			actingProposalId = null;
+		}
+	}
+
+	async function editSuggestedReply(proposal: RelayReplyProposal) {
+		pendingSuggestionProposalId = proposal.id;
+		pendingSuggestionMessageId = proposal.basisMessageId;
+		input = proposal.suggestion;
+		await tick();
+		inputEl?.focus();
+	}
+
+	async function dismissSuggestedReply(proposal: RelayReplyProposal) {
+		actingProposalId = proposal.id;
+		try {
+			await rejectProposal(proposal.id);
+			await loadRelayProposals();
+			pushToast('Suggestion dismissed', 'info');
+		} catch {
+			pushToast('Failed to dismiss suggestion', 'danger');
+		} finally {
+			actingProposalId = null;
+		}
+	}
+
+	async function blockSender(message: RelayMessage) {
+		if (!message.sender_contact_id) {
+			pushToast('No sender to block', 'warning');
+			return;
+		}
+		const contact = contacts.find((c) => c.id === message.sender_contact_id);
+		if (!contact) {
+			pushToast('Sender contact not found', 'warning');
+			return;
+		}
+		const pattern = contact.vault_address?.trim() || contact.public_key?.trim() || contact.display_name;
+		blockingMessageId = message.id;
+		try {
+			await addBlockedSender({
+				sender_type: 'relay',
+				sender_pattern: pattern,
+				reason: `Blocked from relay by ${contact.display_name}`
+			});
+			pushToast(`Blocked ${contact.display_name}`, 'success');
+		} catch {
+			pushToast('Failed to block sender', 'danger');
+		} finally {
+			blockingMessageId = null;
 		}
 	}
 
@@ -278,6 +433,71 @@
 								<div class="mt-0.5 text-xs text-[rgb(var(--mv-muted))]">Delivered</div>
 							{:else if msg.direction === 'outbound' && msg.status === 'read'}
 								<div class="mt-0.5 text-xs text-blue-400">Read</div>
+							{:else if msg.direction === 'inbound' && msg.status === 'deferred'}
+								<div class="mt-0.5 text-xs text-amber-400">Deferred</div>
+							{:else if msg.direction === 'inbound' && msg.status === 'auto_replied'}
+								<div class="mt-0.5 text-xs text-emerald-400">Auto-replied</div>
+							{/if}
+
+							{@const suggestion = msg.direction === 'inbound' ? suggestionForMessage(msg) : null}
+							{#if suggestion}
+								<div class="mt-2 w-full max-w-[70%] rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-2">
+									<div class="flex items-center justify-between text-[11px] text-[rgb(var(--mv-muted))]">
+										<span class="font-medium text-[rgb(var(--mv-text))]">Suggested reply</span>
+										<span>{Math.round(suggestion.confidence * 100)}% confidence</span>
+									</div>
+									<div class="mt-2 whitespace-pre-wrap text-xs text-[rgb(var(--mv-text))]">
+										{suggestion.suggestion}
+									</div>
+									{#if suggestion.contextSnippets.length > 0}
+										<button
+											class="mt-2 text-[11px] text-blue-400 hover:text-blue-300"
+											onclick={() =>
+												(expandedSuggestionMessageId =
+													expandedSuggestionMessageId === msg.id ? null : msg.id)}
+										>
+											{expandedSuggestionMessageId === msg.id ? 'Hide context' : 'Show context'}
+										</button>
+										{#if expandedSuggestionMessageId === msg.id}
+											<div class="mt-2 space-y-1">
+												{#each suggestion.contextSnippets as snippet}
+													<div class="rounded bg-[rgb(var(--mv-hover))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))]">
+														{snippet}
+													</div>
+												{/each}
+											</div>
+										{/if}
+									{/if}
+									<div class="mt-2 flex flex-wrap gap-2">
+										<button
+											class="rounded bg-emerald-600 px-2 py-1 text-[11px] text-white hover:bg-emerald-500 disabled:opacity-50"
+											onclick={() => sendSuggestedReply(suggestion)}
+											disabled={actingProposalId === suggestion.id}
+										>
+											Send suggestion
+										</button>
+										<button
+											class="rounded border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-hover))]"
+											onclick={() => editSuggestedReply(suggestion)}
+										>
+											Edit
+										</button>
+										<button
+											class="rounded border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-hover))] disabled:opacity-50"
+											onclick={() => dismissSuggestedReply(suggestion)}
+											disabled={actingProposalId === suggestion.id}
+										>
+											Dismiss
+										</button>
+										<button
+											class="rounded border border-red-500/40 px-2 py-1 text-[11px] text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+											onclick={() => blockSender(msg)}
+											disabled={blockingMessageId === msg.id}
+										>
+											Block sender
+										</button>
+									</div>
+								</div>
 							{/if}
 						</div>
 					{/each}
@@ -286,6 +506,23 @@
 
 			<!-- Compose area -->
 			<div class="border-t border-[rgb(var(--mv-border))] p-3">
+				{#if pendingSuggestionProposalId}
+					<div class="mb-2 flex items-center justify-between rounded border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-[11px] text-blue-200">
+						<div>
+							Editing suggestion for {pendingSuggestionMessage ? senderName(pendingSuggestionMessage) : 'message'}
+						</div>
+						<button
+							class="text-blue-200 hover:text-blue-100"
+							onclick={() => {
+								pendingSuggestionProposalId = null;
+								pendingSuggestionMessageId = null;
+								input = '';
+							}}
+						>
+							Clear
+						</button>
+					</div>
+				{/if}
 				<div class="flex gap-2">
 					<textarea
 						bind:this={inputEl}

@@ -60,6 +60,7 @@
 	let listContainer: HTMLDivElement | null = null;
 
 	let notesListParentRef: HTMLDivElement | null = null;
+	let displayedNotes: NoteWithKind[] = [];
 
 	const notesVirtualizer = createVirtualizer({
 		get count() {

@@ -102,9 +102,10 @@ Create a communication network that feels and functions like everyday messaging 
 - Delegation model: AI assistant managers authenticate via OAuth or API keys; no shared-state multi-user accounts.
 
 ## Delegation & Identity Model
-- Single admin owner; no shared multi-user logins.
-- All delegated access uses OAuth client credentials or API keys scoped by permission templates.
-- OAuth client secrets live only in the Sovereign Keychain; tokens are minted locally as access keys.
+- Single admin owner; no shared multi-user logins or shared-state accounts.
+- Delegated actors are AI assistant managers only; access is via OAuth client credentials or scoped API keys.
+- Built-in local OAuth2 server mints tokens; client secrets live only in the Sovereign Keychain.
+- Keychain is the single secret store for OAuth clients, adapters, and API keys (no duplicate secret stores).
 - Owner profile is the canonical identity for adapters (email, relay, federation).
 
 ## Key Safeguards
@@ -204,6 +205,7 @@ This section is the operational source of truth for day-to-day execution.
 
 ### 2) Change Control & Safety Rules
 - Schema changes require migrations plus explicit rollback notes.
+- All code, schema, and plan updates are tracked in version control; phase exits are tagged and summarized.
 - Secrets never written to disk; OAuth client secrets live only in the Sovereign Keychain.
 - External adapters must include rate limits, retry policies, and audit logging.
 - Risky behaviors ship disabled by default behind config/feature flags.
@@ -219,6 +221,7 @@ This section is the operational source of truth for day-to-day execution.
   - tests added or updated
   - observability hooks present (logs/metrics/audit where relevant)
   - user-facing docs updated
+- Phase progression is sequential; the next phase does not start until the previous exit criteria are met and verified.
 
 ### 4) Master Program Board
 - [~] `P0` Keep sovereign defaults strict (offline-first, local embeddings, explicit opt-ins)

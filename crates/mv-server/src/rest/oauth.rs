@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use mv_core::{ChronicleEntry, MvError};
+use mv_core::{ChronicleEntry, MvError, StoredCredential};
 use mv_engine::engine::MindVaultEngine;
 
 use crate::auth::{authorize_read, authorize_write, AuthContext};
@@ -186,6 +186,18 @@ fn build_client_response(
     }
 }
 
+fn credential_invalid_for_token(cred: &StoredCredential, now: DateTime<Utc>) -> bool {
+    if let Some(expires_at) = cred.expires_at {
+        if expires_at <= now {
+            return true;
+        }
+    }
+    if cred.archived_at.is_some() || cred.destroyed_at.is_some() {
+        return true;
+    }
+    false
+}
+
 async fn ensure_template_exists(
     engine: &MindVaultEngine,
     template_id: Uuid,
@@ -204,6 +216,23 @@ async fn ensure_template_exists(
 
 async fn oauth_domain_id(engine: &MindVaultEngine) -> Result<Uuid, MvError> {
     engine.keychain.find_or_create_domain(OAUTH_CLIENT_DOMAIN, "system").await
+}
+
+async fn revoke_oauth_access_keys(
+    engine: &MindVaultEngine,
+    client_id: &str,
+) -> Result<usize, MvError> {
+    let keys = engine.list_access_keys().await?;
+    let label = format!("oauth:{client_id}");
+    let mut revoked = 0;
+    for key in keys {
+        if key.name.as_deref() == Some(label.as_str()) {
+            if engine.revoke_access_key(key.id).await? {
+                revoked += 1;
+            }
+        }
+    }
+    Ok(revoked)
 }
 
 // ---------------------------------------------------------------------------
@@ -375,9 +404,27 @@ pub async fn revoke_oauth_client(
         .await
         .map_err(map_keychain_error)?;
 
+    let revoked_keys = match revoke_oauth_access_keys(&state.engine, &client_id).await {
+        Ok(count) => Some(count),
+        Err(err) => {
+            tracing::warn!(
+                client_id = %client_id,
+                error = %err,
+                "failed to revoke access keys for oauth client"
+            );
+            None
+        }
+    };
+
     let chronicle = ChronicleEntry::new(
         "oauth.client_revoke",
-        format!("Revoked OAuth client '{}'", client_id),
+        match revoked_keys {
+            Some(count) => format!(
+                "Revoked OAuth client '{}' and {} access key(s)",
+                client_id, count
+            ),
+            None => format!("Revoked OAuth client '{}' (access key revocation failed)", client_id),
+        },
     );
     let _ = state.engine.log_chronicle(&chronicle).await;
 
@@ -443,6 +490,16 @@ pub async fn oauth_token(
         let _ = state.engine.log_chronicle(&chronicle).await;
         return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
     };
+
+    let now = Utc::now();
+    if credential_invalid_for_token(&cred, now) {
+        let chronicle = ChronicleEntry::new(
+            "oauth.token_denied",
+            format!("Token request denied for client '{}' (expired)", client_id),
+        );
+        let _ = state.engine.log_chronicle(&chronicle).await;
+        return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
+    }
 
     let stored_secret = String::from_utf8(plaintext.to_vec())
         .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid client".into()))?;
@@ -510,6 +567,9 @@ fn generate_client_secret() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mv_engine::config::EngineConfig;
+    use mv_engine::engine::MindVaultEngine;
+    use tempfile::TempDir;
 
     #[test]
     fn constant_time_eq_same_strings() {
@@ -657,5 +717,88 @@ mod tests {
         assert_eq!(resp.description, Some("A test client".into()));
         assert!(resp.expires_at.is_none());
         assert!(resp.revoked_at.is_none());
+    }
+
+    #[test]
+    fn credential_invalid_for_token_flags_expired() {
+        let mut cred = StoredCredential::new(
+            Uuid::now_v7(),
+            "client",
+            "oauth_client_secret",
+            "ciphertext".into(),
+            "derivation".into(),
+        );
+        let now = Utc::now();
+        cred.expires_at = Some(now - Duration::seconds(1));
+        assert!(credential_invalid_for_token(&cred, now));
+    }
+
+    #[test]
+    fn credential_invalid_for_token_allows_valid() {
+        let mut cred = StoredCredential::new(
+            Uuid::now_v7(),
+            "client",
+            "oauth_client_secret",
+            "ciphertext".into(),
+            "derivation".into(),
+        );
+        let now = Utc::now();
+        cred.expires_at = Some(now + Duration::seconds(60));
+        assert!(!credential_invalid_for_token(&cred, now));
+    }
+
+    #[test]
+    fn credential_invalid_for_token_flags_archived() {
+        let mut cred = StoredCredential::new(
+            Uuid::now_v7(),
+            "client",
+            "oauth_client_secret",
+            "ciphertext".into(),
+            "derivation".into(),
+        );
+        cred.archived_at = Some(Utc::now());
+        assert!(credential_invalid_for_token(&cred, Utc::now()));
+    }
+
+    #[tokio::test]
+    async fn revoke_oauth_access_keys_revokes_matching() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        let engine = MindVaultEngine::init(config)
+            .await
+            .expect("engine should init");
+
+        let templates = engine
+            .list_permission_templates(10, 0)
+            .await
+            .expect("templates should load");
+        let template = templates
+            .iter()
+            .find(|t| t.name == "Assistant")
+            .or_else(|| templates.first())
+            .expect("template exists");
+
+        let (key_a, _token_a) = engine
+            .create_access_key(template.id, Some("oauth:client-123".into()), None)
+            .await
+            .expect("key should be created");
+        let (key_b, _token_b) = engine
+            .create_access_key(template.id, Some("other".into()), None)
+            .await
+            .expect("key should be created");
+
+        let revoked = revoke_oauth_access_keys(&engine, "client-123")
+            .await
+            .expect("revocation should succeed");
+        assert_eq!(revoked, 1);
+
+        let keys = engine.list_access_keys().await.expect("keys should load");
+        let key_a = keys.iter().find(|k| k.id == key_a.id).expect("key A present");
+        let key_b = keys.iter().find(|k| k.id == key_b.id).expect("key B present");
+        assert!(key_a.revoked_at.is_some());
+        assert!(key_b.revoked_at.is_none());
     }
 }

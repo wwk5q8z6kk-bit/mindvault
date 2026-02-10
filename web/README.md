@@ -75,10 +75,17 @@ A modern web-based administrative interface for MindVault, providing an intuitiv
 - MindVault server running on `http://127.0.0.1:9470` (default)
 - Modern web browser with JavaScript enabled
 
-### Installation
+### Installation (Bundled)
 1. Ensure the MindVault server is running
-2. Open `web/index.html` in your web browser
-3. The interface will automatically connect to the local MindVault instance
+2. From `web/`, install dependencies: `npm install`
+3. Run the dev server: `npm run dev`
+4. Open the printed local URL (Vite default is `http://localhost:5173`)
+
+### Installation (Static Build)
+1. Ensure the MindVault server is running
+2. From `web/`, install dependencies: `npm install`
+3. Build: `npm run build`
+4. Open `web/dist/index.html` or serve `web/dist/` via a static server
 
 ### CORS Configuration
 If running the web interface from a different origin, configure CORS in your MindVault server:
@@ -176,12 +183,6 @@ The web interface communicates with MindVault's REST API endpoints:
 - `GET /api/v1/files/{node_id}/{attachment_id}` - Download an attachment (`?inline=true` for preview)
 - `DELETE /api/v1/files/{node_id}/{attachment_id}` - Remove an attachment from a node
 
-## Development Notes
-
-- `web/app.js` is the source-of-truth for the admin UI and is intentionally a single file right now.
-- UI dependencies are loaded from CDN modules (unpkg), so offline deployments will require bundling.
-- If you want an offline-first build, add a bundler (Vite/Rollup) and split `web/app.js` by feature area.
-
 ## Browser Support
 
 - Chrome 90+
@@ -194,22 +195,31 @@ The web interface communicates with MindVault's REST API endpoints:
 ### File Structure
 ```
 web/
-├── index.html      # Main HTML interface
-├── styles.css      # CSS styling
-├── app.js         # JavaScript functionality
-└── README.md      # This documentation
+├── index.html        # Main HTML shell
+├── styles.css        # Global styling
+├── src/
+│   ├── main.js       # App entrypoint (bootstraps admin)
+│   ├── admin.js      # MindVault admin UI logic
+│   └── attachments.js# Attachment triage module
+├── dist/             # Bundled output (generated)
+└── README.md         # This documentation
 ```
 
 ### Customization
 - **Styling**: Modify `styles.css` for visual customization
-- **Functionality**: Extend `app.js` for additional features
-- **API Endpoints**: Update `apiBase` in `app.js` for different server locations
+- **Functionality**: Extend `src/admin.js` for additional features
+- **API Endpoints**: Update `apiBase` in `src/admin.js` for different server locations
 
 ### Adding New Features
 1. Add HTML elements to `index.html`
 2. Style components in `styles.css`
-3. Implement functionality in `app.js`
+3. Implement functionality in `src/admin.js` (or split into new modules under `src/`)
 4. Bind events in the `bindEvents()` method
+
+## Development Notes
+
+- The admin UI uses a Vite build so dependencies are pinned locally (no CDN runtime).
+- For offline-first use, deploy from `web/dist/` or serve `web/dist/` via a static server.
 
 ## Security Considerations
 

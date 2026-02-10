@@ -1,22 +1,22 @@
 // MindVault Admin UI JavaScript
-import { Editor, Extension } from 'https://unpkg.com/@tiptap/core@3.19.0/dist/index.js';
-import { StarterKit } from 'https://unpkg.com/@tiptap/starter-kit@3.19.0/dist/index.js';
-import { Link } from 'https://unpkg.com/@tiptap/extension-link@3.19.0/dist/index.js';
-import { Table } from 'https://unpkg.com/@tiptap/extension-table@3.19.0/dist/index.js';
-import { TableRow } from 'https://unpkg.com/@tiptap/extension-table-row@3.19.0/dist/index.js';
-import { TableCell } from 'https://unpkg.com/@tiptap/extension-table-cell@3.19.0/dist/index.js';
-import { TableHeader } from 'https://unpkg.com/@tiptap/extension-table-header@3.19.0/dist/index.js';
-import { TaskList } from 'https://unpkg.com/@tiptap/extension-task-list@3.19.0/dist/index.js';
-import { TaskItem } from 'https://unpkg.com/@tiptap/extension-task-item@3.19.0/dist/index.js';
-import { Placeholder } from 'https://unpkg.com/@tiptap/extension-placeholder@3.19.0/dist/index.js';
-import { Markdown } from 'https://unpkg.com/@tiptap/markdown@3.19.0/dist/index.js';
-import Suggestion from 'https://unpkg.com/@tiptap/suggestion@3.19.0/dist/index.js';
+import { Editor, Extension } from '@tiptap/core';
+import { StarterKit } from '@tiptap/starter-kit';
+import { Link } from '@tiptap/extension-link';
+import { Table } from '@tiptap/extension-table';
+import { TableRow } from '@tiptap/extension-table-row';
+import { TableCell } from '@tiptap/extension-table-cell';
+import { TableHeader } from '@tiptap/extension-table-header';
+import { TaskList } from '@tiptap/extension-task-list';
+import { TaskItem } from '@tiptap/extension-task-item';
+import { Placeholder } from '@tiptap/extension-placeholder';
+import { Markdown } from '@tiptap/markdown';
+import Suggestion from '@tiptap/suggestion';
 import { AttachmentTriage } from './attachments.js';
 
 const AI_TRANSFORM_SELECTION_CHAR_LIMIT = 5000;
 
 
-class MindVaultAdmin {
+export class MindVaultAdmin {
     constructor() {
         this.apiBase = this.getApiBase();
         this.currentPage = 1;
@@ -5567,7 +5567,3 @@ class MindVaultAdmin {
         return uploadedFiles;
     }
 }
-
-document.addEventListener('DOMContentLoaded', () => {
-    window.mindVaultAdmin = new MindVaultAdmin();
-});
