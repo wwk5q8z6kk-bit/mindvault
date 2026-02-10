@@ -28,7 +28,14 @@
             <div id="nodes-panel" class="panel active">
                 <div class="panel-header">
                     <h2>Knowledge Nodes</h2>
-                    <button id="add-node-btn" class="btn primary">Add Node</button>
+                    <div class="panel-header-actions">
+                        <div class="panel-status" id="nodes-status" data-state="idle">
+                            <span class="status-dot" aria-hidden="true"></span>
+                            <span class="status-text">Idle</span>
+                            <span class="status-time"></span>
+                        </div>
+                        <button id="add-node-btn" class="btn primary">Add Node</button>
+                    </div>
                 </div>
                 <div class="filters">
                     <select id="node-kind-filter">
@@ -58,7 +65,14 @@
             <div id="daily-panel" class="panel">
                 <div class="panel-header">
                     <h2>Daily Notes</h2>
-                    <button id="ensure-today-btn" class="btn primary">Ensure Today</button>
+                    <div class="panel-header-actions">
+                        <div class="panel-status" id="daily-status" data-state="idle">
+                            <span class="status-dot" aria-hidden="true"></span>
+                            <span class="status-text">Idle</span>
+                            <span class="status-time"></span>
+                        </div>
+                        <button id="ensure-today-btn" class="btn primary">Ensure Today</button>
+                    </div>
                 </div>
                 <div class="daily-controls">
                     <label for="daily-date">Date</label>
@@ -118,7 +132,14 @@
             <div id="calendar-panel" class="panel">
                 <div class="panel-header">
                     <h2>Calendar Workspace</h2>
-                    <button id="calendar-new-event-btn" class="btn primary">Add Event</button>
+                    <div class="panel-header-actions">
+                        <div class="panel-status" id="calendar-status" data-state="idle">
+                            <span class="status-dot" aria-hidden="true"></span>
+                            <span class="status-text">Idle</span>
+                            <span class="status-time"></span>
+                        </div>
+                        <button id="calendar-new-event-btn" class="btn primary">Add Event</button>
+                    </div>
                 </div>
                 <div class="calendar-controls">
                     <label for="calendar-view">View</label>
@@ -159,7 +180,14 @@
             <div id="templates-panel" class="panel">
                 <div class="panel-header">
                     <h2>Templates</h2>
-                    <button id="refresh-templates-btn" class="btn">Refresh Templates</button>
+                    <div class="panel-header-actions">
+                        <div class="panel-status" id="templates-status" data-state="idle">
+                            <span class="status-dot" aria-hidden="true"></span>
+                            <span class="status-text">Idle</span>
+                            <span class="status-time"></span>
+                        </div>
+                        <button id="refresh-templates-btn" class="btn">Refresh Templates</button>
+                    </div>
                 </div>
                 <div class="template-layout">
                     <section class="template-section">
@@ -291,7 +319,14 @@
             <div id="access-panel" class="panel">
                 <div class="panel-header">
                     <h2>Access Templates</h2>
-                    <button id="refresh-permissions-btn" class="btn">Refresh</button>
+                    <div class="panel-header-actions">
+                        <div class="panel-status" id="access-status" data-state="idle">
+                            <span class="status-dot" aria-hidden="true"></span>
+                            <span class="status-text">Idle</span>
+                            <span class="status-time"></span>
+                        </div>
+                        <button id="refresh-permissions-btn" class="btn">Refresh</button>
+                    </div>
                 </div>
                 <div class="access-layout">
                     <section class="access-section">
@@ -357,6 +392,13 @@
             <div id="search-panel" class="panel">
                 <div class="panel-header">
                     <h2>Search Knowledge</h2>
+                    <div class="panel-header-actions">
+                        <div class="panel-status" id="search-status" data-state="idle">
+                            <span class="status-dot" aria-hidden="true"></span>
+                            <span class="status-text">Idle</span>
+                            <span class="status-time"></span>
+                        </div>
+                    </div>
                 </div>
                 <div class="search-form">
                     <input type="text" id="search-query" placeholder="Enter search query..." class="search-input">
@@ -395,6 +437,13 @@
             <div id="graph-panel" class="panel">
                 <div class="panel-header">
                     <h2>Knowledge Graph</h2>
+                    <div class="panel-header-actions">
+                        <div class="panel-status" id="graph-status" data-state="idle">
+                            <span class="status-dot" aria-hidden="true"></span>
+                            <span class="status-text">Idle</span>
+                            <span class="status-time"></span>
+                        </div>
+                    </div>
                 </div>
                 <div class="graph-controls">
                     <input type="text" id="graph-node-id" placeholder="Node ID (UUID)">
@@ -410,6 +459,13 @@
             <div id="stats-panel" class="panel">
                 <div class="panel-header">
                     <h2>System Statistics</h2>
+                    <div class="panel-header-actions">
+                        <div class="panel-status" id="stats-status" data-state="idle">
+                            <span class="status-dot" aria-hidden="true"></span>
+                            <span class="status-text">Idle</span>
+                            <span class="status-time"></span>
+                        </div>
+                    </div>
                 </div>
                 <div class="transfer-controls">
                     <button id="export-data-btn" class="btn">Export JSON</button>
@@ -436,6 +492,11 @@
                             <input type="checkbox" id="settings-auto-link">
                             Link Suggestions
                         </label>
+                    </div>
+                    <div class="settings-row settings-row--wide">
+                        <label for="settings-suggest-cooldown">Auto Suggest Cooldown</label>
+                        <input type="range" id="settings-suggest-cooldown" min="0" max="15" step="1" value="0">
+                        <span id="settings-suggest-cooldown-label" class="settings-note">Live (no delay)</span>
                     </div>
                 </div>
                 <div id="stats-content" class="stats-content">
@@ -496,6 +557,17 @@
                                     <input type="checkbox" id="ai-suggest-auto" checked>
                                     Auto Suggest
                                 </label>
+                                <div class="editor-ai-pause">
+                                    <select id="ai-suggest-pause-minutes" class="editor-transform-select" aria-label="Auto Suggest Pause Duration">
+                                        <option value="5">Pause 5m</option>
+                                        <option value="15" selected>Pause 15m</option>
+                                        <option value="30">Pause 30m</option>
+                                        <option value="60">Pause 60m</option>
+                                    </select>
+                                    <button type="button" id="ai-suggest-pause-btn" class="btn">Pause</button>
+                                    <button type="button" id="ai-suggest-resume-btn" class="btn">Resume</button>
+                                    <span id="ai-suggest-pause-status" class="ai-suggest-pause-status">Live</span>
+                                </div>
                                 <button type="button" id="ai-link-btn" class="btn">AI Suggest Links</button>
                                 <select id="ai-transform-mode" class="editor-transform-select" aria-label="AI Transform Mode">
                                     <option value="summarize">Summarize</option>

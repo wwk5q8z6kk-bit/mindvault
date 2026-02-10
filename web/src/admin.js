@@ -15,6 +15,7 @@ import { AttachmentTriage } from './attachments.js';
 import { settingsFeature } from './features/settings.js';
 
 const AI_TRANSFORM_SELECTION_CHAR_LIMIT = 5000;
+const AUTO_SUGGEST_PAUSE_KEY = 'mindvaultSettingAutoSuggestPausedUntil';
 
 
 export class MindVaultAdmin {
@@ -67,6 +68,8 @@ export class MindVaultAdmin {
         this.auditLoadingMore = false;
         this.auditQuerySignature = '';
         this.initialized = false;
+        this.autoSuggestPausedUntil = this.readAutoSuggestPausedUntil();
+        this.autoSuggestPauseTicker = null;
 
         this.richEditor = document.getElementById('rich-editor');
         this.markdownEditor = document.getElementById('markdown-editor');
@@ -95,6 +98,7 @@ export class MindVaultAdmin {
         this.nodeRelationshipOverview = document.getElementById('node-relationship-overview');
         this.auditContent = document.getElementById('audit-content');
         this.loadMoreAuditBtn = document.getElementById('load-more-audit-btn');
+        this.panelStatus = this.cachePanelStatus();
 
         this.attachedFiles = [];
         this.existingAttachments = [];
@@ -109,6 +113,8 @@ export class MindVaultAdmin {
         this.initialized = true;
         this.bindEvents();
         this.initSettingsControls();
+        this.updateAutoSuggestPauseStatus();
+        this.startAutoSuggestPauseTicker();
         this.attachmentTriage.init();
         this.initRichTextEditor();
         this.setEditorContentFromMarkdown('');
@@ -561,7 +567,25 @@ export class MindVaultAdmin {
                 }
                 this.applySettingsToUi();
             });
-        });
+        }
+        const aiSuggestPauseBtn = document.getElementById('ai-suggest-pause-btn');
+        const aiSuggestResumeBtn = document.getElementById('ai-suggest-resume-btn');
+        const aiSuggestPauseSelect = document.getElementById('ai-suggest-pause-minutes');
+        if (aiSuggestPauseBtn && aiSuggestPauseSelect) {
+            aiSuggestPauseBtn.addEventListener('click', () => {
+                const minutes = Number(aiSuggestPauseSelect.value || 0);
+                if (!Number.isFinite(minutes) || minutes <= 0) {
+                    this.showNotification('Select a pause duration first.', 'warning');
+                    return;
+                }
+                this.pauseAutoSuggest(minutes);
+            });
+        }
+        if (aiSuggestResumeBtn) {
+            aiSuggestResumeBtn.addEventListener('click', () => {
+                this.resumeAutoSuggest();
+            });
+        }
         document.getElementById('ai-link-btn').addEventListener('click', () => {
             this.requestWikiLinkSuggestions(false, this.resolveExplicitWikiQuery());
         });
@@ -679,8 +703,74 @@ export class MindVaultAdmin {
             if (!this.autoSuggestEnabled) {
                 return;
             }
+            if (this.isAutoSuggestPaused()) {
+                this.updateAutoSuggestPauseStatus();
+                return;
+            }
+            const cooldownMs = (Number(this.autoSuggestCooldownMinutes) || 0) * 60_000;
+            if (cooldownMs > 0 && (Date.now() - this.lastSuggestionFetchedAt) < cooldownMs) {
+                return;
+            }
             this.requestEditorSuggestions(true);
         }, 700);
+    }
+
+    readAutoSuggestPausedUntil() {
+        const raw = localStorage.getItem(AUTO_SUGGEST_PAUSE_KEY);
+        if (!raw) {
+            return 0;
+        }
+        const parsed = Number(raw);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    isAutoSuggestPaused() {
+        return Number(this.autoSuggestPausedUntil || 0) > Date.now();
+    }
+
+    pauseAutoSuggest(minutes) {
+        const pauseMinutes = Math.max(1, Math.min(240, Math.round(Number(minutes) || 0)));
+        const until = Date.now() + pauseMinutes * 60_000;
+        this.autoSuggestPausedUntil = until;
+        localStorage.setItem(AUTO_SUGGEST_PAUSE_KEY, String(until));
+        this.updateAutoSuggestPauseStatus();
+        this.showNotification(`Auto-suggest paused for ${pauseMinutes} minute(s).`, 'info');
+    }
+
+    resumeAutoSuggest() {
+        this.autoSuggestPausedUntil = 0;
+        localStorage.removeItem(AUTO_SUGGEST_PAUSE_KEY);
+        this.updateAutoSuggestPauseStatus();
+        this.showNotification('Auto-suggest resumed.', 'success');
+    }
+
+    updateAutoSuggestPauseStatus() {
+        const status = document.getElementById('ai-suggest-pause-status');
+        if (!status) {
+            return;
+        }
+        if (this.isAutoSuggestPaused()) {
+            status.classList.add('is-paused');
+            status.textContent = `Paused until ${this.formatStatusTime(this.autoSuggestPausedUntil)}`;
+        } else {
+            status.classList.remove('is-paused');
+            status.textContent = 'Live';
+        }
+    }
+
+    startAutoSuggestPauseTicker() {
+        if (this.autoSuggestPauseTicker) {
+            return;
+        }
+        this.autoSuggestPauseTicker = window.setInterval(() => {
+            if (!this.isAutoSuggestPaused()) {
+                if (this.autoSuggestPausedUntil) {
+                    this.autoSuggestPausedUntil = 0;
+                    localStorage.removeItem(AUTO_SUGGEST_PAUSE_KEY);
+                }
+            }
+            this.updateAutoSuggestPauseStatus();
+        }, 30_000);
     }
 
     debounceAutoComplete() {
@@ -2071,6 +2161,54 @@ export class MindVaultAdmin {
         return document.querySelector('.tab.active')?.id || '';
     }
 
+    cachePanelStatus() {
+        const mapping = {
+            nodes: 'nodes-status',
+            daily: 'daily-status',
+            calendar: 'calendar-status',
+            templates: 'templates-status',
+            access: 'access-status',
+            search: 'search-status',
+            graph: 'graph-status',
+            stats: 'stats-status'
+        };
+        const status = {};
+        Object.entries(mapping).forEach(([key, id]) => {
+            const el = document.getElementById(id);
+            if (!el) {
+                return;
+            }
+            status[key] = {
+                el,
+                text: el.querySelector('.status-text'),
+                time: el.querySelector('.status-time')
+            };
+        });
+        return status;
+    }
+
+    formatStatusTime(date) {
+        const value = date instanceof Date ? date : new Date(date || Date.now());
+        if (Number.isNaN(value.getTime())) {
+            return '';
+        }
+        return value.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    setPanelStatus(key, state, message, timestamp = null) {
+        const entry = this.panelStatus?.[key];
+        if (!entry?.el) {
+            return;
+        }
+        entry.el.dataset.state = state || 'idle';
+        if (entry.text) {
+            entry.text.textContent = message || '';
+        }
+        if (entry.time) {
+            entry.time.textContent = timestamp ? `- ${this.formatStatusTime(timestamp)}` : '';
+        }
+    }
+
     setSelectValueWithFallback(selectId, value, fallback) {
         const select = document.getElementById(selectId);
         if (!select) {
@@ -2304,6 +2442,7 @@ export class MindVaultAdmin {
 
     async loadNodes() {
         try {
+            this.setPanelStatus('nodes', 'loading', 'Loading nodes...');
             const params = new URLSearchParams({
                 limit: this.pageSize,
                 offset: (this.currentPage - 1) * this.pageSize,
@@ -2313,7 +2452,9 @@ export class MindVaultAdmin {
             const data = await this.apiCall(`/api/v1/nodes?${params.toString()}`);
             this.renderNodes(data);
             this.updatePagination(data.length === this.pageSize);
+            this.setPanelStatus('nodes', 'ready', 'Nodes updated', new Date());
         } catch (error) {
+            this.setPanelStatus('nodes', 'error', 'Nodes load failed', new Date());
             console.error('Failed to load nodes:', error);
         }
     }
@@ -2410,13 +2551,16 @@ export class MindVaultAdmin {
         });
 
         try {
+            this.setPanelStatus('search', 'loading', 'Searching...');
             const data = await this.apiCall(`/api/v1/search?${params.toString()}`);
             this.renderSearchResults(data);
+            this.setPanelStatus('search', 'ready', 'Search updated', new Date());
             if (!options.fromSavedSearch && this.activeSavedSearchId) {
                 this.activeSavedSearchId = null;
                 this.renderSavedSearches();
             }
         } catch (error) {
+            this.setPanelStatus('search', 'error', 'Search failed', new Date());
             console.error('Search failed:', error);
         }
     }
@@ -2633,9 +2777,12 @@ export class MindVaultAdmin {
         }
 
         try {
+            this.setPanelStatus('search', 'loading', 'Loading saved searches...');
             const items = await this.apiCall('/api/v1/search/saved?limit=100');
             this.savedSearchesCache = Array.isArray(items) ? items : [];
+            this.setPanelStatus('search', 'ready', 'Saved searches updated', new Date());
         } catch (error) {
+            this.setPanelStatus('search', 'error', 'Saved searches failed', new Date());
             console.error('Failed to load saved searches:', error);
             this.savedSearchesCache = [];
             this.showNotification(`Could not load saved searches: ${error.message}`, 'error');
@@ -2817,9 +2964,12 @@ export class MindVaultAdmin {
         }
 
         try {
+            this.setPanelStatus('graph', 'loading', 'Loading graph...');
             const data = await this.apiCall(`/api/v1/graph/neighbors/${nodeId}?depth=${depth}`);
             this.renderGraph(data, nodeId);
+            this.setPanelStatus('graph', 'ready', 'Graph updated', new Date());
         } catch (error) {
+            this.setPanelStatus('graph', 'error', 'Graph load failed', new Date());
             console.error('Failed to load graph:', error);
         }
     }
@@ -2935,12 +3085,15 @@ export class MindVaultAdmin {
         const params = this.buildCalendarQueryParams(250);
 
         try {
+            this.setPanelStatus('calendar', 'loading', 'Loading calendar...');
             const response = await this.apiCall(`/api/v1/calendar/items?${params.toString()}`);
             const items = Array.isArray(response?.items) ? response.items : [];
             this.calendarItemsCache = items;
             this.renderCalendarRangeSummary(response);
             this.renderCalendarItems(items);
+            this.setPanelStatus('calendar', 'ready', 'Calendar updated', new Date());
         } catch (error) {
+            this.setPanelStatus('calendar', 'error', 'Calendar load failed', new Date());
             console.error('Failed to load calendar items:', error);
             this.setCalendarRangeSummaryPlaceholder('Unable to load calendar range right now.');
             this.setCalendarItemsPlaceholder('Unable to load scheduled items right now.');
@@ -3121,6 +3274,7 @@ export class MindVaultAdmin {
         });
 
         try {
+            this.setPanelStatus('daily', 'loading', 'Loading daily notes...');
             const notes = await this.apiCall(`/api/v1/daily-notes?${params.toString()}`);
             this.dailyNotesCache = Array.isArray(notes) ? notes : [];
             this.renderDailyNotes(this.dailyNotesCache);
@@ -3128,6 +3282,7 @@ export class MindVaultAdmin {
             if (this.dailyNotesCache.length === 0) {
                 this.selectedDailyNoteId = null;
                 this.setDailyLinkedItemsPlaceholder('No linked items to show until a daily note exists.');
+                this.setPanelStatus('daily', 'ready', 'Daily notes updated', new Date());
                 return;
             }
 
@@ -3135,7 +3290,9 @@ export class MindVaultAdmin {
             this.selectedDailyNoteId = selected.id;
             this.renderDailyNotes(this.dailyNotesCache);
             this.loadLinkedItemsForDailyNote(selected);
+            this.setPanelStatus('daily', 'ready', 'Daily notes updated', new Date());
         } catch (error) {
+            this.setPanelStatus('daily', 'error', 'Daily notes failed', new Date());
             console.error('Failed to load daily notes:', error);
         }
     }
@@ -3149,6 +3306,7 @@ export class MindVaultAdmin {
 
     async loadDueTasks() {
         this.setDueTasksPlaceholder('Loading due tasks...');
+        this.setPanelStatus('daily', 'loading', 'Loading due tasks...');
         const params = new URLSearchParams({
             namespace: this.selectedDailyNamespace(),
             limit: '80',
@@ -3163,7 +3321,9 @@ export class MindVaultAdmin {
             const tasks = await this.apiCall(`/api/v1/tasks/due?${params.toString()}`);
             this.dueTasksCache = Array.isArray(tasks) ? tasks : [];
             this.renderDueTasks(this.dueTasksCache);
+            this.setPanelStatus('daily', 'ready', 'Due tasks updated', new Date());
         } catch (error) {
+            this.setPanelStatus('daily', 'error', 'Due tasks failed', new Date());
             console.error('Failed to load due tasks:', error);
             this.setDueTasksPlaceholder('Unable to load due tasks right now.');
         }
@@ -3244,6 +3404,7 @@ export class MindVaultAdmin {
             return;
         }
         this.setFocusTasksPlaceholder('Loading focus list...');
+        this.setPanelStatus('daily', 'loading', 'Loading focus list...');
         const payload = {
             namespace: this.selectedDailyNamespace(),
             limit: this.focusLimit(),
@@ -3265,7 +3426,9 @@ export class MindVaultAdmin {
                 }
             }
             this.renderFocusTasks(this.focusTasksCache);
+            this.setPanelStatus('daily', 'ready', 'Focus list updated', new Date());
         } catch (error) {
+            this.setPanelStatus('daily', 'error', 'Focus list failed', new Date());
             console.error('Failed to load focus tasks:', error);
             this.setFocusTasksPlaceholder('Unable to generate focus list right now.');
         }
@@ -3475,10 +3638,13 @@ export class MindVaultAdmin {
 
     async loadTemplatePacks() {
         try {
+            this.setPanelStatus('templates', 'loading', 'Loading template packs...');
             const packs = await this.apiCall('/api/v1/template-packs');
             this.templatePacksCache = Array.isArray(packs) ? packs : [];
             this.renderTemplatePacks(this.templatePacksCache);
+            this.setPanelStatus('templates', 'ready', 'Template packs updated', new Date());
         } catch (error) {
+            this.setPanelStatus('templates', 'error', 'Template packs failed', new Date());
             console.error('Failed to load template packs:', error);
             this.templatePacksCache = [];
             this.renderTemplatePacks([]);
@@ -3575,6 +3741,7 @@ export class MindVaultAdmin {
         }
 
         try {
+            this.setPanelStatus('templates', 'loading', 'Loading templates...');
             const templates = await this.apiCall(`/api/v1/templates?${params.toString()}`);
             this.templatesCache = Array.isArray(templates) ? this.sortNodesByCreatedDesc(templates) : [];
             if (this.templatesCache.length === 0) {
@@ -3585,7 +3752,9 @@ export class MindVaultAdmin {
 
             this.renderTemplates(this.templatesCache);
             this.renderSelectedTemplateDetails();
+            this.setPanelStatus('templates', 'ready', 'Templates updated', new Date());
         } catch (error) {
+            this.setPanelStatus('templates', 'error', 'Templates failed', new Date());
             console.error('Failed to load templates:', error);
             this.showNotification('Unable to load templates right now.', 'error');
         }
@@ -3673,11 +3842,14 @@ export class MindVaultAdmin {
 
     async loadPermissionTemplates() {
         try {
+            this.setPanelStatus('access', 'loading', 'Loading access templates...');
             const templates = await this.apiCall('/api/v1/permission-templates?limit=200&offset=0');
             this.permissionTemplatesCache = Array.isArray(templates) ? templates : [];
             this.renderPermissionTemplates(this.permissionTemplatesCache);
             this.refreshAccessKeyTemplateOptions();
+            this.setPanelStatus('access', 'ready', 'Access templates updated', new Date());
         } catch (error) {
+            this.setPanelStatus('access', 'error', 'Access templates failed', new Date());
             console.error('Failed to load permission templates:', error);
             this.permissionTemplatesCache = [];
             this.renderPermissionTemplates([]);
@@ -3820,10 +3992,13 @@ export class MindVaultAdmin {
 
     async loadAccessKeys() {
         try {
+            this.setPanelStatus('access', 'loading', 'Loading access keys...');
             const keys = await this.apiCall('/api/v1/access-keys');
             this.accessKeysCache = Array.isArray(keys) ? keys : [];
             this.renderAccessKeys(this.accessKeysCache);
+            this.setPanelStatus('access', 'ready', 'Access keys updated', new Date());
         } catch (error) {
+            this.setPanelStatus('access', 'error', 'Access keys failed', new Date());
             console.error('Failed to load access keys:', error);
             this.accessKeysCache = [];
             this.renderAccessKeys([]);
@@ -4473,6 +4648,7 @@ export class MindVaultAdmin {
 
     async loadStats() {
         try {
+            this.setPanelStatus('stats', 'loading', 'Loading stats...');
             const [healthResult, embeddingResult] = await Promise.allSettled([
                 this.apiCall('/api/v1/health'),
                 this.apiCall('/api/v1/diagnostics/embedding')
@@ -4484,7 +4660,9 @@ export class MindVaultAdmin {
             if (this.activeTabId() === 'stats-tab') {
                 this.loadAuditLogs(false);
             }
+            this.setPanelStatus('stats', 'ready', 'Stats updated', new Date());
         } catch (error) {
+            this.setPanelStatus('stats', 'error', 'Stats failed', new Date());
             console.error('Failed to load stats:', error);
         }
     }
@@ -4583,6 +4761,7 @@ export class MindVaultAdmin {
         this.updateAuditLoadMoreButton();
 
         try {
+            this.setPanelStatus('stats', 'loading', 'Loading audit...');
             const entries = await this.apiCall(`/api/v1/audit?${params.toString()}`, {
                 silent: true
             });
@@ -4594,8 +4773,10 @@ export class MindVaultAdmin {
                 this.auditOffset = items.length;
             }
             this.auditHasMore = items.length >= limit;
+            this.setPanelStatus('stats', 'ready', 'Audit updated', new Date());
             return items;
         } catch (fetchError) {
+            this.setPanelStatus('stats', 'error', 'Audit failed', new Date());
             console.error('Failed to load audit logs:', fetchError);
             const isForbidden = String(fetchError?.message || '').includes('403');
             const friendlyMessage = isForbidden

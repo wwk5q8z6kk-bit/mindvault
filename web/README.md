@@ -24,6 +24,7 @@ A modern web-based administrative interface for MindVault, providing an intuitiv
 - **AI Wiki-Link Assist**: Semantic `[[...]]` link suggestions from vault context with keyboard navigation, heading deep links, and inline preview snippets
 - **AI Mention Assist**: Semantic `@...` / `@"Title"` mention suggestions in both Markdown and WYSIWYG modes with the same keyboard-driven picker
 - **AI Transform Actions**: One-click summarize/action-items/refine transforms inserted as sections or used to replace selected Markdown
+- **Quick Pause Controls**: Temporarily pause auto-suggest with one click and resume later
 - **Template Workflows UI**: Browse, filter, create, and instantiate reusable templates with variable substitution
 - **Template Version History**: Inspect historical versions and restore previous template revisions
 - **Field-Level Diff Preview**: Compare historical version fields (title/tags/source/importance/etc.) against current template before restore
@@ -68,7 +69,8 @@ A modern web-based administrative interface for MindVault, providing an intuitiv
 - **Vault Transfer Controls**: One-click JSON export/import from the Stats tab
 - **Audit Activity Feed**: Filterable audit trail (subject/action/since/limit) in the Stats tab for admin sessions
 - **Audit Pagination**: Incremental "Load More" audit retrieval for large activity streams
-- **Runtime Settings**: Configure API base + suggestion toggles from the Stats tab
+- **Runtime Settings**: Configure API base, suggestion toggles, and auto-suggest cooldown from the Stats tab
+- **Panel Status Indicators**: Each tab shows loading state and last refresh timestamp
 
 ## Getting Started
 

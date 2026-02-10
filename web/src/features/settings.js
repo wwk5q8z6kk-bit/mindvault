@@ -2,13 +2,15 @@ const SETTINGS_KEYS = {
   apiBase: 'mindvaultApiBaseOverride',
   autoSuggest: 'mindvaultSettingAutoSuggest',
   autoComplete: 'mindvaultSettingAutoComplete',
-  autoLinking: 'mindvaultSettingAutoLinking'
+  autoLinking: 'mindvaultSettingAutoLinking',
+  autoSuggestCooldown: 'mindvaultSettingAutoSuggestCooldownMinutes'
 };
 
 const DEFAULT_SETTINGS = {
   autoSuggest: true,
   autoComplete: true,
-  autoLinking: true
+  autoLinking: true,
+  autoSuggestCooldownMinutes: 0
 };
 
 function readBool(key, fallback) {
@@ -19,12 +21,33 @@ function readBool(key, fallback) {
   return raw === 'true' || raw === '1' || raw === 'yes';
 }
 
+function readNumber(key, fallback) {
+  const raw = localStorage.getItem(key);
+  if (raw === null || raw === undefined || raw === '') {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function normalizeApiBase(raw) {
   const value = String(raw || '').trim();
   if (!value) {
     return '';
   }
   return value.replace(/\/+$/, '');
+}
+
+function normalizeCooldownMinutes(value) {
+  const minutes = Math.max(0, Math.min(60, Math.round(Number(value) || 0)));
+  return minutes;
+}
+
+function formatCooldownLabel(minutes) {
+  if (!minutes) {
+    return 'Live (no delay)';
+  }
+  return `Every ${minutes} min`;
 }
 
 export const settingsFeature = {
@@ -40,6 +63,9 @@ export const settingsFeature = {
     this.autoLinkingEnabled = readBool(
       SETTINGS_KEYS.autoLinking,
       DEFAULT_SETTINGS.autoLinking
+    );
+    this.autoSuggestCooldownMinutes = normalizeCooldownMinutes(
+      readNumber(SETTINGS_KEYS.autoSuggestCooldown, DEFAULT_SETTINGS.autoSuggestCooldownMinutes)
     );
     this.apiBaseOverride = normalizeApiBase(localStorage.getItem(SETTINGS_KEYS.apiBase));
   },
@@ -83,6 +109,15 @@ export const settingsFeature = {
       settingsAutoLink.checked = Boolean(this.autoLinkingEnabled);
     }
 
+    const suggestCooldown = document.getElementById('settings-suggest-cooldown');
+    const suggestCooldownLabel = document.getElementById('settings-suggest-cooldown-label');
+    if (suggestCooldown) {
+      suggestCooldown.value = String(this.autoSuggestCooldownMinutes || 0);
+    }
+    if (suggestCooldownLabel) {
+      suggestCooldownLabel.textContent = formatCooldownLabel(this.autoSuggestCooldownMinutes || 0);
+    }
+
     const apiBaseInput = document.getElementById('settings-api-base');
     if (apiBaseInput) {
       apiBaseInput.value = this.apiBaseOverride || '';
@@ -96,6 +131,8 @@ export const settingsFeature = {
     const autoSuggestToggle = document.getElementById('settings-auto-suggest');
     const autoCompleteToggle = document.getElementById('settings-auto-complete');
     const autoLinkToggle = document.getElementById('settings-auto-link');
+    const suggestCooldown = document.getElementById('settings-suggest-cooldown');
+    const suggestCooldownLabel = document.getElementById('settings-suggest-cooldown-label');
 
     this.applySettingsToUi();
 
@@ -154,6 +191,25 @@ export const settingsFeature = {
           this.clearWikiLinkSuggestions();
           this.hideWysiwygWikiLinkSuggestions();
         }
+      });
+    }
+
+    if (suggestCooldown) {
+      const updateCooldownLabel = (value) => {
+        const normalized = normalizeCooldownMinutes(value);
+        if (suggestCooldownLabel) {
+          suggestCooldownLabel.textContent = formatCooldownLabel(normalized);
+        }
+        return normalized;
+      };
+      updateCooldownLabel(suggestCooldown.value);
+      suggestCooldown.addEventListener('input', () => {
+        updateCooldownLabel(suggestCooldown.value);
+      });
+      suggestCooldown.addEventListener('change', () => {
+        const normalized = updateCooldownLabel(suggestCooldown.value);
+        this.autoSuggestCooldownMinutes = normalized;
+        this.persistSetting('autoSuggestCooldown', normalized);
       });
     }
   }

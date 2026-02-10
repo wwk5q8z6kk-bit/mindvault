@@ -105,6 +105,53 @@ nav {
     margin: 0;
 }
 
+.panel-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.panel-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.panel-status .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border-color);
+    display: inline-block;
+}
+
+.panel-status[data-state="loading"] .status-dot {
+    background: var(--warning-color);
+    animation: statusPulse 1.4s ease-in-out infinite;
+}
+
+.panel-status[data-state="ready"] .status-dot {
+    background: var(--success-color);
+}
+
+.panel-status[data-state="error"] .status-dot {
+    background: var(--error-color);
+}
+
+.panel-status .status-time {
+    color: var(--text-muted);
+}
+
+@keyframes statusPulse {
+    0% { opacity: 0.6; transform: scale(0.95); }
+    50% { opacity: 1; transform: scale(1.1); }
+    100% { opacity: 0.6; transform: scale(0.95); }
+}
+
 .btn {
     padding: 8px 16px;
     border: none;
@@ -1430,6 +1477,10 @@ nav {
     align-items: center;
 }
 
+.settings-row--wide {
+    grid-column: 1 / -1;
+}
+
 .settings-row label {
     font-size: 13px;
     font-weight: 600;
@@ -1442,6 +1493,16 @@ nav {
     border: 1px solid var(--border-color);
     border-radius: 6px;
     font-size: 13px;
+}
+
+.settings-row input[type="range"] {
+    flex: 1 1 220px;
+    accent-color: var(--primary-color);
+}
+
+.settings-note {
+    font-size: 12px;
+    color: var(--text-muted);
 }
 
 .settings-toggle {
@@ -1671,6 +1732,26 @@ nav {
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
+}
+
+.editor-ai-pause {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.ai-suggest-pause-status {
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: #e2e8f0;
+}
+
+.ai-suggest-pause-status.is-paused {
+    color: #7c2d12;
+    background: #fde68a;
 }
 
 .editor-ai-toggle {
