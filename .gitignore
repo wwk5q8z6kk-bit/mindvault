@@ -25,6 +25,9 @@ web/.vite/
 connectors/*/*.js
 !connectors/*/*.config.js
 
+# Model caches
+.fastembed_cache/
+
 # Python
 __pycache__/
 *.pyc
