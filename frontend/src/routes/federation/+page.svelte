@@ -4,10 +4,12 @@
 	import {
 		listPeers,
 		addPeer,
+		handshakePeer,
 		removePeer,
 		peerHealth,
 		federatedQuery,
 		type FederationPeer,
+		type FederationHandshakeResponse,
 		type FederatedResult
 	} from '$lib/api/federation';
 
@@ -18,12 +20,19 @@
 	let queryResults: FederatedResult[] = [];
 	let querying = false;
 	let healthStatus: Record<string, boolean | null> = {};
+	let handshaking = false;
+	let lastHandshake: FederationHandshakeResponse | null = null;
 
 	let newPeer = {
 		vault_id: '',
 		display_name: '',
 		endpoint: '',
 		max_results: 50
+	};
+
+	let handshakeForm = {
+		endpoint: '',
+		shared_secret: ''
 	};
 
 	onMount(async () => {
@@ -53,6 +62,28 @@
 			pushToast('Peer added', 'success');
 		} catch {
 			pushToast('Failed to add peer', 'danger');
+		}
+	}
+
+	async function handleHandshake() {
+		if (!handshakeForm.endpoint.trim()) {
+			pushToast('Endpoint URL is required', 'warning');
+			return;
+		}
+		handshaking = true;
+		try {
+			const result = await handshakePeer({
+				endpoint: handshakeForm.endpoint.trim(),
+				shared_secret: handshakeForm.shared_secret.trim() || undefined
+			});
+			lastHandshake = result;
+			await loadPeers();
+			handshakeForm = { endpoint: '', shared_secret: '' };
+			pushToast(`Handshake complete with ${result.display_name}`, 'success');
+		} catch {
+			pushToast('Federation handshake failed', 'danger');
+		} finally {
+			handshaking = false;
 		}
 	}
 
@@ -107,6 +138,35 @@
 				class="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700"
 				onclick={() => (showAddForm = !showAddForm)}
 			>{showAddForm ? 'Cancel' : '+ Add Peer'}</button>
+		</div>
+
+		<div class="space-y-3 rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-4">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Handshake (recommended)</h3>
+			<p class="text-xs text-[rgb(var(--mv-muted))]">
+				Provide a peer endpoint to auto-discover vault identity and register the peer.
+			</p>
+			<div class="space-y-2">
+				<input
+					bind:value={handshakeForm.endpoint}
+					class="w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-sm text-[rgb(var(--mv-text))]"
+					placeholder="http://192.168.1.50:9470"
+				/>
+				<input
+					bind:value={handshakeForm.shared_secret}
+					class="w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-sm text-[rgb(var(--mv-text))]"
+					placeholder="Shared secret (optional)"
+				/>
+				<button
+					class="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-700 disabled:opacity-50"
+					onclick={handleHandshake}
+					disabled={handshaking}
+				>{handshaking ? 'Handshaking...' : 'Handshake & Register'}</button>
+			</div>
+			{#if lastHandshake}
+				<p class="text-xs text-[rgb(var(--mv-muted))]">
+					Last handshake: {lastHandshake.display_name} ({lastHandshake.vault_id})
+				</p>
+			{/if}
 		</div>
 
 		{#if showAddForm}

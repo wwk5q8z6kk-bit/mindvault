@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { pushToast } from '$lib/stores/toast';
-	import { syncStatus, syncExport, syncImport, type SyncStats } from '$lib/api/sync';
+	import { syncStatus, syncExport, syncImport, type SyncStats, type SyncImportStats } from '$lib/api/sync';
 
 	let stats: SyncStats | null = null;
+	let lastImportStats: SyncImportStats | null = null;
 	let loading = true;
 	let exporting = false;
 	let importing = false;
@@ -57,7 +58,11 @@
 			const text = await file.text();
 			const snapshot = JSON.parse(text);
 			const res = await syncImport(snapshot);
-			pushToast(`Imported ${res.imported} nodes`, 'success');
+			lastImportStats = res;
+			pushToast(
+				`Import complete: ${res.inserted} inserted, ${res.updated} updated, ${res.conflicts} conflicts`,
+				'success'
+			);
 			await loadStatus();
 		} catch {
 			pushToast('Import failed', 'danger');
@@ -78,10 +83,16 @@
 		<p class="text-[rgb(var(--mv-muted))]">Loading...</p>
 	{:else if stats}
 		<!-- Status -->
-		<div class="grid grid-cols-3 gap-4">
+		<div class="grid grid-cols-4 gap-4">
 			<div class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-4 text-center">
 				<div class="text-2xl font-bold text-[rgb(var(--mv-text))]">{stats.node_count}</div>
 				<div class="text-xs text-[rgb(var(--mv-muted))]">Total Nodes</div>
+			</div>
+			<div class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-4 text-center">
+				<div class="text-sm font-medium text-[rgb(var(--mv-text))] break-all">
+					{stats.device_id}
+				</div>
+				<div class="text-xs text-[rgb(var(--mv-muted))]">Device ID</div>
 			</div>
 			<div class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-4 text-center">
 				<div class="text-sm font-medium text-[rgb(var(--mv-text))]">
@@ -133,5 +144,47 @@
 				<p class="mt-2 text-sm text-[rgb(var(--mv-muted))]">Importing...</p>
 			{/if}
 		</div>
+		{#if lastImportStats}
+			<div class="mt-3 rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] p-3 text-sm text-[rgb(var(--mv-text))]">
+				<div class="grid grid-cols-2 gap-2 text-xs text-[rgb(var(--mv-muted))]">
+					<div>Scanned: <span class="text-[rgb(var(--mv-text))]">{lastImportStats.scanned}</span></div>
+					<div>Inserted: <span class="text-[rgb(var(--mv-text))]">{lastImportStats.inserted}</span></div>
+					<div>Updated: <span class="text-[rgb(var(--mv-text))]">{lastImportStats.updated}</span></div>
+					<div>Skipped: <span class="text-[rgb(var(--mv-text))]">{lastImportStats.skipped}</span></div>
+					<div>Conflicts: <span class="text-[rgb(var(--mv-text))]">{lastImportStats.conflicts}</span></div>
+				</div>
+				{#if lastImportStats.conflicts > 0}
+					<div class="mt-3 space-y-2 text-xs">
+						<p class="text-[rgb(var(--mv-muted))]">Review conflicts via Inbox proposals.</p>
+						<a
+							href="/inbox"
+							class="inline-flex items-center rounded bg-blue-600 px-2.5 py-1 text-xs text-white hover:bg-blue-700"
+						>Open Inbox</a>
+						{#if lastImportStats.conflict_details?.length}
+							<div class="mt-2 space-y-2">
+								{#each lastImportStats.conflict_details as conflict (conflict.id)}
+									<div class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-2">
+										<div class="text-[rgb(var(--mv-muted))]">
+											{conflict.reason} • {new Date(conflict.detected_at).toLocaleString()}
+										</div>
+										<div class="mt-1 text-[rgb(var(--mv-text))]">
+											Local: {conflict.local_content_preview}
+										</div>
+										<div class="mt-1 text-[rgb(var(--mv-text))]">
+											Remote: {conflict.remote_content_preview}
+										</div>
+										{#if conflict.proposal_id}
+											<div class="mt-1 text-[rgb(var(--mv-muted))]">
+												Proposal: {conflict.proposal_id}
+											</div>
+										{/if}
+									</div>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		{/if}
 	</div>
 </div>

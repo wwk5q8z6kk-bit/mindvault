@@ -24,12 +24,18 @@ use mv_server::state::AppState;
 // Helpers
 // ---------------------------------------------------------------------------
 
-async fn setup() -> (axum::Router, TempDir) {
-    let tmp = TempDir::new().expect("tempdir");
-    let config = EngineConfig {
-        data_dir: tmp.path().to_string_lossy().to_string(),
+fn test_config(data_dir: &str) -> EngineConfig {
+    let mut cfg = EngineConfig {
+        data_dir: data_dir.to_string(),
         ..Default::default()
     };
+    cfg.embedding.provider = "noop".to_string();
+    cfg
+}
+
+async fn setup() -> (axum::Router, TempDir) {
+    let tmp = TempDir::new().expect("tempdir");
+    let config = test_config(&tmp.path().to_string_lossy());
     let engine = MindVaultEngine::init(config)
         .await
         .expect("engine init");

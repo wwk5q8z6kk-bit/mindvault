@@ -20,6 +20,14 @@ export interface FederatedResult {
 	relevance_score: number;
 }
 
+export interface FederationHandshakeResponse {
+	id: string;
+	status: string;
+	vault_id: string;
+	display_name: string;
+	public_key: string | null;
+}
+
 export async function listPeers(): Promise<{ peers: FederationPeer[]; count: number }> {
 	return fetchJson('/api/v1/federation/peers');
 }
@@ -33,6 +41,16 @@ export async function addPeer(data: {
 	max_results?: number;
 }): Promise<{ id: string }> {
 	return fetchJson('/api/v1/federation/peers', {
+		method: 'POST',
+		body: JSON.stringify(data)
+	});
+}
+
+export async function handshakePeer(data: {
+	endpoint: string;
+	shared_secret?: string;
+}): Promise<FederationHandshakeResponse> {
+	return fetchJson('/api/v1/federation/handshake', {
 		method: 'POST',
 		body: JSON.stringify(data)
 	});

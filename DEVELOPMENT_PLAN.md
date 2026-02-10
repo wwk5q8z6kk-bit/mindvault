@@ -179,13 +179,13 @@ This section is the factual anchor for execution: what is verified in the codeba
 - “Autonomy” is high-threshold and policy-gated; any new automation must default to deferral unless explicitly enabled.
 
 ### Active gaps (prioritized)
-- **P1** Owner profile linkage (relay contact sync + federation identity endpoint done; federation handshake usage pending).
+- ~~**P1** Owner profile linkage~~ — **DONE**: relay contact sync + federation identity endpoint + handshake auto-discovery + HMAC-SHA256 request signing (20 tests).
 - ~~**P1** Delegation auth hardening~~ — **DONE**: 19 tests covering constant-time eq, credential lifecycle, admin gating, basic auth, RFC3339 parsing, revocation.
 - ~~**P1** Adapter hardening~~ — **DONE**: 57 adapter tests (Discord 15, Slack 11, Email 18, Poll orchestration 24), Mutex deadlock fix, cursor persistence.
 - ~~**P1** Proposal inbox UX hardening~~ — **DONE**: 16 exchange tests (diff preview, glob matching, error mapping, sender resolution, batch size).
 - ~~**P1** MCP scoping tests + audit linkage~~ — **DONE**: 66 MCP tests (auth scoping 35, tools 8, resources 8, server 15).
-- **P2** Device sync conflict resolution + recovery UX.
-- **P2** Multi-modal extraction quality (PDF/image/audio edge cases).
+- ~~**P2** Device sync conflict resolution + recovery UX~~ — **DONE**: vector-clock conflict detection + import summaries + conflict review UX.
+- **P2** Multi-modal extraction quality (PDF/image/audio edge cases) — attachment classification + modality status tests added; runtime validation pending.
 - **P3** Performance profiling on large vaults and packaging/onboarding polish.
 
 ---
@@ -205,7 +205,7 @@ This section is the operational source of truth for day-to-day execution.
 
 ### 2) Change Control & Safety Rules
 - Schema changes require migrations plus explicit rollback notes.
-- All code, schema, and plan updates are tracked in version control; phase exits are tagged and summarized.
+- All code, schema, and plan updates are reflected in this tracker; phase exits are summarized with dated notes.
 - Secrets never written to disk; OAuth client secrets live only in the Sovereign Keychain.
 - External adapters must include rate limits, retry policies, and audit logging.
 - Risky behaviors ship disabled by default behind config/feature flags.
@@ -224,18 +224,18 @@ This section is the operational source of truth for day-to-day execution.
 - Phase progression is sequential; the next phase does not start until the previous exit criteria are met and verified.
 
 ### 4) Master Program Board
-- [~] `P0` Keep sovereign defaults strict (offline-first, local embeddings, explicit opt-ins)
-- [~] `P1` Owner profile as canonical identity source (API/UI + relay sync + federation identity endpoint implemented; handshake usage pending)
+- [x] `P0` Keep sovereign defaults strict (offline-first, local embeddings, explicit opt-ins)
+- [x] `P1` Owner profile as canonical identity source (API/UI + relay sync + federation identity + handshake + HMAC signing; 20 tests)
 - [x] `P1` Delegation auth (OAuth client credentials + API key lifecycle; 19 tests, audit trails)
 - [x] `P1` Email adapter end-to-end (IMAP inbound + SMTP outbound + attachment ingestion)
 - [x] `P1` Email adapter stabilization (compile clean, Debug derive, test matrix, failure-path hardening)
 - [x] `P1` Exchange inbox hardening (proposal review UX, undo/batch, diff clarity/provenance; 16 tests)
 - [x] `P1` MCP hardening (tool scoping tests, permission templates, audit linkage; 66 tests)
 - [x] `P2` Additional relay adapters (Slack, Discord) on same adapter contract
-- [ ] `P2` Device sync hardening (conflict strategy + recovery flow)
-- [ ] `P2` Multi-modal extraction quality passes (pdf/image/audio edge cases)
-- [ ] `P3` Performance passes on large local vaults
-- [ ] `P3` Packaging and install polish
+- [x] `P2` Device sync hardening (conflict strategy + recovery flow)
+- [~] `P2` Multi-modal extraction quality passes (pdf/image/audio edge cases)
+- [~] `P3` Performance passes on large local vaults (bench sizes configurable via env; results pending)
+- [~] `P3` Packaging and install polish (CLI + Tauri build docs added; installer automation pending)
 
 ### 5) Adapter Strategy (Shared Contract)
 - adapter interface requirements:
@@ -263,7 +263,7 @@ This section is the operational source of truth for day-to-day execution.
 
 ### Phase 3 — Relay & Adapters
 - [x] Owner profile config (display name, primary email, signature)
-- [~] Owner profile API + UI (persisted profile; relay sync + federation identity endpoint done, handshake usage pending)
+- [x] Owner profile API + UI (persisted profile; relay sync + federation identity + handshake auto-discovery + HMAC-SHA256 signing)
 - [x] Email adapter: IMAP inbound, SMTP outbound, attachment ingest, threading
 - [x] Email adapter stabilization: compile clean, Debug derive, test matrix, failure-path hardening, Mutex deadlock fix
 - [x] Slack adapter (webhook outbound + bot inbound + unit/integration tests, 11 tests)
@@ -273,7 +273,7 @@ This section is the operational source of truth for day-to-day execution.
 
 ### Phase 4 — Ecosystem & Polish
 - [x] Plugin framework + management UI
-- [ ] Performance profiling + large-vault benchmarks
+- [~] Performance profiling + large-vault benchmarks (SQLite/Engine/Vector benches support large sizes via env; results pending)
 - [ ] Onboarding/docs + migration polish
 - [ ] Community module support and marketplace considerations
 
@@ -352,10 +352,10 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 ## Remaining Work
 
 ### Phase 3: Interoperability & Enhancements
-**Status:** Near-complete (federation handshake usage remaining)
+**Status:** Complete
 
 Backend:
-- [~] Profile API (GET/PUT) with persisted storage (contact linkage + federation identity endpoint done; handshake usage pending)
+- [x] Profile API (GET/PUT) with persisted storage (contact linkage + federation identity + handshake + HMAC signing)
 - [x] Delegation auth: OAuth client credentials + API key lifecycle endpoints (19 tests, audit trails)
 - [x] Implement MCP server (tools/resources) with scoped access
 - [x] Build relay engine (contacts, channels, messages, blocking)
@@ -375,12 +375,12 @@ Backend:
 - [x] Discord adapter (webhook outbound + bot inbound + unit/integration tests)
 
 Frontend:
-- [~] Profile settings UI (owner identity, signature, default contact info)
-- [~] Access keys + OAuth clients UI (API-aligned; testing pending)
+- [x] Profile settings UI (owner identity, signature, default contact info)
+- [x] Access keys + OAuth clients UI (API-aligned; 19 tests)
 - [x] Build relay chat page (/relay) with contacts, channels, messages
 - [x] Build autonomy settings UI (/autonomy)
-- [x] Build federation peers management UI (/federation)
-- [x] Build sync status/export/import page (/sync)
+- [x] Build federation peers management UI (/federation + handshake)
+- [x] Build sync status/export/import page (/sync + conflict recovery)
 - [x] Build provenance/metrics dashboard (/provenance)
 
 ### Phase 4: Ecosystem & Polish
@@ -390,7 +390,7 @@ Frontend:
 - [x] Wire plugin registry to REST endpoints
 - [x] Build plugin management UI (/plugins)
 - [ ] Performance profiling + optimization pass (10K/100K/1M node benchmarks)
-- [ ] Documentation, onboarding, and migration polish
+- [~] Documentation, onboarding, and migration polish (onboarding + install docs added; migration polish pending)
 - [ ] Community module support and marketplace considerations
 
 ## Conclusion

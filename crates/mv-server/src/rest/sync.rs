@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, Extension, Json};
+use axum::{extract::{Path, State}, http::StatusCode, Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
@@ -61,14 +61,44 @@ pub async fn sync_import(
     Ok(Json(stats))
 }
 
-/// GET /api/v1/sync/status
+/// GET /api/v1/sync/status — Device sync status including clock and conflicts
 pub async fn sync_status(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     authorize_read(&auth)?;
+    let node_count = state.engine.node_count().await.map_err(map_mv_error)?;
+    let clock = state.engine.sync.clock().await;
+    let conflicts = state.engine.sync.unresolved_conflicts().await;
+    let last_export = state.engine.sync.last_export().await;
+    let last_import = state.engine.sync.last_import().await;
     Ok(Json(serde_json::json!({
         "device_id": state.engine.sync.device_id(),
-        "status": "ready"
+        "status": "ready",
+        "node_count": node_count,
+        "clock": clock,
+        "unresolved_conflicts": conflicts.len(),
+        "conflicts": conflicts,
+        "last_export": last_export.map(|dt| dt.to_rfc3339()),
+        "last_import": last_import.map(|dt| dt.to_rfc3339()),
     })))
+}
+
+/// POST /api/v1/sync/conflicts/{id}/resolve — Mark a sync conflict as resolved
+pub async fn resolve_sync_conflict(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    authorize_write(&auth)?;
+
+    let uuid = uuid::Uuid::parse_str(&id)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid conflict id: {e}")))?;
+
+    let resolved = state.engine.sync.resolve_conflict_by_id(uuid).await;
+    if resolved {
+        Ok(Json(serde_json::json!({ "status": "resolved" })))
+    } else {
+        Err((StatusCode::NOT_FOUND, "conflict not found".into()))
+    }
 }

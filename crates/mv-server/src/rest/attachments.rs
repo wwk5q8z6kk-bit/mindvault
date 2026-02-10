@@ -730,4 +730,34 @@ mod tests {
         assert_eq!(chunks.len(), 3);
         assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 25));
     }
+
+    #[test]
+    fn detects_textual_by_extension_case_insensitive() {
+        assert!(is_textual_attachment("README.MD", None));
+        assert!(is_textual_attachment("notes.TXT", None));
+    }
+
+    #[test]
+    fn pdf_detection_accepts_content_type_with_parameters() {
+        assert!(is_pdf_attachment("file.bin", Some("application/pdf; charset=binary")));
+        assert!(is_pdf_attachment("report.PDF", None));
+    }
+
+    #[test]
+    fn svg_is_textual_not_image() {
+        assert!(is_textual_attachment("diagram.svg", Some("image/svg+xml")));
+        assert!(!is_image_attachment("diagram.svg", Some("image/svg+xml")));
+    }
+
+    #[test]
+    fn image_detection_handles_uppercase_extensions() {
+        assert!(is_image_attachment("photo.JPEG", None));
+        assert!(is_image_attachment("scan.PNG", None));
+    }
+
+    #[test]
+    fn video_detection_prefers_content_type() {
+        assert!(is_video_attachment("clip.unknown", Some("video/mp4")));
+        assert!(is_video_attachment("clip.MOV", None));
+    }
 }
