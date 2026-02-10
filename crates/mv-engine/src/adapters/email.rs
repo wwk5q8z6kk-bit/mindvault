@@ -173,13 +173,15 @@ impl ExternalAdapter for EmailAdapter {
     }
 
     fn status(&self) -> AdapterStatus {
+        let error = self.last_error.lock().unwrap().clone();
+        let last_send = *self.last_send.lock().unwrap();
         AdapterStatus {
             adapter_type: AdapterType::Email,
             name: self.config.name.clone(),
-            connected: self.last_error.lock().unwrap().is_none(),
-            last_send: *self.last_send.lock().unwrap(),
+            connected: error.is_none(),
+            last_send,
             last_receive: None,
-            error: self.last_error.lock().unwrap().clone(),
+            error,
         }
     }
 }
@@ -368,8 +370,8 @@ mod tests {
         assert_eq!(cursor, "0");
     }
 
-    #[test]
-    fn status_reflects_no_error_initially() {
+    #[tokio::test]
+    async fn status_reflects_no_error_initially() {
         let adapter = EmailAdapter::new(email_config_full()).unwrap();
         let status = adapter.status();
         assert!(status.connected);

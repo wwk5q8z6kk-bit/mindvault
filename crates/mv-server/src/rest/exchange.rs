@@ -1282,7 +1282,7 @@ mod tests {
 
     #[test]
     fn map_mv_error_other_returns_500() {
-        let err = mv_core::MvError::Other("kaboom".into());
+        let err = mv_core::MvError::Internal("kaboom".into());
         let (status, _msg) = map_mv_error(err);
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     }

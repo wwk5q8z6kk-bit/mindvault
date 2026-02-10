@@ -210,13 +210,16 @@ impl ExternalAdapter for SlackAdapter {
     }
 
     fn status(&self) -> AdapterStatus {
+        let error = self.last_error.lock().unwrap().clone();
+        let last_send = *self.last_send.lock().unwrap();
+        let last_receive = *self.last_receive.lock().unwrap();
         AdapterStatus {
             adapter_type: AdapterType::Slack,
             name: self.config.name.clone(),
-            connected: self.last_error.lock().unwrap().is_none(),
-            last_send: *self.last_send.lock().unwrap(),
-            last_receive: *self.last_receive.lock().unwrap(),
-            error: self.last_error.lock().unwrap().clone(),
+            connected: error.is_none(),
+            last_send,
+            last_receive,
+            error,
         }
     }
 }

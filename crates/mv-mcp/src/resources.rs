@@ -187,10 +187,11 @@ mod tests {
 
     async fn test_engine() -> (Arc<MindVaultEngine>, TempDir) {
         let tmp = TempDir::new().unwrap();
-        let config = EngineConfig {
+        let mut config = EngineConfig {
             data_dir: tmp.path().to_string_lossy().to_string(),
             ..Default::default()
         };
+        config.embedding.provider = "noop".into();
         let engine = MindVaultEngine::init(config).await.unwrap();
         (Arc::new(engine), tmp)
     }

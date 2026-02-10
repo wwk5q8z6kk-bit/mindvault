@@ -473,15 +473,18 @@ mod tests {
 
     #[test]
     fn from_template_view_tier_no_write() {
+        let now = chrono::Utc::now();
         let template = PermissionTemplate {
             id: uuid::Uuid::now_v7(),
             name: "viewer".into(),
+            description: None,
             tier: PermissionTier::View,
             scope_namespace: None,
             scope_tags: Vec::new(),
             allow_kinds: Vec::new(),
             allow_actions: Vec::new(),
-            created_at: chrono::Utc::now(),
+            created_at: now,
+            updated_at: now,
         };
         let scope = McpScope::from_template(&template);
         assert!(!scope.allow_write);
@@ -490,15 +493,18 @@ mod tests {
 
     #[test]
     fn from_template_edit_tier_allows_write() {
+        let now = chrono::Utc::now();
         let template = PermissionTemplate {
             id: uuid::Uuid::now_v7(),
             name: "editor".into(),
+            description: None,
             tier: PermissionTier::Edit,
             scope_namespace: Some("work".into()),
             scope_tags: vec!["team".into()],
             allow_kinds: vec![NodeKind::Fact],
             allow_actions: vec!["mcp.read".into(), "mcp.propose".into()],
-            created_at: chrono::Utc::now(),
+            created_at: now,
+            updated_at: now,
         };
         let scope = McpScope::from_template(&template);
         assert!(scope.allow_write);
@@ -510,15 +516,18 @@ mod tests {
 
     #[test]
     fn from_template_admin_tier_allows_write() {
+        let now = chrono::Utc::now();
         let template = PermissionTemplate {
             id: uuid::Uuid::now_v7(),
             name: "admin".into(),
+            description: None,
             tier: PermissionTier::Admin,
             scope_namespace: None,
             scope_tags: Vec::new(),
             allow_kinds: Vec::new(),
             allow_actions: Vec::new(),
-            created_at: chrono::Utc::now(),
+            created_at: now,
+            updated_at: now,
         };
         let scope = McpScope::from_template(&template);
         assert!(scope.allow_write);

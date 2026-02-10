@@ -726,7 +726,7 @@ mod tests {
             "client",
             "oauth_client_secret",
             "ciphertext".into(),
-            "derivation".into(),
+            "derivation".to_string(),
         );
         let now = Utc::now();
         cred.expires_at = Some(now - Duration::seconds(1));
@@ -740,7 +740,7 @@ mod tests {
             "client",
             "oauth_client_secret",
             "ciphertext".into(),
-            "derivation".into(),
+            "derivation".to_string(),
         );
         let now = Utc::now();
         cred.expires_at = Some(now + Duration::seconds(60));
@@ -754,7 +754,7 @@ mod tests {
             "client",
             "oauth_client_secret",
             "ciphertext".into(),
-            "derivation".into(),
+            "derivation".to_string(),
         );
         cred.archived_at = Some(Utc::now());
         assert!(credential_invalid_for_token(&cred, Utc::now()));
@@ -763,10 +763,11 @@ mod tests {
     #[tokio::test]
     async fn revoke_oauth_access_keys_revokes_matching() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
-        let config = EngineConfig {
+        let mut config = EngineConfig {
             data_dir: temp_dir.path().to_string_lossy().to_string(),
             ..Default::default()
         };
+        config.embedding.provider = "noop".into();
         let engine = MindVaultEngine::init(config)
             .await
             .expect("engine should init");
