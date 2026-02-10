@@ -12,6 +12,7 @@
 	import LinkPreview from '$lib/components/LinkPreview.svelte';
 	import FavoritesBar from '$lib/components/FavoritesBar.svelte';
 	import ProposalInbox from '$lib/components/ProposalInbox.svelte';
+	import ApiHealthBanner from '$lib/components/ApiHealthBanner.svelte';
 	import { startSyncLoop, pendingSyncCount } from '$lib/stores/tasks';
 	import { loadNotes } from '$lib/stores/notes';
 	import { startNotifications, stopNotifications } from '$lib/stores/notifications';
@@ -374,6 +375,7 @@
 				{/if}
 			</div>
 		</header>
+		<ApiHealthBanner {online} />
 		<FavoritesBar />
 		<!-- Mobile slide-out menu -->
 		{#if mobileMenuOpen}
