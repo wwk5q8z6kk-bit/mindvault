@@ -10,16 +10,23 @@ use tracing::debug;
 
 use crate::config::EngineConfig;
 use crate::llm::LlmProvider;
+use crate::multihop::MultiHopRetriever;
 use crate::query_rewrite::QueryRewriter;
+use crate::rerank::apply_reranking;
+use crate::session::InMemorySessionStore;
 
 /// Recall pipeline: searches across FTS + vector + graph and fuses results.
-/// Phase 3 additions: query rewriting before search, reranking after fusion.
+/// Phase 3 additions: query rewriting before search, reranking after fusion,
+/// session context injection, and multi-hop iterative retrieval.
 pub struct RecallPipeline {
     store: Arc<UnifiedStore>,
     fts: Arc<TantivyFullTextIndex>,
     graph: Arc<SqliteGraphStore>,
     config: EngineConfig,
     rewriter: QueryRewriter,
+    reranker: Arc<dyn mv_core::traits::Reranker>,
+    session_store: Arc<InMemorySessionStore>,
+    multihop: MultiHopRetriever,
 }
 
 impl RecallPipeline {
@@ -30,14 +37,25 @@ impl RecallPipeline {
         config: EngineConfig,
         llm: Option<Arc<dyn LlmProvider>>,
     ) -> Self {
-        let rewriter = QueryRewriter::new(llm, config.query_rewrite.clone());
+        let rewriter = QueryRewriter::new(llm.clone(), config.query_rewrite.clone());
+        let reranker = crate::rerank::init_reranker(&config.rerank, llm.clone());
+        let session_store = Arc::new(InMemorySessionStore::new(config.session.clone()));
+        let multihop = MultiHopRetriever::new(llm, config.multihop.clone());
         Self {
             store,
             fts,
             graph,
             config,
             rewriter,
+            reranker,
+            session_store,
+            multihop,
         }
+    }
+
+    /// Get a reference to the session store for external use (e.g., recording turns).
+    pub fn session_store(&self) -> &Arc<InMemorySessionStore> {
+        &self.session_store
     }
 
     /// Execute a memory query and return ranked results.
@@ -48,13 +66,26 @@ impl RecallPipeline {
             self.config.search.default_limit
         };
 
-        // Fetch extra results for post-filtering
+        // Fetch extra results for post-filtering and reranking
         let fetch_limit = limit * 3;
+
+        // --- Phase 3: Session Context ---
+        // If a session_id is provided, build context from prior turns and
+        // prepend to the query for better rewriting.
+        let effective_query = if let Some(ref sid) = query.session_id {
+            if let Some(ctx) = self.session_store.build_context_string(sid, 3).await {
+                format!("{ctx}\nCurrent query: {}", query.text)
+            } else {
+                query.text.clone()
+            }
+        } else {
+            query.text.clone()
+        };
 
         // --- Phase 3: Query Rewriting ---
         let rewrite_result = self
             .rewriter
-            .rewrite(&query.text, query.rewrite_strategy)
+            .rewrite(&effective_query, query.rewrite_strategy)
             .await;
 
         if rewrite_result.applied_strategy != RewriteStrategy::None {
@@ -177,6 +208,20 @@ impl RecallPipeline {
             }
         }
 
+        // --- Phase 3: Cross-Encoder Reranking ---
+        if self.config.rerank.enabled && !fused.is_empty() {
+            fused = self
+                .apply_rerank(search_text, &fused, fetch_limit)
+                .await;
+        }
+
+        // --- Phase 3: Multi-Hop Retrieval ---
+        if self.multihop.is_enabled() && !fused.is_empty() {
+            fused = self
+                .apply_multihop(query, search_text, fused, fetch_limit)
+                .await?;
+        }
+
         // Filter by min_score
         fused.retain(|(_, score)| *score >= query.min_score);
 
@@ -184,8 +229,24 @@ impl RecallPipeline {
         fused.truncate(limit);
 
         // Hydrate with full node data
-        self.hydrate_results(&fused, &query.filters, query.strategy)
-            .await
+        let results = self
+            .hydrate_results(&fused, &query.filters, query.strategy)
+            .await?;
+
+        // Record this turn in session memory for future context
+        if let Some(ref sid) = query.session_id {
+            let summary = results
+                .iter()
+                .take(3)
+                .map(|r| r.node.title.as_deref().unwrap_or("untitled"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.session_store
+                .add_turn(sid, &query.text, &format!("Found: {summary}"))
+                .await;
+        }
+
+        Ok(results)
     }
 
     /// Execute recall for decomposed queries: search each sub-query, merge
@@ -254,6 +315,144 @@ impl RecallPipeline {
 
         self.hydrate_results(&fused, &original_query.filters, SearchStrategy::Hybrid)
             .await
+    }
+
+    /// Rerank fused results using the cross-encoder reranker.
+    async fn apply_rerank(
+        &self,
+        query_text: &str,
+        fused: &[(uuid::Uuid, f64)],
+        max_results: usize,
+    ) -> Vec<(uuid::Uuid, f64)> {
+        // Collect document content for reranking
+        let mut docs = Vec::new();
+        let mut ids_scores: Vec<(uuid::Uuid, f64)> = Vec::new();
+        for &(id, score) in fused.iter().take(max_results) {
+            if let Ok(Some(node)) = self.store.nodes.get(id).await {
+                let text = node.title.as_deref().unwrap_or("");
+                let snippet = if node.content.len() > 500 {
+                    &node.content[..500]
+                } else {
+                    &node.content
+                };
+                docs.push(format!("{text} {snippet}"));
+                ids_scores.push((id, score));
+            }
+        }
+
+        if docs.is_empty() {
+            return fused.to_vec();
+        }
+
+        // apply_reranking mutates in-place
+        apply_reranking(
+            &*self.reranker,
+            query_text,
+            &mut ids_scores,
+            &docs,
+            &self.config.rerank,
+        )
+        .await;
+
+        ids_scores
+    }
+
+    /// Apply multi-hop retrieval: extract entities from initial results,
+    /// generate follow-up queries, retrieve additional results, merge.
+    async fn apply_multihop(
+        &self,
+        original_query: &MemoryQuery,
+        search_text: &str,
+        mut fused: Vec<(uuid::Uuid, f64)>,
+        fetch_limit: usize,
+    ) -> MvResult<Vec<(uuid::Uuid, f64)>> {
+        use std::collections::HashSet;
+
+        let mut seen_queries: HashSet<String> = HashSet::new();
+        seen_queries.insert(search_text.to_string());
+        let mut accumulated_tokens = MultiHopRetriever::estimate_tokens(search_text);
+
+        for hop in 0..self.multihop.max_hops() {
+            if !self.multihop.within_budget(accumulated_tokens) {
+                debug!(hop, accumulated_tokens, "multi-hop: token budget exhausted");
+                break;
+            }
+
+            // Gather content from top results for entity extraction
+            let mut result_contents = Vec::new();
+            for &(id, _) in fused.iter().take(5) {
+                if let Ok(Some(node)) = self.store.nodes.get(id).await {
+                    let text = if node.content.len() > 400 {
+                        format!("{}...", &node.content[..400])
+                    } else {
+                        node.content.clone()
+                    };
+                    accumulated_tokens += MultiHopRetriever::estimate_tokens(&text);
+                    result_contents.push(text);
+                }
+            }
+
+            let follow_ups = self
+                .multihop
+                .plan_follow_ups(search_text, &result_contents, &seen_queries)
+                .await;
+
+            if follow_ups.is_empty() {
+                debug!(hop, "multi-hop: no follow-up queries, stopping");
+                break;
+            }
+
+            for fq in &follow_ups {
+                seen_queries.insert(fq.clone());
+                accumulated_tokens += MultiHopRetriever::estimate_tokens(fq);
+
+                // Search with follow-up query
+                let fts_results = self.fts.search(fq, fetch_limit)?;
+                let mut hop_results = fts_results;
+
+                if let Some(ref vectors) = self.store.vectors {
+                    if let Ok(embedding) = self.store.embedder.embed(fq).await {
+                        let vec_results = vectors
+                            .search(
+                                embedding,
+                                fetch_limit,
+                                original_query.min_score,
+                                original_query.filters.namespace.as_deref(),
+                            )
+                            .await?;
+                        hop_results =
+                            mv_index::hybrid::reciprocal_rank_fusion(
+                                &[hop_results, vec_results],
+                                self.config.search.rrf_k,
+                                fetch_limit,
+                            );
+                    }
+                }
+
+                // Merge new results into fused, boosting new finds slightly
+                for (id, score) in hop_results {
+                    if let Some(existing) = fused.iter_mut().find(|(eid, _)| *eid == id) {
+                        // Boost score of results found in multiple hops
+                        existing.1 += score * 0.3;
+                    } else {
+                        // Discount new results slightly (they're indirect)
+                        fused.push((id, score * 0.7));
+                    }
+                }
+            }
+
+            // Re-sort after merging hop results
+            fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            debug!(
+                hop = hop + 1,
+                follow_ups = ?follow_ups,
+                total_results = fused.len(),
+                "multi-hop: completed hop"
+            );
+        }
+
+        Ok(fused)
     }
 
     /// Hydrate UUID+score pairs into full SearchResults with filter application.
