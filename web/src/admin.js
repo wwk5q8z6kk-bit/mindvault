@@ -12,12 +12,14 @@ import { Placeholder } from '@tiptap/extension-placeholder';
 import { Markdown } from '@tiptap/markdown';
 import Suggestion from '@tiptap/suggestion';
 import { AttachmentTriage } from './attachments.js';
+import { settingsFeature } from './features/settings.js';
 
 const AI_TRANSFORM_SELECTION_CHAR_LIMIT = 5000;
 
 
 export class MindVaultAdmin {
     constructor() {
+        this.loadSettings();
         this.apiBase = this.getApiBase();
         this.currentPage = 1;
         this.pageSize = 20;
@@ -29,7 +31,6 @@ export class MindVaultAdmin {
         this.editorSuggestionsTimer = null;
         this.autoCompleteTimer = null;
         this.linkSuggestionTimer = null;
-        this.autoSuggestEnabled = true;
         this.lastSuggestionSignature = '';
         this.lastSuggestionFetchedAt = 0;
         this.autoCompleteSuggestions = [];
@@ -65,6 +66,7 @@ export class MindVaultAdmin {
         this.auditHasMore = false;
         this.auditLoadingMore = false;
         this.auditQuerySignature = '';
+        this.initialized = false;
 
         this.richEditor = document.getElementById('rich-editor');
         this.markdownEditor = document.getElementById('markdown-editor');
@@ -98,18 +100,15 @@ export class MindVaultAdmin {
         this.existingAttachments = [];
         this.attachmentChunksCache = new Map();
         this.attachmentTriage = new AttachmentTriage(this);
-        this.init();
-    }
-
-    getApiBase() {
-        if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
-            return window.location.origin;
-        }
-        return 'http://127.0.0.1:9470';
     }
 
     init() {
+        if (this.initialized) {
+            return;
+        }
+        this.initialized = true;
         this.bindEvents();
+        this.initSettingsControls();
         this.attachmentTriage.init();
         this.initRichTextEditor();
         this.setEditorContentFromMarkdown('');
@@ -554,11 +553,13 @@ export class MindVaultAdmin {
             aiSuggestAuto.checked = this.autoSuggestEnabled;
             aiSuggestAuto.addEventListener('change', () => {
                 this.autoSuggestEnabled = Boolean(aiSuggestAuto.checked);
+                this.persistSetting('autoSuggest', this.autoSuggestEnabled);
                 if (!this.autoSuggestEnabled) {
                     this.renderEditorSuggestions([], null);
                 } else {
                     this.requestEditorSuggestions(true, { force: true });
                 }
+                this.applySettingsToUi();
             });
         });
         document.getElementById('ai-link-btn').addEventListener('click', () => {
@@ -685,6 +686,10 @@ export class MindVaultAdmin {
     debounceAutoComplete() {
         window.clearTimeout(this.autoCompleteTimer);
         this.autoCompleteTimer = window.setTimeout(() => {
+            if (!this.autoCompleteEnabled) {
+                this.clearAutoComplete();
+                return;
+            }
             this.requestAutoComplete(true);
         }, 500);
     }
@@ -692,6 +697,10 @@ export class MindVaultAdmin {
     debounceWikiLinkSuggestions() {
         window.clearTimeout(this.linkSuggestionTimer);
         this.linkSuggestionTimer = window.setTimeout(() => {
+            if (!this.autoLinkingEnabled) {
+                this.clearWikiLinkSuggestions();
+                return;
+            }
             this.requestWikiLinkSuggestions(true);
         }, 420);
     }
@@ -937,6 +946,9 @@ export class MindVaultAdmin {
     }
 
     async fetchWysiwygWikiLinkSuggestions(rawQuery, mode = 'wiki') {
+        if (!this.autoLinkingEnabled) {
+            return [];
+        }
         this.wysiwygLinkMode = mode === 'mention' ? 'mention' : 'wiki';
         let query = String(rawQuery || '');
         if (this.wysiwygLinkMode === 'wiki' && query.startsWith('[')) {
@@ -1402,6 +1414,10 @@ export class MindVaultAdmin {
     }
 
     async requestAutoComplete(silent = false) {
+        if (!this.autoCompleteEnabled) {
+            this.clearAutoComplete();
+            return;
+        }
         const context = this.getAutoCompleteContext();
         if (!context || context.prompt.length < 3) {
             this.clearAutoComplete();
@@ -1729,6 +1745,10 @@ export class MindVaultAdmin {
     }
 
     async requestWikiLinkSuggestions(silent = false, explicitQuery = null) {
+        if (!this.autoLinkingEnabled && !explicitQuery) {
+            this.clearWikiLinkSuggestions();
+            return;
+        }
         let context = this.getLinkSuggestionContext();
         const query = String(explicitQuery || context?.prompt || '').trim();
 
@@ -5567,3 +5587,5 @@ export class MindVaultAdmin {
         return uploadedFiles;
     }
 }
+
+Object.assign(MindVaultAdmin.prototype, settingsFeature);

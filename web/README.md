@@ -68,6 +68,7 @@ A modern web-based administrative interface for MindVault, providing an intuitiv
 - **Vault Transfer Controls**: One-click JSON export/import from the Stats tab
 - **Audit Activity Feed**: Filterable audit trail (subject/action/since/limit) in the Stats tab for admin sessions
 - **Audit Pagination**: Incremental "Load More" audit retrieval for large activity streams
+- **Runtime Settings**: Configure API base + suggestion toggles from the Stats tab
 
 ## Getting Started
 

@@ -122,6 +122,8 @@
             <button
                 on:click={refresh}
                 disabled={loading}
+                aria-label="Refresh access policies"
+                title="Refresh access policies"
                 class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-all disabled:opacity-50"
             >
                 <svg class="w-3.5 h-3.5 {loading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">

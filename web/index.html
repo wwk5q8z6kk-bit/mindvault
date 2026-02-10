@@ -416,6 +416,28 @@
                     <label class="btn" for="import-data-file">Import JSON</label>
                     <input type="file" id="import-data-file" accept="application/json">
                 </div>
+                <div class="settings-controls">
+                    <div class="settings-row">
+                        <label for="settings-api-base">API Base</label>
+                        <input type="text" id="settings-api-base" placeholder="http://127.0.0.1:9470">
+                        <button id="settings-apply-api-base" class="btn">Apply</button>
+                        <button id="settings-reset-api-base" class="btn">Reset</button>
+                    </div>
+                    <div class="settings-row">
+                        <label class="settings-toggle">
+                            <input type="checkbox" id="settings-auto-suggest">
+                            Auto Suggest
+                        </label>
+                        <label class="settings-toggle">
+                            <input type="checkbox" id="settings-auto-complete">
+                            Autocomplete
+                        </label>
+                        <label class="settings-toggle">
+                            <input type="checkbox" id="settings-auto-link">
+                            Link Suggestions
+                        </label>
+                    </div>
+                </div>
                 <div id="stats-content" class="stats-content">
                     <!-- Stats will be loaded here -->
                 </div>

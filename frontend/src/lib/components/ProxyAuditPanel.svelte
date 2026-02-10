@@ -77,6 +77,8 @@
         <button
             on:click={refresh}
             disabled={loading}
+            aria-label="Refresh proxy audit log"
+            title="Refresh proxy audit log"
             class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-all disabled:opacity-50"
         >
             <svg class="w-4 h-4 {loading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
