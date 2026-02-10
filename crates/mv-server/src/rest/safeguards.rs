@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use mv_core::{AutoApproveRule, BlockedSender, ChronicleEntry, SafeguardStore};
+use mv_core::{AutoApproveRule, BlockedSender, SafeguardStore};
 
 use crate::auth::{authorize_read, authorize_write, AuthContext};
 use crate::state::AppState;
@@ -295,94 +295,3 @@ pub async fn remove_auto_approve_rule(
     Ok(Json(serde_json::json!({ "id": id, "removed": true })))
 }
 
-// --- Undo ---
-
-/// POST /api/v1/exchange/proposals/:id/undo
-pub async fn undo_proposal(
-    Extension(auth): Extension<AuthContext>,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    authorize_write(&auth)?;
-
-    let uuid =
-        Uuid::parse_str(&id).map_err(|_| (StatusCode::BAD_REQUEST, "invalid uuid".to_string()))?;
-
-    let snapshot = state
-        .engine
-        .store
-        .nodes
-        .get_undo_snapshot(uuid)
-        .await
-        .map_err(map_mv_error)?
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            "no undo snapshot found for this proposal".to_string(),
-        ))?;
-
-    if snapshot.used {
-        return Err((
-            StatusCode::CONFLICT,
-            "undo snapshot already used".to_string(),
-        ));
-    }
-
-    if Utc::now() > snapshot.expires_at {
-        return Err((StatusCode::GONE, "undo window expired (30s)".to_string()));
-    }
-
-    // Mark snapshot as used
-    state
-        .engine
-        .store
-        .nodes
-        .mark_undo_used(snapshot.id)
-        .await
-        .map_err(map_mv_error)?;
-
-    // Actually reverse the action based on snapshot data
-    let snap = &snapshot.snapshot_data;
-    if let Some(action) = snap.get("action").and_then(|v| v.as_str()) {
-        match action {
-            "create_node" => {
-                // Undo a create by deleting the created node
-                if let Some(node_id_str) = snap.get("node_id").and_then(|v| v.as_str()) {
-                    if let Ok(node_id) = Uuid::parse_str(node_id_str) {
-                        let _ = state.engine.delete_node(node_id).await;
-                    }
-                }
-            }
-            "update_node" => {
-                // Undo an update by restoring the previous state
-                if let Some(previous) = snap.get("previous") {
-                    if let Ok(node) =
-                        serde_json::from_value::<mv_core::KnowledgeNode>(previous.clone())
-                    {
-                        let _ = state.engine.update_node(node).await;
-                    }
-                }
-            }
-            "delete_node" => {
-                // Undo a delete by re-inserting the node
-                if let Some(node_data) = snap.get("node") {
-                    if let Ok(node) =
-                        serde_json::from_value::<mv_core::KnowledgeNode>(node_data.clone())
-                    {
-                        let _ = state.engine.store_node(node).await;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Log chronicle entry for transparency
-    let chronicle = ChronicleEntry::new("exchange.undo", format!("User undid proposal {uuid}"));
-    let _ = state.engine.log_chronicle(&chronicle).await;
-
-    Ok(Json(serde_json::json!({
-        "id": uuid.to_string(),
-        "undone": true,
-        "snapshot_data": snapshot.snapshot_data,
-    })))
-}
