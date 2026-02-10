@@ -1,0 +1,35 @@
+# MindVault AI Service — Default Configuration
+# User overrides go in ~/.mindvault/ai-config.toml
+
+[server]
+host = "127.0.0.1"
+port = 8100
+
+[models]
+memory_budget_mb = 4096
+cache_dir = "~/.mindvault/models"
+
+[embedding]
+model = "all-MiniLM-L6-v2"
+dimensions = 384
+
+[llm]
+backend = "ollama"
+ollama_base_url = "http://localhost:11434"
+ollama_model = "llama3.2:3b"
+remote_base_url = ""
+remote_model = "gpt-4o-mini"
+max_tokens = 512
+temperature = 0.3
+
+[rag]
+mindvault_base_url = "http://127.0.0.1:9470"
+strategy = "hybrid"
+top_k = 6
+
+[classification]
+spacy_model = "en_core_web_sm"
+
+[summarization]
+extractive_method = "textrank"
+extractive_sentences = 5
