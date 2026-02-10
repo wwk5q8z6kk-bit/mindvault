@@ -581,6 +581,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/sync/export", post(sync::sync_export))
         .route("/api/v1/sync/import", post(sync::sync_import))
         .route("/api/v1/sync/status", get(sync::sync_status))
+        .route("/api/v1/sync/conflicts/{id}/resolve", post(sync::resolve_sync_conflict))
         // --- Plugin System ---
         .route("/api/v1/plugins", get(plugins::list_plugins).post(plugins::install_plugin))
         .route("/api/v1/plugins/hooks", get(plugins::list_hook_points))
@@ -5185,6 +5186,8 @@ async fn assist_completion(
         },
         limit: recall_limit,
         min_score: 0.0,
+        rewrite_strategy: None,
+        session_id: None,
     };
 
     let results = state.engine.recall(&query).await.map_err(map_mv_error)?;
@@ -5270,6 +5273,8 @@ async fn assist_autocomplete(
         },
         limit: recall_limit,
         min_score: 0.0,
+        rewrite_strategy: None,
+        session_id: None,
     };
 
     let results = state.engine.recall(&query).await.map_err(map_mv_error)?;
@@ -5310,6 +5315,8 @@ async fn assist_links(
         },
         limit: recall_limit,
         min_score: 0.0,
+        rewrite_strategy: None,
+        session_id: None,
     };
 
     let results = state.engine.recall(&query).await.map_err(map_mv_error)?;
@@ -5358,6 +5365,8 @@ async fn assist_transform(
         },
         limit: recall_limit,
         min_score: 0.0,
+        rewrite_strategy: None,
+        session_id: None,
     };
 
     let results = state.engine.recall(&query).await.map_err(map_mv_error)?;
@@ -10274,6 +10283,8 @@ async fn recall(
             tags: req.tags,
             ..Default::default()
         },
+        rewrite_strategy: None,
+        session_id: None,
     };
 
     let results = state.engine.recall(&query).await.map_err(map_mv_error)?;
@@ -10808,6 +10819,8 @@ async fn run_saved_search(
             min_importance: definition.min_importance,
             ..Default::default()
         },
+        rewrite_strategy: None,
+        session_id: None,
     };
 
     let results = state.engine.recall(&query).await.map_err(map_mv_error)?;

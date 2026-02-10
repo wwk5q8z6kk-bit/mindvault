@@ -224,18 +224,19 @@ impl MindVaultEngine {
             config.clone(),
         );
 
-        let recall = RecallPipeline::new(
-            Arc::clone(&store),
-            Arc::clone(&fts),
-            Arc::clone(&graph),
-            config.clone(),
-        );
-
         // Initialize LLM provider (optional — heuristic fallback when disabled)
         let llm_api_key = credential_store
             .get_secret_string("MINDVAULT_LLM_API_KEY")
             .or_else(|| credential_store.get_secret_string("OPENAI_API_KEY"));
         let llm = llm::init_llm_provider(&config.llm, llm_api_key).await;
+
+        let recall = RecallPipeline::new(
+            Arc::clone(&store),
+            Arc::clone(&fts),
+            Arc::clone(&graph),
+            config.clone(),
+            llm.clone(),
+        );
 
         // Initialize proactive engine (will be wired to engine after construction)
         let proactive = Arc::new(crate::proactive::ProactiveEngine::new());

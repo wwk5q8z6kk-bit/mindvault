@@ -219,3 +219,19 @@ impl ModalityProcessor for PdfProcessor {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_exposes_backend_details_and_types() {
+        let processor = PdfProcessor::new();
+        let status = processor.status();
+        assert_eq!(status.name, "pdf");
+        assert!(status.supported_types.contains(&"application/pdf".to_string()));
+        assert!(status.details.contains_key("pdftotext_available"));
+        assert!(status.details.contains_key("tesseract_available"));
+        assert!(status.details.contains_key("ghostscript_available"));
+    }
+}

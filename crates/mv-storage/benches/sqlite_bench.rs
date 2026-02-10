@@ -3,6 +3,33 @@ use mv_core::*;
 use mv_storage::sqlite::SqliteNodeStore;
 use tokio::runtime::Runtime;
 
+fn bench_sizes(default: &[usize]) -> Vec<usize> {
+    if let Ok(raw) = std::env::var("MINDVAULT_BENCH_SIZES") {
+        let mut sizes = raw
+            .split(',')
+            .filter_map(|s| s.trim().parse::<usize>().ok())
+            .filter(|s| *s > 0)
+            .collect::<Vec<_>>();
+        if !sizes.is_empty() {
+            sizes.sort_unstable();
+            sizes.dedup();
+            return sizes;
+        }
+    }
+
+    let mut sizes = default.to_vec();
+    if std::env::var("MINDVAULT_BENCH_LARGE")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        sizes.extend([100_000, 1_000_000]);
+    }
+    sizes.sort_unstable();
+    sizes.dedup();
+    sizes
+}
+
 fn bench_insert_single(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let store = SqliteNodeStore::open_in_memory().unwrap();
@@ -53,8 +80,9 @@ fn bench_list_with_filters(c: &mut Criterion) {
 
 fn bench_batch_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_insert");
-    for size in [100, 1000, 10_000] {
-        group.sample_size(if size >= 10_000 { 10 } else { 100 });
+    for size in bench_sizes(&[100, 1_000, 10_000]) {
+        let sample_size = if size >= 100_000 { 5 } else if size >= 10_000 { 10 } else { 100 };
+        group.sample_size(sample_size);
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
             let rt = Runtime::new().unwrap();
             b.iter(|| {
@@ -73,7 +101,7 @@ fn bench_batch_insert(c: &mut Criterion) {
 
 fn bench_list_large(c: &mut Criterion) {
     let mut group = c.benchmark_group("list_large");
-    for size in [1_000, 10_000] {
+    for size in bench_sizes(&[1_000, 10_000]) {
         let rt = Runtime::new().unwrap();
         let store = SqliteNodeStore::open_in_memory().unwrap();
 
@@ -88,7 +116,7 @@ fn bench_list_large(c: &mut Criterion) {
             }
         });
 
-        group.sample_size(10);
+        group.sample_size(if size >= 100_000 { 5 } else { 10 });
         group.bench_with_input(
             BenchmarkId::new("unfiltered", size),
             &size,
@@ -107,10 +135,14 @@ fn bench_get_by_id_large(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let store = SqliteNodeStore::open_in_memory().unwrap();
 
-    // Pre-populate with 10K nodes, grab IDs from different positions
+    let size = bench_sizes(&[10_000])
+        .into_iter()
+        .max()
+        .unwrap_or(10_000);
+    // Pre-populate with N nodes, grab IDs from different positions
     let mut ids = Vec::new();
     rt.block_on(async {
-        for i in 0..10_000 {
+        for i in 0..size {
             let node = KnowledgeNode::new(NodeKind::Fact, format!("Content {i}"));
             let id = node.id;
             store.insert(&node).await.unwrap();

@@ -346,6 +346,55 @@ pub struct MemoryQuery {
     pub filters: QueryFilters,
     pub limit: usize,
     pub min_score: f64,
+    /// Optional query rewrite strategy applied before search.
+    #[serde(default)]
+    pub rewrite_strategy: Option<RewriteStrategy>,
+    /// Optional session ID for conversation-aware retrieval.
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+/// Strategy for rewriting queries before search execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RewriteStrategy {
+    /// No rewriting — use query as-is.
+    None,
+    /// Expand abbreviations and add synonyms.
+    Expand,
+    /// Decompose compound queries into sub-queries, search each, merge results.
+    Decompose,
+    /// Hypothetical Document Embedding — generate a hypothetical answer and embed that.
+    HyDE,
+    /// Apply all available rewriting strategies and merge results.
+    Auto,
+}
+
+impl std::str::FromStr for RewriteStrategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "none" => Ok(Self::None),
+            "expand" => Ok(Self::Expand),
+            "decompose" => Ok(Self::Decompose),
+            "hyde" => Ok(Self::HyDE),
+            "auto" => Ok(Self::Auto),
+            _ => Err(format!("unknown rewrite strategy: {s}")),
+        }
+    }
+}
+
+impl std::fmt::Display for RewriteStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => f.write_str("none"),
+            Self::Expand => f.write_str("expand"),
+            Self::Decompose => f.write_str("decompose"),
+            Self::HyDE => f.write_str("hyde"),
+            Self::Auto => f.write_str("auto"),
+        }
+    }
 }
 
 impl MemoryQuery {
@@ -356,6 +405,8 @@ impl MemoryQuery {
             filters: QueryFilters::default(),
             limit: 10,
             min_score: 0.0,
+            rewrite_strategy: None,
+            session_id: None,
         }
     }
 
@@ -386,6 +437,16 @@ impl MemoryQuery {
 
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.filters.tags = Some(tags);
+        self
+    }
+
+    pub fn with_rewrite_strategy(mut self, strategy: RewriteStrategy) -> Self {
+        self.rewrite_strategy = Some(strategy);
+        self
+    }
+
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
         self
     }
 }

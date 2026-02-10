@@ -1,9 +1,36 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use mv_core::{KnowledgeNode, NodeKind, QueryFilters};
 use mv_engine::config::EngineConfig;
 use mv_engine::engine::MindVaultEngine;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
+
+fn bench_sizes(default: &[usize]) -> Vec<usize> {
+    if let Ok(raw) = std::env::var("MINDVAULT_BENCH_SIZES") {
+        let mut sizes = raw
+            .split(',')
+            .filter_map(|s| s.trim().parse::<usize>().ok())
+            .filter(|s| *s > 0)
+            .collect::<Vec<_>>();
+        if !sizes.is_empty() {
+            sizes.sort_unstable();
+            sizes.dedup();
+            return sizes;
+        }
+    }
+
+    let mut sizes = default.to_vec();
+    if std::env::var("MINDVAULT_BENCH_LARGE")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        sizes.extend([10_000, 100_000, 1_000_000]);
+    }
+    sizes.sort_unstable();
+    sizes.dedup();
+    sizes
+}
 
 fn create_engine(rt: &Runtime) -> (MindVaultEngine, TempDir) {
     let temp_dir = TempDir::new().unwrap();
@@ -81,47 +108,63 @@ fn bench_engine_update_node(c: &mut Criterion) {
 }
 
 fn bench_engine_store_1000(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
-    let (engine, _tmp) = create_engine(&rt);
-
+    let sizes = bench_sizes(&[1_000]);
     let mut group = c.benchmark_group("engine_batch_store");
-    group.sample_size(10);
-    group.bench_function("1000_nodes", |b| {
-        b.iter(|| {
-            rt.block_on(async {
-                for i in 0..1000 {
-                    let node = KnowledgeNode::new(NodeKind::Fact, format!("Batch content {i}"));
-                    engine.store_node(node).await.unwrap();
-                }
-            });
-        });
-    });
+
+    for size in sizes {
+        let sample_size = if size >= 100_000 { 5 } else if size >= 10_000 { 10 } else { 30 };
+        group.sample_size(sample_size);
+        group.bench_with_input(
+            BenchmarkId::from_parameter(size),
+            &size,
+            |b, &size| {
+                let rt = Runtime::new().unwrap();
+                b.iter(|| {
+                    let (engine, _tmp) = create_engine(&rt);
+                    rt.block_on(async {
+                        for i in 0..size {
+                            let node =
+                                KnowledgeNode::new(NodeKind::Fact, format!("Batch content {i}"));
+                            engine.store_node(node).await.unwrap();
+                        }
+                    });
+                });
+            },
+        );
+    }
     group.finish();
 }
 
 fn bench_engine_list_in_1000(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
-    let (engine, _tmp) = create_engine(&rt);
+    let sizes = bench_sizes(&[1_000, 10_000]);
+    let mut group = c.benchmark_group("engine_list_large");
 
-    // Pre-populate with 1000 nodes of mixed kinds
-    rt.block_on(async {
-        for i in 0..1000 {
-            let kind = if i % 3 == 0 {
-                NodeKind::Task
-            } else {
-                NodeKind::Fact
-            };
-            let node = KnowledgeNode::new(kind, format!("Content {i}"));
-            engine.store_node(node).await.unwrap();
-        }
-    });
+    for size in sizes {
+        let sample_size = if size >= 100_000 { 5 } else { 10 };
+        group.sample_size(sample_size);
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
+            let rt = Runtime::new().unwrap();
+            let (engine, _tmp) = create_engine(&rt);
 
-    c.bench_function("engine_list_in_1000_nodes", |b| {
-        let filters = QueryFilters::default();
-        b.iter(|| {
-            rt.block_on(async { engine.list_nodes(&filters, 100, 0).await.unwrap() });
+            rt.block_on(async {
+                for i in 0..size {
+                    let kind = if i % 3 == 0 {
+                        NodeKind::Task
+                    } else {
+                        NodeKind::Fact
+                    };
+                    let node = KnowledgeNode::new(kind, format!("Content {i}"));
+                    engine.store_node(node).await.unwrap();
+                }
+            });
+
+            let filters = QueryFilters::default();
+            b.iter(|| {
+                rt.block_on(async { engine.list_nodes(&filters, 100, 0).await.unwrap() });
+            });
         });
-    });
+    }
+    group.finish();
 }
 
 criterion_group!(

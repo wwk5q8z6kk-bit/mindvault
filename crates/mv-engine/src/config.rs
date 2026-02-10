@@ -9,6 +9,20 @@ pub struct EngineConfig {
     pub graph: GraphConfig,
     pub ai: AiConfig,
     pub llm: LlmConfig,
+    #[serde(default)]
+    pub query_rewrite: QueryRewriteConfig,
+    #[serde(default)]
+    pub rerank: RerankConfig,
+    #[serde(default)]
+    pub session: SessionConfig,
+    #[serde(default)]
+    pub conversation: ConversationConfig,
+    #[serde(default)]
+    pub multihop: MultiHopConfig,
+    #[serde(default)]
+    pub local_llm: LocalLlmConfig,
+    #[serde(default)]
+    pub planning: PlanningConfig,
     pub email: EmailAdapterConfig,
     pub linking: LinkingConfig,
     pub daily_notes: DailyNotesConfig,
@@ -134,6 +148,13 @@ impl Default for EngineConfig {
             graph: GraphConfig::default(),
             ai: AiConfig::default(),
             llm: LlmConfig::default(),
+            query_rewrite: QueryRewriteConfig::default(),
+            rerank: RerankConfig::default(),
+            session: SessionConfig::default(),
+            conversation: ConversationConfig::default(),
+            multihop: MultiHopConfig::default(),
+            local_llm: LocalLlmConfig::default(),
+            planning: PlanningConfig::default(),
             email: EmailAdapterConfig::default(),
             linking: LinkingConfig::default(),
             daily_notes: DailyNotesConfig::default(),
@@ -219,7 +240,7 @@ pub struct EmbeddingConfig {
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
-            provider: "local".into(),
+            provider: "local_fastembed".into(),
             model: "bge-small-en-v1.5".into(),
             dimensions: 384,
             base_url: None,
@@ -388,6 +409,156 @@ impl Default for RecurrenceConfig {
             enabled: true,
             scheduler_interval_secs: 300,
             max_instances_per_template: 8,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 Config Sections
+// ---------------------------------------------------------------------------
+
+/// Configuration for query rewriting before search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryRewriteConfig {
+    pub enabled: bool,
+    pub default_strategy: String,
+    pub max_sub_queries: usize,
+    pub hyde_max_tokens: u32,
+}
+
+impl Default for QueryRewriteConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_strategy: "none".into(),
+            max_sub_queries: 3,
+            hyde_max_tokens: 256,
+        }
+    }
+}
+
+/// Configuration for cross-encoder reranking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RerankConfig {
+    pub enabled: bool,
+    pub model_path: Option<String>,
+    pub model_id: String,
+    pub top_n: usize,
+    pub min_score: f64,
+}
+
+impl Default for RerankConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model_path: None,
+            model_id: "cross-encoder/ms-marco-MiniLM-L-6-v2".into(),
+            top_n: 50,
+            min_score: 0.0,
+        }
+    }
+}
+
+/// Configuration for session memory (conversation context for follow-up queries).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionConfig {
+    pub enabled: bool,
+    pub max_turns: usize,
+    pub ttl_secs: u64,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_turns: 20,
+            ttl_secs: 3600,
+        }
+    }
+}
+
+/// Configuration for conversation-aware assist.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationConfig {
+    pub enabled: bool,
+    pub expire_after_secs: u64,
+    pub max_context_tokens: usize,
+    pub summarize_after_turns: usize,
+}
+
+impl Default for ConversationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            expire_after_secs: 86400,
+            max_context_tokens: 4096,
+            summarize_after_turns: 10,
+        }
+    }
+}
+
+/// Configuration for multi-hop retrieval.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiHopConfig {
+    pub enabled: bool,
+    pub max_hops: usize,
+    pub token_budget: usize,
+    pub results_per_hop: usize,
+}
+
+impl Default for MultiHopConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_hops: 2,
+            token_budget: 2048,
+            results_per_hop: 5,
+        }
+    }
+}
+
+/// Configuration for local LLM inference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalLlmConfig {
+    pub enabled: bool,
+    pub model_path: Option<String>,
+    pub model_id: Option<String>,
+    pub max_ram_bytes: u64,
+    pub gpu_layers: u32,
+    pub context_size: u32,
+    pub threads: u32,
+    pub models_dir: String,
+}
+
+impl Default for LocalLlmConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model_path: None,
+            model_id: None,
+            max_ram_bytes: 3 * 1024 * 1024 * 1024,
+            gpu_layers: 0,
+            context_size: 2048,
+            threads: 4,
+            models_dir: shellexpand("~/.mindvault/models"),
+        }
+    }
+}
+
+/// Configuration for agent planning framework.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningConfig {
+    pub enabled: bool,
+    pub max_steps: usize,
+    pub require_approval: bool,
+}
+
+impl Default for PlanningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_steps: 10,
+            require_approval: true,
         }
     }
 }

@@ -428,6 +428,90 @@ pub trait ApprovalStore: Send + Sync {
 
 fn _assert_approval_store_object_safe(_: &dyn ApprovalStore) {}
 
+/// Cross-encoder reranker for improving search result ordering.
+///
+/// Takes a query and a set of candidate documents, returns relevance scores.
+/// Implementations may use ONNX models, LLM-based scoring, or heuristics.
+#[async_trait]
+pub trait Reranker: Send + Sync {
+    /// Score each (query, document) pair. Returns scores in the same order as documents.
+    async fn rerank(
+        &self,
+        query: &str,
+        documents: &[String],
+    ) -> MvResult<Vec<f64>>;
+
+    /// Name of the reranker for logging/diagnostics.
+    fn name(&self) -> &str;
+
+    /// Whether the reranker is ready (model loaded, etc.).
+    fn is_ready(&self) -> bool;
+}
+
+fn _assert_reranker_object_safe(_: &dyn Reranker) {}
+
+/// Session memory store for conversation context in follow-up queries.
+#[async_trait]
+pub trait SessionStore: Send + Sync {
+    /// Record a query+result turn in the session.
+    async fn add_turn(
+        &self,
+        session_id: &str,
+        query: &str,
+        result_summary: &str,
+    ) -> MvResult<()>;
+
+    /// Get recent turns for a session.
+    async fn get_turns(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> MvResult<Vec<(String, String)>>;
+
+    /// Clear a session.
+    async fn clear_session(&self, session_id: &str) -> MvResult<()>;
+
+    /// Expire sessions older than the given duration.
+    async fn expire_sessions(&self, max_age_secs: u64) -> MvResult<usize>;
+}
+
+fn _assert_session_store_object_safe(_: &dyn SessionStore) {}
+
+/// Conversation store for persistent multi-turn dialogues.
+#[async_trait]
+pub trait ConversationStore: Send + Sync {
+    async fn create_conversation(
+        &self,
+        id: Uuid,
+        title: Option<&str>,
+    ) -> MvResult<()>;
+
+    async fn add_message(
+        &self,
+        conversation_id: Uuid,
+        role: &str,
+        content: &str,
+    ) -> MvResult<Uuid>;
+
+    async fn get_messages(
+        &self,
+        conversation_id: Uuid,
+        limit: usize,
+    ) -> MvResult<Vec<(Uuid, String, String, DateTime<Utc>)>>;
+
+    async fn delete_conversation(&self, id: Uuid) -> MvResult<bool>;
+
+    async fn list_conversations(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<(Uuid, Option<String>, DateTime<Utc>)>>;
+
+    async fn expire_conversations(&self, max_age_secs: u64) -> MvResult<usize>;
+}
+
+fn _assert_conversation_store_object_safe(_: &dyn ConversationStore) {}
+
 /// Adapter poll state for cursor persistence across adapter polling cycles.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AdapterPollState {

@@ -477,6 +477,8 @@ impl MindVaultService for MindVaultGrpc {
                 },
                 ..Default::default()
             },
+            rewrite_strategy: None,
+            session_id: None,
         };
 
         let results = self

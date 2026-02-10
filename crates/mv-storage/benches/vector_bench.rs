@@ -4,6 +4,33 @@ use std::path::Path;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
+fn bench_sizes(default: &[usize]) -> Vec<usize> {
+    if let Ok(raw) = std::env::var("MINDVAULT_BENCH_SIZES") {
+        let mut sizes = raw
+            .split(',')
+            .filter_map(|s| s.trim().parse::<usize>().ok())
+            .filter(|s| *s > 0)
+            .collect::<Vec<_>>();
+        if !sizes.is_empty() {
+            sizes.sort_unstable();
+            sizes.dedup();
+            return sizes;
+        }
+    }
+
+    let mut sizes = default.to_vec();
+    if std::env::var("MINDVAULT_BENCH_LARGE")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        sizes.extend([10_000, 100_000, 1_000_000]);
+    }
+    sizes.sort_unstable();
+    sizes.dedup();
+    sizes
+}
+
 /// Helper to create a temporary LanceDB store for benchmarks.
 async fn create_temp_store(
     dir: &Path,
@@ -92,50 +119,62 @@ fn bench_vector_batch_upsert(c: &mut Criterion) {
 }
 
 fn bench_vector_search_1000(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let dimensions = 384;
-    let store = rt.block_on(create_temp_store(dir.path(), dimensions)).unwrap();
-
-    // Pre-populate with 1000 vectors
-    rt.block_on(async {
-        for i in 0..1000 {
-            let id = Uuid::now_v7();
-            let embedding: Vec<f32> =
-                (0..dimensions).map(|j| ((i * dimensions + j) as f32) * 0.001).collect();
-            store
-                .upsert(id, embedding, &format!("content {i}"), None)
-                .await
-                .unwrap();
-        }
-    });
-
+    let sizes = bench_sizes(&[1_000]);
     let mut group = c.benchmark_group("vector_search_large");
-    group.sample_size(10);
 
-    let query_vec: Vec<f32> = (0..dimensions).map(|i| (i as f32) * 0.002).collect();
+    for size in sizes {
+        let rt = Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dimensions = 384;
+        let store = rt.block_on(create_temp_store(dir.path(), dimensions)).unwrap();
 
-    group.bench_function("search_top10_in_1000", |b| {
-        b.iter(|| {
-            rt.block_on(async {
+        rt.block_on(async {
+            for i in 0..size {
+                let id = Uuid::now_v7();
+                let embedding: Vec<f32> =
+                    (0..dimensions).map(|j| ((i * dimensions + j) as f32) * 0.001).collect();
                 store
-                    .search(query_vec.clone(), 10, 0.0, None)
+                    .upsert(id, embedding, &format!("content {i}"), None)
                     .await
                     .unwrap();
-            });
+            }
         });
-    });
 
-    group.bench_function("search_top50_in_1000", |b| {
-        b.iter(|| {
-            rt.block_on(async {
-                store
-                    .search(query_vec.clone(), 50, 0.0, None)
-                    .await
-                    .unwrap();
-            });
-        });
-    });
+        let sample_size = if size >= 100_000 { 5 } else { 10 };
+        group.sample_size(sample_size);
+
+        let query_vec: Vec<f32> = (0..dimensions).map(|i| (i as f32) * 0.002).collect();
+
+        group.bench_with_input(
+            BenchmarkId::new("search_top10", size),
+            &size,
+            |b, _| {
+                b.iter(|| {
+                    rt.block_on(async {
+                        store
+                            .search(query_vec.clone(), 10, 0.0, None)
+                            .await
+                            .unwrap();
+                    });
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("search_top50", size),
+            &size,
+            |b, _| {
+                b.iter(|| {
+                    rt.block_on(async {
+                        store
+                            .search(query_vec.clone(), 50, 0.0, None)
+                            .await
+                            .unwrap();
+                    });
+                });
+            },
+        );
+    }
 
     group.finish();
 }

@@ -20,8 +20,12 @@ pub mod llm;
 pub mod metrics_collector;
 pub mod multimodal;
 pub mod proactive;
+pub mod multihop;
+pub mod query_rewrite;
 pub mod recall;
+pub mod rerank;
 pub mod recurrence;
+pub mod session;
 pub mod reflection;
 pub mod relay;
 #[cfg(target_os = "macos")]

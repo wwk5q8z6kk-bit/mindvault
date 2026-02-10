@@ -267,3 +267,20 @@ impl ModalityProcessor for AudioProcessor {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_exposes_backend_details_and_types() {
+        let processor = AudioProcessor::new();
+        let status = processor.status();
+        assert_eq!(status.name, "audio");
+        assert!(status.supported_types.contains(&"audio/wav".to_string()));
+        assert!(status.details.contains_key("whisper_bin"));
+        assert!(status.details.contains_key("whisper_model"));
+        assert!(status.details.contains_key("local_available"));
+        assert!(status.details.contains_key("api_fallback_available"));
+    }
+}
