@@ -82,4 +82,10 @@ cargo bench -p mv-storage   # SQLite + vector benchmarks
 cargo bench -p mv-engine    # Engine pipeline benchmarks
 ```
 
+For large-vault coverage, set one of:
+```bash
+MINDVAULT_BENCH_LARGE=1 cargo bench -p mv-storage
+MINDVAULT_BENCH_SIZES=10000,100000,1000000 cargo bench -p mv-engine
+```
+
 Results are output as HTML reports in `target/criterion/`.

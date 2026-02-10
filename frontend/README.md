@@ -20,6 +20,7 @@ pnpm dev
 
 ```sh
 pnpm tauri:dev
+pnpm tauri:build
 ```
 
 ## Tests

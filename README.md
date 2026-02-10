@@ -29,6 +29,33 @@ By default, the server binds to `127.0.0.1`:
 - REST: `http://127.0.0.1:9470`
 - gRPC: `127.0.0.1:50051`
 
+For a guided setup flow, see `docs/onboarding.md`.
+
+## Install & Packaging
+
+### CLI / Server
+
+```bash
+cargo build -p mv-cli
+cargo run -p mv-cli -- server start --foreground
+```
+
+For a local install:
+
+```bash
+cargo install --path crates/mv-cli
+```
+
+### Desktop App (Tauri)
+
+```bash
+cd frontend
+pnpm install
+pnpm tauri:build
+```
+
+Build artifacts are generated under `frontend/src-tauri/target/release/bundle/`.
+
 ## Configuration
 
 Default config is in `config/default.toml`.

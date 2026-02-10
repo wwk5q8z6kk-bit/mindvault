@@ -153,3 +153,12 @@ Test your plugin by:
 3. Checking the plugins list: `GET /api/v1/plugins`
 4. Triggering the relevant hook (e.g., create a node for PostIngest)
 5. Checking chronicle logs for plugin execution entries
+
+## Community Modules (Early)
+
+There is no central registry yet. To share a module:
+
+1. Distribute the `.wasm` file and `manifest.json` together.
+2. Publish checksums so others can verify integrity.
+3. Document required permissions and expected hook usage.
+4. Recommend installing in a sandboxed environment first.
