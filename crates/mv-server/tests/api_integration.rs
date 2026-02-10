@@ -3,6 +3,9 @@
 //! Each test spins up a real MindVaultEngine backed by a tempdir, constructs
 //! the axum Router, and sends actual HTTP requests via `tower::ServiceExt`.
 //! This validates routing, serialisation, handler logic, and storage in one pass.
+//!
+//! NOTE: Tests must run sequentially (`--test-threads=1`) because the fastembed
+//! ort runtime uses a global mutex that poisons if any test panics.
 
 use std::sync::Arc;
 
@@ -125,6 +128,7 @@ async fn update_node() {
         .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(create_body)))
         .await
         .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
     let created: Value = body_json(resp).await;
     let id = created["id"].as_str().unwrap();
 
@@ -160,9 +164,11 @@ async fn delete_node() {
         .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(create_body)))
         .await
         .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
     let created: Value = body_json(resp).await;
     let id = created["id"].as_str().unwrap();
 
+    // Delete returns 200 with { "deleted": true }
     let resp = router
         .clone()
         .oneshot(json_request(
@@ -173,6 +179,8 @@ async fn delete_node() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = body_json(resp).await;
+    assert_eq!(body["deleted"], true);
 
     // Verify it's gone
     let resp = router
@@ -193,11 +201,12 @@ async fn list_nodes_with_kind_filter() {
     // Create a fact and a task
     for (kind, content) in [("fact", "A fact"), ("task", "A task")] {
         let body = json!({ "kind": kind, "content": content, "tags": [] });
-        router
+        let resp = router
             .clone()
             .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(body)))
             .await
             .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "creating {kind} should succeed");
     }
 
     // List only facts
@@ -230,15 +239,16 @@ async fn recall_returns_results() {
         "title": "Quantum Computing",
         "tags": ["science"]
     });
-    router
+    let resp = router
         .clone()
         .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(body)))
         .await
         .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
 
-    // Recall
+    // Recall using "text" field (not "query")
     let recall_body = json!({
-        "query": "quantum",
+        "text": "quantum",
         "limit": 10,
         "strategy": "keyword"
     });
@@ -309,19 +319,16 @@ async fn profile_get_and_update() {
 async fn proposal_lifecycle_submit_and_list() {
     let (router, _tmp) = setup().await;
 
-    // Submit a proposal
+    // Submit a proposal using the correct DTO format:
+    // action is a string, payload holds the node fields
     let proposal = json!({
         "sender": "test-agent",
-        "action": {
-            "type": "CreateNode",
-            "node": {
-                "kind": "fact",
-                "content": "Proposed node from agent",
-                "tags": ["proposed"]
-            }
-        },
+        "action": "CreateNode",
         "confidence": 0.85,
-        "rationale": "Relevant knowledge detected"
+        "payload": {
+            "kind": "fact",
+            "content": "Proposed node from agent"
+        }
     });
     let resp = router
         .clone()
@@ -332,7 +339,7 @@ async fn proposal_lifecycle_submit_and_list() {
         ))
         .await
         .unwrap();
-    // Accept either 200 or 201
+    // Accept 200 or 201
     assert!(
         resp.status() == StatusCode::OK || resp.status() == StatusCode::CREATED,
         "submit proposal should succeed, got {}",
