@@ -1,13 +1,18 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { fetchInsights, generateInsights, insights } from '$lib/api/agent';
+	import { dismissInsight, fullInsightScan, getEmbeddingClusters } from '$lib/api/insights';
 	import { listConflicts, resolveConflict, type ConflictAlert } from '$lib/api/conflicts';
 	import { pushToast } from '$lib/stores/toast';
 	import type { ProactiveInsight } from '$lib/api/types';
 
 	let loading = true;
 	let generating = false;
+	let scanning = false;
+	let loadingClusters = false;
 	let conflicts: ConflictAlert[] = [];
+	let clusters: ProactiveInsight[] = [];
+	let showClusters = false;
 	let filterType: string = 'all';
 
 	onMount(async () => {
@@ -38,11 +43,33 @@
 		}
 	}
 
+	async function handleFullScan() {
+		scanning = true;
+		try {
+			const newInsights = await fullInsightScan();
+			pushToast(`Full scan found ${newInsights.length} insights`, 'success');
+		} catch {
+			pushToast('Full scan failed', 'danger');
+		} finally {
+			scanning = false;
+		}
+	}
+
+	async function handleLoadClusters() {
+		loadingClusters = true;
+		showClusters = true;
+		try {
+			clusters = await getEmbeddingClusters();
+		} catch {
+			pushToast('Failed to load clusters', 'danger');
+		} finally {
+			loadingClusters = false;
+		}
+	}
+
 	async function handleDismiss(id: string) {
 		try {
-			const { fetchJson } = await import('$lib/api/client');
-			await fetchJson(`/api/v1/proactive/insights/${id}`, { method: 'DELETE' });
-			insights.update((list) => list.filter((i) => i.id !== id));
+			await dismissInsight(id);
 			pushToast('Insight dismissed', 'success');
 		} catch {
 			pushToast('Failed to dismiss insight', 'danger');
@@ -98,13 +125,29 @@
 				AI-discovered patterns, connections, and knowledge gaps
 			</p>
 		</div>
-		<button
-			class="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
-			disabled={generating}
-			on:click={handleGenerate}
-		>
-			{generating ? 'Generating...' : 'Generate Insights'}
-		</button>
+		<div class="flex gap-2">
+			<button
+				class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
+				disabled={loadingClusters}
+				on:click={handleLoadClusters}
+			>
+				{loadingClusters ? 'Loading...' : 'Clusters'}
+			</button>
+			<button
+				class="rounded-lg border border-indigo-600 px-3 py-1.5 text-xs font-medium text-indigo-300 transition hover:bg-indigo-600/20 disabled:opacity-50"
+				disabled={scanning}
+				on:click={handleFullScan}
+			>
+				{scanning ? 'Scanning...' : 'Full Scan'}
+			</button>
+			<button
+				class="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+				disabled={generating}
+				on:click={handleGenerate}
+			>
+				{generating ? 'Generating...' : 'Generate'}
+			</button>
+		</div>
 	</div>
 
 	<!-- Filter chips -->
@@ -171,6 +214,72 @@
 					</div>
 				{/each}
 			</div>
+		</div>
+	{/if}
+
+	<!-- Embedding Clusters -->
+	{#if showClusters}
+		<div>
+			<div class="mb-2 flex items-center justify-between">
+				<div class="flex items-center gap-2">
+					<span class="text-xs font-semibold text-purple-300">Embedding Clusters</span>
+					{#if clusters.length > 0}
+						<span
+							class="rounded-full bg-purple-500/20 px-2 py-0.5 text-[10px] font-medium text-purple-300"
+						>
+							{clusters.length}
+						</span>
+					{/if}
+				</div>
+				<button
+					class="text-[10px] text-slate-500 hover:text-slate-300"
+					on:click={() => {
+						showClusters = false;
+						clusters = [];
+					}}
+				>
+					Hide
+				</button>
+			</div>
+			{#if loadingClusters}
+				<div class="rounded-xl border border-slate-800 p-6 text-center text-xs text-slate-400">
+					Analyzing embedding space...
+				</div>
+			{:else if clusters.length === 0}
+				<div
+					class="rounded-xl border border-dashed border-purple-900/40 p-4 text-center text-xs text-slate-400"
+				>
+					No unlinked clusters found — nodes are well-connected.
+				</div>
+			{:else}
+				<div class="space-y-2">
+					{#each clusters as cluster (cluster.id)}
+						<div
+							class="rounded-xl border border-purple-900/40 bg-purple-950/20 p-4 transition hover:border-purple-800/60"
+						>
+							<div class="mb-1 flex items-center gap-2">
+								<span
+									class="rounded bg-purple-500/20 px-1.5 py-0.5 text-[10px] font-medium text-purple-300"
+								>
+									{cluster.insight_type.replace(/_/g, ' ')}
+								</span>
+								{#if cluster.importance >= 0.7}
+									<span class="text-[10px] text-amber-400">High priority</span>
+								{/if}
+							</div>
+							<h3 class="text-sm font-medium text-white">{cluster.title}</h3>
+							<p class="mt-1 text-xs text-slate-400 leading-relaxed">
+								{cluster.content}
+							</p>
+							{#if cluster.related_node_ids.length > 0}
+								<p class="mt-1.5 text-[10px] text-slate-500">
+									Nodes in cluster: {cluster.related_node_ids.length}
+								</p>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			{/if}
 		</div>
 	{/if}
 

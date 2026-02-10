@@ -116,7 +116,7 @@
 </script>
 
 <!-- Floating button -->
-<div class="fixed bottom-6 right-6 z-50">
+<div class="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-50 md:bottom-6 md:right-6">
     {#if !isOpen}
         <button
             on:click={() => isOpen = true}
@@ -138,7 +138,7 @@
 <!-- Inbox panel -->
 {#if isOpen}
     <div
-        class="fixed bottom-6 right-6 z-50 w-96 max-h-[70vh] bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+        class="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] left-4 right-4 z-50 max-h-[70vh] rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl overflow-hidden flex flex-col md:bottom-6 md:left-auto md:right-6 md:w-96"
         transition:fly={{ y: 20, duration: 200 }}
     >
         <!-- Header -->
