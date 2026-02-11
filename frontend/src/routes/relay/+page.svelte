@@ -10,6 +10,7 @@
 		sendMessage,
 		createContact,
 		createChannel,
+		updateContact,
 		markRead,
 		getUnreadCount,
 		type RelayContact,
@@ -30,6 +31,8 @@
 	let newContactName = '';
 	let newContactKey = '';
 	let newContactAddress = '';
+	let newContactTrust: RelayContact['trust_level'] = 'relay_only';
+	let newContactNotes = '';
 	let unreadTotal = 0;
 	let relayReplyProposals: RelayReplyProposal[] = [];
 	let expandedSuggestionMessageId: string | null = null;
@@ -89,6 +92,31 @@
 	$: pendingSuggestionMessage = pendingSuggestionMessageId
 		? messages.find((m) => m.id === pendingSuggestionMessageId) ?? null
 		: null;
+
+	let showContactSettings = false;
+	let editingContactId = '';
+	let contactEditor = {
+		display_name: '',
+		vault_address: '',
+		trust_level: 'relay_only' as RelayContact['trust_level'],
+		notes: ''
+	};
+
+	$: activeChannel = channels.find((c) => c.id === selectedChannelId) ?? null;
+	$: activeContact =
+		activeChannel && activeChannel.channel_type === 'direct' && activeChannel.member_contact_ids.length > 0
+			? contacts.find((c) => c.id === activeChannel.member_contact_ids[0]) ?? null
+			: null;
+
+	$: if (activeContact && activeContact.id !== editingContactId) {
+		editingContactId = activeContact.id;
+		contactEditor = {
+			display_name: activeContact.display_name,
+			vault_address: activeContact.vault_address ?? '',
+			trust_level: activeContact.trust_level,
+			notes: activeContact.notes ?? ''
+		};
+	}
 
 	onMount(async () => {
 		await loadData();
@@ -265,7 +293,9 @@
 			const contact = await createContact({
 				display_name: newContactName.trim(),
 				public_key: newContactKey.trim(),
-				vault_address: newContactAddress.trim() || undefined
+				vault_address: newContactAddress.trim() || undefined,
+				trust_level: newContactTrust,
+				notes: newContactNotes.trim() || undefined
 			});
 			contacts = [...contacts, contact];
 
@@ -280,12 +310,30 @@
 			newContactName = '';
 			newContactKey = '';
 			newContactAddress = '';
+			newContactTrust = 'relay_only';
+			newContactNotes = '';
 			showNewContact = false;
 			selectedChannelId = channel.id;
 			await loadMessages();
 			pushToast(`Added contact: ${contact.display_name}`, 'success');
 		} catch {
 			pushToast('Failed to add contact', 'danger');
+		}
+	}
+
+	async function saveContactSettings() {
+		if (!activeContact) return;
+		try {
+			const updated = await updateContact(activeContact.id, {
+				display_name: contactEditor.display_name.trim(),
+				vault_address: contactEditor.vault_address.trim() || undefined,
+				trust_level: contactEditor.trust_level,
+				notes: contactEditor.notes.trim() || undefined
+			});
+			contacts = contacts.map((c) => (c.id === updated.id ? updated : c));
+			pushToast('Contact updated', 'success');
+		} catch {
+			pushToast('Failed to update contact', 'danger');
 		}
 	}
 
@@ -353,6 +401,20 @@
 					placeholder="Vault address (optional)"
 					bind:value={newContactAddress}
 				/>
+				<select
+					class="mb-2 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-xs text-[rgb(var(--mv-text))]"
+					bind:value={newContactTrust}
+				>
+					<option value="relay_only">Relay only</option>
+					<option value="context_inject">Context inject</option>
+					<option value="full">Full autonomy</option>
+				</select>
+				<textarea
+					class="mb-2 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-xs text-[rgb(var(--mv-text))]"
+					placeholder="Notes (optional)"
+					rows="2"
+					bind:value={newContactNotes}
+				></textarea>
 				<button
 					class="w-full rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-700"
 					onclick={handleAddContact}
@@ -401,7 +463,78 @@
 				<h3 class="font-medium text-[rgb(var(--mv-text))]">
 					{contactName(channels.find((c) => c.id === selectedChannelId) ?? channels[0])}
 				</h3>
+				{#if activeContact}
+					<button
+						class="ml-auto rounded border border-[rgb(var(--mv-border))] px-2 py-1 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-hover))]"
+						onclick={() => (showContactSettings = !showContactSettings)}
+					>
+						{showContactSettings ? 'Hide settings' : 'Contact settings'}
+					</button>
+				{/if}
 			</div>
+
+			{#if showContactSettings && activeContact}
+				<div class="border-b border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-4 py-3">
+					<div class="grid gap-2 md:grid-cols-2">
+						<div>
+							<label class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]"
+								>Display name</label
+							>
+							<input
+								class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-xs text-[rgb(var(--mv-text))]"
+								bind:value={contactEditor.display_name}
+							/>
+						</div>
+						<div>
+							<label class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]"
+								>Vault address</label
+							>
+							<input
+								class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-xs text-[rgb(var(--mv-text))]"
+								placeholder="mailto:..."
+								bind:value={contactEditor.vault_address}
+							/>
+						</div>
+						<div>
+							<label class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]"
+								>Trust level</label
+							>
+							<select
+								class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-xs text-[rgb(var(--mv-text))]"
+								bind:value={contactEditor.trust_level}
+							>
+								<option value="relay_only">Relay only</option>
+								<option value="context_inject">Context inject</option>
+								<option value="full">Full autonomy</option>
+							</select>
+						</div>
+						<div>
+							<label class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]"
+								>Notes</label
+							>
+							<textarea
+								class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-xs text-[rgb(var(--mv-text))]"
+								rows="2"
+								bind:value={contactEditor.notes}
+							></textarea>
+						</div>
+					</div>
+					<div class="mt-3 flex gap-2">
+						<button
+							class="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-700"
+							onclick={saveContactSettings}
+						>
+							Save settings
+						</button>
+						<button
+							class="rounded border border-[rgb(var(--mv-border))] px-3 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-hover))]"
+							onclick={() => (showContactSettings = false)}
+						>
+							Close
+						</button>
+					</div>
+				</div>
+			{/if}
 
 			<!-- Messages list -->
 			<div
