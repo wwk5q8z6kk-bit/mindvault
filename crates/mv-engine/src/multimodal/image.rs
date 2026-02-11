@@ -5,8 +5,10 @@
 //! to make images searchable via the vault's hybrid retrieval.
 
 use async_trait::async_trait;
-use mv_core::{KnowledgeNode, MvResult};
+use mv_core::{KnowledgeNode, MvError, MvResult};
 use std::path::Path;
+
+use super::check_file_size;
 
 #[cfg(feature = "image-embeddings")]
 use {
@@ -382,12 +384,14 @@ fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Read JPEG dimensions from file header (SOF0/SOF2 markers).
+/// Limits scanning to prevent infinite loops on malformed data.
 fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     if data.len() < 2 || data[0] != 0xFF || data[1] != 0xD8 {
         return None;
     }
     let mut i = 2;
-    while i + 4 < data.len() {
+    let limit = data.len().min(65536); // don't scan beyond 64KB
+    while i + 4 < limit {
         if data[i] != 0xFF {
             i += 1;
             continue;
@@ -395,7 +399,7 @@ fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
         let marker = data[i + 1];
         // SOF0 (0xC0) or SOF2 (0xC2) contain dimensions
         if marker == 0xC0 || marker == 0xC2 {
-            if i + 9 < data.len() {
+            if i + 9 <= data.len() {
                 let h = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
                 let w = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
                 return Some((w, h));
@@ -403,10 +407,51 @@ fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
         }
         if i + 3 < data.len() {
             let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+            if len == 0 {
+                break; // zero-length segment = malformed
+            }
             i += 2 + len;
         } else {
             break;
         }
+    }
+    None
+}
+
+/// Read WebP dimensions from RIFF container (VP8/VP8L/VP8X chunks).
+fn webp_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    if data.len() < 16 || !data.starts_with(b"RIFF") || &data[8..12] != b"WEBP" {
+        return None;
+    }
+    let chunk = &data[12..];
+    // VP8 lossy: chunk starts with "VP8 ", dimensions at offset 26-29 (from RIFF start)
+    if chunk.starts_with(b"VP8 ") && data.len() >= 30 {
+        // VP8 bitstream: 3-byte frame tag + 3-byte start code (0x9D 0x01 0x2A) + 2-byte width + 2-byte height
+        let vp8_data = &data[20..]; // skip RIFF(4)+size(4)+WEBP(4)+VP8_(4)+size(4)
+        if vp8_data.len() >= 10 && vp8_data[3] == 0x9D && vp8_data[4] == 0x01 && vp8_data[5] == 0x2A {
+            let w = u16::from_le_bytes([vp8_data[6], vp8_data[7]]) & 0x3FFF;
+            let h = u16::from_le_bytes([vp8_data[8], vp8_data[9]]) & 0x3FFF;
+            return Some((w as u32, h as u32));
+        }
+    }
+    // VP8L lossless: "VP8L", signature byte 0x2F, then 4 bytes encode width-1 and height-1
+    if chunk.starts_with(b"VP8L") && data.len() >= 25 {
+        let sig = data[21]; // byte after VP8L chunk header
+        if sig == 0x2F {
+            let b0 = data[22] as u32;
+            let b1 = data[23] as u32;
+            let b2 = data[24] as u32;
+            let bits = b0 | (b1 << 8) | (b2 << 16);
+            let w = (bits & 0x3FFF) + 1;
+            let h = ((bits >> 14) & 0x3FFF) + 1;
+            return Some((w, h));
+        }
+    }
+    // VP8X extended: "VP8X", canvas dimensions at bytes 24-29
+    if chunk.starts_with(b"VP8X") && data.len() >= 30 {
+        let w = (data[24] as u32) | ((data[25] as u32) << 8) | ((data[26] as u32) << 16);
+        let h = (data[27] as u32) | ((data[28] as u32) << 8) | ((data[29] as u32) << 16);
+        return Some((w + 1, h + 1));
     }
     None
 }
@@ -427,7 +472,7 @@ fn detect_image_info(data: &[u8]) -> (Option<&'static str>, Option<(u32, u32)>) 
         };
         ("gif".into(), dims)
     } else if data.starts_with(b"RIFF") && data.len() > 12 && &data[8..12] == b"WEBP" {
-        (Some("webp"), None) // WebP dimension parsing is complex; skip for now
+        (Some("webp"), webp_dimensions(data))
     } else {
         (None, None)
     }
@@ -491,6 +536,8 @@ impl ModalityProcessor for ImageProcessor {
     async fn process(&self, file_path: &str, node: &KnowledgeNode) -> MvResult<ProcessingResult> {
         tracing::info!(file_path, "Processing image file");
 
+        let file_size = check_file_size(file_path).map_err(|e| MvError::Storage(e))?;
+
         let path = Path::new(file_path);
         let file_name = path
             .file_name()
@@ -504,14 +551,10 @@ impl ModalityProcessor for ImageProcessor {
         // Read first 512 bytes for header analysis (enough for PNG/JPEG/GIF/WebP)
         let header_bytes = std::fs::read(file_path)
             .map(|data| data[..data.len().min(512)].to_vec())
-            .unwrap_or_default();
+            .map_err(|e| MvError::Storage(format!("failed to read image: {e}")))?;
 
         let (detected_format, dimensions) = detect_image_info(&header_bytes);
         let format = detected_format.unwrap_or(extension);
-
-        let file_size = std::fs::metadata(file_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
 
         // Build searchable text description
         let mut description = format!("[Image: {file_name}");
@@ -581,15 +624,15 @@ impl ModalityProcessor for ImageProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mv_core::model::{KnowledgeNode, NodeKind};
 
     #[test]
     fn detects_png_dimensions() {
-        // Minimal PNG header: signature + IHDR with 100x200
         let mut data = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
         data.extend_from_slice(&[0, 0, 0, 13]); // IHDR length
         data.extend_from_slice(b"IHDR");
-        data.extend_from_slice(&100u32.to_be_bytes()); // width
-        data.extend_from_slice(&200u32.to_be_bytes()); // height
+        data.extend_from_slice(&100u32.to_be_bytes());
+        data.extend_from_slice(&200u32.to_be_bytes());
         let (fmt, dims) = detect_image_info(&data);
         assert_eq!(fmt, Some("png"));
         assert_eq!(dims, Some((100, 200)));
@@ -603,5 +646,231 @@ mod tests {
         let (fmt, dims) = detect_image_info(&data);
         assert_eq!(fmt, Some("gif"));
         assert_eq!(dims, Some((320, 240)));
+    }
+
+    #[test]
+    fn detects_jpeg_format() {
+        let data = vec![0xFF, 0xD8, 0xFF, 0xE0]; // JPEG SOI + APP0
+        let (fmt, _dims) = detect_image_info(&data);
+        assert_eq!(fmt, Some("jpeg"));
+    }
+
+    #[test]
+    fn jpeg_dimensions_from_sof0() {
+        // Construct minimal JPEG: SOI + SOF0 marker
+        let mut data = vec![0xFF, 0xD8]; // SOI
+        data.push(0xFF);
+        data.push(0xC0); // SOF0
+        data.extend_from_slice(&11u16.to_be_bytes()); // segment length
+        data.push(8); // precision
+        data.extend_from_slice(&480u16.to_be_bytes()); // height
+        data.extend_from_slice(&640u16.to_be_bytes()); // width
+        let dims = jpeg_dimensions(&data);
+        assert_eq!(dims, Some((640, 480)));
+    }
+
+    #[test]
+    fn jpeg_dimensions_skips_app_segments() {
+        // SOI + APP0 (with length) + SOF0
+        let mut data = vec![0xFF, 0xD8]; // SOI
+        data.push(0xFF);
+        data.push(0xE0); // APP0
+        data.extend_from_slice(&8u16.to_be_bytes()); // segment length (6 bytes of content + 2 for length)
+        data.extend_from_slice(&[0; 6]); // padding
+        data.push(0xFF);
+        data.push(0xC0); // SOF0
+        data.extend_from_slice(&11u16.to_be_bytes());
+        data.push(8);
+        data.extend_from_slice(&300u16.to_be_bytes()); // height
+        data.extend_from_slice(&400u16.to_be_bytes()); // width
+        let dims = jpeg_dimensions(&data);
+        assert_eq!(dims, Some((400, 300)));
+    }
+
+    #[test]
+    fn jpeg_handles_zero_length_segment() {
+        // Malformed: segment with length 0 should not loop forever
+        let mut data = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        data.extend_from_slice(&0u16.to_be_bytes()); // zero-length = malformed
+        let dims = jpeg_dimensions(&data);
+        assert_eq!(dims, None);
+    }
+
+    #[test]
+    fn jpeg_rejects_non_jpeg_data() {
+        let data = b"not a jpeg";
+        assert_eq!(jpeg_dimensions(data), None);
+    }
+
+    #[test]
+    fn jpeg_handles_truncated_header() {
+        let data = vec![0xFF, 0xD8]; // SOI only, no markers
+        assert_eq!(jpeg_dimensions(&data), None);
+    }
+
+    #[test]
+    fn detects_webp_format() {
+        let mut data = b"RIFF".to_vec();
+        data.extend_from_slice(&100u32.to_le_bytes()); // file size
+        data.extend_from_slice(b"WEBP");
+        data.extend_from_slice(b"VP8X"); // extended
+        let (fmt, _) = detect_image_info(&data);
+        assert_eq!(fmt, Some("webp"));
+    }
+
+    #[test]
+    fn webp_vp8x_dimensions() {
+        let mut data = b"RIFF".to_vec();
+        data.extend_from_slice(&100u32.to_le_bytes());
+        data.extend_from_slice(b"WEBP");
+        data.extend_from_slice(b"VP8X");
+        data.extend_from_slice(&10u32.to_le_bytes()); // chunk size
+        data.extend_from_slice(&[0; 4]); // flags (4 bytes) — pad to offset 24
+        // Canvas width-1 (3 bytes LE) = 799 → width 800
+        data.push(0x1F);
+        data.push(0x03);
+        data.push(0x00);
+        // Canvas height-1 (3 bytes LE) = 599 → height 600
+        data.push(0x57);
+        data.push(0x02);
+        data.push(0x00);
+        let dims = webp_dimensions(&data);
+        assert_eq!(dims, Some((800, 600)));
+    }
+
+    #[test]
+    fn webp_rejects_non_webp() {
+        assert_eq!(webp_dimensions(b"not webp data"), None);
+    }
+
+    #[test]
+    fn webp_rejects_truncated_header() {
+        let data = b"RIFFWEBP"; // too short
+        assert_eq!(webp_dimensions(data), None);
+    }
+
+    #[test]
+    fn png_rejects_truncated_data() {
+        let data = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]; // signature only
+        assert_eq!(png_dimensions(&data), None);
+    }
+
+    #[test]
+    fn png_rejects_non_png() {
+        assert_eq!(png_dimensions(b"not png"), None);
+    }
+
+    #[test]
+    fn gif_handles_truncated_data() {
+        let data = b"GIF89a".to_vec(); // signature only, no dimensions
+        let (fmt, dims) = detect_image_info(&data);
+        assert_eq!(fmt, Some("gif"));
+        assert_eq!(dims, None);
+    }
+
+    #[test]
+    fn detect_image_info_unknown_format() {
+        let (fmt, dims) = detect_image_info(b"random bytes");
+        assert_eq!(fmt, None);
+        assert_eq!(dims, None);
+    }
+
+    #[test]
+    fn detect_image_info_empty_data() {
+        let (fmt, dims) = detect_image_info(b"");
+        assert_eq!(fmt, None);
+        assert_eq!(dims, None);
+    }
+
+    #[tokio::test]
+    async fn process_rejects_missing_file() {
+        let processor = ImageProcessor::new();
+        let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
+        let result = processor.process("/nonexistent/image.png", &node).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn process_extracts_png_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.png");
+        // Minimal PNG with 50x75 dimensions
+        let mut data = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        data.extend_from_slice(&[0, 0, 0, 13]);
+        data.extend_from_slice(b"IHDR");
+        data.extend_from_slice(&50u32.to_be_bytes());
+        data.extend_from_slice(&75u32.to_be_bytes());
+        std::fs::write(&path, &data).unwrap();
+
+        let processor = ImageProcessor::new();
+        let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
+        let result = processor
+            .process(path.to_str().unwrap(), &node)
+            .await
+            .unwrap();
+
+        assert!(result.text_content.contains("50x75"));
+        assert!(result.text_content.contains("png"));
+        assert_eq!(result.metadata["width"], serde_json::json!(50));
+        assert_eq!(result.metadata["height"], serde_json::json!(75));
+        assert_eq!(result.metadata["format"], serde_json::json!("png"));
+        assert!(result.suggested_tags.contains(&"image".to_string()));
+        assert!(result.suggested_tags.contains(&"png".to_string()));
+    }
+
+    #[tokio::test]
+    async fn process_includes_node_title_in_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.gif");
+        let mut data = b"GIF89a".to_vec();
+        data.extend_from_slice(&10u16.to_le_bytes());
+        data.extend_from_slice(&20u16.to_le_bytes());
+        std::fs::write(&path, &data).unwrap();
+
+        let processor = ImageProcessor::new();
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
+        node.title = Some("My Photo".to_string());
+        let result = processor
+            .process(path.to_str().unwrap(), &node)
+            .await
+            .unwrap();
+
+        assert!(result.text_content.contains("My Photo"));
+    }
+
+    #[tokio::test]
+    async fn process_handles_unknown_format_gracefully() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("weird.xyz");
+        std::fs::write(&path, b"not a real image format").unwrap();
+
+        let processor = ImageProcessor::new();
+        let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
+        let result = processor
+            .process(path.to_str().unwrap(), &node)
+            .await
+            .unwrap();
+
+        // Falls back to extension "xyz" and reports file size
+        assert!(result.text_content.contains("xyz"));
+        assert!(result.metadata.contains_key("file_size"));
+    }
+
+    #[test]
+    fn image_processor_name_and_handles() {
+        let p = ImageProcessor::new();
+        assert_eq!(p.name(), "image");
+        assert!(p.handles().contains(&"image/png"));
+        assert!(p.handles().contains(&"image/jpeg"));
+        assert!(p.handles().contains(&"image/webp"));
+        assert!(p.handles().contains(&"image/svg+xml"));
+    }
+
+    #[test]
+    fn image_status_always_available() {
+        let p = ImageProcessor::new();
+        let status = p.status();
+        assert!(status.available);
+        assert_eq!(status.details["metadata_extraction"], serde_json::json!(true));
     }
 }

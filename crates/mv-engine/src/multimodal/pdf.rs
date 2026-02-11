@@ -7,7 +7,10 @@ use async_trait::async_trait;
 use mv_core::{KnowledgeNode, MvError, MvResult};
 use std::process::Command;
 
-use super::{ModalityProcessor, ModalityStatus, ProcessingResult};
+use super::{
+    check_file_size, run_command_with_timeout, ModalityProcessor, ModalityStatus,
+    ProcessingResult, DEFAULT_COMMAND_TIMEOUT,
+};
 
 /// PDF processor that extracts text content using `pdftotext` CLI.
 pub struct PdfProcessor {
@@ -55,14 +58,11 @@ impl PdfProcessor {
         }
     }
 
-    /// Extract text using pdftotext CLI.
+    /// Extract text using pdftotext CLI with timeout protection.
     fn extract_with_pdftotext(&self, file_path: &str) -> Result<String, String> {
-        let output = Command::new("pdftotext")
-            .arg("-layout")
-            .arg(file_path)
-            .arg("-") // output to stdout
-            .output()
-            .map_err(|e| format!("failed to run pdftotext: {e}"))?;
+        let mut cmd = Command::new("pdftotext");
+        cmd.arg("-layout").arg(file_path).arg("-");
+        let output = run_command_with_timeout(&mut cmd, DEFAULT_COMMAND_TIMEOUT)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -96,27 +96,24 @@ impl PdfProcessor {
         let tiff_path = temp_dir.join(format!("mv_ocr_{stem}.tiff"));
 
         // Convert PDF to TIFF using ghostscript (commonly available)
-        let gs_result = Command::new("gs")
-            .args([
-                "-dNOPAUSE",
-                "-dBATCH",
-                "-sDEVICE=tiffg4",
-                "-r300",
-                &format!("-sOutputFile={}", tiff_path.display()),
-                file_path,
-            ])
-            .output();
-
-        match gs_result {
+        let mut gs_cmd = Command::new("gs");
+        gs_cmd.args([
+            "-dNOPAUSE",
+            "-dBATCH",
+            "-sDEVICE=tiffg4",
+            "-r300",
+            &format!("-sOutputFile={}", tiff_path.display()),
+            file_path,
+        ]);
+        match run_command_with_timeout(&mut gs_cmd, DEFAULT_COMMAND_TIMEOUT) {
             Ok(output) if output.status.success() => {}
             _ => return Err("ghostscript not available or failed".to_string()),
         }
 
         // Run tesseract on the TIFF
-        let output = Command::new("tesseract")
-            .arg(&tiff_path)
-            .arg("stdout")
-            .output()
+        let mut tess_cmd = Command::new("tesseract");
+        tess_cmd.arg(&tiff_path).arg("stdout");
+        let output = run_command_with_timeout(&mut tess_cmd, DEFAULT_COMMAND_TIMEOUT)
             .map_err(|e| format!("tesseract failed: {e}"))?;
 
         let _ = std::fs::remove_file(&tiff_path);
@@ -159,10 +156,8 @@ impl ModalityProcessor for PdfProcessor {
     async fn process(&self, file_path: &str, _node: &KnowledgeNode) -> MvResult<ProcessingResult> {
         tracing::info!(file_path, "Processing PDF file");
 
-        let file_size = tokio::fs::metadata(file_path)
-            .await
-            .map(|m| m.len())
-            .map_err(|e| MvError::Storage(format!("Failed to read PDF: {e}")))?;
+        let file_size = check_file_size(file_path)
+            .map_err(|e| MvError::Storage(e))?;
 
         let page_count = self.get_page_count(file_path);
 
@@ -223,6 +218,7 @@ impl ModalityProcessor for PdfProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mv_core::model::{KnowledgeNode, NodeKind};
 
     #[test]
     fn status_exposes_backend_details_and_types() {
@@ -233,5 +229,118 @@ mod tests {
         assert!(status.details.contains_key("pdftotext_available"));
         assert!(status.details.contains_key("tesseract_available"));
         assert!(status.details.contains_key("ghostscript_available"));
+    }
+
+    #[test]
+    fn handles_returns_application_pdf() {
+        let processor = PdfProcessor::new();
+        assert_eq!(processor.handles(), &["application/pdf"]);
+    }
+
+    #[test]
+    fn name_returns_pdf() {
+        let processor = PdfProcessor::new();
+        assert_eq!(processor.name(), "pdf");
+    }
+
+    #[test]
+    fn status_available_reflects_tool_presence() {
+        let processor = PdfProcessor::new();
+        let status = processor.status();
+        // Available if at least one extraction tool is present
+        let expected = processor.pdftotext_available || processor.tesseract_available;
+        assert_eq!(status.available, expected);
+    }
+
+    #[tokio::test]
+    async fn process_rejects_missing_file() {
+        let processor = PdfProcessor::new();
+        let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
+        let result = processor.process("/nonexistent/file.pdf", &node).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn process_handles_empty_pdf() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.pdf");
+        std::fs::write(&path, b"").unwrap();
+
+        let processor = PdfProcessor::new();
+        let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
+        // Empty file should fail the file size or extraction gracefully
+        let result = processor
+            .process(path.to_str().unwrap(), &node)
+            .await;
+        // Either error or placeholder text — shouldn't panic
+        if let Ok(r) = result {
+            assert!(!r.suggested_tags.is_empty()); // always gets "pdf" tag
+            assert!(r.suggested_tags.contains(&"pdf".to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn process_populates_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fake.pdf");
+        std::fs::write(&path, b"%PDF-1.4 fake content").unwrap();
+
+        let processor = PdfProcessor::new();
+        let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
+        let result = processor
+            .process(path.to_str().unwrap(), &node)
+            .await;
+        if let Ok(r) = result {
+            assert!(r.metadata.contains_key("file_size"));
+            assert_eq!(r.metadata["file_size"], serde_json::json!(21));
+            assert!(r.suggested_tags.contains(&"pdf".to_string()));
+            assert!(r.suggested_tags.contains(&"document".to_string()));
+        }
+    }
+
+    #[test]
+    fn extract_with_pdftotext_on_nonexistent_fails() {
+        let processor = PdfProcessor::new();
+        if processor.pdftotext_available {
+            let result = processor.extract_with_pdftotext("/nonexistent/file.pdf");
+            assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    fn page_count_returns_none_for_nonexistent() {
+        let processor = PdfProcessor::new();
+        assert!(processor.get_page_count("/nonexistent/file.pdf").is_none());
+    }
+
+    #[test]
+    fn status_note_when_no_tools() {
+        // Simulating — we can only test the constructor logic
+        let processor = PdfProcessor {
+            pdftotext_available: false,
+            tesseract_available: false,
+            ghostscript_available: false,
+        };
+        let status = processor.status();
+        assert!(!status.available);
+        assert_eq!(
+            status.note.as_deref(),
+            Some("No PDF extraction backend available")
+        );
+    }
+
+    #[test]
+    fn status_note_when_tesseract_without_ghostscript() {
+        let processor = PdfProcessor {
+            pdftotext_available: false,
+            tesseract_available: true,
+            ghostscript_available: false,
+        };
+        let status = processor.status();
+        assert!(status.available);
+        assert_eq!(
+            status.note.as_deref(),
+            Some("OCR available but ghostscript missing for PDF-to-image")
+        );
     }
 }

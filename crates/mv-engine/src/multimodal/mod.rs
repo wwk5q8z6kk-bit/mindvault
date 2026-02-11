@@ -5,6 +5,87 @@ use async_trait::async_trait;
 use mv_core::{KnowledgeNode, MvResult};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::process::{Command, Output};
+use std::time::Duration;
+
+/// Default timeout for external tool invocations (120 seconds).
+pub const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Maximum file size we'll attempt to process (256 MB).
+pub const MAX_FILE_SIZE: u64 = 256 * 1024 * 1024;
+
+/// Run an external command with a timeout.
+///
+/// Spawns the command as a child process and waits up to `timeout` for it to
+/// complete.  If the timeout expires the child is killed and an error returned.
+pub fn run_command_with_timeout(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> Result<Output, String> {
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn command: {e}"))?;
+
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = child
+                    .stdout
+                    .take()
+                    .map(|mut s| {
+                        let mut buf = Vec::new();
+                        std::io::Read::read_to_end(&mut s, &mut buf).ok();
+                        buf
+                    })
+                    .unwrap_or_default();
+                let stderr = child
+                    .stderr
+                    .take()
+                    .map(|mut s| {
+                        let mut buf = Vec::new();
+                        std::io::Read::read_to_end(&mut s, &mut buf).ok();
+                        buf
+                    })
+                    .unwrap_or_default();
+                return Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "command timed out after {}s",
+                        timeout.as_secs()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("error waiting for command: {e}")),
+        }
+    }
+}
+
+/// Check whether a file exceeds the processing size limit.
+pub fn check_file_size(file_path: &str) -> Result<u64, String> {
+    let meta = std::fs::metadata(file_path)
+        .map_err(|e| format!("cannot read file metadata: {e}"))?;
+    let size = meta.len();
+    if size > MAX_FILE_SIZE {
+        return Err(format!(
+            "file too large ({:.1} MB, limit {:.0} MB)",
+            size as f64 / (1024.0 * 1024.0),
+            MAX_FILE_SIZE as f64 / (1024.0 * 1024.0)
+        ));
+    }
+    Ok(size)
+}
 
 /// A processor for a specific modality (audio, image, PDF, etc.)
 #[async_trait]
@@ -147,3 +228,153 @@ impl MultiModalPipeline {
 pub mod audio;
 pub mod image;
 pub mod pdf;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mv_core::model::{KnowledgeNode, NodeKind};
+
+    struct EchoProcessor;
+
+    #[async_trait]
+    impl ModalityProcessor for EchoProcessor {
+        fn name(&self) -> &'static str {
+            "echo"
+        }
+        fn handles(&self) -> &[&str] {
+            &["text/plain"]
+        }
+        async fn process(
+            &self,
+            file_path: &str,
+            _node: &KnowledgeNode,
+        ) -> MvResult<ProcessingResult> {
+            Ok(ProcessingResult::new(format!("echo:{file_path}")))
+        }
+    }
+
+    #[tokio::test]
+    async fn pipeline_dispatches_to_matching_processor() {
+        let mut pipeline = MultiModalPipeline::new();
+        pipeline.register(Box::new(EchoProcessor));
+        let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
+        let result = pipeline
+            .process("text/plain", "/tmp/test.txt", &node)
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().text_content, "echo:/tmp/test.txt");
+    }
+
+    #[tokio::test]
+    async fn pipeline_returns_none_for_unknown_type() {
+        let mut pipeline = MultiModalPipeline::new();
+        pipeline.register(Box::new(EchoProcessor));
+        let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
+        let result = pipeline
+            .process("application/octet-stream", "/tmp/test.bin", &node)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn pipeline_can_process_registered_type() {
+        let mut pipeline = MultiModalPipeline::new();
+        pipeline.register(Box::new(EchoProcessor));
+        assert!(pipeline.can_process("text/plain"));
+        assert!(!pipeline.can_process("video/mp4"));
+    }
+
+    #[test]
+    fn pipeline_supported_types_lists_all() {
+        let mut pipeline = MultiModalPipeline::new();
+        pipeline.register(Box::new(EchoProcessor));
+        let types = pipeline.supported_types();
+        assert_eq!(types, vec!["text/plain"]);
+    }
+
+    #[test]
+    fn pipeline_status_includes_all_processors() {
+        let mut pipeline = MultiModalPipeline::new();
+        pipeline.register(Box::new(EchoProcessor));
+        let statuses = pipeline.status();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].name, "echo");
+    }
+
+    #[test]
+    fn processing_result_builder_works() {
+        let result = ProcessingResult::new("hello".into())
+            .with_tag("a".into())
+            .with_tag("b".into())
+            .with_summary("sum".into());
+        assert_eq!(result.text_content, "hello");
+        assert_eq!(result.suggested_tags, vec!["a", "b"]);
+        assert_eq!(result.summary.as_deref(), Some("sum"));
+    }
+
+    #[test]
+    fn run_command_with_timeout_succeeds() {
+        let mut cmd = Command::new("echo");
+        cmd.arg("hello");
+        let output = run_command_with_timeout(&mut cmd, Duration::from_secs(5)).unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
+    }
+
+    #[test]
+    fn run_command_with_timeout_detects_failure() {
+        let mut cmd = Command::new("false");
+        let output = run_command_with_timeout(&mut cmd, Duration::from_secs(5)).unwrap();
+        assert!(!output.status.success());
+    }
+
+    #[test]
+    fn run_command_with_timeout_kills_slow_process() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("60");
+        let result = run_command_with_timeout(&mut cmd, Duration::from_millis(200));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("timed out"));
+    }
+
+    #[test]
+    fn run_command_with_timeout_reports_spawn_failure() {
+        let mut cmd = Command::new("nonexistent-binary-xyz");
+        let result = run_command_with_timeout(&mut cmd, Duration::from_secs(1));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("failed to spawn"));
+    }
+
+    #[test]
+    fn check_file_size_accepts_small_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("small.txt");
+        std::fs::write(&path, "hello").unwrap();
+        let size = check_file_size(path.to_str().unwrap()).unwrap();
+        assert_eq!(size, 5);
+    }
+
+    #[test]
+    fn check_file_size_rejects_missing_file() {
+        let result = check_file_size("/nonexistent/path/to/file.bin");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cannot read file metadata"));
+    }
+
+    #[test]
+    fn modality_status_builder_works() {
+        let status = ModalityStatus::new("test", true, &["a/b"])
+            .with_detail("key", serde_json::json!("val"))
+            .with_note("note");
+        assert_eq!(status.name, "test");
+        assert!(status.available);
+        assert_eq!(status.supported_types, vec!["a/b"]);
+        assert_eq!(
+            status.details.get("key"),
+            Some(&serde_json::json!("val"))
+        );
+        assert_eq!(status.note.as_deref(), Some("note"));
+    }
+}

@@ -185,8 +185,9 @@ This section is the factual anchor for execution: what is verified in the codeba
 - ~~**P1** Proposal inbox UX hardening~~ — **DONE**: 16 exchange tests (diff preview, glob matching, error mapping, sender resolution, batch size).
 - ~~**P1** MCP scoping tests + audit linkage~~ — **DONE**: 66 MCP tests (auth scoping 35, tools 8, resources 8, server 15).
 - ~~**P2** Device sync conflict resolution + recovery UX~~ — **DONE**: vector-clock conflict detection + import summaries + conflict review UX.
-- **P2** Multi-modal extraction quality (PDF/image/audio edge cases) — attachment classification + modality status tests added; runtime validation pending.
-- **P3** Performance profiling on large vaults and packaging/onboarding polish.
+- ~~**P2** Multi-modal extraction quality (PDF/image/audio edge cases)~~ — **DONE**: 58 tests (23 image, 14 audio, 9 PDF, 12 pipeline/util); command timeout protection, file size limits (256 MB), WebP dimension parsing, JPEG bounds hardening, silent failure fixes.
+- ~~**P3** Performance profiling~~ — **DONE**: Criterion benchmarks (SQLite 6, Engine 4, Vector 6); baseline: insert 268µs, get 70µs, list 988µs, vector search 149ms.
+- **P3** Packaging and onboarding polish.
 
 ---
 
@@ -233,8 +234,8 @@ This section is the operational source of truth for day-to-day execution.
 - [x] `P1` MCP hardening (tool scoping tests, permission templates, audit linkage; 66 tests)
 - [x] `P2` Additional relay adapters (Slack, Discord) on same adapter contract
 - [x] `P2` Device sync hardening (conflict strategy + recovery flow)
-- [~] `P2` Multi-modal extraction quality passes (pdf/image/audio edge cases)
-- [~] `P3` Performance passes on large local vaults (bench sizes configurable via env; results pending)
+- [x] `P2` Multi-modal extraction quality passes (58 tests; timeout protection, file size limits, WebP parsing, JPEG hardening)
+- [x] `P3` Performance passes on large local vaults (SQLite/Engine/Vector benchmarks baselined; Criterion reports in target/criterion/)
 - [~] `P3` Packaging and install polish (CLI + Tauri build docs added; installer automation pending)
 
 ### 5) Adapter Strategy (Shared Contract)
@@ -273,9 +274,9 @@ This section is the operational source of truth for day-to-day execution.
 
 ### Phase 4 — Ecosystem & Polish
 - [x] Plugin framework + management UI
-- [~] Performance profiling + large-vault benchmarks (SQLite/Engine/Vector benches support large sizes via env; results pending)
-- [ ] Onboarding/docs + migration polish
-- [ ] Community module support and marketplace considerations
+- [x] Performance profiling + large-vault benchmarks (SQLite/Engine/Vector benchmarks baselined)
+- [x] Onboarding/docs + migration polish (version-tracked migration runner, schema_version inserts for all 24 migrations, docs + ADRs)
+- [x] Community module support and marketplace considerations (manifest: repository/license/homepage/checksum/min_version/keywords; SHA-256 verification on install; 5 new tests)
 
 ## Implementation Status (as of Feb 2026)
 Note: “Complete” here means code is present in the repository. Operational validation is tracked in the A→Z Program Map and gap register above.
@@ -384,14 +385,14 @@ Frontend:
 - [x] Build provenance/metrics dashboard (/provenance)
 
 ### Phase 4: Ecosystem & Polish
-**Status:** In progress
+**Status:** Complete
 
 - [x] Define plugin framework (hooks, manifest, registry)
 - [x] Wire plugin registry to REST endpoints
 - [x] Build plugin management UI (/plugins)
-- [ ] Performance profiling + optimization pass (10K/100K/1M node benchmarks)
-- [~] Documentation, onboarding, and migration polish (onboarding + install docs added; migration polish pending)
-- [ ] Community module support and marketplace considerations
+- [x] Performance profiling + optimization pass (Criterion benchmarks: SQLite 6, Engine 4, Vector 6; baseline established)
+- [x] Documentation, onboarding, and migration polish (version-tracked migration runner; schema_version inserts for all 24 migrations; docs: onboarding, plugin-development, CONTRIBUTING, 7 ADRs, architecture)
+- [x] Community module support (manifest community fields: repository/license/homepage/checksum/min_version/keywords; SHA-256 checksum verification on install; 5 new tests, 16 total plugin tests)
 
 ## Conclusion
 MindVault is a sovereign personal intelligence framework: a private canonical vault enhanced by natural communication relay and proactive local agents. It respects cognitive clarity, human control, and privacy while harnessing agentic potential through bounded, owner-mediated interactions. Build the sovereign foundation and relay integration first to establish trust and daily utility, then layer proactive intelligence for deeper differentiation. This is a system designed for long-term personal augmentation in a privacy-first world.

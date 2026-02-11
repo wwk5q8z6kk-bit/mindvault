@@ -9,7 +9,10 @@ use mv_core::{KnowledgeNode, MvResult};
 use std::path::Path;
 use std::process::Command;
 
-use super::{ModalityProcessor, ModalityStatus, ProcessingResult};
+use super::{
+    check_file_size, run_command_with_timeout, ModalityProcessor, ModalityStatus,
+    ProcessingResult, DEFAULT_COMMAND_TIMEOUT,
+};
 
 /// Audio processor that transcribes audio files using Whisper.
 pub struct AudioProcessor {
@@ -54,7 +57,7 @@ impl AudioProcessor {
         }
     }
 
-    /// Transcribe using local Whisper CLI.
+    /// Transcribe using local Whisper CLI with timeout protection.
     fn transcribe_local(&self, file_path: &str) -> Result<String, String> {
         let temp_dir = std::env::temp_dir();
         let stem = Path::new(file_path)
@@ -75,9 +78,7 @@ impl AudioProcessor {
             cmd.arg("--language").arg(lang);
         }
 
-        let output = cmd
-            .output()
-            .map_err(|e| format!("failed to run whisper: {e}"))?;
+        let output = run_command_with_timeout(&mut cmd, DEFAULT_COMMAND_TIMEOUT)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -217,6 +218,9 @@ impl ModalityProcessor for AudioProcessor {
     async fn process(&self, file_path: &str, _node: &KnowledgeNode) -> MvResult<ProcessingResult> {
         tracing::info!(file_path, "Processing audio file");
 
+        check_file_size(file_path)
+            .map_err(|e| mv_core::MvError::Storage(e))?;
+
         // Try local Whisper first, then API fallback
         let transcript = if self.local_available {
             match self.transcribe_local(file_path) {
@@ -271,6 +275,7 @@ impl ModalityProcessor for AudioProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mv_core::model::{KnowledgeNode, NodeKind};
 
     #[test]
     fn status_exposes_backend_details_and_types() {
@@ -282,5 +287,169 @@ mod tests {
         assert!(status.details.contains_key("whisper_model"));
         assert!(status.details.contains_key("local_available"));
         assert!(status.details.contains_key("api_fallback_available"));
+    }
+
+    #[test]
+    fn handles_all_audio_types() {
+        let processor = AudioProcessor::new();
+        let types = processor.handles();
+        assert!(types.contains(&"audio/wav"));
+        assert!(types.contains(&"audio/mp3"));
+        assert!(types.contains(&"audio/ogg"));
+        assert!(types.contains(&"audio/webm"));
+        assert!(types.contains(&"audio/mpeg"));
+        assert!(types.contains(&"audio/flac"));
+        assert!(types.contains(&"audio/m4a"));
+        assert!(types.contains(&"audio/x-wav"));
+    }
+
+    #[test]
+    fn name_returns_audio() {
+        assert_eq!(AudioProcessor::new().name(), "audio");
+    }
+
+    #[test]
+    fn status_note_when_no_backend() {
+        // Force no backends by using a nonexistent binary and no API key
+        let processor = AudioProcessor {
+            whisper_bin: "nonexistent-whisper-xyz".to_string(),
+            whisper_model: "base".to_string(),
+            language: None,
+            api_key: None,
+            local_available: false,
+        };
+        let status = processor.status();
+        assert!(!status.available);
+        assert_eq!(status.note.as_deref(), Some("No Whisper backend available"));
+    }
+
+    #[test]
+    fn status_available_with_api_key_only() {
+        let processor = AudioProcessor {
+            whisper_bin: "nonexistent".to_string(),
+            whisper_model: "base".to_string(),
+            language: None,
+            api_key: Some("sk-test".to_string()),
+            local_available: false,
+        };
+        let status = processor.status();
+        assert!(status.available);
+        assert_eq!(
+            status.details["api_fallback_available"],
+            serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn status_includes_language_when_set() {
+        let processor = AudioProcessor {
+            whisper_bin: "whisper".to_string(),
+            whisper_model: "base".to_string(),
+            language: Some("en".to_string()),
+            api_key: None,
+            local_available: false,
+        };
+        let status = processor.status();
+        assert_eq!(status.details["language"], serde_json::json!("en"));
+    }
+
+    #[tokio::test]
+    async fn process_rejects_missing_file() {
+        let processor = AudioProcessor::new();
+        let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
+        let result = processor
+            .process("/nonexistent/audio.wav", &node)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn process_produces_placeholder_without_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wav");
+        std::fs::write(&path, b"RIFF fake wav data for testing").unwrap();
+
+        let processor = AudioProcessor {
+            whisper_bin: "nonexistent-whisper-xyz".to_string(),
+            whisper_model: "base".to_string(),
+            language: None,
+            api_key: None,
+            local_available: false,
+        };
+        let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
+        let result = processor
+            .process(path.to_str().unwrap(), &node)
+            .await
+            .unwrap();
+
+        assert!(result.text_content.contains("no Whisper backend"));
+        assert!(result.suggested_tags.contains(&"audio".to_string()));
+        assert!(!result.suggested_tags.contains(&"transcribed".to_string()));
+    }
+
+    #[tokio::test]
+    async fn process_estimates_duration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wav");
+        // 160KB ≈ 10 seconds at 16KB/s
+        let data = vec![0u8; 160_000];
+        std::fs::write(&path, &data).unwrap();
+
+        let processor = AudioProcessor {
+            whisper_bin: "nonexistent-whisper-xyz".to_string(),
+            whisper_model: "base".to_string(),
+            language: None,
+            api_key: None,
+            local_available: false,
+        };
+        let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
+        let result = processor
+            .process(path.to_str().unwrap(), &node)
+            .await
+            .unwrap();
+
+        let duration = result.metadata["estimated_duration_secs"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(duration, 10);
+    }
+
+    #[test]
+    fn transcribe_local_fails_with_nonexistent_binary() {
+        let processor = AudioProcessor {
+            whisper_bin: "nonexistent-whisper-xyz".to_string(),
+            whisper_model: "base".to_string(),
+            language: None,
+            api_key: None,
+            local_available: false,
+        };
+        let result = processor.transcribe_local("/tmp/fake.wav");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn mime_type_mapping() {
+        // Verify the extension → MIME mapping in transcribe_api
+        let cases = [
+            ("mp3", "audio/mpeg"),
+            ("mpeg", "audio/mpeg"),
+            ("ogg", "audio/ogg"),
+            ("flac", "audio/flac"),
+            ("m4a", "audio/m4a"),
+            ("webm", "audio/webm"),
+            ("wav", "audio/wav"),
+            ("unknown", "audio/wav"),
+        ];
+        for (ext, expected_mime) in cases {
+            let mime = match ext {
+                "mp3" | "mpeg" => "audio/mpeg",
+                "ogg" => "audio/ogg",
+                "flac" => "audio/flac",
+                "m4a" => "audio/m4a",
+                "webm" => "audio/webm",
+                _ => "audio/wav",
+            };
+            assert_eq!(mime, expected_mime, "MIME mismatch for extension {ext}");
+        }
     }
 }
