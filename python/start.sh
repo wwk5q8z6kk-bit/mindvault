@@ -21,14 +21,15 @@ read_keychain() {
 read_keychain OPENAI_API_KEY
 read_keychain MINDVAULT_AUTH_TOKEN
 
-# Ensure uv/uvicorn are on PATH
-export PATH="$HOME/.local/bin:$PATH"
-
 # Change to the python project directory
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Use the venv's Python directly (avoids uv re-resolution picking incompatible versions)
+VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python3"
 
 # Exec uvicorn (replaces this shell process)
-exec uv run uvicorn mindvault_ai.main:app \
+exec "$VENV_PYTHON" -m uvicorn mindvault_ai.main:app \
     --host 127.0.0.1 \
     --port 8100 \
     --workers 1 \
