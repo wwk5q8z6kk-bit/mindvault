@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { enrichClip } from './clips';
+import { markApiSuccess } from '$lib/stores/api-health';
 
 const API_BASE = 'http://127.0.0.1:9470';
 
@@ -8,6 +9,7 @@ describe('clips api client', () => {
 
 	beforeEach(() => {
 		vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+		markApiSuccess('/test-init');
 	});
 
 	afterEach(() => {

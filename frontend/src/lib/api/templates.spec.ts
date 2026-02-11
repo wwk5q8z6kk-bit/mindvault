@@ -7,6 +7,7 @@ import {
 	restoreTemplateVersion
 } from './templates';
 import type { KnowledgeNode } from './types';
+import { markApiSuccess } from '$lib/stores/api-health';
 
 const API_BASE = 'http://127.0.0.1:9470';
 
@@ -15,6 +16,7 @@ describe('templates api client', () => {
 
 	beforeEach(() => {
 		vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+		markApiSuccess('/test-init');
 	});
 
 	afterEach(() => {

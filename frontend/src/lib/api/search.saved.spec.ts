@@ -7,6 +7,7 @@ import {
 	updateSavedSearch,
 	type SavedSearch
 } from './search';
+import { markApiSuccess } from '$lib/stores/api-health';
 
 const API_BASE = 'http://127.0.0.1:9470';
 
@@ -15,6 +16,7 @@ describe('saved search api client', () => {
 
 	beforeEach(() => {
 		vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+		markApiSuccess('/test-init');
 	});
 
 	afterEach(() => {

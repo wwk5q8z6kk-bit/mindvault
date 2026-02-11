@@ -6,6 +6,7 @@ import {
 	normalizeBookmarkUrl,
 	setBookmarkRead
 } from './bookmarks';
+import { markApiSuccess } from '$lib/stores/api-health';
 
 const API_BASE = 'http://127.0.0.1:9470';
 
@@ -13,6 +14,7 @@ describe('bookmarks api client', () => {
 	const fetchMock = vi.fn();
 
 	beforeEach(() => {
+		markApiSuccess('/test-init');
 		vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
 	});
 
