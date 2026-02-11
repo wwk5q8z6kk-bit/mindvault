@@ -67,7 +67,7 @@ pub async fn get_prompt(
 ) -> Result<Vec<PromptMessage>, String> {
     match name {
         "summarize" => prompt_summarize(engine, ctx, args).await,
-        "extract_tasks" => prompt_extract_tasks(engine, args).await,
+        "extract_tasks" => prompt_extract_tasks(engine, ctx, args).await,
         "daily_briefing" => prompt_daily_briefing(engine, ctx, args).await,
         _ => Err(format!("unknown prompt: {name}")),
     }
@@ -141,8 +141,13 @@ async fn prompt_summarize(
 
 async fn prompt_extract_tasks(
     _engine: &Arc<MindVaultEngine>,
+    ctx: &McpContext,
     args: &Value,
 ) -> Result<Vec<PromptMessage>, String> {
+    ctx.scope()
+        .ensure_action("mcp.read")
+        .map_err(|e| format!("scope error: {e}"))?;
+
     let content = args
         .get("content")
         .and_then(|v| v.as_str())
