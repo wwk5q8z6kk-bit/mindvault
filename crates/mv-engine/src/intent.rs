@@ -140,12 +140,12 @@ impl IntentEngine {
         // Extract date hints as parameters
         let mut params = serde_json::Map::new();
         if let Some(relative) = self.parse_relative_date(&content_lower) {
-            params.insert("relative_time".into(), relative.into());
+            params.insert("relative_time".to_string(), relative.into());
         }
 
         // Extract the reminder subject (what to be reminded about)
         if let Some(subject) = self.extract_reminder_subject(&content_lower) {
-            params.insert("subject".into(), subject.into());
+            params.insert("subject".to_string(), subject.into());
         }
 
         if !params.is_empty() {
@@ -191,18 +191,18 @@ impl IntentEngine {
 
         // Extract priority
         if let Some((priority, label)) = self.detect_priority(&content_lower) {
-            params.insert("priority".into(), serde_json::json!(priority));
-            params.insert("priority_label".into(), label.into());
+            params.insert("priority".to_string(), serde_json::json!(priority));
+            params.insert("priority_label".to_string(), label.into());
         }
 
         // Extract deadline
         if let Some(deadline) = self.detect_deadline(&content_lower) {
-            params.insert("deadline_relative".into(), deadline.into());
+            params.insert("deadline_relative".to_string(), deadline.into());
         }
 
         // Extract dependency hints
         if let Some(dep) = self.detect_dependency(&content_lower) {
-            params.insert("depends_on".into(), dep.into());
+            params.insert("depends_on".to_string(), dep.into());
         }
 
         if !params.is_empty() {
@@ -231,8 +231,8 @@ impl IntentEngine {
                                 .with_confidence(0.85);
 
                             let mut params = serde_json::Map::new();
-                            params.insert("target".into(), target.into());
-                            params.insert("link_type".into(), "wikilink".into());
+                            params.insert("target".to_string(), target.into());
+                            params.insert("link_type".to_string(), serde_json::Value::String("wikilink".to_string()));
                             intent.parameters = serde_json::Value::Object(params);
 
                             intents.push(intent);
@@ -260,8 +260,8 @@ impl IntentEngine {
                         .with_confidence(0.75);
 
                     let mut params = serde_json::Map::new();
-                    params.insert("target".into(), mention.to_string().into());
-                    params.insert("link_type".into(), "mention".into());
+                    params.insert("target".to_string(), mention.to_string().into());
+                    params.insert("link_type".to_string(), serde_json::Value::String("mention".to_string()));
                     intent.parameters = serde_json::Value::Object(params);
 
                     intents.push(intent);
@@ -294,7 +294,7 @@ impl IntentEngine {
                     CapturedIntent::new(node.id, IntentType::SuggestTag).with_confidence(0.8);
 
                 let mut params = serde_json::Map::new();
-                params.insert("tag".into(), tag.into());
+                params.insert("tag".to_string(), tag.into());
                 intent.parameters = serde_json::Value::Object(params);
 
                 intents.push(intent);
@@ -427,30 +427,30 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
                 IntentType::ScheduleReminder => {
                     if !params.contains_key("relative_time") && !params.contains_key("reminder_at") {
                         if let Some(relative) = self.parse_relative_date(&content_lower) {
-                            params.insert("relative_time".into(), relative.into());
+                            params.insert("relative_time".to_string(), relative.into());
                         }
                     }
                     if !params.contains_key("subject") {
                         if let Some(subject) = self.extract_reminder_subject(&content_lower) {
-                            params.insert("subject".into(), subject.into());
+                            params.insert("subject".to_string(), subject.into());
                         }
                     }
                 }
                 IntentType::ExtractTask => {
                     if !params.contains_key("priority") {
                         if let Some((priority, label)) = self.detect_priority(&content_lower) {
-                            params.insert("priority".into(), serde_json::json!(priority));
-                            params.insert("priority_label".into(), label.into());
+                            params.insert("priority".to_string(), serde_json::json!(priority));
+                            params.insert("priority_label".to_string(), label.into());
                         }
                     }
                     if !params.contains_key("deadline_relative") && !params.contains_key("deadline") {
                         if let Some(deadline) = self.detect_deadline(&content_lower) {
-                            params.insert("deadline_relative".into(), deadline.into());
+                            params.insert("deadline_relative".to_string(), deadline.into());
                         }
                     }
                     if !params.contains_key("depends_on") {
                         if let Some(dep) = self.detect_dependency(&content_lower) {
-                            params.insert("depends_on".into(), dep.into());
+                            params.insert("depends_on".to_string(), dep.into());
                         }
                     }
                 }
@@ -474,13 +474,13 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
     fn parse_relative_date(&self, content: &str) -> Option<String> {
         // Exact matches (most specific first)
         if content.contains("this evening") || content.contains("tonight") {
-            return Some("today".into());
+            return Some("today".to_string());
         }
         if content.contains("tomorrow morning") || content.contains("tomorrow") {
-            return Some("tomorrow".into());
+            return Some("tomorrow".to_string());
         }
         if content.contains("day after tomorrow") {
-            return Some("in_2_days".into());
+            return Some("in_2_days".to_string());
         }
         if content.contains("this weekend") {
             let now = Utc::now();
@@ -534,10 +534,10 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
 
         // Generic relative periods
         if content.contains("next week") {
-            return Some("next_week".into());
+            return Some("next_week".to_string());
         }
         if content.contains("next month") {
-            return Some("next_month".into());
+            return Some("next_month".to_string());
         }
         if content.contains("end of week") || content.contains("eow") {
             let now = Utc::now();
@@ -549,7 +549,7 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
             return Some(format!("in_{}_days", days));
         }
         if content.contains("end of month") || content.contains("eom") {
-            return Some("end_of_month".into());
+            return Some("end_of_month".to_string());
         }
 
         None
@@ -565,7 +565,7 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
                     match window[2].trim_end_matches(|c: char| !c.is_alphabetic()) {
                         "day" | "days" => return Some(format!("in_{}_days", n)),
                         "week" | "weeks" => return Some(format!("in_{}_days", n * 7)),
-                        "hour" | "hours" => return Some("today".into()),
+                        "hour" | "hours" => return Some("today".to_string()),
                         _ => {}
                     }
                 }
@@ -615,7 +615,7 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
     fn detect_priority(&self, content: &str) -> Option<(i32, String)> {
         // Explicit priority markers
         if content.contains("p0") || content.contains("critical") {
-            return Some((0, "critical".into()));
+            return Some((0, "critical".to_string()));
         }
         if content.contains("p1")
             || content.contains("urgent")
@@ -623,13 +623,13 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
             || content.contains("immediately")
             || content.contains("right away")
         {
-            return Some((1, "high".into()));
+            return Some((1, "high".to_string()));
         }
         if content.contains("p2") || content.contains("high priority") {
-            return Some((1, "high".into()));
+            return Some((1, "high".to_string()));
         }
         if content.contains("low priority") || content.contains("p3") || content.contains("when possible") {
-            return Some((3, "low".into()));
+            return Some((3, "low".to_string()));
         }
 
         // Infer from urgency signals
@@ -638,7 +638,7 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
             || content.contains("blocking")
             || content.contains("blocker")
         {
-            return Some((1, "high".into()));
+            return Some((1, "high".to_string()));
         }
 
         None
@@ -891,6 +891,7 @@ mod tests {
         let engine = IntentEngine::new(Arc::clone(&store));
 
         let node = make_node("TODO: Fix bug #urgent");
+        store.nodes.insert(&node).await.unwrap();
         let first = engine.extract_intents_and_store(&node).await.unwrap();
         assert!(!first.is_empty());
 

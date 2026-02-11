@@ -33,13 +33,13 @@ pub struct KnowledgeNode {
 }
 
 impl KnowledgeNode {
-    pub fn new(kind: NodeKind, content: String) -> Self {
+    pub fn new(kind: NodeKind, content: impl Into<String>) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::now_v7(),
             kind,
             title: None,
-            content,
+            content: content.into(),
             source: None,
             namespace: "default".into(),
             tags: Vec::new(),

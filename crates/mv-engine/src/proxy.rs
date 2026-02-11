@@ -83,8 +83,9 @@ fn check_ssrf(url: &str) -> Result<(), String> {
         .host_str()
         .ok_or_else(|| "URL has no host".to_string())?;
 
-    // Try parsing as IP directly
-    if let Ok(ip) = host.parse::<IpAddr>() {
+    // Try parsing as IP directly (strip brackets for IPv6 URIs like [::1])
+    let host_bare = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = host_bare.parse::<IpAddr>() {
         if is_private_ip(ip) {
             return Err(format!("blocked: private IP address {host}"));
         }
