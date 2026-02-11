@@ -71,6 +71,7 @@ A modern web-based administrative interface for MindVault, providing an intuitiv
 - **Audit Pagination**: Incremental "Load More" audit retrieval for large activity streams
 - **Runtime Settings**: Configure API base, suggestion toggles, and auto-suggest cooldown from the Stats tab
 - **Panel Status Indicators**: Each tab shows loading state and last refresh timestamp
+- **Reset Confirmation Toggle**: Optional confirm dialog for per-tab reset actions
 
 ## Getting Started
 
@@ -116,6 +117,7 @@ cors_allowed_origins = ["http://localhost:3000", "http://localhost:8080"]
 4. **Save Reusable Queries**: Provide a name and click "Save Current Search"
 5. **Run Saved Queries**: Use "Run" to execute stored filters instantly
 6. **Persistent Inputs**: Search form and filter inputs are remembered between sessions
+7. **Reset Tab Inputs**: Each tab now has a “Reset Tab” action to clear only that panel’s saved inputs
 6. **Update Active Presets**: Load a saved query, edit fields, then click "Update Active"
 7. **View Results**: Browse scored results with match source information
 

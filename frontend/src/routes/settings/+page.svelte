@@ -34,6 +34,12 @@
 		KNOWN_SECRETS,
 		type BackendStatus
 	} from '$lib/api/secrets';
+	import {
+		listBlockedSenders,
+		addBlockedSender,
+		removeBlockedSender,
+		type BlockedSender
+	} from '$lib/api/safeguards';
 	import { listAdapterStatuses, type AdapterStatus } from '$lib/api/adapters';
 	import { fetchAiModels } from '$lib/api/agent';
 	import type { ModelRegistry } from '$lib/api/types';
@@ -109,6 +115,67 @@
 	/** All keys that are currently stored across any backend. */
 	$: storedKeys = new Set(credBackends.flatMap((b) => b.keys));
 
+	// Blocked senders
+	let blockedSenders: BlockedSender[] = [];
+	let blockedLoading = false;
+	let blockedError = '';
+	let addingBlocked = false;
+	let removingBlockedId = '';
+	let newBlockedType: BlockedSender['sender_type'] = 'relay';
+	let newBlockedPattern = '';
+	let newBlockedReason = '';
+	let newBlockedExpires = '';
+
+	async function loadBlockedSenders() {
+		blockedLoading = true;
+		blockedError = '';
+		try {
+			blockedSenders = await listBlockedSenders();
+		} catch (e: any) {
+			blockedError = e?.message ?? 'Failed to load blocked senders';
+		} finally {
+			blockedLoading = false;
+		}
+	}
+
+	async function handleAddBlocked() {
+		if (!newBlockedPattern.trim()) return;
+		addingBlocked = true;
+		try {
+			const expiresAt = newBlockedExpires
+				? new Date(newBlockedExpires).toISOString()
+				: undefined;
+			const created = await addBlockedSender({
+				sender_type: newBlockedType,
+				sender_pattern: newBlockedPattern.trim(),
+				reason: newBlockedReason.trim() || undefined,
+				expires_at: expiresAt
+			});
+			blockedSenders = [created, ...blockedSenders];
+			newBlockedPattern = '';
+			newBlockedReason = '';
+			newBlockedExpires = '';
+			pushToast('Sender blocked', 'success');
+		} catch (e: any) {
+			pushToast(e?.message ?? 'Failed to block sender', 'danger');
+		} finally {
+			addingBlocked = false;
+		}
+	}
+
+	async function handleRemoveBlocked(id: string) {
+		removingBlockedId = id;
+		try {
+			await removeBlockedSender(id);
+			blockedSenders = blockedSenders.filter((item) => item.id !== id);
+			pushToast('Sender unblocked', 'success');
+		} catch (e: any) {
+			pushToast(e?.message ?? 'Failed to remove block', 'danger');
+		} finally {
+			removingBlockedId = '';
+		}
+	}
+
 	async function loadCredentials() {
 		credLoading = true;
 		credError = '';
@@ -178,6 +245,9 @@
 		}
 	}
 	loadBackendModels();
+
+	// Load blocked senders on mount
+	loadBlockedSenders();
 
 	function handleThemeChange(mode: ThemeMode) {
 		setTheme(mode);
@@ -856,6 +926,133 @@
 						{addSecretBusy ? 'Storing...' : 'Store'}
 					</button>
 				</div>
+			</div>
+		</section>
+
+		<!-- Blocked Senders -->
+		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+			<div class="flex items-center justify-between">
+				<div>
+					<h3 class="text-sm font-semibold text-white">Blocked Senders</h3>
+					<p class="mt-1 text-[11px] text-slate-400">
+						Block inbound relay messages or proposal senders by pattern (glob match).
+					</p>
+				</div>
+				<button
+					class="rounded-lg border border-slate-700 px-2.5 py-1.5 text-[10px] text-slate-300 hover:bg-slate-800"
+					on:click={loadBlockedSenders}
+					disabled={blockedLoading}
+				>
+					{blockedLoading ? 'Loading...' : 'Refresh'}
+				</button>
+			</div>
+
+			{#if blockedError}
+				<div
+					class="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300"
+				>
+					{blockedError}
+				</div>
+			{/if}
+
+			<div class="mt-3 space-y-2">
+				{#if blockedSenders.length === 0}
+					<p class="text-xs text-slate-500">No blocked senders configured.</p>
+				{:else}
+					{#each blockedSenders as sender (sender.id)}
+						<div class="rounded-lg border border-slate-800/60 px-3 py-2.5">
+							<div class="flex items-center justify-between gap-2">
+								<div class="min-w-0">
+									<div class="flex items-center gap-2">
+										<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300">
+											{sender.sender_type}
+										</span>
+										<span class="truncate text-xs text-white">{sender.sender_pattern}</span>
+									</div>
+									<div class="mt-1 text-[10px] text-slate-500">
+										{#if sender.reason}
+											Reason: {sender.reason}
+										{:else}
+											No reason specified
+										{/if}
+										{#if sender.expires_at}
+											&nbsp;· Expires {new Date(sender.expires_at).toLocaleString()}
+										{/if}
+									</div>
+								</div>
+								<button
+									class="rounded-md border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+									on:click={() => handleRemoveBlocked(sender.id)}
+									disabled={removingBlockedId === sender.id}
+								>
+									{removingBlockedId === sender.id ? 'Removing...' : 'Remove'}
+								</button>
+							</div>
+						</div>
+					{/each}
+				{/if}
+			</div>
+
+			<div class="mt-4 border-t border-slate-800/60 pt-4">
+				<h4 class="text-[10px] uppercase tracking-wider text-slate-500">Add Block</h4>
+				<div class="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
+					<div>
+						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="blocked-type"
+							>Sender Type</label
+						>
+						<select
+							id="blocked-type"
+							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							bind:value={newBlockedType}
+						>
+							<option value="relay">Relay</option>
+							<option value="agent">Agent</option>
+							<option value="mcp">MCP</option>
+							<option value="webhook">Webhook</option>
+							<option value="watcher">Watcher</option>
+						</select>
+					</div>
+					<div>
+						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="blocked-pattern"
+							>Pattern</label
+						>
+						<input
+							id="blocked-pattern"
+							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							placeholder="e.g. alice@example.com or *spam*"
+							bind:value={newBlockedPattern}
+						/>
+					</div>
+					<div>
+						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="blocked-reason"
+							>Reason (optional)</label
+						>
+						<input
+							id="blocked-reason"
+							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							placeholder="Why this sender is blocked"
+							bind:value={newBlockedReason}
+						/>
+					</div>
+					<div>
+						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="blocked-expires"
+							>Expires (optional)</label
+						>
+						<input
+							id="blocked-expires"
+							type="datetime-local"
+							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							bind:value={newBlockedExpires}
+						/>
+					</div>
+				</div>
+				<button
+					class="mt-3 rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+					on:click={handleAddBlocked}
+					disabled={addingBlocked || !newBlockedPattern.trim()}
+				>
+					{addingBlocked ? 'Blocking...' : 'Block Sender'}
+				</button>
 			</div>
 		</section>
 

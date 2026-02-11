@@ -3,14 +3,16 @@ const SETTINGS_KEYS = {
   autoSuggest: 'mindvaultSettingAutoSuggest',
   autoComplete: 'mindvaultSettingAutoComplete',
   autoLinking: 'mindvaultSettingAutoLinking',
-  autoSuggestCooldown: 'mindvaultSettingAutoSuggestCooldownMinutes'
+  autoSuggestCooldown: 'mindvaultSettingAutoSuggestCooldownMinutes',
+  confirmTabReset: 'mindvaultSettingConfirmTabReset'
 };
 
 const DEFAULT_SETTINGS = {
   autoSuggest: true,
   autoComplete: true,
   autoLinking: true,
-  autoSuggestCooldownMinutes: 0
+  autoSuggestCooldownMinutes: 0,
+  confirmTabReset: true
 };
 
 function readBool(key, fallback) {
@@ -67,6 +69,10 @@ export const settingsFeature = {
     this.autoSuggestCooldownMinutes = normalizeCooldownMinutes(
       readNumber(SETTINGS_KEYS.autoSuggestCooldown, DEFAULT_SETTINGS.autoSuggestCooldownMinutes)
     );
+    this.confirmResetEnabled = readBool(
+      SETTINGS_KEYS.confirmTabReset,
+      DEFAULT_SETTINGS.confirmTabReset
+    );
     this.apiBaseOverride = normalizeApiBase(localStorage.getItem(SETTINGS_KEYS.apiBase));
   },
 
@@ -107,6 +113,11 @@ export const settingsFeature = {
     const settingsAutoLink = document.getElementById('settings-auto-link');
     if (settingsAutoLink) {
       settingsAutoLink.checked = Boolean(this.autoLinkingEnabled);
+    }
+
+    const settingsConfirmReset = document.getElementById('settings-confirm-reset');
+    if (settingsConfirmReset) {
+      settingsConfirmReset.checked = Boolean(this.confirmResetEnabled);
     }
 
     const suggestCooldown = document.getElementById('settings-suggest-cooldown');
@@ -191,6 +202,13 @@ export const settingsFeature = {
           this.clearWikiLinkSuggestions();
           this.hideWysiwygWikiLinkSuggestions();
         }
+      });
+    }
+
+    if (settingsConfirmReset) {
+      settingsConfirmReset.addEventListener('change', () => {
+        this.confirmResetEnabled = Boolean(settingsConfirmReset.checked);
+        this.persistSetting('confirmTabReset', this.confirmResetEnabled);
       });
     }
 

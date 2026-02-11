@@ -42,8 +42,70 @@ const FORM_STATE_FIELDS = [
     { id: 'calendar-anchor', key: 'mindvaultFormCalendarAnchor', type: 'text' },
     { id: 'calendar-namespace', key: 'mindvaultFormCalendarNamespace', type: 'text' },
     { id: 'calendar-include-completed', key: 'mindvaultFormCalendarIncludeCompleted', type: 'checkbox' },
-    { id: 'calendar-import-overwrite', key: 'mindvaultFormCalendarImportOverwrite', type: 'checkbox' }
+    { id: 'calendar-import-overwrite', key: 'mindvaultFormCalendarImportOverwrite', type: 'checkbox' },
+    { id: 'template-namespace-filter', key: 'mindvaultFormTemplateNamespaceFilter', type: 'text' },
+    { id: 'template-kind-filter', key: 'mindvaultFormTemplateKindFilter', type: 'select' },
+    { id: 'template-pack-namespace', key: 'mindvaultFormTemplatePackNamespace', type: 'text' },
+    { id: 'template-pack-tags', key: 'mindvaultFormTemplatePackTags', type: 'text' },
+    { id: 'template-pack-overwrite', key: 'mindvaultFormTemplatePackOverwrite', type: 'checkbox' },
+    { id: 'template-create-namespace', key: 'mindvaultFormTemplateCreateNamespace', type: 'text' },
+    { id: 'template-instance-namespace', key: 'mindvaultFormTemplateInstanceNamespace', type: 'text' },
+    { id: 'template-instance-title', key: 'mindvaultFormTemplateInstanceTitle', type: 'text' },
+    { id: 'template-instance-tags', key: 'mindvaultFormTemplateInstanceTags', type: 'text' },
+    { id: 'audit-limit', key: 'mindvaultFormAuditLimit', type: 'number' },
+    { id: 'audit-subject', key: 'mindvaultFormAuditSubject', type: 'text' },
+    { id: 'audit-action', key: 'mindvaultFormAuditAction', type: 'text' },
+    { id: 'audit-since', key: 'mindvaultFormAuditSince', type: 'text' }
 ];
+const FORM_STATE_GROUPS = {
+    nodes: ['node-kind-filter', 'node-namespace-filter'],
+    search: [
+        'search-query',
+        'search-strategy',
+        'search-limit',
+        'saved-search-name',
+        'saved-search-description',
+        'saved-search-target-namespace',
+        'saved-search-kinds',
+        'saved-search-tags',
+        'saved-search-min-score',
+        'saved-search-min-importance'
+    ],
+    graph: ['graph-node-id', 'graph-depth'],
+    daily: [
+        'daily-namespace',
+        'daily-date',
+        'due-before',
+        'due-include-completed',
+        'focus-limit',
+        'focus-include-completed',
+        'focus-include-no-due'
+    ],
+    calendar: [
+        'calendar-view',
+        'calendar-anchor',
+        'calendar-namespace',
+        'calendar-include-completed',
+        'calendar-import-overwrite'
+    ],
+    templates: [
+        'template-namespace-filter',
+        'template-kind-filter',
+        'template-pack-namespace',
+        'template-pack-tags',
+        'template-pack-overwrite',
+        'template-create-namespace',
+        'template-instance-namespace',
+        'template-instance-title',
+        'template-instance-tags'
+    ],
+    stats: [
+        'audit-limit',
+        'audit-subject',
+        'audit-action',
+        'audit-since'
+    ]
+};
 
 
 export class MindVaultAdmin {
@@ -99,6 +161,7 @@ export class MindVaultAdmin {
         this.autoSuggestPausedUntil = this.readAutoSuggestPausedUntil();
         this.autoSuggestPauseTicker = null;
         this.formStateDefaults = null;
+        this.confirmResetEnabled = this.confirmResetEnabled ?? true;
 
         this.richEditor = document.getElementById('rich-editor');
         this.markdownEditor = document.getElementById('markdown-editor');
@@ -624,11 +687,98 @@ export class MindVaultAdmin {
         const resetFormStateBtn = document.getElementById('reset-form-state-btn');
         if (resetFormStateBtn) {
             resetFormStateBtn.addEventListener('click', () => {
-                if (!window.confirm('Clear all saved inputs and restore defaults?')) {
+                if (!this.shouldConfirmReset('Clear all saved inputs and restore defaults?')) {
                     return;
                 }
                 this.resetFormState();
                 this.showNotification('Saved inputs cleared.', 'success');
+            });
+        }
+        const resetNodesStateBtn = document.getElementById('reset-nodes-state-btn');
+        if (resetNodesStateBtn) {
+            resetNodesStateBtn.addEventListener('click', () => {
+                if (!this.shouldConfirmReset('Reset Nodes tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('nodes');
+                this.loadNodes();
+            });
+        }
+        const resetSearchStateBtn = document.getElementById('reset-search-state-btn');
+        if (resetSearchStateBtn) {
+            resetSearchStateBtn.addEventListener('click', () => {
+                if (!this.shouldConfirmReset('Reset Search tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('search');
+                this.activeSavedSearchId = null;
+                this.renderSavedSearches();
+                this.renderSearchResults([]);
+            });
+        }
+        const resetGraphStateBtn = document.getElementById('reset-graph-state-btn');
+        if (resetGraphStateBtn) {
+            resetGraphStateBtn.addEventListener('click', () => {
+                if (!this.shouldConfirmReset('Reset Graph tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('graph');
+                const graphContainer = document.getElementById('graph-container');
+                if (graphContainer) {
+                    graphContainer.innerHTML = '<p>Enter a node ID to load a graph.</p>';
+                }
+            });
+        }
+        const resetDailyStateBtn = document.getElementById('reset-daily-state-btn');
+        if (resetDailyStateBtn) {
+            resetDailyStateBtn.addEventListener('click', () => {
+                if (!this.shouldConfirmReset('Reset Daily Notes tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('daily');
+                this.loadDailyNotes();
+                this.loadDueTasks();
+                this.loadFocusTasks();
+            });
+        }
+        const resetCalendarStateBtn = document.getElementById('reset-calendar-state-btn');
+        if (resetCalendarStateBtn) {
+            resetCalendarStateBtn.addEventListener('click', () => {
+                if (!this.shouldConfirmReset('Reset Calendar tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('calendar');
+                this.loadCalendarItems();
+            });
+        }
+        const resetTemplatesStateBtn = document.getElementById('reset-templates-state-btn');
+        if (resetTemplatesStateBtn) {
+            resetTemplatesStateBtn.addEventListener('click', () => {
+                if (!this.shouldConfirmReset('Reset Templates tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('templates');
+                this.loadTemplatePacks();
+                this.loadTemplates();
+            });
+        }
+        const resetAccessStateBtn = document.getElementById('reset-access-state-btn');
+        if (resetAccessStateBtn) {
+            resetAccessStateBtn.addEventListener('click', () => {
+                if (!this.shouldConfirmReset('Reset Access tab inputs?')) {
+                    return;
+                }
+                this.resetAccessTabState();
+            });
+        }
+        const resetStatsStateBtn = document.getElementById('reset-stats-state-btn');
+        if (resetStatsStateBtn) {
+            resetStatsStateBtn.addEventListener('click', () => {
+                if (!this.shouldConfirmReset('Reset Stats tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('stats');
+                this.loadStats();
             });
         }
         document.getElementById('ai-transform-btn').addEventListener('click', () => {
@@ -2327,6 +2477,66 @@ export class MindVaultAdmin {
             localStorage.removeItem(field.key);
         });
         this.applyFormStateDefaults();
+    }
+
+    resetFormStateGroup(groupKey) {
+        const ids = FORM_STATE_GROUPS[groupKey] || [];
+        if (ids.length === 0) {
+            return;
+        }
+        ids.forEach((id) => {
+            const field = FORM_STATE_FIELDS.find((entry) => entry.id === id);
+            if (!field) {
+                return;
+            }
+            localStorage.removeItem(field.key);
+        });
+        this.applyFormStateDefaultsForIds(ids);
+        this.showNotification('Tab inputs reset.', 'success');
+    }
+
+    applyFormStateDefaultsForIds(ids) {
+        if (!this.formStateDefaults) {
+            return;
+        }
+        ids.forEach((id) => {
+            const field = FORM_STATE_FIELDS.find((entry) => entry.id === id);
+            const el = document.getElementById(id);
+            if (!field || !el || !this.formStateDefaults.has(id)) {
+                return;
+            }
+            const value = this.formStateDefaults.get(id);
+            if (field.type === 'checkbox') {
+                el.checked = Boolean(value);
+            } else {
+                el.value = value;
+            }
+        });
+        this.syncNodeFiltersFromInputs();
+    }
+
+    shouldConfirmReset(message) {
+        if (!this.confirmResetEnabled) {
+            return true;
+        }
+        return window.confirm(message);
+    }
+
+    resetAccessTabState() {
+        this.resetPermissionTemplateForm();
+        const accessKeyForm = document.getElementById('access-key-form');
+        if (accessKeyForm && typeof accessKeyForm.reset === 'function') {
+            accessKeyForm.reset();
+        }
+        if (this.accessKeyOutput) {
+            this.accessKeyOutput.classList.add('is-hidden');
+        }
+        if (this.accessKeyToken) {
+            this.accessKeyToken.textContent = '';
+        }
+        this.loadPermissionTemplates();
+        this.loadAccessKeys();
+        this.showNotification('Access tab reset.', 'success');
     }
 
     cachePanelStatus() {

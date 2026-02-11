@@ -44,13 +44,15 @@ impl SqliteNodeStore {
         f(&conn)
     }
 
-    /// Convenience: access the first connection directly (for migrations and
-    /// code that still uses `self.conn().lock()`). This preserves backward
-    /// compatibility with existing trait impls that haven't migrated to
-    /// `with_conn` yet.
+    /// Access a pooled connection via round-robin, matching `with_conn`
+    /// distribution. Callers must `.lock()` the returned mutex.
     #[inline]
     fn conn(&self) -> &Mutex<Connection> {
-        &self.pool[0]
+        let idx = self
+            .next_slot
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.pool.len();
+        &self.pool[idx]
     }
 }
 
