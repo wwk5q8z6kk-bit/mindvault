@@ -108,12 +108,12 @@ impl CredentialBackend for KeychainBackend {
 
     fn set(&self, key: &str, value: &str) -> Result<(), CredentialError> {
         if !self.keychain.is_unsealed_sync() {
-            return Err(CredentialError::EncryptedFile("vault is sealed".into()));
+            return Err(CredentialError::EncryptedFile("vault is sealed".to_string()));
         }
 
         let domain_id = self
             .resolve_domain()?
-            .ok_or_else(|| CredentialError::EncryptedFile("vault is sealed".into()))?;
+            .ok_or_else(|| CredentialError::EncryptedFile("vault is sealed".to_string()))?;
 
         let kc = Arc::clone(&self.keychain);
         let key_owned = key.to_string();
@@ -138,7 +138,7 @@ impl CredentialBackend for KeychainBackend {
 
     fn delete(&self, key: &str) -> Result<(), CredentialError> {
         if !self.keychain.is_unsealed_sync() {
-            return Err(CredentialError::EncryptedFile("vault is sealed".into()));
+            return Err(CredentialError::EncryptedFile("vault is sealed".to_string()));
         }
 
         let domain_id = match self.resolve_domain()? {

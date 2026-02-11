@@ -60,12 +60,12 @@ pub fn export_vault(db_path: &Path, password: &str) -> Result<Vec<u8>, String> {
 /// Import (restore) an encrypted vault backup.
 pub fn import_vault(data: &[u8], password: &str, db_path: &Path) -> Result<(), String> {
     if data.len() < HEADER_SIZE + 16 + HMAC_SIZE {
-        return Err("backup data too short".into());
+        return Err("backup data too short".to_string());
     }
 
     // Verify magic
     if &data[0..4] != MAGIC {
-        return Err("invalid backup magic".into());
+        return Err("invalid backup magic".to_string());
     }
 
     // Verify version
@@ -87,7 +87,7 @@ pub fn import_vault(data: &[u8], password: &str, db_path: &Path) -> Result<(), S
     mac.update(&data[..data.len() - HMAC_SIZE]);
     let computed_hmac = mac.finalize().into_bytes();
     if !constant_time_eq(&computed_hmac, stored_hmac) {
-        return Err("HMAC verification failed — wrong password or corrupted backup".into());
+        return Err("HMAC verification failed — wrong password or corrupted backup".to_string());
     }
 
     // Decrypt

@@ -112,14 +112,14 @@ pub fn parse_obsidian_note(
 
     // Build metadata from remaining frontmatter keys
     let mut metadata: HashMap<String, serde_json::Value> = HashMap::new();
-    metadata.insert("import_mtime".into(), serde_json::Value::String(mtime));
+    metadata.insert("import_mtime".to_string(), serde_json::Value::String(mtime));
     metadata.insert(
-        "import_source_path".into(),
+        "import_source_path".to_string(),
         serde_json::Value::String(relative_str.clone()),
     );
 
     if let Some(aliases) = frontmatter.get("aliases") {
-        metadata.insert("aliases".into(), aliases.clone());
+        metadata.insert("aliases".to_string(), aliases.clone());
     }
 
     // Store any extra frontmatter keys into metadata
@@ -696,14 +696,14 @@ mod tests {
     #[test]
     fn test_determine_kind_task() {
         let mut fm = HashMap::new();
-        fm.insert("type".into(), serde_json::Value::String("task".into()));
+        fm.insert("type".to_string(), serde_json::Value::String("task".to_string()));
         assert_eq!(determine_kind(&fm), NodeKind::Task);
     }
 
     #[test]
     fn test_determine_kind_todo() {
         let mut fm = HashMap::new();
-        fm.insert("type".into(), serde_json::Value::String("todo".into()));
+        fm.insert("type".to_string(), serde_json::Value::String("todo".to_string()));
         assert_eq!(determine_kind(&fm), NodeKind::Task);
     }
 
@@ -711,8 +711,8 @@ mod tests {
     fn test_determine_kind_event_from_date() {
         let mut fm = HashMap::new();
         fm.insert(
-            "date".into(),
-            serde_json::Value::String("2024-01-15".into()),
+            "date".to_string(),
+            serde_json::Value::String("2024-01-15".to_string()),
         );
         assert_eq!(determine_kind(&fm), NodeKind::Event);
     }
@@ -733,8 +733,8 @@ mod tests {
     fn test_extract_frontmatter_tags_string() {
         let mut fm = HashMap::new();
         fm.insert(
-            "tags".into(),
-            serde_json::Value::String("alpha, beta, gamma".into()),
+            "tags".to_string(),
+            serde_json::Value::String("alpha, beta, gamma".to_string()),
         );
         let tags = extract_frontmatter_tags(&fm);
         assert_eq!(tags, vec!["alpha", "beta", "gamma"]);

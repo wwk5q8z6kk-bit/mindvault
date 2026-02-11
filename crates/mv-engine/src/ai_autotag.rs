@@ -308,8 +308,8 @@ mod tests {
     fn merge_tags_with_existing_deduplicates_case_insensitive() {
         let auto_tagger = KnowledgeVaultIndexNoteEmbeddingAutoTagger::new();
         let merged = auto_tagger.merge_tags_with_existing(
-            &["Rust".into(), "backend".into()],
-            vec!["rust".into(), "tokio".into()],
+            &["Rust".to_string(), "backend".to_string()],
+            vec!["rust".to_string(), "tokio".to_string()],
             10,
         );
         assert_eq!(merged, vec!["Rust", "backend", "tokio"]);
@@ -320,7 +320,7 @@ mod tests {
         let auto_tagger = KnowledgeVaultIndexNoteEmbeddingAutoTagger::new();
         let node = KnowledgeNode::new(
             NodeKind::Fact,
-            "The system stores memory and indexes memory quickly".into(),
+            "The system stores memory and indexes memory quickly".to_string(),
         )
         .with_title("Memory indexing");
         let scores = auto_tagger.collect_lexical_candidate_scores(&node, 4);

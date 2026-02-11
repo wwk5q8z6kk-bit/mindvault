@@ -129,19 +129,19 @@ pub fn validate_recurrence_metadata_for_kind(
     if metadata.contains_key(TASK_RECURRENCE_METADATA_KEY)
         && !matches!(kind, NodeKind::Task | NodeKind::Template)
     {
-        return Err("task_recurrence is only supported for kind=task or kind=template".into());
+        return Err("task_recurrence is only supported for kind=task or kind=template".to_string());
     }
 
     if let Some(_rule) = parse_task_recurrence_rule(metadata)? {
         if !matches!(kind, NodeKind::Task | NodeKind::Template) {
-            return Err("task_recurrence is only supported for kind=task or kind=template".into());
+            return Err("task_recurrence is only supported for kind=task or kind=template".to_string());
         }
     }
 
     if let Some(_due_at) = parse_optional_metadata_datetime(metadata, TASK_DUE_AT_METADATA_KEY)? {
         if !matches!(kind, NodeKind::Task | NodeKind::Event | NodeKind::Template) {
             return Err(
-                "task_due_at is only supported for kind=task, kind=event, or kind=template".into(),
+                "task_due_at is only supported for kind=task, kind=event, or kind=template".to_string(),
             );
         }
     }
@@ -149,7 +149,7 @@ pub fn validate_recurrence_metadata_for_kind(
     if parse_optional_metadata_bool(metadata, TASK_COMPLETED_METADATA_KEY).is_some()
         && !matches!(kind, NodeKind::Task | NodeKind::Template)
     {
-        return Err("task_completed is only supported for kind=task or kind=template".into());
+        return Err("task_completed is only supported for kind=task or kind=template".to_string());
     }
 
     if let Some(_completed_at) =
@@ -157,7 +157,7 @@ pub fn validate_recurrence_metadata_for_kind(
     {
         if !matches!(kind, NodeKind::Task | NodeKind::Template) {
             return Err(
-                "task_completed_at is only supported for kind=task or kind=template".into(),
+                "task_completed_at is only supported for kind=task or kind=template".to_string(),
             );
         }
     }

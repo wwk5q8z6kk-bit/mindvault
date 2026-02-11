@@ -221,7 +221,7 @@ impl KeychainEngine {
     pub async fn initialize_vault(&self, password: &str, macos_bridge: bool, subject: &str) -> MvResult<()> {
         // Check if already initialized
         if self.store.get_vault_meta().await?.is_some() {
-            return Err(MvError::Keychain("vault already initialized".into()));
+            return Err(MvError::Keychain("vault already initialized".to_string()));
         }
 
         // Generate salt
@@ -295,7 +295,7 @@ impl KeychainEngine {
             if let Some(until) = *locked {
                 if Instant::now() < until {
                     return Err(MvError::Keychain(
-                        "vault is temporarily locked due to failed attempts".into(),
+                        "vault is temporarily locked due to failed attempts".to_string(),
                     ));
                 }
             }
@@ -304,7 +304,7 @@ impl KeychainEngine {
         let attempts = self.failed_attempts.load(Ordering::SeqCst);
         if attempts >= 20 {
             return Err(MvError::Keychain(
-                "vault is permanently locked after 20 failed attempts".into(),
+                "vault is permanently locked after 20 failed attempts".to_string(),
             ));
         }
 
@@ -312,7 +312,7 @@ impl KeychainEngine {
             .store
             .get_vault_meta()
             .await?
-            .ok_or_else(|| MvError::Keychain("vault not initialized".into()))?;
+            .ok_or_else(|| MvError::Keychain("vault not initialized".to_string()))?;
 
         let salt_bytes = BASE64
             .decode(&meta.master_salt)
@@ -361,7 +361,7 @@ impl KeychainEngine {
                 Some(serde_json::json!({"attempts": new_attempts})),
             )
             .await?;
-            return Err(MvError::Keychain("invalid password".into()));
+            return Err(MvError::Keychain("invalid password".to_string()));
         }
 
         // Success — reset lockout
@@ -398,7 +398,7 @@ impl KeychainEngine {
         let password = self
             .cred_store
             .get_secret_string("MINDVAULT_VAULT_KEY")
-            .ok_or_else(|| MvError::Keychain("vault key not found in macOS Keychain".into()))?;
+            .ok_or_else(|| MvError::Keychain("vault key not found in macOS Keychain".to_string()))?;
         self.unseal(&password, subject).await
     }
 
@@ -463,7 +463,7 @@ impl KeychainEngine {
             .store
             .get_vault_meta()
             .await?
-            .ok_or_else(|| MvError::Keychain("vault not initialized".into()))?;
+            .ok_or_else(|| MvError::Keychain("vault not initialized".to_string()))?;
         meta.shamir_threshold = Some(threshold);
         meta.shamir_total = Some(total);
         self.store.save_vault_meta(&meta).await?;
@@ -492,14 +492,14 @@ impl KeychainEngine {
             .store
             .get_vault_meta()
             .await?
-            .ok_or_else(|| MvError::Keychain("vault not initialized".into()))?;
+            .ok_or_else(|| MvError::Keychain("vault not initialized".to_string()))?;
 
         let threshold = meta
             .shamir_threshold
-            .ok_or_else(|| MvError::Keychain("Shamir is not enabled".into()))?;
+            .ok_or_else(|| MvError::Keychain("Shamir is not enabled".to_string()))?;
         let total = meta
             .shamir_total
-            .ok_or_else(|| MvError::Keychain("Shamir is not enabled".into()))?;
+            .ok_or_else(|| MvError::Keychain("Shamir is not enabled".to_string()))?;
 
         if let Some(ref pws) = passphrases {
             if pws.len() != total as usize {
@@ -566,11 +566,11 @@ impl KeychainEngine {
             .store
             .get_vault_meta()
             .await?
-            .ok_or_else(|| MvError::Keychain("vault not initialized".into()))?;
+            .ok_or_else(|| MvError::Keychain("vault not initialized".to_string()))?;
 
         let threshold = meta
             .shamir_threshold
-            .ok_or_else(|| MvError::Keychain("shamir not enabled on this vault".into()))?;
+            .ok_or_else(|| MvError::Keychain("shamir not enabled on this vault".to_string()))?;
         let total = meta.shamir_total.unwrap_or(0);
 
         let index = {
@@ -603,11 +603,11 @@ impl KeychainEngine {
             .store
             .get_vault_meta()
             .await?
-            .ok_or_else(|| MvError::Keychain("vault not initialized".into()))?;
+            .ok_or_else(|| MvError::Keychain("vault not initialized".to_string()))?;
 
         let threshold = meta
             .shamir_threshold
-            .ok_or_else(|| MvError::Keychain("shamir not enabled on this vault".into()))?;
+            .ok_or_else(|| MvError::Keychain("shamir not enabled on this vault".to_string()))?;
 
         let shares: Vec<ShamirShare> = {
             let pending = self.pending_shares.read().await;
@@ -650,7 +650,7 @@ impl KeychainEngine {
                 pending.clear();
             }
             return Err(MvError::Keychain(
-                "shamir reconstruction produced invalid key".into(),
+                "shamir reconstruction produced invalid key".to_string(),
             ));
         }
 
@@ -780,7 +780,7 @@ impl KeychainEngine {
             .store
             .get_vault_meta()
             .await?
-            .ok_or_else(|| MvError::Keychain("vault not initialized".into()))?;
+            .ok_or_else(|| MvError::Keychain("vault not initialized".to_string()))?;
 
         let old_epoch = meta.key_epoch;
         let new_epoch = old_epoch + 1;
@@ -941,7 +941,7 @@ impl KeychainEngine {
             .store
             .get_vault_meta()
             .await?
-            .ok_or_else(|| MvError::Keychain("vault not initialized".into()))?;
+            .ok_or_else(|| MvError::Keychain("vault not initialized".to_string()))?;
 
         let derivation_info = format!("domain:{name}");
         let mut domain = DomainKey::new(name, &derivation_info).with_epoch(meta.key_epoch);
@@ -997,10 +997,10 @@ impl KeychainEngine {
             .store
             .get_domain(domain_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("domain not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("domain not found".to_string()))?;
 
         if domain.revoked_at.is_some() {
-            return Err(MvError::Keychain("domain is revoked".into()));
+            return Err(MvError::Keychain("domain is revoked".to_string()));
         }
 
         let cred_derivation = format!("cred:{name}:{}", Uuid::now_v7());
@@ -1019,7 +1019,7 @@ impl KeychainEngine {
             .store
             .get_vault_meta()
             .await?
-            .ok_or_else(|| MvError::Keychain("vault not initialized".into()))?;
+            .ok_or_else(|| MvError::Keychain("vault not initialized".to_string()))?;
 
         let mut cred = StoredCredential::new(domain_id, &encrypted_name, kind, encrypted, &cred_derivation)
             .with_tags(tags)
@@ -1057,17 +1057,17 @@ impl KeychainEngine {
             .store
             .get_credential(id)
             .await?
-            .ok_or_else(|| MvError::Keychain("credential not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("credential not found".to_string()))?;
 
         if cred.state == CredentialState::Destroyed {
-            return Err(MvError::Keychain("credential has been destroyed".into()));
+            return Err(MvError::Keychain("credential has been destroyed".to_string()));
         }
 
         let domain = self
             .store
             .get_domain(cred.domain_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("domain not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("domain not found".to_string()))?;
 
         // Decrypt value and metadata
         let plaintext = {
@@ -1152,13 +1152,13 @@ impl KeychainEngine {
             .store
             .get_credential(id)
             .await?
-            .ok_or_else(|| MvError::Keychain("credential not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("credential not found".to_string()))?;
 
         let domain = self
             .store
             .get_domain(cred.domain_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("domain not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("domain not found".to_string()))?;
 
         let encrypted = {
             let crypto = self.crypto.read().await;
@@ -1207,7 +1207,7 @@ impl KeychainEngine {
             .store
             .get_credential(id)
             .await?
-            .ok_or_else(|| MvError::Keychain("credential not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("credential not found".to_string()))?;
 
         if let Some(desc) = description {
             if cred.metadata_encrypted {
@@ -1258,7 +1258,7 @@ impl KeychainEngine {
             .store
             .get_credential(id)
             .await?
-            .ok_or_else(|| MvError::Keychain("credential not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("credential not found".to_string()))?;
 
         cred.state = CredentialState::Archived;
         cred.archived_at = Some(Utc::now());
@@ -1347,7 +1347,7 @@ impl KeychainEngine {
         self.store
             .get_domain(domain_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("domain not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("domain not found".to_string()))?;
 
         let acl = DomainAcl {
             id: Uuid::now_v7(),
@@ -1409,15 +1409,15 @@ impl KeychainEngine {
         // Check expiry
         if let Some(expires_at) = acl.expires_at {
             if expires_at <= Utc::now() {
-                return Err(MvError::Keychain("ACL has expired".into()));
+                return Err(MvError::Keychain("ACL has expired".to_string()));
             }
         }
 
         if need_read && !acl.can_read {
-            return Err(MvError::Keychain("ACL denies read access".into()));
+            return Err(MvError::Keychain("ACL denies read access".to_string()));
         }
         if need_write && !acl.can_write {
-            return Err(MvError::Keychain("ACL denies write access".into()));
+            return Err(MvError::Keychain("ACL denies write access".to_string()));
         }
 
         Ok(())
@@ -1502,13 +1502,13 @@ impl KeychainEngine {
             .store
             .get_credential(credential_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("credential not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("credential not found".to_string()))?;
 
         let domain = self
             .store
             .get_domain(cred.domain_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("domain not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("domain not found".to_string()))?;
 
         let perms_str = format!(
             "r:{},u:{},d:{}",
@@ -1573,30 +1573,30 @@ impl KeychainEngine {
             .store
             .get_delegation(parent_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("parent delegation not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("parent delegation not found".to_string()))?;
 
         if parent.revoked_at.is_some() {
-            return Err(MvError::Keychain("parent delegation is revoked".into()));
+            return Err(MvError::Keychain("parent delegation is revoked".to_string()));
         }
         if !parent.permissions.can_delegate {
             return Err(MvError::Keychain(
-                "parent delegation does not allow sub-delegation".into(),
+                "parent delegation does not allow sub-delegation".to_string(),
             ));
         }
         if parent.depth + 1 >= parent.max_depth {
-            return Err(MvError::Keychain("delegation depth limit reached".into()));
+            return Err(MvError::Keychain("delegation depth limit reached".to_string()));
         }
 
         let cred = self
             .store
             .get_credential(parent.credential_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("credential not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("credential not found".to_string()))?;
         let domain = self
             .store
             .get_domain(cred.domain_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("domain not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("domain not found".to_string()))?;
 
         let perms_str = format!(
             "r:{},u:{},d:{}",
@@ -1675,19 +1675,19 @@ impl KeychainEngine {
             .store
             .get_delegation(delegation_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("delegation not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("delegation not found".to_string()))?;
 
         if delegation.revoked_at.is_some() {
-            return Err(MvError::Keychain("delegation is revoked".into()));
+            return Err(MvError::Keychain("delegation is revoked".to_string()));
         }
         if let Some(expires_at) = delegation.expires_at {
             if expires_at <= Utc::now() {
-                return Err(MvError::Keychain("delegation has expired".into()));
+                return Err(MvError::Keychain("delegation has expired".to_string()));
             }
         }
         if !delegation.permissions.can_read {
             return Err(MvError::Keychain(
-                "delegation does not grant read access".into(),
+                "delegation does not grant read access".to_string(),
             ));
         }
 
@@ -1711,13 +1711,13 @@ impl KeychainEngine {
             .store
             .get_credential(credential_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("credential not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("credential not found".to_string()))?;
 
         let domain = self
             .store
             .get_domain(cred.domain_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("domain not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("domain not found".to_string()))?;
 
         // Decrypt the credential to get the raw value for proof generation
         let plaintext = {
@@ -1769,13 +1769,13 @@ impl KeychainEngine {
             .store
             .get_credential(proof.credential_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("credential not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("credential not found".to_string()))?;
 
         let domain = self
             .store
             .get_domain(cred.domain_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("domain not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("domain not found".to_string()))?;
 
         let plaintext = {
             let crypto = self.crypto.read().await;
@@ -1860,7 +1860,7 @@ impl KeychainEngine {
         let db_path = self
             .keychain_db_path
             .as_ref()
-            .ok_or_else(|| MvError::Keychain("keychain db path not set".into()))?;
+            .ok_or_else(|| MvError::Keychain("keychain db path not set".to_string()))?;
         crate::backup::export_vault(db_path, password)
             .map_err(|e| MvError::Keychain(format!("backup failed: {e}")))
     }
@@ -1869,7 +1869,7 @@ impl KeychainEngine {
         let db_path = self
             .keychain_db_path
             .as_ref()
-            .ok_or_else(|| MvError::Keychain("keychain db path not set".into()))?;
+            .ok_or_else(|| MvError::Keychain("keychain db path not set".to_string()))?;
         crate::backup::import_vault(data, password, db_path)
             .map_err(|e| MvError::Keychain(format!("restore failed: {e}")))
     }
@@ -1879,12 +1879,12 @@ impl KeychainEngine {
         let wrapped = self
             .cred_store
             .get_secret_string("MINDVAULT_SE_WRAPPED_KEY")
-            .ok_or_else(|| MvError::Keychain("SE wrapped key not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("SE wrapped key not found".to_string()))?;
         let key_bytes = crate::secure_enclave::unwrap_key_from_se(&wrapped)
             .map_err(|e| MvError::Keychain(format!("Secure Enclave: {e}")))?;
         if key_bytes.len() != 32 {
             return Err(MvError::Keychain(
-                "invalid key length from Secure Enclave".into(),
+                "invalid key length from Secure Enclave".to_string(),
             ));
         }
         let mut key = zeroize::Zeroizing::new([0u8; 32]);
@@ -2064,7 +2064,7 @@ impl KeychainEngine {
             .store
             .get_vault_meta()
             .await?
-            .ok_or_else(|| MvError::Keychain("vault not initialized".into()))?;
+            .ok_or_else(|| MvError::Keychain("vault not initialized".to_string()))?;
 
         let old_epoch = meta.key_epoch;
         let new_epoch = old_epoch + 1;
@@ -2236,7 +2236,7 @@ impl KeychainEngine {
             .store
             .get_domain(cred.domain_id)
             .await?
-            .ok_or_else(|| MvError::Keychain("domain not found".into()))?;
+            .ok_or_else(|| MvError::Keychain("domain not found".to_string()))?;
 
         let plaintext = crypto
             .decrypt_credential(
@@ -2328,7 +2328,7 @@ mod tests {
                 "client-id",
                 "oauth_client_secret",
                 b"secret",
-                vec!["oauth".into()],
+                vec!["oauth".to_string()],
                 None,
                 "test",
             )
@@ -2349,7 +2349,7 @@ mod tests {
             .update_credential_metadata(
                 stored.id,
                 Some("AI Manager".to_string()),
-                Some(vec!["oauth".into(), "client".into()]),
+                Some(vec!["oauth".to_string(), "client".to_string()]),
                 Some(metadata.clone()),
                 None,
                 "test",
@@ -2393,7 +2393,7 @@ mod tests {
                 "openai-key",
                 "api_key",
                 b"sk-12345",
-                vec!["prod".into()],
+                vec!["prod".to_string()],
                 None,
                 "test",
             )
