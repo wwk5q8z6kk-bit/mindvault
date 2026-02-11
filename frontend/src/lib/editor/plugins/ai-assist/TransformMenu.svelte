@@ -35,7 +35,7 @@
 		transformResult = state.transformResult;
 	}
 
-	async function handleTransform(mode: 'summarize' | 'action_items' | 'refine') {
+	async function handleTransform(mode: 'summarize' | 'action_items' | 'refine' | 'meeting') {
 		await transformText(mode);
 	}
 
@@ -96,14 +96,22 @@
 					<span>✅</span>
 					Actions
 				</button>
-				<button
-					class="flex items-center gap-1.5 rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
-					disabled={isTransforming}
-					on:click={() => handleTransform('refine')}
-				>
-					<span>✨</span>
-					Refine
-				</button>
+					<button
+						class="flex items-center gap-1.5 rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+						disabled={isTransforming}
+						on:click={() => handleTransform('refine')}
+					>
+						<span>✨</span>
+						Refine
+					</button>
+					<button
+						class="flex items-center gap-1.5 rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+						disabled={isTransforming}
+						on:click={() => handleTransform('meeting')}
+					>
+						<span>🧭</span>
+						Meeting
+					</button>
 				{#if isTransforming}
 					<div class="flex items-center px-2">
 						<div class="h-3 w-3 animate-spin rounded-full border-2 border-slate-600 border-t-sky-500"></div>

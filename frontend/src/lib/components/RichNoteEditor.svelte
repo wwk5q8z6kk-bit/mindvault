@@ -82,9 +82,30 @@
 	const TRANSFORM_SELECTION_MIN_CHARS = 8;
 	const CONTEXT_WINDOW_CHARS = 360;
 
+	function escapeHtml(value: string): string {
+		return value
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#39;');
+	}
+
+	const mermaidHtmlOptions = {
+		renderers: {
+			html: (node: { value?: string }) => {
+				const raw = String(node?.value ?? '');
+				if (!raw) {
+					return '';
+				}
+				return `<pre class="mv-html-block">${escapeHtml(raw)}</pre>\n`;
+			}
+		}
+	};
+
 	$: hasMermaidBlock = /```mermaid[\s\S]*?```/i.test(markdown);
 	$: if (showMermaidPreview && hasMermaidBlock) {
-		mermaidHtml = markdownToHTML(markdown || '');
+		mermaidHtml = markdownToHTML(markdown || '', undefined, mermaidHtmlOptions);
 	} else {
 		mermaidHtml = '';
 	}
@@ -974,6 +995,14 @@
 		border-radius: 0.5rem;
 		padding: 0.5rem;
 		overflow-x: auto;
+	}
+
+	.mv-editor-mermaid-preview .mv-html-block {
+		background: rgba(15, 23, 42, 0.6);
+		border-radius: 0.5rem;
+		padding: 0.5rem;
+		overflow-x: auto;
+		color: #e2e8f0;
 	}
 
 	.mv-editor-surface {

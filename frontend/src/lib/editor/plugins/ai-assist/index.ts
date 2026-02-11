@@ -3,7 +3,7 @@
  *
  * Features:
  * - Ghost completions: Query after 300ms pause, Tab to accept
- * - Transform menu: On selection, show Summarize, Extract Actions, Refine
+ * - Transform menu: On selection, show Summarize, Extract Actions, Refine, Meeting Notes
  * - Link suggestions: Auto-suggest wiki-links
  */
 
@@ -294,7 +294,7 @@ export function hideTransformMenu(): void {
  * Transform the selected text.
  */
 export async function transformText(
-	mode: 'summarize' | 'action_items' | 'refine'
+	mode: 'summarize' | 'action_items' | 'refine' | 'meeting'
 ): Promise<void> {
 	if (!editorCtx || !state.selectedText) return;
 

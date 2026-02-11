@@ -60,6 +60,8 @@ use utoipa_swagger_ui::SwaggerUi;
         // Health
         health,
         embedding_diagnostics,
+        diagnostics_health,
+        diagnostics_performance,
         // Nodes
         store_node,
         list_nodes,
@@ -331,6 +333,26 @@ async fn health() {}
     )
 )]
 async fn embedding_diagnostics() {}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/diagnostics/health",
+    tag = "health",
+    responses(
+        (status = 200, description = "Health check with performance info")
+    )
+)]
+async fn diagnostics_health() {}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/diagnostics/performance",
+    tag = "metrics",
+    responses(
+        (status = 200, description = "Histogram-based performance stats")
+    )
+)]
+async fn diagnostics_performance() {}
 
 #[utoipa::path(
     post,

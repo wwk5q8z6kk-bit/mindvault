@@ -141,15 +141,15 @@ fn html_response(status: StatusCode, body: String) -> Response {
         HeaderValue::from_static("no-cache"),
     );
     headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderName::from_static("x-content-type-options"),
         HeaderValue::from_static("nosniff"),
     );
     headers.insert(
-        header::REFERRER_POLICY,
+        header::HeaderName::from_static("referrer-policy"),
         HeaderValue::from_static("no-referrer"),
     );
     headers.insert(
-        header::CONTENT_SECURITY_POLICY,
+        header::HeaderName::from_static("content-security-policy"),
         HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; img-src data:"),
     );
     headers.insert(
@@ -554,7 +554,19 @@ pub async fn revoke_public_share(
     }
 
     match state.engine.revoke_public_share(share_id).await {
-        Ok(true) => Json(share_summary(share)).into_response(),
+        Ok(true) => {
+            // Return post-revoke state when possible so clients see revoked_at immediately.
+            if let Ok(Some(updated_share)) = state.engine.store.nodes.get_public_share(share_id).await {
+                Json(share_summary(updated_share)).into_response()
+            } else {
+                // Fallback: mark the preloaded share as revoked for response consistency.
+                let mut revoked_share = share;
+                if revoked_share.revoked_at.is_none() {
+                    revoked_share.revoked_at = Some(Utc::now());
+                }
+                Json(share_summary(revoked_share)).into_response()
+            }
+        }
         Ok(false) => (StatusCode::NOT_FOUND, err_json("share not found")).into_response(),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
