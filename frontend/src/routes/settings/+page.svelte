@@ -27,6 +27,7 @@
 		saveInboxTriageSettings
 	} from '$lib/inbox/triage-settings';
 	import ImportExportPanel from '$lib/components/ImportExportPanel.svelte';
+	import McpConnectorsPanel from '$lib/components/McpConnectorsPanel.svelte';
 	import {
 		getSecretStatus,
 		setSecret,
@@ -776,8 +777,8 @@
 			</div>
 		</section>
 
-		<!-- Connected Adapters -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+			<!-- Connected Adapters -->
+			<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
 			<div class="flex items-center justify-between">
 				<div>
 					<h3 class="text-sm font-semibold text-white">Connected Adapters</h3>
@@ -822,7 +823,10 @@
 					{/each}
 				</div>
 			{/if}
-		</section>
+			</section>
+
+			<!-- MCP Connectors -->
+			<McpConnectorsPanel />
 
 		<!-- AI Provider (BYOK) -->
 		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
