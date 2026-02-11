@@ -120,8 +120,8 @@ cors_allowed_origins = ["http://localhost:3000", "http://localhost:8080"]
 6. **Persistent Inputs**: Search form and filter inputs are remembered between sessions
 7. **Reset Tab Inputs**: Each tab now has a “Reset Tab” action to clear only that panel’s saved inputs
 8. **Quick Reset Shortcut**: Use `Ctrl/Cmd + Alt + R` to reset the active tab
-6. **Update Active Presets**: Load a saved query, edit fields, then click "Update Active"
-7. **View Results**: Browse scored results with match source information
+9. **Update Active Presets**: Load a saved query, edit fields, then click "Update Active"
+10. **View Results**: Browse scored results with match source information
 
 ### Working with Templates
 1. **Open Templates tab**: Review template cards by namespace/kind filters

@@ -163,6 +163,7 @@ export class MindVaultAdmin {
         this.autoSuggestPauseTicker = null;
         this.formStateDefaults = null;
         this.confirmResetEnabled = this.confirmResetEnabled ?? true;
+        this.globalKeydownHandler = null;
 
         this.richEditor = document.getElementById('rich-editor');
         this.markdownEditor = document.getElementById('markdown-editor');
@@ -198,6 +199,7 @@ export class MindVaultAdmin {
         this.latestShareByNode = new Map();
         this.auditContent = document.getElementById('audit-content');
         this.loadMoreAuditBtn = document.getElementById('load-more-audit-btn');
+        this.formStateSummary = document.getElementById('form-state-summary');
         this.panelStatus = this.cachePanelStatus();
 
         this.attachedFiles = [];
@@ -216,6 +218,7 @@ export class MindVaultAdmin {
         this.initSettingsControls();
         this.updateAutoSuggestPauseStatus();
         this.startAutoSuggestPauseTicker();
+        this.applyPowerControlsVisibility();
         this.attachmentTriage.init();
         this.initRichTextEditor();
         this.setEditorContentFromMarkdown('');
@@ -813,7 +816,11 @@ export class MindVaultAdmin {
             this.handleFileSelection(event.target.files);
         });
 
-        document.addEventListener('keydown', (event) => this.handleGlobalKeydown(event));
+        if (this.globalKeydownHandler) {
+            document.removeEventListener('keydown', this.globalKeydownHandler);
+        }
+        this.globalKeydownHandler = (event) => this.handleGlobalKeydown(event);
+        document.addEventListener('keydown', this.globalKeydownHandler);
     }
 
     setEditorMode(mode) {
@@ -902,6 +909,16 @@ export class MindVaultAdmin {
 
     handleGlobalKeydown(event) {
         if (!event) {
+            return;
+        }
+        const target = event.target;
+        const tag = target && typeof target.tagName === 'string' ? target.tagName.toLowerCase() : '';
+        const inEditableField =
+            tag === 'input'
+            || tag === 'textarea'
+            || tag === 'select'
+            || (target && target.isContentEditable === true);
+        if (inEditableField) {
             return;
         }
         const key = String(event.key || '').toLowerCase();
@@ -2457,9 +2474,11 @@ export class MindVaultAdmin {
         }
         if (field.type === 'checkbox') {
             this.writeStoredValue(field.key, el.checked ? 'true' : 'false');
+            this.refreshFormStateSummary();
             return;
         }
         this.writeStoredValue(field.key, el.value);
+        this.refreshFormStateSummary();
     }
 
     restoreFormStateField(field, el) {
@@ -2495,6 +2514,34 @@ export class MindVaultAdmin {
         });
     }
 
+    refreshFormStateSummary() {
+        if (!this.formStateSummary) {
+            return;
+        }
+        const snapshot = {};
+        FORM_STATE_FIELDS.forEach((field) => {
+            const stored = this.readStoredValue(field.key);
+            if (stored === null || stored === '') {
+                return;
+            }
+            if (field.type === 'checkbox') {
+                snapshot[field.id] = stored === 'true' || stored === '1' || stored === 'yes';
+            } else {
+                snapshot[field.id] = stored;
+            }
+        });
+        const keys = Object.keys(snapshot);
+        if (keys.length === 0) {
+            this.formStateSummary.textContent = 'No saved inputs yet.';
+            return;
+        }
+        const ordered = {};
+        keys.sort().forEach((key) => {
+            ordered[key] = snapshot[key];
+        });
+        this.formStateSummary.textContent = JSON.stringify(ordered, null, 2);
+    }
+
     restoreFormState() {
         FORM_STATE_FIELDS.forEach((field) => {
             const el = document.getElementById(field.id);
@@ -2504,6 +2551,7 @@ export class MindVaultAdmin {
             this.restoreFormStateField(field, el);
         });
         this.syncNodeFiltersFromInputs();
+        this.refreshFormStateSummary();
     }
 
     syncNodeFiltersFromInputs() {
@@ -2558,6 +2606,7 @@ export class MindVaultAdmin {
             localStorage.removeItem(field.key);
         });
         this.applyFormStateDefaults();
+        this.refreshFormStateSummary();
     }
 
     resetFormStateGroup(groupKey) {
@@ -2574,6 +2623,7 @@ export class MindVaultAdmin {
         });
         this.applyFormStateDefaultsForIds(ids);
         this.showNotification('Tab inputs reset.', 'success');
+        this.refreshFormStateSummary();
     }
 
     applyFormStateDefaultsForIds(ids) {
@@ -2594,6 +2644,13 @@ export class MindVaultAdmin {
             }
         });
         this.syncNodeFiltersFromInputs();
+    }
+
+    applyPowerControlsVisibility() {
+        const show = Boolean(this.showPowerControls);
+        document.querySelectorAll('.power-control').forEach((el) => {
+            el.classList.toggle('is-hidden', !show);
+        });
     }
 
     shouldConfirmReset(message) {

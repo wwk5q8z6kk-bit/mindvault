@@ -165,3 +165,21 @@ Prometheus-style metrics:
 curl http://127.0.0.1:9470/metrics
 curl http://127.0.0.1:9470/api/v1/metrics/summary
 ```
+
+## 13) Optional: Meeting notes AI + comments
+
+Meeting-style transforms:
+
+```bash
+curl -X POST http://127.0.0.1:9470/api/v1/assist/transform \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"meeting","text":"Discussed launch risks. Decided to delay by 1 week. Next: update timeline?"}'
+```
+
+Node comments:
+
+```bash
+curl -X POST http://127.0.0.1:9470/api/v1/nodes/{node_id}/comments \
+  -H "Content-Type: application/json" \
+  -d '{"body":"Capture the decision rationale."}'
+```

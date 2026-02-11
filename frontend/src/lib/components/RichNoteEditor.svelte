@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import { Editor, Extension } from '@tiptap/core';
 	import { StarterKit } from '@tiptap/starter-kit';
 	import { Image } from '@tiptap/extension-image';
@@ -24,6 +24,8 @@
 		type AssistSuggestionSource
 	} from '$lib/api/assist';
 	import { searchFullTextNodes } from '$lib/api/search';
+	import { markdownToHTML } from '$lib/editor';
+	import { renderMermaid } from '$lib/utils/mermaid';
 
 	export let markdown = '';
 	export let placeholder = 'Write your note…';
@@ -50,9 +52,13 @@
 	let linksStrategy = '';
 	let linksSourceNodes = 0;
 	let isLoadingSuggestions = false;
-	let transformMode: 'summarize' | 'action_items' | 'refine' = 'summarize';
+	let transformMode: 'summarize' | 'action_items' | 'refine' | 'meeting' = 'summarize';
 	let transformTarget: 'append_section' | 'replace_selection' = 'append_section';
 	let isTransforming = false;
+	let showMermaidPreview = false;
+	let mermaidContainer: HTMLDivElement | null = null;
+	let mermaidHtml = '';
+	let hasMermaidBlock = false;
 
 	let wysiwygLinkPanel: HTMLDivElement | null = null;
 	type WysiwygLinkSuggestion = {
@@ -75,6 +81,20 @@
 	const TRANSFORM_MIN_CHARS = 16;
 	const TRANSFORM_SELECTION_MIN_CHARS = 8;
 	const CONTEXT_WINDOW_CHARS = 360;
+
+	$: hasMermaidBlock = /```mermaid[\s\S]*?```/i.test(markdown);
+	$: if (showMermaidPreview && hasMermaidBlock) {
+		mermaidHtml = markdownToHTML(markdown || '');
+	} else {
+		mermaidHtml = '';
+	}
+
+	$: if (showMermaidPreview && hasMermaidBlock && mermaidContainer && mermaidHtml) {
+		void (async () => {
+			await tick();
+			await renderMermaid(mermaidContainer);
+		})();
+	}
 
 	function syncFromEditor() {
 		if (!editor) return;
@@ -425,12 +445,14 @@
 				}
 			}
 
-			const sectionTitle =
-				transformMode === 'summarize'
-					? 'AI Summary'
-					: transformMode === 'action_items'
-						? 'AI Action Items'
-						: 'AI Refined Draft';
+				const sectionTitle =
+					transformMode === 'summarize'
+						? 'AI Summary'
+						: transformMode === 'action_items'
+							? 'AI Action Items'
+							: transformMode === 'meeting'
+								? 'AI Meeting Notes'
+								: 'AI Refined Draft';
 			const current = markdown.trim();
 			const separator = current.length === 0 ? '' : '\n\n';
 			const next = `${current}${separator}## ${sectionTitle}\n${transformed}`;
@@ -783,24 +805,34 @@
 		</div>
 	</div>
 
-	<div class="mv-editor-transform">
-		<select bind:value={transformMode}>
-			<option value="summarize">Summarize</option>
-			<option value="action_items">Action Items</option>
-			<option value="refine">Refine</option>
-		</select>
-		<select bind:value={transformTarget}>
-			<option value="append_section">Insert Section</option>
-			<option value="replace_selection">Replace Selection</option>
-		</select>
-		<button type="button" on:click={requestTransform} disabled={isTransforming}>
-			{isTransforming ? 'Transforming…' : 'AI Transform'}
-		</button>
-	</div>
+		<div class="mv-editor-transform">
+			<select bind:value={transformMode}>
+				<option value="summarize">Summarize</option>
+				<option value="action_items">Action Items</option>
+				<option value="refine">Refine</option>
+				<option value="meeting">Meeting Notes</option>
+			</select>
+			<select bind:value={transformTarget}>
+				<option value="append_section">Insert Section</option>
+				<option value="replace_selection">Replace Selection</option>
+			</select>
+			<button type="button" on:click={requestTransform} disabled={isTransforming}>
+				{isTransforming ? 'Transforming…' : 'AI Transform'}
+			</button>
+			<button
+				type="button"
+				class:active={showMermaidPreview}
+				on:click={() => (showMermaidPreview = !showMermaidPreview)}
+				disabled={!hasMermaidBlock}
+				title={hasMermaidBlock ? 'Toggle Mermaid preview' : 'No Mermaid blocks found'}
+			>
+				Mermaid Preview
+			</button>
+		</div>
 
-	<div class={`mv-editor-surface mode-${mode}`}>
-		<div class="mv-editor-rich" bind:this={editorElement}></div>
-		<textarea
+		<div class={`mv-editor-surface mode-${mode}`}>
+			<div class="mv-editor-rich" bind:this={editorElement}></div>
+			<textarea
 			class="mv-editor-markdown"
 			bind:this={markdownTextarea}
 			bind:value={markdown}
@@ -810,8 +842,14 @@
 				syncFromEditor();
 			}}
 			placeholder="Markdown"
-		></textarea>
-	</div>
+			></textarea>
+		</div>
+
+		{#if showMermaidPreview && hasMermaidBlock}
+			<div class="mv-editor-mermaid-preview" bind:this={mermaidContainer}>
+				{@html mermaidHtml}
+			</div>
+		{/if}
 
 	{#if autoCompleteSuggestion}
 		<div class="mv-editor-autocomplete">
@@ -915,6 +953,27 @@
 		flex-wrap: wrap;
 		gap: 0.5rem;
 		align-items: center;
+	}
+
+	.mv-editor-transform button.active {
+		background: rgba(34, 197, 94, 0.2);
+		border-color: rgba(34, 197, 94, 0.5);
+		color: #dcfce7;
+	}
+
+	.mv-editor-mermaid-preview {
+		border: 1px solid rgba(148, 163, 184, 0.2);
+		background: rgba(15, 23, 42, 0.4);
+		border-radius: 0.75rem;
+		padding: 0.75rem;
+	}
+
+	.mv-editor-mermaid-preview .mv-mermaid,
+	.mv-editor-mermaid-preview .mermaid {
+		background: rgba(15, 23, 42, 0.6);
+		border-radius: 0.5rem;
+		padding: 0.5rem;
+		overflow-x: auto;
 	}
 
 	.mv-editor-surface {

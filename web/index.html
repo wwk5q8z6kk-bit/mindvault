@@ -34,7 +34,7 @@
                             <span class="status-text">Idle</span>
                             <span class="status-time"></span>
                         </div>
-                        <button id="reset-nodes-state-btn" class="btn">Reset Tab</button>
+                        <button id="reset-nodes-state-btn" class="btn power-control">Reset Tab</button>
                         <button id="add-node-btn" class="btn primary">Add Node</button>
                     </div>
                 </div>
@@ -72,7 +72,7 @@
                             <span class="status-text">Idle</span>
                             <span class="status-time"></span>
                         </div>
-                        <button id="reset-daily-state-btn" class="btn">Reset Tab</button>
+                        <button id="reset-daily-state-btn" class="btn power-control">Reset Tab</button>
                         <button id="ensure-today-btn" class="btn primary">Ensure Today</button>
                     </div>
                 </div>
@@ -140,7 +140,7 @@
                             <span class="status-text">Idle</span>
                             <span class="status-time"></span>
                         </div>
-                        <button id="reset-calendar-state-btn" class="btn">Reset Tab</button>
+                        <button id="reset-calendar-state-btn" class="btn power-control">Reset Tab</button>
                         <button id="calendar-new-event-btn" class="btn primary">Add Event</button>
                     </div>
                 </div>
@@ -189,7 +189,7 @@
                             <span class="status-text">Idle</span>
                             <span class="status-time"></span>
                         </div>
-                        <button id="reset-templates-state-btn" class="btn">Reset Tab</button>
+                        <button id="reset-templates-state-btn" class="btn power-control">Reset Tab</button>
                         <button id="refresh-templates-btn" class="btn">Refresh Templates</button>
                     </div>
                 </div>
@@ -329,7 +329,7 @@
                             <span class="status-text">Idle</span>
                             <span class="status-time"></span>
                         </div>
-                        <button id="reset-access-state-btn" class="btn">Reset Tab</button>
+                        <button id="reset-access-state-btn" class="btn power-control">Reset Tab</button>
                         <button id="refresh-permissions-btn" class="btn">Refresh</button>
                     </div>
                 </div>
@@ -403,7 +403,7 @@
                             <span class="status-text">Idle</span>
                             <span class="status-time"></span>
                         </div>
-                        <button id="reset-search-state-btn" class="btn">Reset Tab</button>
+                        <button id="reset-search-state-btn" class="btn power-control">Reset Tab</button>
                     </div>
                 </div>
                 <div class="search-form">
@@ -449,7 +449,7 @@
                             <span class="status-text">Idle</span>
                             <span class="status-time"></span>
                         </div>
-                        <button id="reset-graph-state-btn" class="btn">Reset Tab</button>
+                        <button id="reset-graph-state-btn" class="btn power-control">Reset Tab</button>
                     </div>
                 </div>
                 <div class="graph-controls">
@@ -472,14 +472,14 @@
                             <span class="status-text">Idle</span>
                             <span class="status-time"></span>
                         </div>
-                        <button id="reset-stats-state-btn" class="btn">Reset Tab</button>
+                        <button id="reset-stats-state-btn" class="btn power-control">Reset Tab</button>
                     </div>
                 </div>
                 <div class="transfer-controls">
                     <button id="export-data-btn" class="btn">Export JSON</button>
                     <label class="btn" for="import-data-file">Import JSON</label>
                     <input type="file" id="import-data-file" accept="application/json">
-                    <button id="reset-form-state-btn" class="btn">Reset Saved Inputs</button>
+                    <button id="reset-form-state-btn" class="btn power-control">Reset Saved Inputs</button>
                 </div>
                 <div class="settings-controls">
                     <div class="settings-row">
@@ -505,6 +505,10 @@
                             <input type="checkbox" id="settings-confirm-reset" checked>
                             Confirm Tab Reset
                         </label>
+                        <label class="settings-toggle">
+                            <input type="checkbox" id="settings-power-controls" checked>
+                            Show Power Controls
+                        </label>
                     </div>
                     <div class="settings-row settings-row--wide">
                         <label for="settings-suggest-cooldown">Auto Suggest Cooldown</label>
@@ -514,6 +518,10 @@
                 </div>
                 <div id="stats-content" class="stats-content">
                     <!-- Stats will be loaded here -->
+                </div>
+                <div class="stats-content">
+                    <h3>Saved Input Snapshot</h3>
+                    <pre id="form-state-summary" class="form-state-summary">Loading saved inputs...</pre>
                 </div>
                 <div class="audit-controls">
                     <input type="number" id="audit-limit" min="1" max="200" value="50" placeholder="Limit">

@@ -1,6 +1,7 @@
 /target
 target-codex-*/
 target-pi-session/
+examples/**/target/
 **/*.rs.bk
 *.swp
 .DS_Store

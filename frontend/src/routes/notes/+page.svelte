@@ -19,6 +19,7 @@
 	import { buildTaskPayloadsFromActionItems, parseActionItems } from '$lib/tasks/action-items';
 	import type { NodeAttachment } from '$lib/api/files';
 	import type { Note } from '$lib/api/notes';
+	import { markdownToHTML } from '$lib/editor';
 
 	// Extended Note with kind for filtering
 	interface NoteWithKind extends Note {
@@ -29,6 +30,7 @@
 	import { fetchAgentContext, agentStore } from '$lib/api/agent';
 	import VersionHistory from '$lib/components/VersionHistory.svelte';
 	import PublicSharePanel from '$lib/components/PublicSharePanel.svelte';
+	import CommentsPanel from '$lib/components/CommentsPanel.svelte';
 	import { createVirtualizer } from '@tanstack/svelte-virtual';
 
 	let notes: NoteWithKind[] = [];
@@ -438,16 +440,33 @@
 		return JSON.stringify(exportData, null, 2);
 	}
 
+	function escapeHtml(value: string): string {
+		return value
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#39;');
+	}
+
+	const htmlExportOptions = {
+		renderers: {
+			html: (node: { value?: string }) => {
+				const raw = String(node?.value ?? '');
+				if (!raw) {
+					return '';
+				}
+				return `<pre class="html-block">${escapeHtml(raw)}</pre>\n`;
+			}
+		}
+	};
+
 	function generateHtmlExport(notesToExport: NoteWithKind[]): string {
 		const notesHtml = notesToExport
 			.map((note) => {
 				const title = note.title ?? 'Untitled';
 				const tags = note.tags?.map((t) => `<span class="tag">${t}</span>`).join('') ?? '';
-				const content = (note.markdown ?? '')
-					.replace(/&/g, '&amp;')
-					.replace(/</g, '&lt;')
-					.replace(/>/g, '&gt;')
-					.replace(/\n/g, '<br>');
+				const content = markdownToHTML(note.markdown ?? '', undefined, htmlExportOptions);
 				return `
 					<article class="note">
 						<h2>${title}</h2>
@@ -476,7 +495,11 @@
 		.meta { display: flex; gap: 0.5rem; flex-wrap: wrap; font-size: 0.75rem; color: #94a3b8; margin-bottom: 1rem; }
 		.kind { background: #7c3aed33; color: #c4b5fd; padding: 0.25rem 0.5rem; border-radius: 4px; }
 		.tag { background: #334155; padding: 0.25rem 0.5rem; border-radius: 4px; }
-		.content { white-space: pre-wrap; line-height: 1.6; }
+		.content { line-height: 1.6; }
+		.content pre { background: #0b1220; color: #e2e8f0; padding: 0.75rem; border-radius: 8px; overflow: auto; }
+		.content code { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 0.85rem; }
+		.content .mv-mermaid { background: #0b1220; padding: 0.75rem; border-radius: 8px; overflow: auto; }
+		.content .html-block { background: #0b1220; color: #e2e8f0; padding: 0.75rem; border-radius: 8px; overflow: auto; }
 	</style>
 </head>
 <body>
@@ -1136,13 +1159,19 @@
 				/>
 			</div>
 
-			<div class="mt-4">
-				<PublicSharePanel
-					nodeId={selectedNote.id}
-					nodeTitle={selectedNote.title ?? 'Untitled'}
-				/>
-			</div>
-		{/if}
+				<div class="mt-4">
+					<PublicSharePanel
+						nodeId={selectedNote.id}
+						nodeTitle={selectedNote.title ?? 'Untitled'}
+					/>
+				</div>
+				<div class="mt-4">
+					<CommentsPanel
+						nodeId={selectedNote.id}
+						nodeTitle={selectedNote.title ?? 'Untitled'}
+					/>
+				</div>
+			{/if}
 	</section>
 </div>
 

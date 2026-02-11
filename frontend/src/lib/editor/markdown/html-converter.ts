@@ -90,6 +90,10 @@ const defaultRenderers: Partial<Record<NodeType, (this: HTMLRenderer, node: ASTN
 
 	code_block(node) {
 		const code = this.escape(node.value || '');
+		const language = (node.lang || '').trim().toLowerCase();
+		if (language === 'mermaid') {
+			return `<div class="${this.className('mermaid')}"><pre class="mermaid">${code}</pre></div>\n`;
+		}
 		const lang = node.lang ? ` class="language-${this.escape(node.lang)}"` : '';
 		return `<pre><code${lang}>${code}</code></pre>\n`;
 	},

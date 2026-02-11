@@ -64,7 +64,7 @@ export async function assistCompletion(payload: {
 
 export async function assistTransform(payload: {
 	text: string;
-	mode: 'summarize' | 'action_items' | 'refine';
+	mode: 'summarize' | 'action_items' | 'refine' | 'meeting';
 	limit?: number;
 	namespace?: string;
 }): Promise<AssistTransformResponse> {
