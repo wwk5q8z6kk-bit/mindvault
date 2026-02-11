@@ -11652,7 +11652,7 @@ mod tests {
 
     #[test]
     fn parse_node_attachments_skips_invalid_items() {
-        let mut node = KnowledgeNode::new(NodeKind::Fact, "x".into());
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "x");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -11703,7 +11703,7 @@ mod tests {
 
     #[test]
     fn attachment_search_blob_sync_aggregates_index_entries() {
-        let mut node = KnowledgeNode::new(NodeKind::Fact, "x".into());
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "x");
         upsert_attachment_text_index_entry(&mut node, "att-a", Some("alpha planning notes"));
         upsert_attachment_text_index_entry(&mut node, "att-b", Some("beta incident summary"));
         sync_attachment_search_blob_metadata(&mut node);
@@ -11719,7 +11719,7 @@ mod tests {
 
     #[test]
     fn attachment_chunk_index_tracks_chunked_entries() {
-        let mut node = KnowledgeNode::new(NodeKind::Fact, "x".into());
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "x");
         upsert_attachment_text_chunk_index_entry(
             &mut node,
             "att-a",
@@ -12401,7 +12401,7 @@ mod tests {
             .single()
             .expect("valid datetime");
 
-        let mut task = KnowledgeNode::new(NodeKind::Task, "Finish weekly planning".into())
+        let mut task = KnowledgeNode::new(NodeKind::Task, "Finish weekly planning")
             .with_namespace("ops");
         task.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
@@ -12409,14 +12409,14 @@ mod tests {
         );
 
         let mut event =
-            KnowledgeNode::new(NodeKind::Event, "Leadership sync".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Event, "Leadership sync").with_namespace("ops");
         event.metadata.insert(
             EVENT_START_AT_METADATA_KEY.into(),
             serde_json::Value::String(event_start_at.to_rfc3339()),
         );
 
         let mut future_task =
-            KnowledgeNode::new(NodeKind::Task, "Quarter planning".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Task, "Quarter planning").with_namespace("ops");
         future_task.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
             serde_json::Value::String(outside_range_due_at.to_rfc3339()),
@@ -12482,7 +12482,7 @@ mod tests {
             .expect("valid datetime");
 
         let mut completed_task =
-            KnowledgeNode::new(NodeKind::Task, "Submit invoice".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Task, "Submit invoice").with_namespace("ops");
         completed_task.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
             serde_json::Value::String(task_due_at.to_rfc3339()),
@@ -12493,7 +12493,7 @@ mod tests {
         );
 
         let mut event =
-            KnowledgeNode::new(NodeKind::Event, "Client kickoff".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Event, "Client kickoff").with_namespace("ops");
         event.metadata.insert(
             EVENT_START_AT_METADATA_KEY.into(),
             serde_json::Value::String(event_start_at.to_rfc3339()),
@@ -12558,7 +12558,7 @@ mod tests {
             .single()
             .expect("valid datetime");
         let mut event =
-            KnowledgeNode::new(NodeKind::Event, "Morning standup".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Event, "Morning standup").with_namespace("ops");
         event.metadata.insert(
             EVENT_START_AT_METADATA_KEY.into(),
             serde_json::Value::String(event_start_at.to_rfc3339()),
@@ -12608,13 +12608,13 @@ mod tests {
             .expect("valid datetime");
 
         let mut task =
-            KnowledgeNode::new(NodeKind::Task, "Finalize agenda".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Task, "Finalize agenda").with_namespace("ops");
         task.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
             serde_json::Value::String(task_due_at.to_rfc3339()),
         );
         let mut event =
-            KnowledgeNode::new(NodeKind::Event, "Client sync".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Event, "Client sync").with_namespace("ops");
         event.metadata.insert(
             EVENT_START_AT_METADATA_KEY.into(),
             serde_json::Value::String(event_start_at.to_rfc3339()),
@@ -12711,7 +12711,7 @@ mod tests {
             .single()
             .expect("valid datetime");
 
-        let mut node = KnowledgeNode::new(NodeKind::Event, "Line one,\nline two".into())
+        let mut node = KnowledgeNode::new(NodeKind::Event, "Line one,\nline two")
             .with_namespace("ops")
             .with_title("Team sync; roadmap");
         node.tags = vec!["meeting".into(), "weekly".into()];
@@ -12742,7 +12742,7 @@ mod tests {
     #[tokio::test]
     async fn export_calendar_ical_handler_returns_calendar_headers() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
-        let mut task = KnowledgeNode::new(NodeKind::Task, "Prepare weekly report".into())
+        let mut task = KnowledgeNode::new(NodeKind::Task, "Prepare weekly report")
             .with_namespace("ops");
         task.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
@@ -12799,14 +12799,14 @@ mod tests {
             .single()
             .expect("valid datetime");
 
-        let mut task_a = KnowledgeNode::new(NodeKind::Task, "Finish incident review".into())
+        let mut task_a = KnowledgeNode::new(NodeKind::Task, "Finish incident review")
             .with_namespace("ops");
         task_a.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
             serde_json::Value::String(due_a.to_rfc3339()),
         );
         let mut task_b =
-            KnowledgeNode::new(NodeKind::Task, "Send retro summary".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Task, "Send retro summary").with_namespace("ops");
         task_b.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
             serde_json::Value::String(due_b.to_rfc3339()),
@@ -12869,7 +12869,7 @@ mod tests {
             .single()
             .expect("valid datetime");
 
-        let mut urgent = KnowledgeNode::new(NodeKind::Task, "Urgent".into())
+        let mut urgent = KnowledgeNode::new(NodeKind::Task, "Urgent")
             .with_namespace("ops")
             .with_importance(0.9);
         urgent.metadata.insert(
@@ -12882,11 +12882,11 @@ mod tests {
             ),
         );
 
-        let important = KnowledgeNode::new(NodeKind::Task, "Important".into())
+        let important = KnowledgeNode::new(NodeKind::Task, "Important")
             .with_namespace("ops")
             .with_importance(0.8);
 
-        let mut later = KnowledgeNode::new(NodeKind::Task, "Later".into())
+        let mut later = KnowledgeNode::new(NodeKind::Task, "Later")
             .with_namespace("ops")
             .with_importance(0.2);
         later.metadata.insert(
@@ -12963,7 +12963,7 @@ mod tests {
         let stored = state
             .engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Task, "Review on-call checklist".into())
+                KnowledgeNode::new(NodeKind::Task, "Review on-call checklist")
                     .with_namespace("ops"),
             )
             .await
@@ -13014,7 +13014,7 @@ mod tests {
         let task = state
             .engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Task, "Draft launch checklist".into())
+                KnowledgeNode::new(NodeKind::Task, "Draft launch checklist")
                     .with_namespace("ops"),
             )
             .await
@@ -13029,7 +13029,7 @@ mod tests {
             .single()
             .expect("valid datetime");
         let mut time_block =
-            KnowledgeNode::new(NodeKind::Event, "Focus block: launch checklist".into())
+            KnowledgeNode::new(NodeKind::Event, "Focus block: launch checklist")
                 .with_namespace("ops");
         time_block.tags.push("time-block".to_string());
         time_block.metadata.insert(
@@ -13196,7 +13196,7 @@ mod tests {
         let stored = state
             .engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "This is a fact node".into())
+                KnowledgeNode::new(NodeKind::Fact, "This is a fact node")
                     .with_namespace("ops"),
             )
             .await
@@ -13222,7 +13222,7 @@ mod tests {
             .store_node(
                 KnowledgeNode::new(
                     NodeKind::Task,
-                    "Finalize the incident report before deadline".into(),
+                    "Finalize the incident report before deadline",
                 )
                 .with_namespace("ops")
                 .with_tags(vec!["urgent".into(), "incident".into()]),
@@ -13232,7 +13232,7 @@ mod tests {
         state
             .engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Unrelated retrospective note".into())
+                KnowledgeNode::new(NodeKind::Fact, "Unrelated retrospective note")
                     .with_namespace("ops")
                     .with_tags(vec!["retrospective".into()]),
             )
@@ -13424,7 +13424,7 @@ mod tests {
         let from = state
             .engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Task, "Prepare launch checklist".into())
+                KnowledgeNode::new(NodeKind::Task, "Prepare launch checklist")
                     .with_namespace("ops"),
             )
             .await
@@ -13432,7 +13432,7 @@ mod tests {
         let to = state
             .engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Task, "Run production validation".into())
+                KnowledgeNode::new(NodeKind::Task, "Run production validation")
                     .with_namespace("ops"),
             )
             .await
@@ -13467,8 +13467,8 @@ mod tests {
     #[tokio::test]
     async fn import_bundle_creates_nodes_and_relationships() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
-        let mut node_a = KnowledgeNode::new(NodeKind::Task, "A".into()).with_namespace("ops");
-        let mut node_b = KnowledgeNode::new(NodeKind::Task, "B".into()).with_namespace("ops");
+        let mut node_a = KnowledgeNode::new(NodeKind::Task, "A").with_namespace("ops");
+        let mut node_b = KnowledgeNode::new(NodeKind::Task, "B").with_namespace("ops");
         node_a.id = uuid::Uuid::now_v7();
         node_b.id = uuid::Uuid::now_v7();
         let relationship = Relationship::new(node_a.id, node_b.id, RelationKind::DependsOn);
@@ -13509,17 +13509,17 @@ mod tests {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let center = state
             .engine
-            .store_node(KnowledgeNode::new(NodeKind::Fact, "Center".into()).with_namespace("ops"))
+            .store_node(KnowledgeNode::new(NodeKind::Fact, "Center").with_namespace("ops"))
             .await
             .expect("center should store");
         let outbound_target = state
             .engine
-            .store_node(KnowledgeNode::new(NodeKind::Task, "Target".into()).with_namespace("ops"))
+            .store_node(KnowledgeNode::new(NodeKind::Task, "Target").with_namespace("ops"))
             .await
             .expect("target should store");
         let inbound_source = state
             .engine
-            .store_node(KnowledgeNode::new(NodeKind::Event, "Source".into()).with_namespace("ops"))
+            .store_node(KnowledgeNode::new(NodeKind::Event, "Source").with_namespace("ops"))
             .await
             .expect("source should store");
 
@@ -13579,7 +13579,7 @@ mod tests {
     async fn list_node_attachments_returns_download_urls() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -13633,7 +13633,7 @@ mod tests {
     async fn list_node_attachments_supports_query_and_status_filters() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -13780,7 +13780,7 @@ mod tests {
     async fn list_node_attachments_supports_limit_and_offset() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -13838,7 +13838,7 @@ mod tests {
     async fn list_node_attachments_paged_returns_counts_and_facets() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -13915,7 +13915,7 @@ mod tests {
     async fn list_node_attachments_paged_supports_sort_orders() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -13976,7 +13976,7 @@ mod tests {
     async fn get_attachment_chunks_returns_paginated_chunks() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14035,7 +14035,7 @@ mod tests {
     async fn get_attachment_chunks_falls_back_to_text_index_when_chunk_index_missing() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14087,7 +14087,7 @@ mod tests {
         let stored = state
             .engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops"),
+                KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops"),
             )
             .await
             .expect("node should store");
@@ -14168,7 +14168,7 @@ mod tests {
     async fn reindex_attachment_rejects_transcribed_status() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14210,7 +14210,7 @@ mod tests {
         let stored = state
             .engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops"),
+                KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops"),
             )
             .await
             .expect("node should store");
@@ -14394,7 +14394,7 @@ mod tests {
     async fn delete_attachment_removes_metadata_entry() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14460,7 +14460,7 @@ mod tests {
     async fn delete_filtered_attachments_supports_dry_run_and_confirmation_guards() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops");
+            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14545,7 +14545,7 @@ mod tests {
         let stored = state
             .engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Attachment node".into()).with_namespace("ops"),
+                KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops"),
             )
             .await
             .expect("node should store");

@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn applies_and_reads_saved_search_definition_roundtrip() {
-        let mut node = KnowledgeNode::new(NodeKind::Fact, "placeholder".into());
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "placeholder");
         let definition = SavedSearchDefinition {
             name: "Due Tasks".to_string(),
             description: Some("High priority due tasks".to_string()),
