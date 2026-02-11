@@ -50,7 +50,7 @@ fn bench_engine_store_node(c: &mut Criterion) {
 
     c.bench_function("engine_store_node", |b| {
         b.iter(|| {
-            let node = KnowledgeNode::new(NodeKind::Fact, "Benchmark content".into());
+            let node = KnowledgeNode::new(NodeKind::Fact, "Benchmark content");
             rt.block_on(async { engine.store_node(node).await.unwrap() });
         });
     });
@@ -60,7 +60,7 @@ fn bench_engine_get_node(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let (engine, _tmp) = create_engine(&rt);
 
-    let node = KnowledgeNode::new(NodeKind::Fact, "Test content".into());
+    let node = KnowledgeNode::new(NodeKind::Fact, "Test content");
     let stored = rt.block_on(async { engine.store_node(node).await.unwrap() });
     let id = stored.id;
 
@@ -95,7 +95,7 @@ fn bench_engine_update_node(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let (engine, _tmp) = create_engine(&rt);
 
-    let node = KnowledgeNode::new(NodeKind::Fact, "Original content".into());
+    let node = KnowledgeNode::new(NodeKind::Fact, "Original content");
     let stored = rt.block_on(async { engine.store_node(node).await.unwrap() });
 
     c.bench_function("engine_update_node", |b| {

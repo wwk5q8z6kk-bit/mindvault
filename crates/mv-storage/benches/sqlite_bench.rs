@@ -36,7 +36,7 @@ fn bench_insert_single(c: &mut Criterion) {
 
     c.bench_function("insert_single_node", |b| {
         b.iter(|| {
-            let node = KnowledgeNode::new(NodeKind::Fact, "Benchmark content".into());
+            let node = KnowledgeNode::new(NodeKind::Fact, "Benchmark content");
             rt.block_on(async { store.insert(&node).await.unwrap() });
         });
     });
@@ -47,7 +47,7 @@ fn bench_get_by_id(c: &mut Criterion) {
     let store = SqliteNodeStore::open_in_memory().unwrap();
 
     // Pre-populate
-    let node = KnowledgeNode::new(NodeKind::Fact, "Test content".into());
+    let node = KnowledgeNode::new(NodeKind::Fact, "Test content");
     let id = node.id;
     rt.block_on(async { store.insert(&node).await.unwrap() });
 

@@ -185,7 +185,7 @@ mod tests {
 
         let node = KnowledgeNode::new(
             NodeKind::Fact,
-            "Rust is a systems programming language".into(),
+            "Rust is a systems programming language",
         )
         .with_title("About Rust")
         .with_tags(vec!["rust".into(), "programming".into()]);
@@ -202,7 +202,7 @@ mod tests {
     fn test_remove_node() {
         let idx = TantivyFullTextIndex::open_in_memory().unwrap();
 
-        let node = KnowledgeNode::new(NodeKind::Fact, "temporary fact".into());
+        let node = KnowledgeNode::new(NodeKind::Fact, "temporary fact");
         let id = node.id;
 
         idx.index_node(&node).unwrap();
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn test_attachment_search_blob_is_indexed() {
         let idx = TantivyFullTextIndex::open_in_memory().unwrap();
-        let mut node = KnowledgeNode::new(NodeKind::Fact, "Sprint plan".into())
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "Sprint plan")
             .with_title("Planning")
             .with_tags(vec!["ops".into()]);
         node.metadata.insert(

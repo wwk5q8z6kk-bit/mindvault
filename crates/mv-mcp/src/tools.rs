@@ -855,7 +855,7 @@ mod tests {
     async fn search_vault_returns_results() {
         let (engine, _tmp) = test_engine().await;
         // Store a node first
-        let node = mv_core::KnowledgeNode::new(NodeKind::Fact, "Rust is a systems language".into())
+        let node = mv_core::KnowledgeNode::new(NodeKind::Fact, "Rust is a systems language")
             .with_title("Rust Facts")
             .with_tags(vec!["rust".into()]);
         engine.store_node(node).await.unwrap();
@@ -891,7 +891,7 @@ mod tests {
     #[tokio::test]
     async fn get_node_scope_blocks_namespace() {
         let (engine, _tmp) = test_engine().await;
-        let mut node = mv_core::KnowledgeNode::new(NodeKind::Fact, "private info".into());
+        let mut node = mv_core::KnowledgeNode::new(NodeKind::Fact, "private info");
         node.namespace = "private".to_string();
         let stored = engine.store_node(node).await.unwrap();
 
@@ -985,7 +985,7 @@ mod tests {
     #[tokio::test]
     async fn propose_update_no_fields() {
         let (engine, _tmp) = test_engine().await;
-        let node = mv_core::KnowledgeNode::new(NodeKind::Fact, "original".into());
+        let node = mv_core::KnowledgeNode::new(NodeKind::Fact, "original");
         let stored = engine.store_node(node).await.unwrap();
 
         let ctx = writable_ctx();

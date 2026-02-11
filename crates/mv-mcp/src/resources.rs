@@ -259,7 +259,7 @@ mod tests {
     #[tokio::test]
     async fn read_recent_with_nodes() {
         let (engine, _tmp) = test_engine().await;
-        let node = KnowledgeNode::new(NodeKind::Fact, "test content".into())
+        let node = KnowledgeNode::new(NodeKind::Fact, "test content")
             .with_tags(vec!["hello".into()]);
         engine.store_node(node).await.unwrap();
 
@@ -285,9 +285,9 @@ mod tests {
     #[tokio::test]
     async fn read_tags_aggregates_counts() {
         let (engine, _tmp) = test_engine().await;
-        let n1 = KnowledgeNode::new(NodeKind::Fact, "a".into())
+        let n1 = KnowledgeNode::new(NodeKind::Fact, "a")
             .with_tags(vec!["rust".into(), "programming".into()]);
-        let n2 = KnowledgeNode::new(NodeKind::Fact, "b".into())
+        let n2 = KnowledgeNode::new(NodeKind::Fact, "b")
             .with_tags(vec!["rust".into()]);
         engine.store_node(n1).await.unwrap();
         engine.store_node(n2).await.unwrap();

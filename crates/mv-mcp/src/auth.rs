@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn namespace_isolation() {
         let scope = scope_with_namespace("private");
-        let mut node = KnowledgeNode::new(NodeKind::Fact, "test".into());
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "test");
         node.namespace = "default".to_string();
         assert!(scope.check_node(&node).is_err());
     }
@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn namespace_allows_matching() {
         let scope = scope_with_namespace("private");
-        let mut node = KnowledgeNode::new(NodeKind::Fact, "test".into());
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "test");
         node.namespace = "private".to_string();
         assert!(scope.check_node(&node).is_ok());
     }
@@ -346,14 +346,14 @@ mod tests {
     #[test]
     fn kind_restriction_blocks_disallowed() {
         let scope = scope_with_kinds(vec![NodeKind::Fact]);
-        let node = KnowledgeNode::new(NodeKind::Task, "test".into());
+        let node = KnowledgeNode::new(NodeKind::Task, "test");
         assert!(scope.check_node(&node).is_err());
     }
 
     #[test]
     fn kind_restriction_allows_permitted() {
         let scope = scope_with_kinds(vec![NodeKind::Fact, NodeKind::Task]);
-        let node = KnowledgeNode::new(NodeKind::Fact, "test".into());
+        let node = KnowledgeNode::new(NodeKind::Fact, "test");
         assert!(scope.check_node(&node).is_ok());
     }
 
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn tag_restriction_blocks_untagged() {
         let scope = scope_with_tags(vec!["project-a"]);
-        let node = KnowledgeNode::new(NodeKind::Fact, "test".into());
+        let node = KnowledgeNode::new(NodeKind::Fact, "test");
         // node has no tags
         assert!(scope.check_node(&node).is_err());
     }
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn tag_restriction_allows_matching() {
         let scope = scope_with_tags(vec!["project-a"]);
-        let mut node = KnowledgeNode::new(NodeKind::Fact, "test".into());
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "test");
         node.tags = vec!["project-a".to_string()];
         assert!(scope.check_node(&node).is_ok());
     }
