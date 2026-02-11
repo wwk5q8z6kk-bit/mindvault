@@ -74,9 +74,8 @@
 			prioritizedTasks = prioritized.items;
 			timeBlockSuggestions = timeBlocks;
 			calendarItems = calendar.items;
-		} catch (e) {
+		} catch {
 			error = 'Failed to load daily plan';
-			console.error(e);
 		} finally {
 			loading = false;
 		}

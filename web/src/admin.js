@@ -98,6 +98,7 @@ export class MindVaultAdmin {
         this.initialized = false;
         this.autoSuggestPausedUntil = this.readAutoSuggestPausedUntil();
         this.autoSuggestPauseTicker = null;
+        this.formStateDefaults = null;
 
         this.richEditor = document.getElementById('rich-editor');
         this.markdownEditor = document.getElementById('markdown-editor');
@@ -151,6 +152,7 @@ export class MindVaultAdmin {
         this.initializeDailyNotesControls();
         this.initializeCalendarControls();
         this.initializeTemplateControls();
+        this.captureFormStateDefaults();
         this.restoreFormState();
         this.loadNodes();
         this.loadStats();
@@ -619,6 +621,16 @@ export class MindVaultAdmin {
         document.getElementById('ai-link-btn').addEventListener('click', () => {
             this.requestWikiLinkSuggestions(false, this.resolveExplicitWikiQuery());
         });
+        const resetFormStateBtn = document.getElementById('reset-form-state-btn');
+        if (resetFormStateBtn) {
+            resetFormStateBtn.addEventListener('click', () => {
+                if (!window.confirm('Clear all saved inputs and restore defaults?')) {
+                    return;
+                }
+                this.resetFormState();
+                this.showNotification('Saved inputs cleared.', 'success');
+            });
+        }
         document.getElementById('ai-transform-btn').addEventListener('click', () => {
             this.requestEditorTransform();
         });
@@ -2273,6 +2285,48 @@ export class MindVaultAdmin {
         if (namespace) {
             this.currentFilters.namespace = namespace;
         }
+    }
+
+    captureFormStateDefaults() {
+        const defaults = new Map();
+        FORM_STATE_FIELDS.forEach((field) => {
+            const el = document.getElementById(field.id);
+            if (!el) {
+                return;
+            }
+            if (field.type === 'checkbox') {
+                defaults.set(field.id, el.checked);
+            } else {
+                defaults.set(field.id, el.value);
+            }
+        });
+        this.formStateDefaults = defaults;
+    }
+
+    applyFormStateDefaults() {
+        if (!this.formStateDefaults) {
+            return;
+        }
+        FORM_STATE_FIELDS.forEach((field) => {
+            const el = document.getElementById(field.id);
+            if (!el || !this.formStateDefaults.has(field.id)) {
+                return;
+            }
+            const value = this.formStateDefaults.get(field.id);
+            if (field.type === 'checkbox') {
+                el.checked = Boolean(value);
+            } else {
+                el.value = value;
+            }
+        });
+        this.syncNodeFiltersFromInputs();
+    }
+
+    resetFormState() {
+        FORM_STATE_FIELDS.forEach((field) => {
+            localStorage.removeItem(field.key);
+        });
+        this.applyFormStateDefaults();
     }
 
     cachePanelStatus() {
