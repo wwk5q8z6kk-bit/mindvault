@@ -4197,7 +4197,7 @@ mod tests {
     #[tokio::test]
     async fn test_insert_and_get() {
         let store = SqliteNodeStore::open_in_memory().unwrap();
-        let node = KnowledgeNode::new(NodeKind::Fact, "Rust is fast".into())
+        let node = KnowledgeNode::new(NodeKind::Fact, "Rust is fast")
             .with_title("Rust Speed")
             .with_tags(vec!["rust".into(), "performance".into()]);
 
@@ -4213,7 +4213,7 @@ mod tests {
     #[tokio::test]
     async fn test_update() {
         let store = SqliteNodeStore::open_in_memory().unwrap();
-        let mut node = KnowledgeNode::new(NodeKind::Fact, "original".into());
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "original");
         let id = node.id;
         store.insert(&node).await.unwrap();
 
@@ -4230,7 +4230,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete() {
         let store = SqliteNodeStore::open_in_memory().unwrap();
-        let node = KnowledgeNode::new(NodeKind::Fact, "to delete".into());
+        let node = KnowledgeNode::new(NodeKind::Fact, "to delete");
         let id = node.id;
         store.insert(&node).await.unwrap();
 
@@ -4242,13 +4242,13 @@ mod tests {
     async fn test_list_with_filters() {
         let store = SqliteNodeStore::open_in_memory().unwrap();
 
-        let n1 = KnowledgeNode::new(NodeKind::Fact, "fact one".into())
+        let n1 = KnowledgeNode::new(NodeKind::Fact, "fact one")
             .with_namespace("dev")
             .with_tags(vec!["rust".into()]);
-        let n2 = KnowledgeNode::new(NodeKind::Decision, "decision one".into())
+        let n2 = KnowledgeNode::new(NodeKind::Decision, "decision one")
             .with_namespace("dev")
             .with_tags(vec!["planning".into()]);
-        let n3 = KnowledgeNode::new(NodeKind::Fact, "fact two".into())
+        let n3 = KnowledgeNode::new(NodeKind::Fact, "fact two")
             .with_namespace("personal")
             .with_tags(vec!["rust".into()]);
 
@@ -4281,7 +4281,7 @@ mod tests {
     #[tokio::test]
     async fn test_touch() {
         let store = SqliteNodeStore::open_in_memory().unwrap();
-        let node = KnowledgeNode::new(NodeKind::Fact, "touchable".into());
+        let node = KnowledgeNode::new(NodeKind::Fact, "touchable");
         let id = node.id;
         store.insert(&node).await.unwrap();
 
@@ -4294,15 +4294,15 @@ mod tests {
     async fn test_count() {
         let store = SqliteNodeStore::open_in_memory().unwrap();
         store
-            .insert(&KnowledgeNode::new(NodeKind::Fact, "a".into()))
+            .insert(&KnowledgeNode::new(NodeKind::Fact, "a"))
             .await
             .unwrap();
         store
-            .insert(&KnowledgeNode::new(NodeKind::Fact, "b".into()))
+            .insert(&KnowledgeNode::new(NodeKind::Fact, "b"))
             .await
             .unwrap();
         store
-            .insert(&KnowledgeNode::new(NodeKind::Decision, "c".into()))
+            .insert(&KnowledgeNode::new(NodeKind::Decision, "c"))
             .await
             .unwrap();
 

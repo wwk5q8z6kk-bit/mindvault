@@ -1,7 +1,6 @@
 import { get } from 'svelte/store';
-import { apiHealth, markApiFailure, markApiSuccess } from '$lib/stores/api-health';
+import { apiHealth, getOfflineCooldownMs, markApiFailure, markApiSuccess } from '$lib/stores/api-health';
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:9470';
-const OFFLINE_COOLDOWN_MS = 5000;
 const HEALTH_PROBE_PATH = '/api/v1/nodes?limit=1';
 
 let reachabilityProbePromise: Promise<boolean> | null = null;
@@ -74,11 +73,13 @@ export async function fetchJson<T>(
 
 		if (health.status === 'offline' && typeof health.lastFailureAt === 'number') {
 			const elapsed = Date.now() - health.lastFailureAt;
-			if (elapsed < OFFLINE_COOLDOWN_MS) {
+			const cooldownMs = getOfflineCooldownMs(health.consecutiveFailures);
+			if (elapsed < cooldownMs) {
 				throw new ApiError('Backend unavailable', 0, {
 					reason: 'offline_cooldown',
-					cooldown_ms: OFFLINE_COOLDOWN_MS,
-					retry_in_ms: OFFLINE_COOLDOWN_MS - elapsed
+					cooldown_ms: cooldownMs,
+					retry_in_ms: cooldownMs - elapsed,
+					failures: health.consecutiveFailures
 				});
 			}
 

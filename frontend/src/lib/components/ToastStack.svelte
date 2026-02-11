@@ -3,10 +3,10 @@
 	import { popUndo } from '$lib/stores/undo';
 
 	const variants: Record<string, string> = {
-		info: 'bg-slate-800 text-slate-100 border-slate-700',
-		success: 'bg-emerald-500/20 text-emerald-200 border-emerald-500/40',
-		warning: 'bg-amber-500/20 text-amber-200 border-amber-500/40',
-		danger: 'bg-rose-500/20 text-rose-200 border-rose-500/40'
+		info: 'bg-slate-900 text-slate-100 border-slate-700',
+		success: 'bg-emerald-50 text-emerald-900 border-emerald-300',
+		warning: 'bg-amber-50 text-amber-900 border-amber-300',
+		danger: 'bg-rose-50 text-rose-900 border-rose-300'
 	};
 
 	async function handleUndo(undoId: string, toastId: string) {
@@ -19,15 +19,11 @@
 
 <div class="fixed left-3 right-3 top-[calc(4.5rem+env(safe-area-inset-top))] z-50 flex flex-col gap-2 md:left-auto md:right-6 md:top-6 md:w-80">
 	{#each $toastStore as toast (toast.id)}
-		<div
-			class={`flex items-center justify-between rounded-xl border px-4 py-3 text-sm shadow-lg backdrop-blur ${
-				variants[toast.variant ?? 'info']
-			}`}
-		>
+		<div class={`flex items-center justify-between rounded-xl border px-4 py-3 text-sm shadow-lg ${variants[toast.variant ?? 'info']}`}>
 			<span>{toast.message}</span>
 			{#if toast.undoId}
 				<button
-					class="ml-3 shrink-0 rounded-md px-2 py-0.5 text-xs font-semibold text-white hover:bg-white/10"
+					class="ml-3 shrink-0 rounded-md border border-current/25 px-2 py-0.5 text-xs font-semibold text-current hover:bg-black/5"
 					on:click={() => handleUndo(toast.undoId ?? '', toast.id)}
 				>
 					Undo
