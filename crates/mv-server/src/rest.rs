@@ -725,6 +725,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/provenance/audit", get(provenance_audit))
         // --- Performance Diagnostics ---
         .route("/api/v1/diagnostics/health", get(diagnostics_health))
+        .route("/api/v1/diagnostics/performance", get(diagnostics_performance))
         .route("/api/v1/audit", get(list_audit_logs))
         .route("/metrics", get(metrics_handler))
         .merge(swagger_ui())
@@ -11286,6 +11287,25 @@ async fn metrics_summary(
         "uptime_seconds": state.engine.metrics.uptime_seconds(),
         "counters": state.engine.metrics.get_counters().await,
         "gauges": state.engine.metrics.get_gauges().await,
+    })))
+}
+
+/// GET /api/v1/diagnostics/performance — Get histogram-based performance stats.
+async fn diagnostics_performance(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+
+    let health_latency = state
+        .engine
+        .metrics
+        .get_histogram_stats("health_check_latency_ms")
+        .await;
+
+    Ok(Json(serde_json::json!({
+        "health_check_latency_ms": health_latency,
+        "uptime_seconds": state.engine.metrics.uptime_seconds()
     })))
 }
 
