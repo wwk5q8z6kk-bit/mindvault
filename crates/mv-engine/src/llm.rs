@@ -19,14 +19,14 @@ pub struct ChatMessage {
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
         Self {
-            role: "system".into(),
+            role: "system".to_string(),
             content: content.into(),
         }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
         Self {
-            role: "user".into(),
+            role: "user".to_string(),
             content: content.into(),
         }
     }
@@ -192,7 +192,7 @@ impl LlmProvider for OpenAiCompatibleLlm {
             .choices
             .first()
             .and_then(|c| c.message.content.clone())
-            .ok_or_else(|| LlmError::ParseError("no content in response".into()))
+            .ok_or_else(|| LlmError::ParseError("no content in response".to_string()))
     }
 
     fn name(&self) -> &str {
@@ -362,7 +362,7 @@ pub async fn llm_action_items(
         .collect();
 
     if items.is_empty() {
-        Err(LlmError::ParseError("no action items extracted".into()))
+        Err(LlmError::ParseError("no action items extracted".to_string()))
     } else {
         Ok(items)
     }
@@ -439,7 +439,7 @@ pub async fn llm_completion_suggestions(
         .collect();
 
     if suggestions.is_empty() {
-        Err(LlmError::ParseError("no completion suggestions extracted".into()))
+        Err(LlmError::ParseError("no completion suggestions extracted".to_string()))
     } else {
         Ok(suggestions)
     }
@@ -564,15 +564,36 @@ pub async fn probe_ollama(base_url: &str, timeout_secs: u64) -> bool {
 
 /// Initialize the LLM provider from config. Returns None if no provider available.
 ///
-/// When `auto_detect` is enabled, probes for local Ollama and builds a fallback
-/// chain of available providers.
+/// Resolution order (fallback chain):
+/// 1. Local llama.cpp (if `local_llm.enabled` and model available)
+/// 2. Explicitly configured provider (if `llm.enabled`)
+/// 3. Auto-detected Ollama (if `llm.auto_detect`)
+/// 4. OpenAI API (if API key available)
+///
+/// When multiple providers are available, they form a `FallbackLlmProvider`
+/// chain that tries each in order until one succeeds.
 pub async fn init_llm_provider(
     config: &LlmConfig,
     api_key: Option<String>,
 ) -> Option<Arc<dyn LlmProvider>> {
+    init_llm_provider_with_local(config, &crate::config::LocalLlmConfig::default(), api_key).await
+}
+
+/// Extended LLM provider init that includes local llama.cpp configuration.
+pub async fn init_llm_provider_with_local(
+    config: &LlmConfig,
+    local_config: &crate::config::LocalLlmConfig,
+    api_key: Option<String>,
+) -> Option<Arc<dyn LlmProvider>> {
     let mut providers: Vec<Arc<dyn LlmProvider>> = Vec::new();
 
-    // If explicitly enabled, use configured provider
+    // 1. Local llama.cpp provider (highest priority — fully offline)
+    if let Some(local_provider) = crate::llm_local::init_local_provider(local_config) {
+        info!("Local llama.cpp provider added to fallback chain");
+        providers.push(local_provider);
+    }
+
+    // 2. If explicitly enabled, use configured provider
     if config.enabled {
         let provider = OpenAiCompatibleLlm::from_config(config, api_key.clone());
         info!(
@@ -584,7 +605,7 @@ pub async fn init_llm_provider(
         providers.push(Arc::new(provider));
     }
 
-    // Auto-detect local Ollama if enabled
+    // 3. Auto-detect local Ollama if enabled
     if config.auto_detect && !config.enabled {
         let ollama_url = "http://localhost:11434/v1";
         if probe_ollama(ollama_url, config.timeout_secs).await {
@@ -600,13 +621,13 @@ pub async fn init_llm_provider(
         }
     }
 
-    // Add OpenAI as fallback if API key present and not already the primary
+    // 4. Add OpenAI as fallback if API key present and not already the primary
     if let Some(key) = api_key {
         if !config.enabled || config.base_url != "https://api.openai.com/v1" {
             let openai_config = LlmConfig {
                 enabled: true,
-                base_url: "https://api.openai.com/v1".into(),
-                model: "gpt-4o-mini".into(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                model: "gpt-4o-mini".to_string(),
                 ..config.clone()
             };
             let provider = OpenAiCompatibleLlm::from_config(&openai_config, Some(key));

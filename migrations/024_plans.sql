@@ -32,3 +32,5 @@ CREATE INDEX IF NOT EXISTS idx_plan_steps_plan_id
 
 CREATE INDEX IF NOT EXISTS idx_plans_status
     ON plans(status);
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (24, datetime('now'));

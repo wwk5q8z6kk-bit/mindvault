@@ -44,3 +44,5 @@ CREATE INDEX IF NOT EXISTS idx_relay_messages_channel ON relay_messages(channel_
 CREATE INDEX IF NOT EXISTS idx_relay_messages_thread ON relay_messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_relay_messages_status ON relay_messages(status);
 CREATE INDEX IF NOT EXISTS idx_relay_messages_created ON relay_messages(created_at);
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (8, datetime('now'));

@@ -104,7 +104,7 @@ cors_allowed_origins = ["http://localhost:3000", "http://localhost:8080"]
 1. **View Nodes**: Click the "Nodes" tab to browse existing knowledge nodes
 2. **Add Node**: Click "Add Node" to create a new knowledge entry
 3. **Edit Node**: Click any node in the list to edit its content
-4. **Filter**: Use the dropdown and text filters to narrow down the node list
+4. **Filter**: Use the dropdown and text filters to narrow down the node list (filters persist across reloads)
 5. **Link Faster**: In Markdown or WYSIWYG mode type `[[` (or `[[target#heading|alias`) for wiki-links, or `@` / `@"Title"` for mentions, then use `Up`/`Down` + `Enter`/`Tab` (or click "AI Suggest Links")
 6. **Transform Drafts**: Pick AI transform mode + target (`Insert Section` or `Replace Selection`) and click "AI Transform"
 7. **Control Suggestion Flow**: Toggle `Auto Suggest` on/off for background completions with grounding metadata
@@ -115,6 +115,7 @@ cors_allowed_origins = ["http://localhost:3000", "http://localhost:8080"]
 3. **Configure Saved Filters**: Optionally set namespace/kinds/tags/min-score/min-importance
 4. **Save Reusable Queries**: Provide a name and click "Save Current Search"
 5. **Run Saved Queries**: Use "Run" to execute stored filters instantly
+6. **Persistent Inputs**: Search form and filter inputs are remembered between sessions
 6. **Update Active Presets**: Load a saved query, edit fields, then click "Update Active"
 7. **View Results**: Browse scored results with match source information
 

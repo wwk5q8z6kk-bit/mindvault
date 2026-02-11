@@ -1,5 +1,45 @@
-import { markApiFailure, markApiSuccess } from '$lib/stores/api-health';
+import { get } from 'svelte/store';
+import { apiHealth, markApiFailure, markApiSuccess } from '$lib/stores/api-health';
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:9470';
+const OFFLINE_COOLDOWN_MS = 5000;
+const HEALTH_PROBE_PATH = '/api/v1/nodes?limit=1';
+
+let reachabilityProbePromise: Promise<boolean> | null = null;
+
+async function probeApiReachability(timeoutMs: number): Promise<boolean> {
+	if (reachabilityProbePromise) {
+		return reachabilityProbePromise;
+	}
+
+	reachabilityProbePromise = (async () => {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), Math.min(timeoutMs, 3000));
+		try {
+			const res = await fetch(`${API_BASE_URL}${HEALTH_PROBE_PATH}`, {
+				method: 'GET',
+				headers: { Accept: 'application/json' },
+				signal: controller.signal
+			});
+			if (res.status >= 500) {
+				markApiFailure('server', HEALTH_PROBE_PATH, `HTTP ${res.status}`);
+			} else {
+				// Any non-5xx response means the backend is reachable.
+				markApiSuccess(HEALTH_PROBE_PATH);
+			}
+			return true;
+		} catch (err) {
+			const kind = err instanceof Error && err.name === 'AbortError' ? 'timeout' : 'network';
+			const detail = err instanceof Error ? err.message : 'Probe failed';
+			markApiFailure(kind, HEALTH_PROBE_PATH, detail);
+			return false;
+		} finally {
+			clearTimeout(timer);
+			reachabilityProbePromise = null;
+		}
+	})();
+
+	return reachabilityProbePromise;
+}
 
 export class ApiError extends Error {
 	status: number;
@@ -15,8 +55,42 @@ export class ApiError extends Error {
 export async function fetchJson<T>(
 	path: string,
 	options: RequestInit = {},
-	{ timeoutMs = 10000 }: { timeoutMs?: number } = {}
+	{
+		timeoutMs = 10000,
+		bypassOfflineCircuit = false
+	}: { timeoutMs?: number; bypassOfflineCircuit?: boolean } = {}
 ): Promise<T> {
+	if (!bypassOfflineCircuit) {
+		let health = get(apiHealth);
+		if (health.status === 'unknown') {
+			const reachable = await probeApiReachability(timeoutMs);
+			if (!reachable) {
+				throw new ApiError('Backend unavailable', 0, {
+					reason: 'offline_probe'
+				});
+			}
+			health = get(apiHealth);
+		}
+
+		if (health.status === 'offline' && typeof health.lastFailureAt === 'number') {
+			const elapsed = Date.now() - health.lastFailureAt;
+			if (elapsed < OFFLINE_COOLDOWN_MS) {
+				throw new ApiError('Backend unavailable', 0, {
+					reason: 'offline_cooldown',
+					cooldown_ms: OFFLINE_COOLDOWN_MS,
+					retry_in_ms: OFFLINE_COOLDOWN_MS - elapsed
+				});
+			}
+
+			const reachable = await probeApiReachability(timeoutMs);
+			if (!reachable) {
+				throw new ApiError('Backend unavailable', 0, {
+					reason: 'offline_probe'
+				});
+			}
+		}
+	}
+
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -35,7 +109,11 @@ export async function fetchJson<T>(
 			const kind = err instanceof Error && err.name === 'AbortError' ? 'timeout' : 'network';
 			const detail = err instanceof Error ? err.message : 'Request failed';
 			markApiFailure(kind, path, detail);
-			throw err;
+			throw new ApiError(
+				kind === 'timeout' ? `Request timed out (${timeoutMs}ms)` : 'Network unavailable',
+				0,
+				detail
+			);
 		}
 
 		if (!res.ok) {

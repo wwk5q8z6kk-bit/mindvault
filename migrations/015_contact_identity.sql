@@ -20,3 +20,5 @@ CREATE TABLE IF NOT EXISTS trust_models (
     max_confidence_override REAL,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (15, datetime('now'));

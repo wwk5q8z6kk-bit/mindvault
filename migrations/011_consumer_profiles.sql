@@ -12,3 +12,5 @@ CREATE TABLE IF NOT EXISTS consumer_profiles (
 
 CREATE INDEX IF NOT EXISTS idx_consumer_profiles_name ON consumer_profiles(name);
 CREATE INDEX IF NOT EXISTS idx_consumer_profiles_token_hash ON consumer_profiles(token_hash);
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (11, datetime('now'));

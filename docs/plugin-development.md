@@ -154,11 +154,55 @@ Test your plugin by:
 4. Triggering the relevant hook (e.g., create a node for PostIngest)
 5. Checking chronicle logs for plugin execution entries
 
-## Community Modules (Early)
+## Community Modules
+
+### Manifest Community Fields
+
+When publishing a plugin for others to use, include the optional community fields in your `manifest.json`:
+
+```json
+{
+  "id": "my-plugin",
+  "name": "My Plugin",
+  "version": "1.0.0",
+  "description": "Enriches notes with external data",
+  "author": "Your Name",
+  "permissions": ["ReadNodes", "WriteNodes"],
+  "hooks": ["PostIngest"],
+  "repository": "https://github.com/user/mv-plugin-enricher",
+  "license": "MIT",
+  "homepage": "https://example.com/mv-plugin-enricher",
+  "checksum": "a1b2c3d4...sha256hex...of-the-wasm-binary",
+  "min_mindvault_version": "0.9.0",
+  "keywords": ["enrichment", "notes", "external-data"]
+}
+```
+
+| Field | Purpose |
+|-------|---------|
+| `repository` | Source code URL for inspection and contribution |
+| `license` | SPDX license identifier (e.g. `MIT`, `Apache-2.0`) |
+| `homepage` | Project website or documentation |
+| `checksum` | SHA-256 hex digest of `plugin.wasm` for integrity verification |
+| `min_mindvault_version` | Minimum MindVault version required (semver) |
+| `keywords` | Tags for discovery and search |
+
+### Generating a Checksum
+
+```bash
+shasum -a 256 target/wasm32-wasip1/release/my_plugin.wasm
+# => a1b2c3d4e5f6...  my_plugin.wasm
+```
+
+Copy the hex digest into the manifest's `checksum` field. MindVault verifies this on install — a mismatch rejects installation.
+
+### Publishing a Module
 
 There is no central registry yet. To share a module:
 
-1. Distribute the `.wasm` file and `manifest.json` together.
-2. Publish checksums so others can verify integrity.
-3. Document required permissions and expected hook usage.
-4. Recommend installing in a sandboxed environment first.
+1. Distribute the `.wasm` file and `manifest.json` together (e.g. as a GitHub release).
+2. Include the SHA-256 checksum in the manifest so consumers can verify integrity automatically.
+3. Document required permissions and expected hook usage in your README.
+4. Specify `min_mindvault_version` so users know compatibility requirements.
+5. Recommend installing in a sandboxed environment first.
+6. Tag your repository with `mindvault-plugin` for discoverability.

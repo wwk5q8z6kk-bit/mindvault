@@ -9,8 +9,8 @@
     onMount(async () => {
         try {
             await fetchInsights();
-        } catch (e) {
-            console.error('Failed to load insights', e);
+        } catch {
+            // Non-blocking widget; banner/toasts elsewhere handle backend visibility.
         }
     });
 

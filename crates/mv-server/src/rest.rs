@@ -100,8 +100,16 @@ mod proxy;
 mod sync;
 #[path = "rest/conflicts.rs"]
 mod conflicts;
+#[path = "rest/conversations.rs"]
+mod conversations;
+#[path = "rest/distill.rs"]
+mod distill;
+#[path = "rest/plans.rs"]
+mod plans;
 #[path = "rest/contact_identity.rs"]
 mod contact_identity;
+#[path = "rest/models.rs"]
+mod models;
 
 use crate::audit::{audit_middleware, list_audit_entries, AuditConfig, AuditEntry, AuditLogger};
 use crate::auth::{
@@ -153,13 +161,13 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/agent/context", get(get_agent_context))
         .route("/api/v1/agent/chronicle", get(list_chronicles))
         .route("/api/v1/agent/intents", get(list_intents))
-        .route("/api/v1/agent/intents/{id}/apply", post(apply_intent))
-        .route("/api/v1/agent/intents/{id}/dismiss", post(dismiss_intent))
+        .route("/api/v1/agent/intents/:id/apply", post(apply_intent))
+        .route("/api/v1/agent/intents/:id/dismiss", post(dismiss_intent))
         .route("/api/v1/agent/models", get(list_models))
         .route("/api/v1/agent/watcher/status", get(watcher_status))
         .route("/api/v1/agent/insights", get(list_agent_insights))
         .route("/api/v1/proactive/insights", get(list_insights))
-        .route("/api/v1/proactive/insights/{id}", delete(delete_insight))
+        .route("/api/v1/proactive/insights/:id", delete(delete_insight))
         .route("/api/v1/proactive/generate", post(generate_insights))
         .route("/api/v1/insights/topic", get(insight_topic_analysis))
         .route(
@@ -173,7 +181,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(insight_cross_namespace),
         )
         .route(
-            "/api/v1/insights/{id}/dismiss",
+            "/api/v1/insights/:id/dismiss",
             post(dismiss_insight),
         )
         .route("/api/v1/insights/scan", post(insight_full_scan))
@@ -195,7 +203,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(feedback::list_confidence_overrides),
         )
         .route(
-            "/api/v1/agent/confidence-overrides/{type}",
+            "/api/v1/agent/confidence-overrides/:type",
             put(feedback::set_confidence_override),
         )
         .route(
@@ -203,7 +211,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(autonomy::list_rules).post(autonomy::create_rule),
         )
         .route(
-            "/api/v1/autonomy/rules/{id}",
+            "/api/v1/autonomy/rules/:id",
             get(autonomy::get_rule)
                 .put(autonomy::update_rule)
                 .delete(autonomy::delete_rule),
@@ -225,31 +233,31 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(exchange::batch_proposals),
         )
         .route(
-            "/api/v1/exchange/proposals/{id}",
+            "/api/v1/exchange/proposals/:id",
             get(exchange::get_proposal),
         )
         .route(
-            "/api/v1/exchange/proposals/{id}/approve",
+            "/api/v1/exchange/proposals/:id/approve",
             post(exchange::approve_proposal),
         )
         .route(
-            "/api/v1/exchange/proposals/{id}/reject",
+            "/api/v1/exchange/proposals/:id/reject",
             post(exchange::reject_proposal),
         )
         .route("/api/v1/exchange/inbox/count", get(exchange::inbox_count))
         .route(
-            "/api/v1/exchange/proposals/{id}/undo",
+            "/api/v1/exchange/proposals/:id/undo",
             post(exchange::undo_proposal),
         );
 
     let router = router
         .route("/api/v1/tasks/prioritize", post(prioritize_tasks))
-        .route("/api/v1/tasks/{id}/complete", post(complete_task))
-        .route("/api/v1/tasks/{id}/reopen", post(reopen_task))
-        .route("/api/v1/tasks/{id}/snooze", post(snooze_task_reminder))
+        .route("/api/v1/tasks/:id/complete", post(complete_task))
+        .route("/api/v1/tasks/:id/reopen", post(reopen_task))
+        .route("/api/v1/tasks/:id/snooze", post(snooze_task_reminder))
         .route("/api/v1/template-packs", get(list_template_packs))
         .route(
-            "/api/v1/template-packs/{pack_id}/install",
+            "/api/v1/template-packs/:pack_id/install",
             post(install_template_pack),
         )
         .route(
@@ -257,25 +265,25 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(create_template).get(list_templates),
         )
         .route(
-            "/api/v1/templates/{id}",
+            "/api/v1/templates/:id",
             delete(delete_template).patch(update_template),
         )
-        .route("/api/v1/templates/{id}/duplicate", post(duplicate_template))
+        .route("/api/v1/templates/:id/duplicate", post(duplicate_template))
         .route(
-            "/api/v1/templates/{id}/instantiate",
+            "/api/v1/templates/:id/instantiate",
             post(instantiate_template),
         )
-        .route("/api/v1/templates/{id}/apply", post(apply_template))
+        .route("/api/v1/templates/:id/apply", post(apply_template))
         .route(
-            "/api/v1/templates/{id}/versions",
+            "/api/v1/templates/:id/versions",
             get(list_template_versions),
         )
         .route(
-            "/api/v1/templates/{id}/versions/{version_id}",
+            "/api/v1/templates/:id/versions/:version_id",
             get(get_template_version),
         )
         .route(
-            "/api/v1/templates/{id}/versions/{version_id}/restore",
+            "/api/v1/templates/:id/versions/:version_id/restore",
             post(restore_template_version),
         )
         .route(
@@ -283,19 +291,19 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(list_permission_templates).post(create_permission_template),
         )
         .route(
-            "/api/v1/permission-templates/{id}",
+            "/api/v1/permission-templates/:id",
             put(update_permission_template).delete(delete_permission_template),
         )
         .route(
             "/api/v1/access-keys",
             get(list_access_keys).post(create_access_key),
         )
-        .route("/api/v1/access-keys/{id}", delete(revoke_access_key))
+        .route("/api/v1/access-keys/:id", delete(revoke_access_key))
         .route(
             "/api/v1/oauth/clients",
             get(list_oauth_clients).post(create_oauth_client),
         )
-        .route("/api/v1/oauth/clients/{id}", delete(revoke_oauth_client))
+        .route("/api/v1/oauth/clients/:id", delete(revoke_oauth_client))
         .route("/api/v1/oauth/token", post(oauth_token))
         .route("/api/v1/export", get(export_bundle))
         .route("/api/v1/import", post(import_bundle))
@@ -304,77 +312,78 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(list_saved_searches).post(create_saved_search),
         )
         .route(
-            "/api/v1/search/saved/{id}",
+            "/api/v1/search/saved/:id",
             put(update_saved_search).delete(delete_saved_search),
         )
-        .route("/api/v1/search/saved/{id}/run", post(run_saved_search))
+        .route("/api/v1/search/saved/:id/run", post(run_saved_search))
         .route(
             "/api/v1/saved_views",
             get(list_saved_views).post(create_saved_view),
         )
         .route(
-            "/api/v1/saved_views/{id}",
+            "/api/v1/saved_views/:id",
             patch(update_saved_view).delete(delete_saved_view),
         )
         .route("/api/v1/clips/import", post(import_clip))
         .route("/api/v1/clips/enrich", post(enrich_clip))
-        .route("/api/v1/clips/{id}/note", post(create_clip_note))
+        .route("/api/v1/clips/:id/note", post(create_clip_note))
         .route("/api/v1/files/upload", post(upload_file))
         .route("/api/v1/voice/upload", post(upload_voice_note))
         .route("/api/v1/files", get(list_attachments_index))
-        .route("/api/v1/files/{node_id}", get(list_node_attachments))
+        .route("/api/v1/files/:node_id", get(list_node_attachments))
         .route(
-            "/api/v1/files/{node_id}/paged",
+            "/api/v1/files/:node_id/paged",
             get(list_node_attachments_paged),
         )
         .route(
-            "/api/v1/files/{node_id}/reindex-failed",
+            "/api/v1/files/:node_id/reindex-failed",
             post(reindex_failed_attachments),
         )
         .route(
-            "/api/v1/files/{node_id}/delete-filtered",
+            "/api/v1/files/:node_id/delete-filtered",
             post(delete_filtered_attachments),
         )
         .route(
-            "/api/v1/files/{node_id}/{attachment_id}/chunks",
+            "/api/v1/files/:node_id/:attachment_id/chunks",
             get(get_attachment_chunks),
         )
         .route(
-            "/api/v1/files/{node_id}/{attachment_id}/reindex",
+            "/api/v1/files/:node_id/:attachment_id/reindex",
             post(reindex_attachment),
         )
         .route(
-            "/api/v1/files/{node_id}/{attachment_id}",
+            "/api/v1/files/:node_id/:attachment_id",
             get(download_attachment).delete(delete_attachment),
         )
         .route("/api/v1/nodes", post(store_node))
         .route("/api/v1/nodes", get(list_nodes))
-        .route("/api/v1/nodes/{id}/versions", get(list_node_versions))
+        .route("/api/v1/nodes/:id/versions", get(list_node_versions))
         .route(
-            "/api/v1/nodes/{id}/versions/{version_id}",
+            "/api/v1/nodes/:id/versions/:version_id",
             get(get_node_version),
         )
         .route(
-            "/api/v1/nodes/{id}/versions/{version_id}/restore",
+            "/api/v1/nodes/:id/versions/:version_id/restore",
             post(restore_node_version),
         )
-        .route("/api/v1/nodes/{id}", get(get_node))
-        .route("/api/v1/nodes/{id}", put(update_node))
-        .route("/api/v1/nodes/{id}", delete(delete_node))
+        .route(
+            "/api/v1/nodes/:id",
+            get(get_node).put(update_node).delete(delete_node),
+        )
         .route("/api/v1/recall", post(recall))
         .route("/api/v1/search", get(search))
         .route("/api/v1/graph/relationships", post(add_relationship))
         .route(
-            "/api/v1/graph/relationships/{id}",
+            "/api/v1/graph/relationships/:id",
             get(get_node_relationships),
         )
-        .route("/api/v1/graph/neighbors/{id}", get(get_neighbors))
+        .route("/api/v1/graph/neighbors/:id", get(get_neighbors))
         .route(
             "/api/v1/exchange/blocked-senders",
             get(safeguards::list_blocked_senders).post(safeguards::add_blocked_sender),
         )
         .route(
-            "/api/v1/exchange/blocked-senders/{id}",
+            "/api/v1/exchange/blocked-senders/:id",
             delete(safeguards::remove_blocked_sender),
         )
         .route(
@@ -382,31 +391,31 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(safeguards::list_auto_approve_rules).post(safeguards::add_auto_approve_rule),
         )
         .route(
-            "/api/v1/exchange/auto-approve-rules/{id}",
+            "/api/v1/exchange/auto-approve-rules/:id",
             put(safeguards::update_auto_approve_rule).delete(safeguards::remove_auto_approve_rule),
         )
         .route("/api/v1/secrets/status", get(secrets::secret_status))
         .route("/api/v1/secrets/unlock", post(secrets::unlock_encrypted_file))
         .route("/api/v1/secrets", post(secrets::set_secret))
-        .route("/api/v1/secrets/{key}", delete(secrets::delete_secret))
+        .route("/api/v1/secrets/:key", delete(secrets::delete_secret))
         // --- Owner Profile ---
         .route("/api/v1/profile", get(profile::get_profile).put(profile::update_profile))
         // --- Consumer Profiles ---
         .route("/api/v1/consumers", post(consumers::create_consumer).get(consumers::list_consumers))
         .route("/api/v1/consumers/whoami", get(consumers::whoami))
-        .route("/api/v1/consumers/{id}", get(consumers::get_consumer).delete(consumers::revoke_consumer))
+        .route("/api/v1/consumers/:id", get(consumers::get_consumer).delete(consumers::revoke_consumer))
         // --- Access Policies ---
         .route("/api/v1/policies", post(policies::set_policy).get(policies::list_policies))
         .route("/api/v1/policies/matrix", get(policies::policy_matrix))
         .route("/api/v1/policies/my-access", get(policies::my_access))
-        .route("/api/v1/policies/{id}", delete(policies::delete_policy))
+        .route("/api/v1/policies/:id", delete(policies::delete_policy))
         // --- Credential Proxy ---
         .route("/api/v1/proxy/http", post(proxy::proxy_http))
         .route("/api/v1/proxy/exec", post(proxy::proxy_exec))
         .route("/api/v1/proxy/audit", get(proxy::list_audit))
         .route("/api/v1/proxy/approvals", get(proxy::list_approvals))
         .route(
-            "/api/v1/proxy/approvals/{id}",
+            "/api/v1/proxy/approvals/:id",
             get(proxy::get_approval).post(proxy::decide_approval),
         )
         // --- Sovereign Keychain ---
@@ -421,7 +430,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(keychain::create_domain).get(keychain::list_domains),
         )
         .route(
-            "/api/v1/keychain/domains/{id}",
+            "/api/v1/keychain/domains/:id",
             delete(keychain::revoke_domain),
         )
         .route(
@@ -429,13 +438,13 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(keychain::store_credential).get(keychain::list_credentials),
         )
         .route(
-            "/api/v1/keychain/credentials/{id}",
+            "/api/v1/keychain/credentials/:id",
             get(keychain::read_credential)
                 .put(keychain::update_credential)
                 .delete(keychain::destroy_credential),
         )
         .route(
-            "/api/v1/keychain/credentials/{id}/archive",
+            "/api/v1/keychain/credentials/:id/archive",
             post(keychain::archive_credential),
         )
         .route(
@@ -443,11 +452,11 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(keychain::create_delegation).get(keychain::list_delegations),
         )
         .route(
-            "/api/v1/keychain/delegations/{id}",
+            "/api/v1/keychain/delegations/:id",
             delete(keychain::revoke_delegation),
         )
         .route(
-            "/api/v1/keychain/delegations/{id}/sub-delegate",
+            "/api/v1/keychain/delegations/:id/sub-delegate",
             post(keychain::sub_delegate),
         )
         .route(
@@ -465,7 +474,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         )
         .route("/api/v1/keychain/alerts", get(keychain::list_alerts))
         .route(
-            "/api/v1/keychain/alerts/{id}/acknowledge",
+            "/api/v1/keychain/alerts/:id/acknowledge",
             post(keychain::acknowledge_alert),
         )
         .route(
@@ -493,11 +502,11 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(keychain::shamir_status),
         )
         .route(
-            "/api/v1/keychain/domains/{id}/acls",
+            "/api/v1/keychain/domains/:id/acls",
             post(keychain::set_domain_acl).get(keychain::list_domain_acls),
         )
         .route(
-            "/api/v1/keychain/acls/{id}",
+            "/api/v1/keychain/acls/:id",
             delete(keychain::delete_domain_acl),
         )
         .route("/api/v1/keychain/backup", post(keychain::backup_vault))
@@ -507,7 +516,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(relay::list_contacts).post(relay::create_contact),
         )
         .route(
-            "/api/v1/relay/contacts/{id}",
+            "/api/v1/relay/contacts/:id",
             get(relay::get_contact)
                 .put(relay::update_contact)
                 .delete(relay::delete_contact),
@@ -516,43 +525,43 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             "/api/v1/relay/channels",
             get(relay::list_channels).post(relay::create_channel),
         )
-        .route("/api/v1/relay/channels/{id}", delete(relay::delete_channel))
+        .route("/api/v1/relay/channels/:id", delete(relay::delete_channel))
         .route(
-            "/api/v1/relay/channels/{id}/messages",
+            "/api/v1/relay/channels/:id/messages",
             get(relay::list_messages).post(relay::send_message),
         )
         .route(
-            "/api/v1/relay/channels/{id}/inbound",
+            "/api/v1/relay/channels/:id/inbound",
             post(relay::receive_message),
         )
-        .route("/api/v1/relay/messages/{id}/read", post(relay::mark_read))
+        .route("/api/v1/relay/messages/:id/read", post(relay::mark_read))
         .route(
-            "/api/v1/relay/messages/{id}/status",
+            "/api/v1/relay/messages/:id/status",
             post(relay::update_message_status),
         )
         .route("/api/v1/relay/unread", get(relay::unread_count))
         // --- Contact Identity & Trust ---
         .route(
-            "/api/v1/relay/contacts/{id}/identities",
+            "/api/v1/relay/contacts/:id/identities",
             get(contact_identity::list_identities).post(contact_identity::add_identity),
         )
         .route(
-            "/api/v1/relay/contacts/identities/{id}",
+            "/api/v1/relay/contacts/identities/:id",
             delete(contact_identity::delete_identity),
         )
         .route(
-            "/api/v1/relay/contacts/identities/{id}/verify",
+            "/api/v1/relay/contacts/identities/:id/verify",
             post(contact_identity::verify_identity),
         )
         .route(
-            "/api/v1/relay/contacts/{id}/trust",
+            "/api/v1/relay/contacts/:id/trust",
             get(contact_identity::get_trust_model).put(contact_identity::set_trust_model),
         )
         // --- Conflict Detection ---
         .route("/api/v1/conflicts", get(conflicts::list_conflicts))
-        .route("/api/v1/conflicts/{id}", get(conflicts::get_conflict))
+        .route("/api/v1/conflicts/:id", get(conflicts::get_conflict))
         .route(
-            "/api/v1/conflicts/{id}/resolve",
+            "/api/v1/conflicts/:id/resolve",
             post(conflicts::resolve_conflict),
         )
         // --- Adapters ---
@@ -565,15 +574,15 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(adapters::list_statuses),
         )
         .route(
-            "/api/v1/adapters/{id}",
+            "/api/v1/adapters/:id",
             get(adapters::get_adapter_status).delete(adapters::remove_adapter),
         )
         .route(
-            "/api/v1/adapters/{id}/send",
+            "/api/v1/adapters/:id/send",
             post(adapters::send_message),
         )
         .route(
-            "/api/v1/adapters/{id}/health",
+            "/api/v1/adapters/:id/health",
             post(adapters::health_check),
         )
         .route("/api/v1/multimodal/status", get(multimodal_status))
@@ -581,17 +590,17 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/sync/export", post(sync::sync_export))
         .route("/api/v1/sync/import", post(sync::sync_import))
         .route("/api/v1/sync/status", get(sync::sync_status))
-        .route("/api/v1/sync/conflicts/{id}/resolve", post(sync::resolve_sync_conflict))
+        .route("/api/v1/sync/conflicts/:id/resolve", post(sync::resolve_sync_conflict))
         // --- Plugin System ---
         .route("/api/v1/plugins", get(plugins::list_plugins).post(plugins::install_plugin))
         .route("/api/v1/plugins/hooks", get(plugins::list_hook_points))
         .route("/api/v1/plugins/reload", post(plugins::reload_plugins))
-        .route("/api/v1/plugins/{name}", delete(plugins::uninstall_plugin))
+        .route("/api/v1/plugins/:name", delete(plugins::uninstall_plugin))
         // --- Plugin Runtime ---
         .route("/api/v1/plugins/runtime", get(plugins::runtime_list))
-        .route("/api/v1/plugins/runtime/{name}", get(plugins::runtime_get_plugin).delete(plugins::runtime_unload_plugin))
-        .route("/api/v1/plugins/runtime/{name}/reload", post(plugins::runtime_reload_plugin))
-        .route("/api/v1/plugins/runtime/{name}/hooks", get(plugins::runtime_plugin_hooks))
+        .route("/api/v1/plugins/runtime/:name", get(plugins::runtime_get_plugin).delete(plugins::runtime_unload_plugin))
+        .route("/api/v1/plugins/runtime/:name/reload", post(plugins::runtime_reload_plugin))
+        .route("/api/v1/plugins/runtime/:name/hooks", get(plugins::runtime_plugin_hooks))
         // --- Federation ---
         .route(
             "/api/v1/federation/peers",
@@ -606,17 +615,48 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(federation::federation_handshake),
         )
         .route(
-            "/api/v1/federation/peers/{id}",
+            "/api/v1/federation/peers/:id",
             delete(federation::remove_peer),
         )
         .route(
-            "/api/v1/federation/peers/{id}/health",
+            "/api/v1/federation/peers/:id/health",
             get(federation::peer_health),
         )
         .route(
             "/api/v1/federation/query",
             post(federation::federated_query),
         )
+        // --- Phase 3: Conversations ---
+        .route(
+            "/api/v1/conversations",
+            get(conversations::list_conversations).post(conversations::create_conversation),
+        )
+        .route(
+            "/api/v1/conversations/:id",
+            delete(conversations::delete_conversation),
+        )
+        .route(
+            "/api/v1/conversations/:id/message",
+            post(conversations::send_message),
+        )
+        .route(
+            "/api/v1/conversations/:id/messages",
+            get(conversations::get_messages),
+        )
+        // --- Phase 3: Plans ---
+        .route("/api/v1/plans", post(plans::create_plan))
+        .route("/api/v1/plans/:id", get(plans::get_plan))
+        .route(
+            "/api/v1/plans/:id/approve",
+            post(plans::approve_plan),
+        )
+        // --- Phase 3: Distillation ---
+        .route("/api/v1/distill", post(distill::distill))
+        // --- Phase 3: Local Models ---
+        .route("/api/v1/models", get(models::list_models))
+        .route("/api/v1/models/download", post(models::download_model))
+        .route("/api/v1/models/status", get(models::model_status))
+        .route("/api/v1/models/:filename", delete(models::delete_model))
         // --- Provenance & Observability ---
         .route("/api/v1/metrics/snapshot", get(metrics_snapshot))
         .route("/api/v1/metrics/summary", get(metrics_summary))

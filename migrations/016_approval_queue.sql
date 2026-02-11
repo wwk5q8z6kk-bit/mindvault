@@ -22,3 +22,5 @@ CREATE INDEX IF NOT EXISTS idx_proxy_approvals_consumer
 CREATE INDEX IF NOT EXISTS idx_proxy_approvals_expires
     ON proxy_approvals(expires_at)
     WHERE state = 'pending';
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (16, datetime('now'));

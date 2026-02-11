@@ -98,7 +98,7 @@ async fn create_and_get_node() {
         .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(create_body)))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::CREATED);
 
     let created: Value = body_json(resp).await;
     let id = created["id"].as_str().expect("node should have an id");
@@ -106,16 +106,22 @@ async fn create_and_get_node() {
     assert_eq!(created["title"], "Test Fact");
 
     // Get it back
+    let get_uri = format!("/api/v1/nodes/{id}");
     let resp = router
         .oneshot(json_request(
             Method::GET,
-            &format!("/api/v1/nodes/{id}"),
+            &get_uri,
             None,
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let status = resp.status();
     let fetched: Value = body_json(resp).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "GET {get_uri} returned {status}; body: {fetched}"
+    );
     assert_eq!(fetched["id"], id);
     assert_eq!(fetched["content"], "Integration test node");
 }
@@ -134,7 +140,7 @@ async fn update_node() {
         .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(create_body)))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::CREATED);
     let created: Value = body_json(resp).await;
     let id = created["id"].as_str().unwrap();
 
@@ -170,7 +176,7 @@ async fn delete_node() {
         .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(create_body)))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::CREATED);
     let created: Value = body_json(resp).await;
     let id = created["id"].as_str().unwrap();
 
@@ -212,7 +218,7 @@ async fn list_nodes_with_kind_filter() {
             .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(body)))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK, "creating {kind} should succeed");
+        assert_eq!(resp.status(), StatusCode::CREATED, "creating {kind} should succeed");
     }
 
     // List only facts
@@ -250,13 +256,13 @@ async fn recall_returns_results() {
         .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(body)))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::CREATED);
 
     // Recall using "text" field (not "query")
     let recall_body = json!({
         "text": "quantum",
         "limit": 10,
-        "strategy": "keyword"
+        "strategy": "fulltext"
     });
     let resp = router
         .oneshot(json_request(
@@ -266,8 +272,13 @@ async fn recall_returns_results() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let recall_status = resp.status();
     let results: Value = body_json(resp).await;
+    assert_eq!(
+        recall_status,
+        StatusCode::OK,
+        "recall returned {recall_status}; body: {results}"
+    );
     let items = results.as_array().expect("should be array");
     assert!(
         !items.is_empty(),
@@ -326,10 +337,11 @@ async fn proposal_lifecycle_submit_and_list() {
     let (router, _tmp) = setup().await;
 
     // Submit a proposal using the correct DTO format:
-    // action is a string, payload holds the node fields
+    // sender must be a valid ProposalSender (agent/mcp/webhook/watcher/relay/self)
+    // action is a snake_case string matching ProposalAction variants
     let proposal = json!({
-        "sender": "test-agent",
-        "action": "CreateNode",
+        "sender": "agent",
+        "action": "create_node",
         "confidence": 0.85,
         "payload": {
             "kind": "fact",
@@ -387,6 +399,54 @@ async fn get_nonexistent_node_returns_404() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// Parameterized route matching
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn parameterized_routes_resolve() {
+    let (router, _tmp) = setup().await;
+
+    // Create a real node, then hit several parameterized endpoints
+    let body = json!({ "kind": "fact", "content": "route test", "tags": [] });
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(body)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created: Value = body_json(resp).await;
+    let id = created["id"].as_str().unwrap();
+
+    // GET /api/v1/nodes/:id  — should resolve (not router-level 404)
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::GET, &format!("/api/v1/nodes/{id}"), None))
+        .await
+        .unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "GET /nodes/:id should resolve to handler"
+    );
+
+    // GET /api/v1/graph/neighbors/:id — should resolve even if node has no edges
+    let resp = router
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/graph/neighbors/{id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    // A 200 with empty array is expected; the key thing is it's NOT a router-level 404
+    assert_ne!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "GET /graph/neighbors/:id should resolve to handler"
+    );
 }
 
 // ---------------------------------------------------------------------------

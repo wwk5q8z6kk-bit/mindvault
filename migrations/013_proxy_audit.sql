@@ -17,3 +17,5 @@ CREATE TABLE IF NOT EXISTS proxy_audit_log (
 CREATE INDEX IF NOT EXISTS idx_proxy_audit_consumer ON proxy_audit_log(consumer);
 CREATE INDEX IF NOT EXISTS idx_proxy_audit_timestamp ON proxy_audit_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_proxy_audit_secret_ref ON proxy_audit_log(secret_ref);
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (13, datetime('now'));

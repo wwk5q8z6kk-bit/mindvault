@@ -16,6 +16,34 @@ import { settingsFeature } from './features/settings.js';
 
 const AI_TRANSFORM_SELECTION_CHAR_LIMIT = 5000;
 const AUTO_SUGGEST_PAUSE_KEY = 'mindvaultSettingAutoSuggestPausedUntil';
+const FORM_STATE_FIELDS = [
+    { id: 'node-kind-filter', key: 'mindvaultFormNodeKind', type: 'select' },
+    { id: 'node-namespace-filter', key: 'mindvaultFormNodeNamespace', type: 'text' },
+    { id: 'search-query', key: 'mindvaultFormSearchQuery', type: 'text' },
+    { id: 'search-strategy', key: 'mindvaultFormSearchStrategy', type: 'select' },
+    { id: 'search-limit', key: 'mindvaultFormSearchLimit', type: 'number' },
+    { id: 'saved-search-name', key: 'mindvaultFormSavedSearchName', type: 'text' },
+    { id: 'saved-search-description', key: 'mindvaultFormSavedSearchDescription', type: 'text' },
+    { id: 'saved-search-target-namespace', key: 'mindvaultFormSavedSearchTargetNamespace', type: 'text' },
+    { id: 'saved-search-kinds', key: 'mindvaultFormSavedSearchKinds', type: 'text' },
+    { id: 'saved-search-tags', key: 'mindvaultFormSavedSearchTags', type: 'text' },
+    { id: 'saved-search-min-score', key: 'mindvaultFormSavedSearchMinScore', type: 'number' },
+    { id: 'saved-search-min-importance', key: 'mindvaultFormSavedSearchMinImportance', type: 'number' },
+    { id: 'graph-node-id', key: 'mindvaultFormGraphNodeId', type: 'text' },
+    { id: 'graph-depth', key: 'mindvaultFormGraphDepth', type: 'number' },
+    { id: 'daily-namespace', key: 'mindvaultFormDailyNamespace', type: 'text' },
+    { id: 'daily-date', key: 'mindvaultFormDailyDate', type: 'text' },
+    { id: 'due-before', key: 'mindvaultFormDueBefore', type: 'text' },
+    { id: 'due-include-completed', key: 'mindvaultFormDueIncludeCompleted', type: 'checkbox' },
+    { id: 'focus-limit', key: 'mindvaultFormFocusLimit', type: 'number' },
+    { id: 'focus-include-completed', key: 'mindvaultFormFocusIncludeCompleted', type: 'checkbox' },
+    { id: 'focus-include-no-due', key: 'mindvaultFormFocusIncludeNoDue', type: 'checkbox' },
+    { id: 'calendar-view', key: 'mindvaultFormCalendarView', type: 'select' },
+    { id: 'calendar-anchor', key: 'mindvaultFormCalendarAnchor', type: 'text' },
+    { id: 'calendar-namespace', key: 'mindvaultFormCalendarNamespace', type: 'text' },
+    { id: 'calendar-include-completed', key: 'mindvaultFormCalendarIncludeCompleted', type: 'checkbox' },
+    { id: 'calendar-import-overwrite', key: 'mindvaultFormCalendarImportOverwrite', type: 'checkbox' }
+];
 
 
 export class MindVaultAdmin {
@@ -112,6 +140,7 @@ export class MindVaultAdmin {
         }
         this.initialized = true;
         this.bindEvents();
+        this.initializeFormStatePersistence();
         this.initSettingsControls();
         this.updateAutoSuggestPauseStatus();
         this.startAutoSuggestPauseTicker();
@@ -122,6 +151,7 @@ export class MindVaultAdmin {
         this.initializeDailyNotesControls();
         this.initializeCalendarControls();
         this.initializeTemplateControls();
+        this.restoreFormState();
         this.loadNodes();
         this.loadStats();
         this.loadSavedSearches();
@@ -2159,6 +2189,90 @@ export class MindVaultAdmin {
 
     activeTabId() {
         return document.querySelector('.tab.active')?.id || '';
+    }
+
+    readStoredValue(key) {
+        const raw = localStorage.getItem(key);
+        if (raw === null || raw === undefined) {
+            return null;
+        }
+        return raw;
+    }
+
+    writeStoredValue(key, value) {
+        const normalized = value === undefined || value === null ? '' : String(value);
+        if (!normalized) {
+            localStorage.removeItem(key);
+            return;
+        }
+        localStorage.setItem(key, normalized);
+    }
+
+    persistFormStateField(field, el) {
+        if (!field || !el) {
+            return;
+        }
+        if (field.type === 'checkbox') {
+            this.writeStoredValue(field.key, el.checked ? 'true' : 'false');
+            return;
+        }
+        this.writeStoredValue(field.key, el.value);
+    }
+
+    restoreFormStateField(field, el) {
+        if (!field || !el) {
+            return;
+        }
+        const stored = this.readStoredValue(field.key);
+        if (stored === null) {
+            return;
+        }
+        if (field.type === 'checkbox') {
+            el.checked = stored === 'true' || stored === '1' || stored === 'yes';
+            return;
+        }
+        if (field.type === 'select') {
+            const options = Array.from(el.options || []).map((opt) => opt.value);
+            if (options.includes(stored)) {
+                el.value = stored;
+            }
+            return;
+        }
+        el.value = stored;
+    }
+
+    initializeFormStatePersistence() {
+        FORM_STATE_FIELDS.forEach((field) => {
+            const el = document.getElementById(field.id);
+            if (!el) {
+                return;
+            }
+            const eventType = field.type === 'checkbox' || field.type === 'select' ? 'change' : 'input';
+            el.addEventListener(eventType, () => this.persistFormStateField(field, el));
+        });
+    }
+
+    restoreFormState() {
+        FORM_STATE_FIELDS.forEach((field) => {
+            const el = document.getElementById(field.id);
+            if (!el) {
+                return;
+            }
+            this.restoreFormStateField(field, el);
+        });
+        this.syncNodeFiltersFromInputs();
+    }
+
+    syncNodeFiltersFromInputs() {
+        const kind = document.getElementById('node-kind-filter')?.value;
+        const namespace = document.getElementById('node-namespace-filter')?.value?.trim();
+        this.currentFilters = {};
+        if (kind) {
+            this.currentFilters.kind = kind;
+        }
+        if (namespace) {
+            this.currentFilters.namespace = namespace;
+        }
     }
 
     cachePanelStatus() {

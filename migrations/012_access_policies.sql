@@ -15,3 +15,5 @@ CREATE TABLE IF NOT EXISTS access_policies (
 
 CREATE INDEX IF NOT EXISTS idx_access_policies_consumer ON access_policies(consumer);
 CREATE INDEX IF NOT EXISTS idx_access_policies_secret_key ON access_policies(secret_key);
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (12, datetime('now'));

@@ -27,3 +27,5 @@ CREATE TABLE IF NOT EXISTS autonomy_action_log (
 );
 CREATE INDEX IF NOT EXISTS idx_autonomy_action_log_created ON autonomy_action_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_autonomy_action_log_decision ON autonomy_action_log(decision);
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (7, datetime('now'));

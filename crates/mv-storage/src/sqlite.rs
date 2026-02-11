@@ -128,71 +128,59 @@ impl SqliteNodeStore {
     }
 
     fn run_migrations(&self) -> MvResult<()> {
-        // Migrations run on slot 0 only — they need exclusive access
+        // Migrations run on slot 0 only — they need exclusive access.
         let conn = self.pool[0]
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
-        let migration_001 = include_str!("../../../migrations/001_initial.sql");
-        conn.execute_batch(migration_001)
+        // Table-driven migration registry.
+        // Versions 002, 009, 017-021 are keychain-only and applied in
+        // SqliteKeychainStore — they are intentionally excluded here.
+        const MIGRATIONS: &[(i64, &str)] = &[
+            (1,  include_str!("../../../migrations/001_initial.sql")),
+            (3,  include_str!("../../../migrations/003_agentic.sql")),
+            (4,  include_str!("../../../migrations/004_exchange.sql")),
+            (5,  include_str!("../../../migrations/005_relay_safeguards.sql")),
+            (6,  include_str!("../../../migrations/006_feedback.sql")),
+            (7,  include_str!("../../../migrations/007_autonomy.sql")),
+            (8,  include_str!("../../../migrations/008_relay.sql")),
+            (10, include_str!("../../../migrations/010_profile.sql")),
+            (11, include_str!("../../../migrations/011_consumer_profiles.sql")),
+            (12, include_str!("../../../migrations/012_access_policies.sql")),
+            (13, include_str!("../../../migrations/013_proxy_audit.sql")),
+            (14, include_str!("../../../migrations/014_conflicts.sql")),
+            (15, include_str!("../../../migrations/015_contact_identity.sql")),
+            (16, include_str!("../../../migrations/016_approval_queue.sql")),
+            (22, include_str!("../../../migrations/022_adapter_poll_state.sql")),
+            (23, include_str!("../../../migrations/023_conversations.sql")),
+            (24, include_str!("../../../migrations/024_plans.sql")),
+        ];
+
+        // Migration 001 must always run first to create schema_version table.
+        // After that, check which versions are already applied.
+        conn.execute_batch(MIGRATIONS[0].1)
             .map_err(|e| MvError::Migration(format!("migration 001 failed: {e}")))?;
 
-        let migration_003 = include_str!("../../../migrations/003_agentic.sql");
-        conn.execute_batch(migration_003)
-            .map_err(|e| MvError::Migration(format!("migration 003 failed: {e}")))?;
+        let max_version: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
 
-        let migration_004 = include_str!("../../../migrations/004_exchange.sql");
-        conn.execute_batch(migration_004)
-            .map_err(|e| MvError::Migration(format!("migration 004 failed: {e}")))?;
+        for &(version, sql) in &MIGRATIONS[1..] {
+            if version <= max_version {
+                continue;
+            }
+            conn.execute_batch(sql)
+                .map_err(|e| MvError::Migration(format!("migration {version:03} failed: {e}")))?;
+        }
 
-        let migration_005 = include_str!("../../../migrations/005_relay_safeguards.sql");
-        conn.execute_batch(migration_005)
-            .map_err(|e| MvError::Migration(format!("migration 005 failed: {e}")))?;
-
-        let migration_006 = include_str!("../../../migrations/006_feedback.sql");
-        conn.execute_batch(migration_006)
-            .map_err(|e| MvError::Migration(format!("migration 006 failed: {e}")))?;
-
-        let migration_007 = include_str!("../../../migrations/007_autonomy.sql");
-        conn.execute_batch(migration_007)
-            .map_err(|e| MvError::Migration(format!("migration 007 failed: {e}")))?;
-
-        let migration_008 = include_str!("../../../migrations/008_relay.sql");
-        conn.execute_batch(migration_008)
-            .map_err(|e| MvError::Migration(format!("migration 008 failed: {e}")))?;
-
-        // 009 is keychain-only (ALTER TABLE on keychain.sqlite), applied in SqliteKeychainStore.
-        let migration_010 = include_str!("../../../migrations/010_profile.sql");
-        conn.execute_batch(migration_010)
-            .map_err(|e| MvError::Migration(format!("migration 010 failed: {e}")))?;
-
-        let migration_011 = include_str!("../../../migrations/011_consumer_profiles.sql");
-        conn.execute_batch(migration_011)
-            .map_err(|e| MvError::Migration(format!("migration 011 failed: {e}")))?;
-
-        let migration_012 = include_str!("../../../migrations/012_access_policies.sql");
-        conn.execute_batch(migration_012)
-            .map_err(|e| MvError::Migration(format!("migration 012 failed: {e}")))?;
-
-        let migration_013 = include_str!("../../../migrations/013_proxy_audit.sql");
-        conn.execute_batch(migration_013)
-            .map_err(|e| MvError::Migration(format!("migration 013 failed: {e}")))?;
-
-        let migration_014 = include_str!("../../../migrations/014_conflicts.sql");
-        conn.execute_batch(migration_014)
-            .map_err(|e| MvError::Migration(format!("migration 014 failed: {e}")))?;
-
-        let migration_015 = include_str!("../../../migrations/015_contact_identity.sql");
-        conn.execute_batch(migration_015)
-            .map_err(|e| MvError::Migration(format!("migration 015 failed: {e}")))?;
-
-        let migration_016 = include_str!("../../../migrations/016_approval_queue.sql");
-        conn.execute_batch(migration_016)
-            .map_err(|e| MvError::Migration(format!("migration 016 failed: {e}")))?;
-
-        let migration_022 = include_str!("../../../migrations/022_adapter_poll_state.sql");
-        conn.execute_batch(migration_022)
-            .map_err(|e| MvError::Migration(format!("migration 022 failed: {e}")))?;
+        tracing::debug!(
+            applied_up_to = MIGRATIONS.last().map(|(v, _)| *v).unwrap_or(0),
+            "Migrations complete"
+        );
 
         Ok(())
     }
@@ -4045,6 +4033,159 @@ impl AdapterPollStore for SqliteNodeStore {
                 )
                 .map_err(|e| MvError::Storage(e.to_string()))?;
             Ok(affected > 0)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ConversationStore — Phase 3 WI-3a
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl ConversationStore for SqliteNodeStore {
+    async fn create_conversation(
+        &self,
+        id: Uuid,
+        title: Option<&str>,
+    ) -> MvResult<()> {
+        let id_s = id.to_string();
+        let title_s = title.map(|t| t.to_string());
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO conversations (id, title) VALUES (?1, ?2)",
+                params![id_s, title_s],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    async fn add_message(
+        &self,
+        conversation_id: Uuid,
+        role: &str,
+        content: &str,
+    ) -> MvResult<Uuid> {
+        let msg_id = Uuid::now_v7();
+        let conv_s = conversation_id.to_string();
+        let msg_s = msg_id.to_string();
+        let role_s = role.to_string();
+        let content_s = content.to_string();
+        let token_count = (content_s.len() / 4) as i64; // rough estimate
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO conversation_turns (id, conversation_id, role, content, token_count) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![msg_s, conv_s, role_s, content_s, token_count],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+            // Update conversation's updated_at
+            conn.execute(
+                "UPDATE conversations SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE id = ?1",
+                params![conv_s],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+            Ok(msg_id)
+        })
+    }
+
+    async fn get_messages(
+        &self,
+        conversation_id: Uuid,
+        limit: usize,
+    ) -> MvResult<Vec<(Uuid, String, String, chrono::DateTime<chrono::Utc>)>> {
+        let conv_s = conversation_id.to_string();
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, role, content, created_at FROM conversation_turns \
+                     WHERE conversation_id = ?1 ORDER BY created_at ASC LIMIT ?2",
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![conv_s, limit as i64], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+
+            let mut messages = Vec::new();
+            for row in rows {
+                let (id_str, role, content, ts_str) =
+                    row.map_err(|e| MvError::Storage(e.to_string()))?;
+                let id = Uuid::parse_str(&id_str)
+                    .map_err(|e| MvError::Storage(format!("invalid uuid: {e}")))?;
+                let ts = chrono::DateTime::parse_from_rfc3339(&ts_str)
+                    .map_err(|e| MvError::Storage(format!("invalid timestamp: {e}")))?
+                    .with_timezone(&chrono::Utc);
+                messages.push((id, role, content, ts));
+            }
+            Ok(messages)
+        })
+    }
+
+    async fn delete_conversation(&self, id: Uuid) -> MvResult<bool> {
+        let id_s = id.to_string();
+        self.with_conn(move |conn| {
+            let affected = conn
+                .execute("DELETE FROM conversations WHERE id = ?1", params![id_s])
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+            Ok(affected > 0)
+        })
+    }
+
+    async fn list_conversations(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<(Uuid, Option<String>, chrono::DateTime<chrono::Utc>)>> {
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, title, updated_at FROM conversations \
+                     ORDER BY updated_at DESC LIMIT ?1 OFFSET ?2",
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![limit as i64, offset as i64], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+
+            let mut convs = Vec::new();
+            for row in rows {
+                let (id_str, title, ts_str) =
+                    row.map_err(|e| MvError::Storage(e.to_string()))?;
+                let id = Uuid::parse_str(&id_str)
+                    .map_err(|e| MvError::Storage(format!("invalid uuid: {e}")))?;
+                let ts = chrono::DateTime::parse_from_rfc3339(&ts_str)
+                    .map_err(|e| MvError::Storage(format!("invalid timestamp: {e}")))?
+                    .with_timezone(&chrono::Utc);
+                convs.push((id, title, ts));
+            }
+            Ok(convs)
+        })
+    }
+
+    async fn expire_conversations(&self, max_age_secs: u64) -> MvResult<usize> {
+        self.with_conn(move |conn| {
+            let affected = conn
+                .execute(
+                    "DELETE FROM conversations WHERE updated_at < \
+                     strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)",
+                    params![format!("-{max_age_secs} seconds")],
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+            Ok(affected)
         })
     }
 }

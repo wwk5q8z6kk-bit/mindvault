@@ -19,3 +19,5 @@ CREATE TABLE IF NOT EXISTS agent_confidence_overrides (
     suppress_below REAL NOT NULL DEFAULT 0.1,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (6, datetime('now'));

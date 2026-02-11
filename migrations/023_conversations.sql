@@ -23,3 +23,5 @@ CREATE INDEX IF NOT EXISTS idx_conversation_turns_conv_id
 
 CREATE INDEX IF NOT EXISTS idx_conversations_updated
     ON conversations(updated_at);
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (23, datetime('now'));

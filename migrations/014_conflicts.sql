@@ -13,3 +13,5 @@ CREATE TABLE IF NOT EXISTS conflicts (
 CREATE INDEX IF NOT EXISTS idx_conflicts_resolved ON conflicts(resolved);
 CREATE INDEX IF NOT EXISTS idx_conflicts_node_a ON conflicts(node_a);
 CREATE INDEX IF NOT EXISTS idx_conflicts_node_b ON conflicts(node_b);
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (14, datetime('now'));

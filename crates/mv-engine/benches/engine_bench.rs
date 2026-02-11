@@ -34,10 +34,12 @@ fn bench_sizes(default: &[usize]) -> Vec<usize> {
 
 fn create_engine(rt: &Runtime) -> (MindVaultEngine, TempDir) {
     let temp_dir = TempDir::new().unwrap();
-    let config = EngineConfig {
+    let mut config = EngineConfig {
         data_dir: temp_dir.path().to_string_lossy().to_string(),
         ..Default::default()
     };
+    // Use "none" provider to avoid loading ONNX Runtime in bench environments
+    config.embedding.provider = "none".into();
     let engine = rt.block_on(async { MindVaultEngine::init(config).await.unwrap() });
     (engine, temp_dir)
 }
@@ -112,7 +114,7 @@ fn bench_engine_store_1000(c: &mut Criterion) {
     let mut group = c.benchmark_group("engine_batch_store");
 
     for size in sizes {
-        let sample_size = if size >= 100_000 { 5 } else if size >= 10_000 { 10 } else { 30 };
+        let sample_size = if size >= 10_000 { 5 } else { 10 };
         group.sample_size(sample_size);
         group.bench_with_input(
             BenchmarkId::from_parameter(size),

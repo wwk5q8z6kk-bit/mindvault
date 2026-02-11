@@ -32,3 +32,5 @@ CREATE TABLE IF NOT EXISTS proposal_undo_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_proposal_undo_proposal ON proposal_undo_snapshots(proposal_id);
 CREATE INDEX IF NOT EXISTS idx_proposal_undo_expires ON proposal_undo_snapshots(expires_at);
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (5, datetime('now'));

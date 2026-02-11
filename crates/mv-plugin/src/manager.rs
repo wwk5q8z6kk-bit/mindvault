@@ -1,6 +1,7 @@
 //! Plugin lifecycle management: install, uninstall, and discovery.
 
 use crate::manifest::PluginManifest;
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -36,6 +37,8 @@ impl PluginManager {
 	}
 
 	/// Install a plugin by writing its WASM bytes and manifest to disk.
+	/// If the manifest contains a `checksum` field, the SHA-256 digest of the
+	/// WASM binary is verified before installation proceeds.
 	/// Returns a freshly generated plugin UUID.
 	pub fn install(
 		&self,
@@ -46,6 +49,17 @@ impl PluginManager {
 		if !Self::is_valid_plugin_name(name) {
 			return Err("invalid plugin name".into());
 		}
+
+		// Verify WASM checksum if declared in manifest.
+		if let Some(expected) = &manifest.checksum {
+			let actual = Self::sha256_hex(wasm_bytes);
+			if actual != expected.to_lowercase() {
+				return Err(format!(
+					"checksum mismatch: expected {expected}, got {actual}"
+				));
+			}
+		}
+
 		let id = Uuid::now_v7();
 		let plugin_dir = self.plugins_dir.join(name);
 		std::fs::create_dir_all(&plugin_dir)
@@ -63,6 +77,12 @@ impl PluginManager {
 
 		tracing::info!(plugin = name, uuid = %id, "Plugin installed");
 		Ok(id)
+	}
+
+	/// Compute the SHA-256 hex digest of a byte slice.
+	pub fn sha256_hex(data: &[u8]) -> String {
+		let digest = Sha256::digest(data);
+		digest.iter().map(|b| format!("{b:02x}")).collect()
 	}
 
 	/// Remove a plugin directory from disk.
@@ -145,5 +165,78 @@ mod tests {
 		let mgr = PluginManager::new(tmp.clone());
 		assert!(mgr.uninstall("no-such-plugin").is_ok());
 		let _ = std::fs::remove_dir_all(&tmp);
+	}
+
+	#[test]
+	fn checksum_verification_passes() {
+		let tmp = std::env::temp_dir().join(format!("mv_plugin_test_cs_{}", Uuid::now_v7()));
+		let mgr = PluginManager::new(tmp.clone());
+
+		let wasm_bytes = b"\0asm checksum module";
+		let checksum = PluginManager::sha256_hex(wasm_bytes);
+		let mut manifest = PluginManifest::new("cs-plugin", "Checksum Plugin", "1.0.0");
+		manifest.checksum = Some(checksum);
+
+		let id = mgr.install("cs-plugin", wasm_bytes, &manifest).unwrap();
+		assert!(!id.is_nil());
+
+		let _ = std::fs::remove_dir_all(&tmp);
+	}
+
+	#[test]
+	fn checksum_mismatch_rejects() {
+		let tmp = std::env::temp_dir().join(format!("mv_plugin_test_csf_{}", Uuid::now_v7()));
+		let mgr = PluginManager::new(tmp.clone());
+
+		let wasm_bytes = b"\0asm checksum module";
+		let mut manifest = PluginManifest::new("bad-cs", "Bad Checksum", "1.0.0");
+		manifest.checksum = Some("0000000000000000000000000000000000000000000000000000000000000000".into());
+
+		let result = mgr.install("bad-cs", wasm_bytes, &manifest);
+		assert!(result.is_err());
+		assert!(result.unwrap_err().contains("checksum mismatch"));
+
+		let _ = std::fs::remove_dir_all(&tmp);
+	}
+
+	#[test]
+	fn no_checksum_skips_verification() {
+		let tmp = std::env::temp_dir().join(format!("mv_plugin_test_nocs_{}", Uuid::now_v7()));
+		let mgr = PluginManager::new(tmp.clone());
+
+		let wasm_bytes = b"\0asm no checksum";
+		let manifest = PluginManifest::new("no-cs", "No Checksum", "1.0.0");
+
+		let id = mgr.install("no-cs", wasm_bytes, &manifest).unwrap();
+		assert!(!id.is_nil());
+
+		let _ = std::fs::remove_dir_all(&tmp);
+	}
+
+	#[test]
+	fn manifest_community_fields_serialize() {
+		let mut manifest = PluginManifest::new("community-test", "Community Test", "2.0.0");
+		manifest.repository = Some("https://github.com/user/mv-plugin".into());
+		manifest.license = Some("MIT".into());
+		manifest.homepage = Some("https://example.com".into());
+		manifest.min_mindvault_version = Some("0.9.0".into());
+		manifest.keywords = vec!["analytics".into(), "dashboard".into()];
+
+		let json = serde_json::to_string(&manifest).unwrap();
+		let parsed: PluginManifest = serde_json::from_str(&json).unwrap();
+
+		assert_eq!(parsed.repository.as_deref(), Some("https://github.com/user/mv-plugin"));
+		assert_eq!(parsed.license.as_deref(), Some("MIT"));
+		assert_eq!(parsed.min_mindvault_version.as_deref(), Some("0.9.0"));
+		assert_eq!(parsed.keywords, vec!["analytics", "dashboard"]);
+	}
+
+	#[test]
+	fn manifest_without_community_fields_parses() {
+		let json = r#"{"id":"old","name":"Old Plugin","version":"0.1.0","permissions":[],"hooks":[]}"#;
+		let manifest: PluginManifest = serde_json::from_str(json).unwrap();
+		assert!(manifest.repository.is_none());
+		assert!(manifest.checksum.is_none());
+		assert!(manifest.keywords.is_empty());
 	}
 }

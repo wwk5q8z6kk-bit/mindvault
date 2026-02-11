@@ -228,7 +228,7 @@ impl MindVaultEngine {
         let llm_api_key = credential_store
             .get_secret_string("MINDVAULT_LLM_API_KEY")
             .or_else(|| credential_store.get_secret_string("OPENAI_API_KEY"));
-        let llm = llm::init_llm_provider(&config.llm, llm_api_key).await;
+        let llm = llm::init_llm_provider_with_local(&config.llm, &config.local_llm, llm_api_key).await;
 
         let recall = RecallPipeline::new(
             Arc::clone(&store),
@@ -331,8 +331,8 @@ impl MindVaultEngine {
             let now = Utc::now();
             let owner = PermissionTemplate {
                 id: Uuid::now_v7(),
-                name: "Owner".into(),
-                description: Some("Full access template".into()),
+                name: "Owner".to_string(),
+                description: Some("Full access template".to_string()),
                 tier: PermissionTier::Admin,
                 scope_namespace: None,
                 scope_tags: Vec::new(),
@@ -348,10 +348,10 @@ impl MindVaultEngine {
             let now = Utc::now();
             let assistant = PermissionTemplate {
                 id: Uuid::now_v7(),
-                name: "Assistant".into(),
-                description: Some("Scoped assistant template".into()),
+                name: "Assistant".to_string(),
+                description: Some("Scoped assistant template".to_string()),
                 tier: PermissionTier::Action,
-                scope_namespace: Some("assistant".into()),
+                scope_namespace: Some("assistant".to_string()),
                 scope_tags: Vec::new(),
                 allow_kinds: Vec::new(),
                 allow_actions: Vec::new(),
@@ -463,7 +463,7 @@ impl MindVaultEngine {
             .nodes
             .get_permission_template(template_id)
             .await?
-            .ok_or_else(|| MvError::InvalidInput("permission template not found".into()))?;
+            .ok_or_else(|| MvError::InvalidInput("permission template not found".to_string()))?;
 
         let token = generate_access_token();
         let key_hash = hash_access_token(&token);
@@ -518,7 +518,7 @@ impl MindVaultEngine {
             .nodes
             .get_permission_template(key.template_id)
             .await?
-            .ok_or_else(|| MvError::InvalidInput("permission template missing".into()))?;
+            .ok_or_else(|| MvError::InvalidInput("permission template missing".to_string()))?;
 
         let _ = self
             .store
@@ -1207,7 +1207,7 @@ impl MindVaultEngine {
         namespace: Option<String>,
     ) -> MvResult<(KnowledgeNode, bool)> {
         if !self.config.daily_notes.enabled {
-            return Err(MvError::InvalidInput("daily notes are disabled".into()));
+            return Err(MvError::InvalidInput("daily notes are disabled".to_string()));
         }
 
         let daily_namespace =
@@ -1234,9 +1234,9 @@ impl MindVaultEngine {
         }
 
         node.metadata
-            .insert("daily_note".into(), serde_json::Value::Bool(true));
+            .insert("daily_note".to_string(), serde_json::Value::Bool(true));
         node.metadata.insert(
-            "daily_note_date".into(),
+            "daily_note_date".to_string(),
             serde_json::Value::String(date.to_string()),
         );
 
@@ -2474,7 +2474,7 @@ fn select_embedding_provider(
                 .embedding
                 .base_url
                 .clone()
-                .unwrap_or_else(|| "https://api.openai.com/v1".into());
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
             let api_key = credentials.get_secret_string("OPENAI_API_KEY");
             if api_key.is_none() && base_url.contains("api.openai.com") {
                 let reason = "OPENAI_API_KEY not found in any credential backend".to_string();
@@ -2519,7 +2519,7 @@ fn select_embedding_provider(
                 .embedding
                 .base_url
                 .clone()
-                .unwrap_or_else(|| "http://localhost:8080/v1".into());
+                .unwrap_or_else(|| "http://localhost:8080/v1".to_string());
             let api_key = credentials
                 .get_secret_string("MINDVAULT_EMBEDDING_API_KEY")
                 .or_else(|| credentials.get_secret_string("OPENAI_API_KEY"));
@@ -2553,7 +2553,7 @@ fn select_embedding_provider(
                 .embedding
                 .base_url
                 .clone()
-                .unwrap_or_else(|| "http://localhost:11434/v1".into());
+                .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
             let model = if config.embedding.model.starts_with("text-embedding-") {
                 "nomic-embed-text".to_string()
             } else {
@@ -2755,11 +2755,11 @@ mod tests {
         let (engine, _tmp_dir) = create_test_engine().await;
         let node = KnowledgeNode::new(NodeKind::Fact, "Test content".to_string())
             .with_title("Test Title")
-            .with_tags(vec!["test".into()]);
+            .with_tags(vec!["test".to_string()]);
 
         let stored_node = engine.store_node(node.clone()).await.unwrap();
         assert_eq!(stored_node.content, "Test content");
-        assert_eq!(stored_node.title, Some("Test Title".into()));
+        assert_eq!(stored_node.title, Some("Test Title".to_string()));
 
         let retrieved = engine.get_node(stored_node.id).await.unwrap().unwrap();
         assert_eq!(retrieved.content, "Test content");
@@ -2769,22 +2769,22 @@ mod tests {
     #[tokio::test]
     async fn test_update_node() {
         let (engine, _tmp_dir) = create_test_engine().await;
-        let node = KnowledgeNode::new(NodeKind::Fact, "Original content".into());
+        let node = KnowledgeNode::new(NodeKind::Fact, "Original content".to_string());
         let stored = engine.store_node(node).await.unwrap();
 
         let mut updated = stored.clone();
-        updated.content = "Updated content".into();
-        updated.title = Some("Updated title".into());
+        updated.content = "Updated content".to_string();
+        updated.title = Some("Updated title".to_string());
 
         let updated_node = engine.update_node(updated).await.unwrap();
         assert_eq!(updated_node.content, "Updated content");
-        assert_eq!(updated_node.title, Some("Updated title".into()));
+        assert_eq!(updated_node.title, Some("Updated title".to_string()));
     }
 
     #[tokio::test]
     async fn test_delete_node() {
         let (engine, _tmp_dir) = create_test_engine().await;
-        let node = KnowledgeNode::new(NodeKind::Fact, "To delete".into());
+        let node = KnowledgeNode::new(NodeKind::Fact, "To delete".to_string());
         let stored = engine.store_node(node).await.unwrap();
 
         assert!(engine.delete_node(stored.id).await.unwrap());
@@ -2799,11 +2799,11 @@ mod tests {
         assert_eq!(count, 0);
 
         engine
-            .store_node(KnowledgeNode::new(NodeKind::Fact, "First".into()))
+            .store_node(KnowledgeNode::new(NodeKind::Fact, "First".to_string()))
             .await
             .unwrap();
         engine
-            .store_node(KnowledgeNode::new(NodeKind::Fact, "Second".into()))
+            .store_node(KnowledgeNode::new(NodeKind::Fact, "Second".to_string()))
             .await
             .unwrap();
 
@@ -2816,11 +2816,11 @@ mod tests {
         let (engine, _tmp_dir) = create_test_engine().await;
 
         let node1 = engine
-            .store_node(KnowledgeNode::new(NodeKind::Fact, "Node 1".into()))
+            .store_node(KnowledgeNode::new(NodeKind::Fact, "Node 1".to_string()))
             .await
             .unwrap();
         let node2 = engine
-            .store_node(KnowledgeNode::new(NodeKind::Fact, "Node 2".into()))
+            .store_node(KnowledgeNode::new(NodeKind::Fact, "Node 2".to_string()))
             .await
             .unwrap();
 
@@ -2847,9 +2847,9 @@ mod tests {
 
         let updated = engine
             .update_profile(&UpdateProfileRequest {
-                display_name: Some("Owner".into()),
-                email: Some("owner@example.com".into()),
-                signature_public_key: Some("pk-owner".into()),
+                display_name: Some("Owner".to_string()),
+                email: Some("owner@example.com".to_string()),
+                signature_public_key: Some("pk-owner".to_string()),
                 ..Default::default()
             })
             .await
@@ -2914,15 +2914,15 @@ mod tests {
 
         let seed = KnowledgeNode::new(
             NodeKind::Fact,
-            "Rust async tokio memory pipeline for background jobs".into(),
+            "Rust async tokio memory pipeline for background jobs".to_string(),
         )
-        .with_tags(vec!["rust".into(), "async".into(), "tokio".into()]);
+        .with_tags(vec!["rust".to_string(), "async".to_string(), "tokio".to_string()]);
         let _seed_node = engine.store_node(seed).await.unwrap();
 
         let stored = engine
             .store_node(KnowledgeNode::new(
                 NodeKind::Fact,
-                "Building a memory pipeline in Rust for async workers".into(),
+                "Building a memory pipeline in Rust for async workers".to_string(),
             ))
             .await
             .unwrap();
@@ -2952,7 +2952,7 @@ mod tests {
         let stored = engine
             .store_node(KnowledgeNode::new(
                 NodeKind::Fact,
-                "Novel note without manual tags".into(),
+                "Novel note without manual tags".to_string(),
             ))
             .await
             .unwrap();
@@ -2971,7 +2971,7 @@ mod tests {
         let stored = engine
             .store_node(KnowledgeNode::new(
                 NodeKind::Fact,
-                "Provider fallback should keep ingest healthy".into(),
+                "Provider fallback should keep ingest healthy".to_string(),
             ))
             .await
             .unwrap();
@@ -3000,7 +3000,7 @@ mod tests {
         let stored = engine
             .store_node(KnowledgeNode::new(
                 NodeKind::Fact,
-                "Invalid local model should not break ingest".into(),
+                "Invalid local model should not break ingest".to_string(),
             ))
             .await
             .unwrap();
@@ -3032,7 +3032,7 @@ mod tests {
         assert!(created_note.tags.iter().any(|tag| tag == "day:2026-02-06"));
         assert_eq!(
             created_note.metadata.get("daily_note_date"),
-            Some(&serde_json::Value::String("2026-02-06".into()))
+            Some(&serde_json::Value::String("2026-02-06".to_string()))
         );
 
         let (existing_note, created_again) = engine.ensure_daily_note(date, None).await.unwrap();
@@ -3052,9 +3052,9 @@ mod tests {
             .unwrap();
         assert!(created);
 
-        let non_daily = KnowledgeNode::new(NodeKind::Fact, "not a daily note".into())
+        let non_daily = KnowledgeNode::new(NodeKind::Fact, "not a daily note".to_string())
             .with_namespace(namespace.clone())
-            .with_tags(vec!["journal".into()]);
+            .with_tags(vec!["journal".to_string()]);
         let stored_non_daily = engine.store_node(non_daily).await.unwrap();
 
         let notes = engine
@@ -3075,10 +3075,10 @@ mod tests {
         let namespace = engine.config.daily_notes.namespace.clone();
         let task_node = KnowledgeNode::new(
             NodeKind::Task,
-            "Ship release checklist and verify deployment timeline".into(),
+            "Ship release checklist and verify deployment timeline".to_string(),
         )
         .with_namespace(namespace.clone())
-        .with_tags(vec!["release".into()]);
+        .with_tags(vec!["release".to_string()]);
 
         let stored_task = engine.store_node(task_node).await.unwrap();
         let day = stored_task.temporal.created_at.date_naive();
@@ -3103,7 +3103,7 @@ mod tests {
         let (engine, _tmp_dir) = create_test_engine().await;
         let namespace = engine.config.daily_notes.namespace.clone();
         let event_node =
-            KnowledgeNode::new(NodeKind::Event, "Team planning sync at 10:00 UTC".into())
+            KnowledgeNode::new(NodeKind::Event, "Team planning sync at 10:00 UTC".to_string())
                 .with_namespace(namespace.clone());
 
         let stored_event = engine.store_node(event_node).await.unwrap();
@@ -3128,7 +3128,7 @@ mod tests {
     async fn test_update_node_auto_link_does_not_duplicate_daily_edge() {
         let (engine, _tmp_dir) = create_test_engine().await;
         let namespace = engine.config.daily_notes.namespace.clone();
-        let task_node = KnowledgeNode::new(NodeKind::Event, "Capture meeting action items".into())
+        let task_node = KnowledgeNode::new(NodeKind::Event, "Capture meeting action items".to_string())
             .with_namespace(namespace.clone());
         let stored_task = engine.store_node(task_node).await.unwrap();
         let day = stored_task.temporal.created_at.date_naive();
@@ -3139,7 +3139,7 @@ mod tests {
             .expect("daily note should exist");
 
         let mut updated_task = stored_task.clone();
-        updated_task.content = "Capture meeting action items and owner assignments".into();
+        updated_task.content = "Capture meeting action items and owner assignments".to_string();
         let _updated = engine.update_node(updated_task).await.unwrap();
 
         let outgoing = engine
@@ -3160,7 +3160,7 @@ mod tests {
         let namespace = "knowledge".to_string();
         let target = engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Launch scope and milestones".into())
+                KnowledgeNode::new(NodeKind::Fact, "Launch scope and milestones".to_string())
                     .with_namespace(namespace.clone())
                     .with_title("Project Alpha"),
             )
@@ -3171,7 +3171,7 @@ mod tests {
             .store_node(
                 KnowledgeNode::new(
                     NodeKind::Fact,
-                    "Review [[Project Alpha]] and prep a kickoff checklist.".into(),
+                    "Review [[Project Alpha]] and prep a kickoff checklist.".to_string(),
                 )
                 .with_namespace(namespace.clone())
                 .with_title("Kickoff Brief"),
@@ -3204,7 +3204,7 @@ mod tests {
         let namespace = "knowledge".to_string();
         let title_target = engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Project Beta release sequencing".into())
+                KnowledgeNode::new(NodeKind::Fact, "Project Beta release sequencing".to_string())
                     .with_namespace(namespace.clone())
                     .with_title("Project Beta"),
             )
@@ -3212,7 +3212,7 @@ mod tests {
             .unwrap();
         let source_target = engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Bookmark, "Spec reference".into())
+                KnowledgeNode::new(NodeKind::Bookmark, "Spec reference".to_string())
                     .with_namespace(namespace.clone())
                     .with_title("Platform Spec")
                     .with_source("https://docs.example.com/spec"),
@@ -3224,7 +3224,7 @@ mod tests {
             .store_node(
                 KnowledgeNode::new(
                     NodeKind::Fact,
-                    "Review [release scope](Project Beta#Milestones) and https://docs.example.com/spec#overview before kickoff.".into(),
+                    "Review [release scope](Project Beta#Milestones) and https://docs.example.com/spec#overview before kickoff.".to_string(),
                 )
                 .with_namespace(namespace.clone())
                 .with_title("Kickoff Prep"),
@@ -3270,7 +3270,7 @@ mod tests {
         let namespace = "knowledge".to_string();
         let target = engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Project Alpha execution notes".into())
+                KnowledgeNode::new(NodeKind::Fact, "Project Alpha execution notes".to_string())
                     .with_namespace(namespace.clone())
                     .with_title("Project Alpha"),
             )
@@ -3281,7 +3281,7 @@ mod tests {
             .store_node(
                 KnowledgeNode::new(
                     NodeKind::Fact,
-                    "Align the launch checklist with @\"Project Alpha\" owners.".into(),
+                    "Align the launch checklist with @\"Project Alpha\" owners.".to_string(),
                 )
                 .with_namespace(namespace.clone())
                 .with_title("Launch Checklist"),
@@ -3314,7 +3314,7 @@ mod tests {
         let namespace = "knowledge".to_string();
         let target_alpha = engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Alpha details".into())
+                KnowledgeNode::new(NodeKind::Fact, "Alpha details".to_string())
                     .with_namespace(namespace.clone())
                     .with_title("Project Alpha"),
             )
@@ -3322,7 +3322,7 @@ mod tests {
             .unwrap();
         let target_beta = engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Beta details".into())
+                KnowledgeNode::new(NodeKind::Fact, "Beta details".to_string())
                     .with_namespace(namespace.clone())
                     .with_title("Project Beta"),
             )
@@ -3331,14 +3331,14 @@ mod tests {
 
         let mut source = engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Draft [[Project Alpha]] notes".into())
+                KnowledgeNode::new(NodeKind::Fact, "Draft [[Project Alpha]] notes".to_string())
                     .with_namespace(namespace.clone())
                     .with_title("Planning"),
             )
             .await
             .unwrap();
 
-        source.content = "Finalize [[Project Beta]] notes".into();
+        source.content = "Finalize [[Project Beta]] notes".to_string();
         let source = engine.update_node(source).await.unwrap();
 
         let outgoing = engine
@@ -3365,7 +3365,7 @@ mod tests {
 
         let _target = engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Alpha details".into())
+                KnowledgeNode::new(NodeKind::Fact, "Alpha details".to_string())
                     .with_namespace(namespace.clone())
                     .with_title("Project Alpha"),
             )
@@ -3374,7 +3374,7 @@ mod tests {
 
         let source = engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Draft [[Project Alpha]] notes".into())
+                KnowledgeNode::new(NodeKind::Fact, "Draft [[Project Alpha]] notes".to_string())
                     .with_namespace(namespace.clone())
                     .with_title("Planning"),
             )
@@ -3396,9 +3396,9 @@ mod tests {
         let (engine, _tmp_dir) = create_test_engine().await;
         let namespace = "ops".to_string();
         let mut template =
-            KnowledgeNode::new(NodeKind::Task, "Daily standup action checklist".into())
+            KnowledgeNode::new(NodeKind::Task, "Daily standup action checklist".to_string())
                 .with_namespace(namespace.clone())
-                .with_tags(vec!["ops".into()]);
+                .with_tags(vec!["ops".to_string()]);
 
         let last_generated = Utc
             .with_ymd_and_hms(2026, 2, 5, 9, 0, 0)
@@ -3469,7 +3469,7 @@ mod tests {
     #[tokio::test]
     async fn test_rollforward_recurring_tasks_is_idempotent_for_same_instant() {
         let (engine, _tmp_dir) = create_test_engine().await;
-        let mut template = KnowledgeNode::new(NodeKind::Task, "Weekly planning template".into())
+        let mut template = KnowledgeNode::new(NodeKind::Task, "Weekly planning template".to_string())
             .with_namespace("ops");
         template.metadata.insert(
             TASK_RECURRENCE_METADATA_KEY.into(),
@@ -3509,7 +3509,7 @@ mod tests {
             .single()
             .expect("valid datetime");
 
-        let mut task_a = KnowledgeNode::new(NodeKind::Task, "A".into()).with_namespace("ops");
+        let mut task_a = KnowledgeNode::new(NodeKind::Task, "A".to_string()).with_namespace("ops");
         task_a.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
             serde_json::Value::String(
@@ -3519,7 +3519,7 @@ mod tests {
                     .to_rfc3339(),
             ),
         );
-        let mut task_b = KnowledgeNode::new(NodeKind::Task, "B".into()).with_namespace("ops");
+        let mut task_b = KnowledgeNode::new(NodeKind::Task, "B".to_string()).with_namespace("ops");
         task_b.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
             serde_json::Value::String(
@@ -3529,7 +3529,7 @@ mod tests {
                     .to_rfc3339(),
             ),
         );
-        let mut task_c = KnowledgeNode::new(NodeKind::Task, "C".into()).with_namespace("ops");
+        let mut task_c = KnowledgeNode::new(NodeKind::Task, "C".to_string()).with_namespace("ops");
         task_c.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
             serde_json::Value::String(
@@ -3549,7 +3549,7 @@ mod tests {
         let _c = engine.store_node(task_c).await.unwrap();
 
         let due = engine
-            .list_due_tasks(base, Some("ops".into()), 10, false)
+            .list_due_tasks(base, Some("ops".to_string()), 10, false)
             .await
             .unwrap();
         assert_eq!(due.len(), 2);
@@ -3565,7 +3565,7 @@ mod tests {
             .single()
             .expect("valid datetime");
 
-        let mut urgent = KnowledgeNode::new(NodeKind::Task, "Urgent".into())
+        let mut urgent = KnowledgeNode::new(NodeKind::Task, "Urgent".to_string())
             .with_namespace("ops")
             .with_importance(0.9);
         urgent.metadata.insert(
@@ -3578,11 +3578,11 @@ mod tests {
             ),
         );
 
-        let important = KnowledgeNode::new(NodeKind::Task, "Important".into())
+        let important = KnowledgeNode::new(NodeKind::Task, "Important".to_string())
             .with_namespace("ops")
             .with_importance(0.8);
 
-        let mut later = KnowledgeNode::new(NodeKind::Task, "Later".into())
+        let mut later = KnowledgeNode::new(NodeKind::Task, "Later".to_string())
             .with_namespace("ops")
             .with_importance(0.2);
         later.metadata.insert(
@@ -3601,7 +3601,7 @@ mod tests {
 
         let prioritized = engine
             .prioritize_tasks(TaskPrioritizationOptions {
-                namespace: Some("ops".into()),
+                namespace: Some("ops".to_string()),
                 limit: 10,
                 include_completed: false,
                 include_without_due: true,
@@ -3626,7 +3626,7 @@ mod tests {
             .single()
             .expect("valid datetime");
 
-        let mut task = KnowledgeNode::new(NodeKind::Task, "Follow up on incident".into())
+        let mut task = KnowledgeNode::new(NodeKind::Task, "Follow up on incident".to_string())
             .with_namespace("ops");
         task.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
@@ -3669,19 +3669,19 @@ mod tests {
         let (engine, _tmp_dir) = create_test_engine().await;
         let template = engine
             .create_permission_template(
-                "Scoped".into(),
-                Some("Test".into()),
+                "Scoped".to_string(),
+                Some("Test".to_string()),
                 PermissionTier::Edit,
-                Some("ops".into()),
-                vec!["shared".into()],
+                Some("ops".to_string()),
+                vec!["shared".to_string()],
                 vec![NodeKind::Fact],
-                vec!["transform".into()],
+                vec!["transform".to_string()],
             )
             .await
             .unwrap();
 
         let (_key, token) = engine
-            .create_access_key(template.id, Some("Key".into()), None)
+            .create_access_key(template.id, Some("Key".to_string()), None)
             .await
             .unwrap();
 

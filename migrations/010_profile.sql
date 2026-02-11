@@ -15,3 +15,5 @@ CREATE TABLE IF NOT EXISTS owner_profile (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 INSERT OR IGNORE INTO owner_profile (id) VALUES ('owner');
+
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (10, datetime('now'));
