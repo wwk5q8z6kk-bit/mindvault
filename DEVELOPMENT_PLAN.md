@@ -187,7 +187,7 @@ This section is the factual anchor for execution: what is verified in the codeba
 - ~~**P2** Device sync conflict resolution + recovery UX~~ — **DONE**: vector-clock conflict detection + import summaries + conflict review UX.
 - ~~**P2** Multi-modal extraction quality (PDF/image/audio edge cases)~~ — **DONE**: 58 tests (23 image, 14 audio, 9 PDF, 12 pipeline/util); command timeout protection, file size limits (256 MB), WebP dimension parsing, JPEG bounds hardening, silent failure fixes.
 - ~~**P3** Performance profiling~~ — **DONE**: Criterion benchmarks (SQLite 6, Engine 4, Vector 6); baseline: insert 268µs, get 70µs, list 988µs, vector search 149ms.
-- **P3** Packaging and onboarding polish.
+- ~~**P3** Packaging and onboarding polish~~ — **DONE**: Cargo workspace metadata (description, repository, categories, keywords), Tauri metadata cleanup, cross-platform release workflow (GitHub Actions: linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64 + SHA256 checksums), install.sh one-liner, CLI crate packaging metadata.
 
 ---
 
@@ -236,7 +236,7 @@ This section is the operational source of truth for day-to-day execution.
 - [x] `P2` Device sync hardening (conflict strategy + recovery flow)
 - [x] `P2` Multi-modal extraction quality passes (58 tests; timeout protection, file size limits, WebP parsing, JPEG hardening)
 - [x] `P3` Performance passes on large local vaults (SQLite/Engine/Vector benchmarks baselined; Criterion reports in target/criterion/)
-- [~] `P3` Packaging and install polish (CLI + Tauri build docs added; installer automation pending)
+- [x] `P3` Packaging and install polish (Cargo metadata, Tauri metadata, cross-platform release workflow, install.sh, SHA256 checksums)
 
 ### 5) Adapter Strategy (Shared Contract)
 - adapter interface requirements:

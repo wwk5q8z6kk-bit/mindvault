@@ -2,6 +2,10 @@
 name = "mv-cli"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "MindVault CLI — local-first knowledge memory for humans and AI agents"
+repository.workspace = true
 
 [features]
 default = []

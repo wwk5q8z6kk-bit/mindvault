@@ -17,6 +17,11 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 authors = ["MindVault Contributors"]
+description = "A local-first knowledge memory system for humans and AI agents"
+homepage = "https://github.com/nicholasgasior/mindvault"
+repository = "https://github.com/nicholasgasior/mindvault"
+categories = ["database", "command-line-utilities"]
+keywords = ["knowledge-graph", "memory", "local-first", "ai", "vault"]
 
 [workspace.dependencies]
 # Internal crates
