@@ -6,6 +6,7 @@ edition.workspace = true
 [features]
 default = ["local-embeddings"]
 local-embeddings = ["mv-engine/local-embeddings"]
+local-llm = ["mv-engine/local-llm"]
 wip = ["mv-engine/wip"]
 
 [dependencies]
