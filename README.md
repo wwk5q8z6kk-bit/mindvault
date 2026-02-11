@@ -30,6 +30,7 @@ By default, the server binds to `127.0.0.1`:
 - gRPC: `127.0.0.1:50051`
 
 For a guided setup flow, see `docs/onboarding.md`.
+API docs are served by the running server at `/api/docs` (Swagger UI) and `/api/openapi.json`.
 
 ## Install & Packaging
 

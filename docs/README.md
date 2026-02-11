@@ -5,6 +5,7 @@
 - `architecture/components.md`: Component boundaries and invariants (legacy RLM notes).
 - `architecture/invariants.md`: Runtime invariants (legacy RLM notes).
 - `plugin-development.md`: WASM plugin authoring and lifecycle.
+- API docs: `/api/docs` (Swagger UI) and `/api/openapi.json` (OpenAPI JSON).
 - Sharing API: `/api/v1/shares` and `/public/shares/{token}` (see REST OpenAPI).
 - Google Calendar sync: `/api/v1/calendar/google/*` endpoints (see onboarding).
 - AI sidecar proxy: `/api/v1/ai/*` endpoints (see README for config).

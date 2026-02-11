@@ -19,12 +19,13 @@ A plugin consists of:
 
 ```json
 {
-  "name": "my-plugin",
+  "id": "my-plugin",
+  "name": "My Plugin",
   "version": "1.0.0",
   "description": "A sample MindVault plugin",
   "author": "Your Name",
-  "permissions": ["ReadNodes", "WriteNodes"],
-  "hooks": ["PostIngest", "OnChange"]
+  "permissions": ["read_nodes", "write_nodes"],
+  "hooks": ["post_ingest", "on_change"]
 }
 ```
 
@@ -32,21 +33,25 @@ A plugin consists of:
 
 | Permission | Description |
 |------------|-------------|
-| `ReadNodes` | Read nodes via `mv_read_node` and `mv_search` |
-| `WriteNodes` | Create/update nodes via `mv_write_node` |
-| `Network` | Make outbound HTTP requests (WASI) |
-| `Filesystem` | Access sandboxed filesystem (WASI) |
+| `read_nodes` | Read nodes via `mv_read_node` |
+| `write_nodes` | Create/update nodes via `mv_write_node` |
+| `search` | Use `mv_search` |
+| `graph_access` | Read graph relationships |
+| `network_access` | Make outbound HTTP requests (WASI) |
+| `file_system_read` | Read from sandboxed filesystem (WASI) |
+| `file_system_write` | Write to sandboxed filesystem (WASI) |
 
 ### Hook Points
 
 | Hook | Trigger | Use Case |
 |------|---------|----------|
-| `PreIngest` | Before a node is stored | Validate, transform, enrich |
-| `PostIngest` | After a node is stored | Index, notify, log |
-| `PreSearch` | Before a search executes | Modify query, add filters |
-| `PostSearch` | After search results | Re-rank, filter, augment |
-| `OnChange` | When a node is updated | Sync, react, propagate |
-| `OnIntent` | When an intent is detected | Custom intent handling |
+| `pre_ingest` | Before a node is stored | Validate, transform, enrich |
+| `post_ingest` | After a node is stored | Index, notify, log |
+| `pre_search` | Before a search executes | Modify query, add filters |
+| `post_search` | After search results | Re-rank, filter, augment |
+| `on_change` | When a node is changed | Sync, react, propagate |
+| `scheduled` | On a scheduled interval | Periodic sync/maintenance |
+| `on_intent` | When an intent is detected | Custom intent handling |
 
 ## WASM ABI Contract
 
@@ -137,13 +142,22 @@ cargo build --target wasm32-wasip1 --release
 
 ### Via REST API
 ```bash
-curl -X POST http://localhost:9470/api/v1/plugins/install \
-  -F "file=@target/wasm32-wasip1/release/my_plugin.wasm" \
-  -F "manifest=@manifest.json"
+curl -X POST http://localhost:9470/api/v1/plugins \
+  -F "manifest=@manifest.json" \
+  -F "wasm=@target/wasm32-wasip1/release/my_plugin.wasm"
 ```
+
+If auth is enabled, include your admin token (for example, `Authorization: Bearer ...`).
 
 ### Via Plugins Directory
 Place `plugin.wasm` and `manifest.json` in `~/.mindvault/plugins/my-plugin/`.
+
+### Hook Point Catalog
+List available hook points directly from the server:
+
+```bash
+curl http://localhost:9470/api/v1/plugins/hooks
+```
 
 ## Testing
 
@@ -167,8 +181,8 @@ When publishing a plugin for others to use, include the optional community field
   "version": "1.0.0",
   "description": "Enriches notes with external data",
   "author": "Your Name",
-  "permissions": ["ReadNodes", "WriteNodes"],
-  "hooks": ["PostIngest"],
+  "permissions": ["read_nodes", "write_nodes"],
+  "hooks": ["post_ingest"],
   "repository": "https://github.com/user/mv-plugin-enricher",
   "license": "MIT",
   "homepage": "https://example.com/mv-plugin-enricher",
