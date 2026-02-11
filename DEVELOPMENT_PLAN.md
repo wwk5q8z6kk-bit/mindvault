@@ -188,6 +188,7 @@ This section is the factual anchor for execution: what is verified in the codeba
 - ~~**P2** Multi-modal extraction quality (PDF/image/audio edge cases)~~ — **DONE**: 58 tests (23 image, 14 audio, 9 PDF, 12 pipeline/util); command timeout protection, file size limits (256 MB), WebP dimension parsing, JPEG bounds hardening, silent failure fixes.
 - ~~**P3** Performance profiling~~ — **DONE**: Criterion benchmarks (SQLite 6, Engine 4, Vector 6); baseline: insert 268µs, get 70µs, list 988µs, vector search 149ms.
 - ~~**P3** Packaging and onboarding polish~~ — **DONE**: Cargo workspace metadata (description, repository, categories, keywords), Tauri metadata cleanup, cross-platform release workflow (GitHub Actions: linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64 + SHA256 checksums), install.sh one-liner, CLI crate packaging metadata.
+- ~~**P3** Public share links~~ — **DONE**: REST + storage support + web admin UI + tests + docs + Svelte/Tauri UI + public viewer.
 
 ---
 
@@ -265,6 +266,7 @@ This section is the operational source of truth for day-to-day execution.
 ### Phase 3 — Relay & Adapters
 - [x] Owner profile config (display name, primary email, signature)
 - [x] Owner profile API + UI (persisted profile; relay sync + federation identity + handshake auto-discovery + HMAC-SHA256 signing)
+- [x] Google Calendar sync (OAuth refresh + sync endpoints + scheduler)
 - [x] Email adapter: IMAP inbound, SMTP outbound, attachment ingest, threading
 - [x] Email adapter stabilization: compile clean, Debug derive, test matrix, failure-path hardening, Mutex deadlock fix
 - [x] Slack adapter (webhook outbound + bot inbound + unit/integration tests, 11 tests)
@@ -275,7 +277,9 @@ This section is the operational source of truth for day-to-day execution.
 ### Phase 4 — Ecosystem & Polish
 - [x] Plugin framework + management UI
 - [x] Performance profiling + large-vault benchmarks (SQLite/Engine/Vector benchmarks baselined)
-- [x] Onboarding/docs + migration polish (version-tracked migration runner, schema_version inserts for all 24 migrations, docs + ADRs)
+- [x] Onboarding/docs + migration polish (migration runner with schema_version inserts for all 25 migrations, docs + ADRs)
+- [x] AI sidecar proxy endpoints (optional local OpenAI-compatible bridge)
+- [x] Public share links (backend + web admin UI + Svelte/Tauri UI + public viewer)
 - [x] Community module support and marketplace considerations (manifest: repository/license/homepage/checksum/min_version/keywords; SHA-256 verification on install; 5 new tests)
 
 ## Implementation Status (as of Feb 2026)
@@ -313,7 +317,7 @@ Note: “Complete” here means code is present in the repository. Operational v
 
 ### Storage Traits Implemented (SqliteNodeStore)
 
-NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyStore, RelayStore, KeychainStore
+NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyStore, RelayStore, ShareStore, KeychainStore
 
 ### Migrations
 
@@ -329,6 +333,21 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 | 008 | Relay (contacts, channels, messages) | Ready |
 | 009 | Keychain security (brute-force, HMAC) | Ready |
 | 010 | Owner profile | Ready |
+| 011 | Consumer profiles | Ready |
+| 012 | Access policies | Ready |
+| 013 | Proxy audit | Ready |
+| 014 | Sync conflicts | Ready |
+| 015 | Contact identity | Ready |
+| 016 | Approval queue | Ready |
+| 017 | Shamir key splits | Ready |
+| 018 | Breach alert dedup | Ready |
+| 019 | Metadata encryption | Ready |
+| 020 | Credential ACLs | Ready |
+| 021 | Shamir rotation | Ready |
+| 022 | Adapter poll state | Ready |
+| 023 | Conversations | Ready |
+| 024 | Plans | Ready |
+| 025 | Public shares | Ready |
 
 ### Frontend Components (SvelteKit + Tauri)
 
@@ -391,8 +410,9 @@ Frontend:
 - [x] Wire plugin registry to REST endpoints
 - [x] Build plugin management UI (/plugins)
 - [x] Performance profiling + optimization pass (Criterion benchmarks: SQLite 6, Engine 4, Vector 6; baseline established)
-- [x] Documentation, onboarding, and migration polish (version-tracked migration runner; schema_version inserts for all 24 migrations; docs: onboarding, plugin-development, CONTRIBUTING, 7 ADRs, architecture)
+- [x] Documentation, onboarding, and migration polish (migration runner with schema_version inserts for all 25 migrations; docs: onboarding, plugin-development, CONTRIBUTING, 7 ADRs, architecture)
 - [x] Community module support (manifest community fields: repository/license/homepage/checksum/min_version/keywords; SHA-256 checksum verification on install; 5 new tests, 16 total plugin tests)
+- [x] Public share links: read-only public viewer for `/public/shares/:token`
 
 ## Conclusion
 MindVault is a sovereign personal intelligence framework: a private canonical vault enhanced by natural communication relay and proactive local agents. It respects cognitive clarity, human control, and privacy while harnessing agentic potential through bounded, owner-mediated interactions. Build the sovereign foundation and relay integration first to establish trust and daily utility, then layer proactive intelligence for deeper differentiation. This is a system designed for long-term personal augmentation in a privacy-first world.

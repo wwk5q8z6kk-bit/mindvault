@@ -483,6 +483,44 @@ pub async fn llm_refine(
     llm.complete(&messages, &CompletionParams::default()).await
 }
 
+/// Generate a meeting notes summary with decisions and action items.
+pub async fn llm_meeting_notes(
+    llm: &dyn LlmProvider,
+    input: &str,
+    context_snippets: &[String],
+    limit: usize,
+) -> Result<String, LlmError> {
+    let context = if context_snippets.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nRelevant context:\n{}",
+            context_snippets
+                .iter()
+                .take(6)
+                .enumerate()
+                .map(|(i, s)| format!("{}. {}", i + 1, s))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+
+    let messages = vec![
+        ChatMessage::system(
+            "You are a meeting note assistant for a personal knowledge management system. \
+             Produce structured markdown with the following sections: \
+             ### Meeting Summary, ### Decisions, ### Action Items, ### Open Questions. \
+             Keep summaries concise, list decisions and questions as bullets, and action items as markdown task list items. \
+             Do not add information not present in the input or context.",
+        ),
+        ChatMessage::user(format!(
+            "Summarize the following meeting notes (summary: {limit} sentences max, decisions: {limit} items max, action items: {limit} items max, questions: {limit} items max):\n\n{input}{context}"
+        )),
+    ];
+
+    llm.complete(&messages, &CompletionParams::default()).await
+}
+
 /// Generate a daily briefing summary using the LLM.
 pub async fn llm_briefing_summary(
     llm: &dyn LlmProvider,

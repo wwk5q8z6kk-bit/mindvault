@@ -623,6 +623,70 @@ fn apply_env_overrides(engine: &mut EngineConfig, server: &mut ServerRuntimeConf
             engine.email.smtp_from = Some(value);
         }
     }
+
+    if let Some(value) = parse_env_bool("MINDVAULT_GOOGLE_CALENDAR_ENABLED") {
+        engine.google_calendar.enabled = value;
+    }
+    if let Ok(value) = std::env::var("MINDVAULT_GOOGLE_CALENDAR_NAMESPACE") {
+        if !value.is_empty() {
+            engine.google_calendar.namespace = value;
+        }
+    }
+    if let Ok(value) = std::env::var("MINDVAULT_GOOGLE_CALENDAR_CALENDAR_ID") {
+        if !value.is_empty() {
+            engine.google_calendar.calendar_id = value;
+        }
+    }
+    if let Some(value) = parse_env::<u64>("MINDVAULT_GOOGLE_CALENDAR_SYNC_INTERVAL_SECS") {
+        engine.google_calendar.sync_interval_secs = value;
+    }
+    if let Some(value) = parse_env::<i64>("MINDVAULT_GOOGLE_CALENDAR_LOOKBACK_DAYS") {
+        engine.google_calendar.lookback_days = value;
+    }
+    if let Some(value) = parse_env::<i64>("MINDVAULT_GOOGLE_CALENDAR_LOOKAHEAD_DAYS") {
+        engine.google_calendar.lookahead_days = value;
+    }
+    if let Some(value) = parse_env::<usize>("MINDVAULT_GOOGLE_CALENDAR_MAX_RESULTS") {
+        engine.google_calendar.max_results = value;
+    }
+    if let Some(value) = parse_env_bool("MINDVAULT_GOOGLE_CALENDAR_IMPORT_EVENTS") {
+        engine.google_calendar.import_events = value;
+    }
+    if let Some(value) = parse_env_bool("MINDVAULT_GOOGLE_CALENDAR_EXPORT_EVENTS") {
+        engine.google_calendar.export_events = value;
+    }
+    if let Ok(value) = std::env::var("MINDVAULT_GOOGLE_CALENDAR_CLIENT_ID") {
+        if value.trim().is_empty() {
+            engine.google_calendar.client_id = None;
+        } else {
+            engine.google_calendar.client_id = Some(value);
+        }
+    }
+    if let Ok(value) = std::env::var("MINDVAULT_GOOGLE_CALENDAR_CLIENT_SECRET") {
+        if value.trim().is_empty() {
+            engine.google_calendar.client_secret = None;
+        } else {
+            engine.google_calendar.client_secret = Some(value);
+        }
+    }
+    if let Ok(value) = std::env::var("MINDVAULT_GOOGLE_CALENDAR_REFRESH_TOKEN") {
+        if value.trim().is_empty() {
+            engine.google_calendar.refresh_token = None;
+        } else {
+            engine.google_calendar.refresh_token = Some(value);
+        }
+    }
+    if let Some(value) = parse_env_bool("MINDVAULT_AI_SIDECAR_ENABLED") {
+        engine.ai_sidecar.enabled = value;
+    }
+    if let Ok(value) = std::env::var("MINDVAULT_AI_SIDECAR_BASE_URL") {
+        if !value.trim().is_empty() {
+            engine.ai_sidecar.base_url = value;
+        }
+    }
+    if let Some(value) = parse_env::<u64>("MINDVAULT_AI_SIDECAR_TIMEOUT_SECS") {
+        engine.ai_sidecar.timeout_secs = value;
+    }
     if let Some(value) = parse_env_bool("MINDVAULT_EMAIL_SMTP_STARTTLS") {
         engine.email.smtp_starttls = value;
     }

@@ -34,6 +34,16 @@ fn test_config(data_dir: &str) -> EngineConfig {
 }
 
 async fn setup() -> (axum::Router, TempDir) {
+    for key in [
+        "MINDVAULT_AUTH_TOKEN",
+        "MINDVAULT_AUTH_ROLE",
+        "MINDVAULT_AUTH_NAMESPACE",
+        "MINDVAULT_JWT_SECRET",
+        "MINDVAULT_JWT_ISSUER",
+        "MINDVAULT_JWT_AUDIENCE",
+    ] {
+        std::env::remove_var(key);
+    }
     let tmp = TempDir::new().expect("tempdir");
     let config = test_config(&tmp.path().to_string_lossy());
     let engine = MindVaultEngine::init(config)
@@ -199,7 +209,7 @@ async fn delete_node() {
     let body: Value = body_json(resp).await;
     assert_eq!(body["deleted"], true);
 
-    // Verify it's gone — get_node returns 200 with null for missing nodes
+    // Verify it's gone — get_node returns 404 for missing nodes
     let resp = router
         .oneshot(json_request(
             Method::GET,
@@ -208,9 +218,92 @@ async fn delete_node() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body: Value = body_json(resp).await;
-    assert!(body.is_null(), "deleted node should return null, got {body}");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// Public Shares
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn public_share_lifecycle() {
+    let (router, _tmp) = setup().await;
+
+    let create_body = json!({
+        "kind": "fact",
+        "content": "Share me",
+        "title": "Shareable"
+    });
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(create_body)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created: Value = body_json(resp).await;
+    let node_id = created["id"].as_str().unwrap();
+
+    let share_resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/shares",
+            Some(json!({ "node_id": node_id })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(share_resp.status(), StatusCode::OK);
+    let share_body: Value = body_json(share_resp).await;
+    let share_id = share_body["id"].as_str().unwrap();
+    let token = share_body["token"].as_str().unwrap();
+
+    let list_resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/shares?node_id={node_id}&include_revoked=true"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let list_body: Value = body_json(list_resp).await;
+    assert_eq!(list_body.as_array().unwrap().len(), 1);
+
+    let public_resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/public/shares/{token}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(public_resp.status(), StatusCode::OK);
+    let public_body: Value = body_json(public_resp).await;
+    assert_eq!(public_body["node"]["id"], node_id);
+    assert_eq!(public_body["node"]["content"], "Share me");
+
+    let revoke_resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::DELETE,
+            &format!("/api/v1/shares/{share_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(revoke_resp.status(), StatusCode::OK);
+
+    let missing_resp = router
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/public/shares/{token}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(missing_resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -394,7 +487,7 @@ async fn proposal_lifecycle_submit_and_list() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn get_nonexistent_node_returns_null() {
+async fn get_nonexistent_node_returns_404() {
     let (router, _tmp) = setup().await;
     let fake_id = "00000000-0000-0000-0000-000000000000";
     let resp = router
@@ -405,10 +498,7 @@ async fn get_nonexistent_node_returns_null() {
         ))
         .await
         .unwrap();
-    // get_node returns 200 with null body when node is not found
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body: Value = body_json(resp).await;
-    assert!(body.is_null(), "nonexistent node should return null, got {body}");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 // ---------------------------------------------------------------------------

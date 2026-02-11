@@ -11,6 +11,10 @@ members = [
     "crates/mv-cli",
     "crates/mv-plugin",
 ]
+exclude = [
+    "frontend/src-tauri",
+    "examples/plugins/hello-world",
+]
 
 [workspace.package]
 version = "0.1.0"

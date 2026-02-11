@@ -20,6 +20,8 @@ pub struct AppState {
     pub plugin_registry: Arc<RwLock<PluginRegistry>>,
     pub plugin_manager: Arc<RwLock<PluginManager>>,
     pub plugin_runtime: Arc<RwLock<PluginRuntime>>,
+    /// Shared HTTP client for AI sidecar proxy and other outbound requests.
+    pub http_client: reqwest::Client,
 }
 
 /// Notification for task reminders.
@@ -132,6 +134,10 @@ impl AppState {
             .unwrap_or_else(|_| PathBuf::from("plugins"));
         let plugin_manager = PluginManager::new(plugins_dir);
         let plugin_runtime = PluginRuntime::new(plugin_manager.clone());
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("failed to build HTTP client");
         Self {
             engine,
             change_tx,
@@ -141,6 +147,7 @@ impl AppState {
             plugin_registry: Arc::new(RwLock::new(PluginRegistry::new())),
             plugin_manager: Arc::new(RwLock::new(plugin_manager)),
             plugin_runtime: Arc::new(RwLock::new(plugin_runtime)),
+            http_client,
         }
     }
 

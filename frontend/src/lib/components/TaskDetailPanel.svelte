@@ -2,6 +2,7 @@
 	import type { TaskRecord } from '$lib/db';
 	import type { TaskStatus } from '$lib/api/tasks';
 	import AttachmentsPanel from '$lib/components/AttachmentsPanel.svelte';
+	import PublicSharePanel from '$lib/components/PublicSharePanel.svelte';
 	import { createEventDispatcher } from 'svelte';
 
 	export let task: TaskRecord | null = null;
@@ -389,6 +390,10 @@
 					title="Attachments"
 					description="Files linked to this task."
 				/>
+			</div>
+
+			<div>
+				<PublicSharePanel nodeId={task.id} nodeTitle={task.title} />
 			</div>
 
 			<!-- Timestamps -->

@@ -12,7 +12,9 @@ use mv_index::tantivy_index::TantivyFullTextIndex;
 use mv_storage::unified::UnifiedStore;
 use mv_storage::vector::{KnowledgeVaultIndexNoteEmbeddingFastembedLocalEmbedder, OpenAiEmbedder};
 use rand::RngCore;
+use reqwest::StatusCode as HttpStatusCode;
 use sha2::{Digest, Sha256};
+use url::form_urlencoded::byte_serialize;
 use uuid::Uuid;
 
 use crate::backlinks::{
@@ -80,6 +82,19 @@ pub struct TaskReminderDispatchStats {
     pub due_tasks: usize,
     pub reminders_marked_sent: usize,
     pub errors: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GoogleCalendarSyncReport {
+    pub calendar_id: String,
+    pub fetched: usize,
+    pub created: usize,
+    pub updated: usize,
+    pub deleted: usize,
+    pub skipped: usize,
+    pub exported_created: usize,
+    pub exported_updated: usize,
+    pub next_sync_token: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -485,6 +500,190 @@ impl MindVaultEngine {
         Ok((access_key, token))
     }
 
+    pub async fn create_public_share(
+        &self,
+        node_id: Uuid,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> MvResult<(PublicShare, String)> {
+        let node = self
+            .store
+            .nodes
+            .get(node_id)
+            .await?
+            .ok_or_else(|| MvError::InvalidInput("node not found".to_string()))?;
+
+        let _ = node;
+        let token = generate_share_token();
+        let token_hash = hash_share_token(&token);
+        let now = Utc::now();
+
+        let share = PublicShare {
+            id: Uuid::now_v7(),
+            node_id,
+            token_hash,
+            created_at: now,
+            expires_at,
+            revoked_at: None,
+        };
+
+        self.store.nodes.insert_public_share(&share).await?;
+
+        Ok((share, token))
+    }
+
+    pub async fn list_public_shares(
+        &self,
+        node_id: Option<Uuid>,
+        include_revoked: bool,
+    ) -> MvResult<Vec<PublicShare>> {
+        self.store
+            .nodes
+            .list_public_shares(node_id, include_revoked)
+            .await
+    }
+
+    pub async fn revoke_public_share(&self, share_id: Uuid) -> MvResult<bool> {
+        self.store
+            .nodes
+            .revoke_public_share(share_id, Utc::now())
+            .await
+    }
+
+    pub async fn resolve_public_share(
+        &self,
+        token: &str,
+    ) -> MvResult<Option<(PublicShare, KnowledgeNode)>> {
+        let token_hash = hash_share_token(token);
+        let share = match self
+            .store
+            .nodes
+            .get_public_share_by_hash(&token_hash)
+            .await?
+        {
+            Some(share) => share,
+            None => return Ok(None),
+        };
+
+        if !share.is_active() {
+            return Ok(None);
+        }
+
+        let node = match self.store.nodes.get(share.node_id).await? {
+            Some(node) => node,
+            None => return Ok(None),
+        };
+
+        Ok(Some((share, node)))
+    }
+
+    pub async fn create_node_comment(
+        &self,
+        node_id: Uuid,
+        author: Option<String>,
+        body: String,
+    ) -> MvResult<NodeComment> {
+        let _ = self
+            .store
+            .nodes
+            .get(node_id)
+            .await?
+            .ok_or_else(|| MvError::InvalidInput("node not found".to_string()))?;
+
+        let now = Utc::now();
+        let comment = NodeComment {
+            id: Uuid::now_v7(),
+            node_id,
+            author,
+            body,
+            created_at: now,
+            updated_at: now,
+            resolved_at: None,
+        };
+
+        self.store.nodes.insert_comment(&comment).await?;
+        Ok(comment)
+    }
+
+    pub async fn list_node_comments(
+        &self,
+        node_id: Uuid,
+        include_resolved: bool,
+    ) -> MvResult<Vec<NodeComment>> {
+        self.store.nodes.list_comments(node_id, include_resolved).await
+    }
+
+    pub async fn get_node_comment(&self, comment_id: Uuid) -> MvResult<Option<NodeComment>> {
+        self.store.nodes.get_comment(comment_id).await
+    }
+
+    pub async fn resolve_node_comment(&self, comment_id: Uuid) -> MvResult<bool> {
+        self.store
+            .nodes
+            .resolve_comment(comment_id, Utc::now())
+            .await
+    }
+
+    pub async fn delete_node_comment(&self, comment_id: Uuid) -> MvResult<bool> {
+        self.store.nodes.delete_comment(comment_id).await
+    }
+
+    pub async fn create_mcp_connector(
+        &self,
+        name: String,
+        description: Option<String>,
+        publisher: Option<String>,
+        version: String,
+        homepage_url: Option<String>,
+        repository_url: Option<String>,
+        config_schema: serde_json::Value,
+        capabilities: Vec<String>,
+        verified: bool,
+    ) -> MvResult<McpConnector> {
+        let now = Utc::now();
+        let connector = McpConnector {
+            id: Uuid::now_v7(),
+            name,
+            description,
+            publisher,
+            version,
+            homepage_url,
+            repository_url,
+            config_schema,
+            capabilities,
+            verified,
+            created_at: now,
+            updated_at: now,
+        };
+
+        self.store.nodes.insert_mcp_connector(&connector).await?;
+        Ok(connector)
+    }
+
+    pub async fn list_mcp_connectors(
+        &self,
+        publisher: Option<&str>,
+        verified: Option<bool>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<McpConnector>> {
+        self.store
+            .nodes
+            .list_mcp_connectors(publisher, verified, limit, offset)
+            .await
+    }
+
+    pub async fn get_mcp_connector(&self, connector_id: Uuid) -> MvResult<Option<McpConnector>> {
+        self.store.nodes.get_mcp_connector(connector_id).await
+    }
+
+    pub async fn update_mcp_connector(&self, connector: McpConnector) -> MvResult<bool> {
+        self.store.nodes.update_mcp_connector(&connector).await
+    }
+
+    pub async fn delete_mcp_connector(&self, connector_id: Uuid) -> MvResult<bool> {
+        self.store.nodes.delete_mcp_connector(connector_id).await
+    }
+
     pub async fn list_access_keys(&self) -> MvResult<Vec<AccessKey>> {
         self.store.nodes.list_access_keys().await
     }
@@ -527,6 +726,210 @@ impl MindVaultEngine {
             .await;
 
         Ok(Some((key, template)))
+    }
+
+    pub async fn sync_google_calendar(&self) -> MvResult<GoogleCalendarSyncReport> {
+        let config = &self.config.google_calendar;
+        if !config.enabled {
+            return Err(MvError::InvalidInput(
+                "google calendar sync is disabled".to_string(),
+            ));
+        }
+
+        let client_id = config
+            .client_id
+            .as_ref()
+            .ok_or_else(|| MvError::InvalidInput("google calendar client_id missing".into()))?;
+        let client_secret = config
+            .client_secret
+            .as_ref()
+            .ok_or_else(|| MvError::InvalidInput("google calendar client_secret missing".into()))?;
+        let refresh_token = config
+            .refresh_token
+            .as_ref()
+            .ok_or_else(|| MvError::InvalidInput("google calendar refresh_token missing".into()))?;
+
+        let calendar_id = config.calendar_id.trim();
+        if calendar_id.is_empty() {
+            return Err(MvError::InvalidInput(
+                "google calendar_id must not be empty".into(),
+            ));
+        }
+
+        let access_token = google_refresh_access_token(client_id, client_secret, refresh_token).await?;
+        let adapter_name = format!("google-calendar:{calendar_id}");
+        let existing_sync = self
+            .store
+            .nodes
+            .get_poll_state(&adapter_name)
+            .await?
+            .and_then(|state| {
+                let cursor = state.cursor.trim().to_string();
+                if cursor.is_empty() {
+                    None
+                } else {
+                    Some(cursor)
+                }
+            });
+
+        let mut report = GoogleCalendarSyncReport {
+            calendar_id: calendar_id.to_string(),
+            fetched: 0,
+            created: 0,
+            updated: 0,
+            deleted: 0,
+            skipped: 0,
+            exported_created: 0,
+            exported_updated: 0,
+            next_sync_token: None,
+        };
+
+        let mut sync_token = existing_sync;
+        for attempt in 0..2 {
+            match google_list_events(&access_token, calendar_id, config, sync_token.as_deref()).await
+            {
+                Ok((events, next_sync_token)) => {
+                    report.fetched = events.len();
+                    report.next_sync_token = next_sync_token.clone();
+                    let mut created = 0usize;
+                    let mut updated = 0usize;
+                    let mut deleted = 0usize;
+                    let mut skipped = 0usize;
+
+                    if config.import_events {
+                        for event in events {
+                            let Some(event_id) = event.id.as_ref() else {
+                                skipped += 1;
+                                continue;
+                            };
+
+                            if matches!(event.status.as_deref(), Some("cancelled")) {
+                                if let Some(existing) =
+                                    self.store.nodes.find_by_source(&event_source(calendar_id, event_id)).await?
+                                {
+                                    let _ = self.delete_node(existing.id).await?;
+                                    deleted += 1;
+                                }
+                                continue;
+                            }
+
+                            let (start_at, end_at) = match event_times(&event) {
+                                Some(times) => times,
+                                None => {
+                                    skipped += 1;
+                                    continue;
+                                }
+                            };
+
+                            let source = event_source(calendar_id, event_id);
+                            let existing = self.store.nodes.find_by_source(&source).await?;
+                            let was_existing = existing.is_some();
+                            let mut node = if let Some(existing) = existing {
+                                existing
+                            } else {
+                                KnowledgeNode::new(NodeKind::Event, "")
+                                    .with_namespace(config.namespace.clone())
+                                    .with_tags(vec!["calendar".into(), "google-calendar".into()])
+                                    .with_source(source)
+                            };
+
+                            let title = event
+                                .summary
+                                .clone()
+                                .filter(|s| !s.trim().is_empty())
+                                .unwrap_or_else(|| "Google Calendar Event".to_string());
+                            let content = event
+                                .description
+                                .clone()
+                                .filter(|s| !s.trim().is_empty())
+                                .unwrap_or_else(|| title.clone());
+
+                            node.title = Some(title);
+                            node.content = content;
+                            node.metadata.insert(
+                                "event_start_at".to_string(),
+                                serde_json::Value::String(start_at.to_rfc3339()),
+                            );
+                            node.metadata.insert(
+                                "event_end_at".to_string(),
+                                serde_json::Value::String(end_at.to_rfc3339()),
+                            );
+                            node.metadata.insert(
+                                "google_calendar_event_id".to_string(),
+                                serde_json::Value::String(event_id.clone()),
+                            );
+                            node.metadata.insert(
+                                "google_calendar_calendar_id".to_string(),
+                                serde_json::Value::String(calendar_id.to_string()),
+                            );
+                            if let Some(updated_at) = event.updated.clone() {
+                                node.metadata.insert(
+                                    "google_calendar_updated_at".to_string(),
+                                    serde_json::Value::String(updated_at),
+                                );
+                            }
+                            if let Some(html_link) = event.html_link.clone() {
+                                node.metadata.insert(
+                                    "google_calendar_html_link".to_string(),
+                                    serde_json::Value::String(html_link),
+                                );
+                            }
+
+                            if was_existing {
+                                node.temporal.updated_at = Utc::now();
+                                let _ = self.update_node(node).await?;
+                                updated += 1;
+                            } else {
+                                let _ = self.store_node(node).await?;
+                                created += 1;
+                            }
+                        }
+                    } else {
+                        skipped = events.len();
+                    }
+
+                    report.created = created;
+                    report.updated = updated;
+                    report.deleted = deleted;
+                    report.skipped = skipped;
+
+                    if config.export_events {
+                        let (exported_created, exported_updated) =
+                            google_export_events(self, &access_token, calendar_id, config).await?;
+                        report.exported_created = exported_created;
+                        report.exported_updated = exported_updated;
+                    }
+
+                    if let Some(next) = next_sync_token {
+                        let _ = self
+                            .store
+                            .nodes
+                            .upsert_poll_state(&adapter_name, &next, report.fetched as u64)
+                            .await;
+                    }
+
+                    return Ok(report);
+                }
+                Err(GoogleCalendarFetchError::SyncTokenExpired) => {
+                    if attempt == 0 {
+                        sync_token = None;
+                        continue;
+                    }
+                    return Err(MvError::InvalidInput(
+                        "google calendar sync token expired".into(),
+                    ));
+                }
+                Err(GoogleCalendarFetchError::RequestFailed(err)) => {
+                    return Err(MvError::Storage(format!(
+                        "google calendar sync failed: {err}"
+                    )));
+                }
+            }
+        }
+
+        Err(MvError::Storage(
+            "google calendar sync failed unexpectedly".into(),
+        ))
     }
 
     // ── Consumer Profiles ────────────────────────────────────────────
@@ -2590,6 +2993,20 @@ fn select_embedding_provider(
                 ),
             }
         }
+        "noop" | "none" | "disabled" => {
+            tracing::info!(provider = "noop", "mindvault_embedding_provider_noop");
+            EmbeddingProviderSelection {
+                embedder: None,
+                vector_dimensions: config.embedding.dimensions,
+                runtime_status: base_status(
+                    "noop",
+                    "noop".to_string(),
+                    config.embedding.dimensions,
+                    false,
+                    None,
+                ),
+            }
+        }
         "local_fastembed" | "fastembed" | "local" => {
             let local_model = default_local_model_if_needed(&config.embedding.model);
             match KnowledgeVaultIndexNoteEmbeddingFastembedLocalEmbedder::try_new(&local_model) {
@@ -2683,6 +3100,13 @@ fn generate_access_token() -> String {
     format!("mvk_{encoded}")
 }
 
+fn generate_share_token() -> String {
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let encoded = URL_SAFE_NO_PAD.encode(bytes);
+    format!("mvs_{encoded}")
+}
+
 fn hash_access_token(token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
@@ -2690,22 +3114,343 @@ fn hash_access_token(token: &str) -> String {
     URL_SAFE_NO_PAD.encode(digest)
 }
 
+fn hash_share_token(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let digest = hasher.finalize();
+    URL_SAFE_NO_PAD.encode(digest)
+}
+
+#[derive(Debug)]
+enum GoogleCalendarFetchError {
+    SyncTokenExpired,
+    RequestFailed(String),
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GoogleTokenResponse {
+    access_token: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GoogleEventsResponse {
+    items: Option<Vec<GoogleEvent>>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
+    #[serde(rename = "nextSyncToken")]
+    next_sync_token: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GoogleEvent {
+    id: Option<String>,
+    summary: Option<String>,
+    description: Option<String>,
+    status: Option<String>,
+    updated: Option<String>,
+    #[serde(rename = "htmlLink")]
+    html_link: Option<String>,
+    start: Option<GoogleEventTime>,
+    end: Option<GoogleEventTime>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GoogleEventTime {
+    #[serde(rename = "dateTime")]
+    date_time: Option<String>,
+    date: Option<String>,
+}
+
+async fn google_refresh_access_token(
+    client_id: &str,
+    client_secret: &str,
+    refresh_token: &str,
+) -> MvResult<String> {
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("refresh_token", refresh_token),
+            ("grant_type", "refresh_token"),
+        ])
+        .send()
+        .await
+        .map_err(|e| MvError::Storage(format!("google token request failed: {e}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(MvError::Storage(format!(
+            "google token request failed ({status}): {body}"
+        )));
+    }
+
+    let token = response
+        .json::<GoogleTokenResponse>()
+        .await
+        .map_err(|e| MvError::Storage(format!("google token response parse failed: {e}")))?;
+
+    Ok(token.access_token)
+}
+
+async fn google_list_events(
+    access_token: &str,
+    calendar_id: &str,
+    config: &crate::config::GoogleCalendarConfig,
+    sync_token: Option<&str>,
+) -> Result<(Vec<GoogleEvent>, Option<String>), GoogleCalendarFetchError> {
+    let client = reqwest::Client::new();
+    let encoded_calendar = byte_serialize(calendar_id.as_bytes()).collect::<String>();
+    let url = format!(
+        "https://www.googleapis.com/calendar/v3/calendars/{encoded_calendar}/events"
+    );
+
+    let max_results = config.max_results.to_string();
+    let mut page_token: Option<String> = None;
+    let mut events: Vec<GoogleEvent> = Vec::new();
+
+    let next_sync_token = loop {
+        let mut request = client
+            .get(&url)
+            .bearer_auth(access_token)
+            .query(&[
+                ("singleEvents", "true"),
+                ("showDeleted", "true"),
+                ("maxResults", max_results.as_str()),
+            ]);
+
+        if let Some(token) = sync_token {
+            request = request.query(&[("syncToken", token)]);
+        } else {
+            let now = Utc::now();
+            let time_min = (now - chrono::Duration::days(config.lookback_days)).to_rfc3339();
+            let time_max = (now + chrono::Duration::days(config.lookahead_days)).to_rfc3339();
+            request = request.query(&[
+                ("timeMin", time_min.as_str()),
+                ("timeMax", time_max.as_str()),
+                ("orderBy", "startTime"),
+            ]);
+        }
+
+        if let Some(ref token) = page_token {
+            request = request.query(&[("pageToken", token.as_str())]);
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| GoogleCalendarFetchError::RequestFailed(e.to_string()))?;
+
+        if response.status() == HttpStatusCode::GONE {
+            return Err(GoogleCalendarFetchError::SyncTokenExpired);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(GoogleCalendarFetchError::RequestFailed(format!(
+                "google events request failed ({status}): {body}"
+            )));
+        }
+
+        let payload = response
+            .json::<GoogleEventsResponse>()
+            .await
+            .map_err(|e| GoogleCalendarFetchError::RequestFailed(e.to_string()))?;
+
+        if let Some(mut page_items) = payload.items {
+            events.append(&mut page_items);
+        }
+
+        if payload.next_page_token.is_none() {
+            break payload.next_sync_token;
+        }
+
+        page_token = payload.next_page_token;
+    };
+
+    Ok((events, next_sync_token))
+}
+
+fn event_source(calendar_id: &str, event_id: &str) -> String {
+    format!("google-calendar:{calendar_id}:{event_id}")
+}
+
+fn parse_google_event_time(time: &GoogleEventTime) -> Option<DateTime<Utc>> {
+    if let Some(ref dt) = time.date_time {
+        return DateTime::parse_from_rfc3339(dt)
+            .ok()
+            .map(|dt| dt.with_timezone(&Utc));
+    }
+
+    let date_str = time.date.as_ref()?;
+    let date = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()?;
+    let naive = date.and_hms_opt(0, 0, 0)?;
+    Some(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
+}
+
+fn event_times(event: &GoogleEvent) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let start = event.start.as_ref().and_then(parse_google_event_time)?;
+    let end = event
+        .end
+        .as_ref()
+        .and_then(parse_google_event_time)
+        .unwrap_or_else(|| start + chrono::Duration::hours(1));
+    Some((start, end))
+}
+
+async fn google_export_events(
+    engine: &MindVaultEngine,
+    access_token: &str,
+    calendar_id: &str,
+    config: &crate::config::GoogleCalendarConfig,
+) -> MvResult<(usize, usize)> {
+    let mut exported_created = 0usize;
+    let mut exported_updated = 0usize;
+
+    let filters = QueryFilters {
+        namespace: Some(config.namespace.clone()),
+        kinds: Some(vec![NodeKind::Event]),
+        tags: None,
+        min_importance: None,
+        created_after: None,
+        created_before: None,
+    };
+
+    let nodes = engine.store.nodes.list(&filters, 1000, 0).await?;
+    let client = reqwest::Client::new();
+    let encoded_calendar = byte_serialize(calendar_id.as_bytes()).collect::<String>();
+    let url = format!(
+        "https://www.googleapis.com/calendar/v3/calendars/{encoded_calendar}/events"
+    );
+
+    for mut node in nodes {
+        let start_at = node
+            .metadata
+            .get("event_start_at")
+            .and_then(|v| v.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.to_rfc3339());
+        let end_at = node
+            .metadata
+            .get("event_end_at")
+            .and_then(|v| v.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.to_rfc3339());
+
+        let (Some(start_at), Some(end_at)) = (start_at, end_at) else {
+            continue;
+        };
+
+        let summary = node.title.clone().unwrap_or_else(|| "MindVault Event".to_string());
+        let description = node.content.clone();
+
+        let mut payload = serde_json::json!({
+            "summary": summary,
+            "description": description,
+            "start": { "dateTime": start_at },
+            "end": { "dateTime": end_at }
+        });
+
+        if let Some(ref source) = node.source {
+            payload["source"] = serde_json::json!({ "title": "MindVault", "url": source });
+        }
+
+        if let Some(event_id) = node
+            .metadata
+            .get("google_calendar_event_id")
+            .and_then(|v| v.as_str())
+        {
+            let request = client
+                .patch(format!("{url}/{event_id}"))
+                .bearer_auth(access_token)
+                .json(&payload);
+
+            let response = request.send().await.map_err(|e| {
+                MvError::Storage(format!("google event update failed: {e}"))
+            })?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(MvError::Storage(format!(
+                    "google event update failed ({status}): {body}"
+                )));
+            }
+
+            exported_updated += 1;
+            continue;
+        }
+
+        let response = client
+            .post(&url)
+            .bearer_auth(access_token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| MvError::Storage(format!("google event create failed: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(MvError::Storage(format!(
+                "google event create failed ({status}): {body}"
+            )));
+        }
+
+        let created_event = response
+            .json::<GoogleEvent>()
+            .await
+            .map_err(|e| MvError::Storage(format!("google event response parse failed: {e}")))?;
+
+        if let Some(event_id) = created_event.id {
+            node.metadata.insert(
+                "google_calendar_event_id".to_string(),
+                serde_json::Value::String(event_id.clone()),
+            );
+            node.metadata.insert(
+                "google_calendar_calendar_id".to_string(),
+                serde_json::Value::String(calendar_id.to_string()),
+            );
+            if let Some(html_link) = created_event.html_link {
+                node.metadata.insert(
+                    "google_calendar_html_link".to_string(),
+                    serde_json::Value::String(html_link),
+                );
+            }
+            if node.source.is_none() {
+                node.source = Some(event_source(calendar_id, &event_id));
+            }
+            node.temporal.updated_at = Utc::now();
+            let _ = engine.update_node(node).await?;
+            exported_created += 1;
+        }
+    }
+
+    Ok((exported_created, exported_updated))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::{NaiveDate, TimeZone, Utc};
     use mv_core::{
-        GraphStore, KnowledgeNode, MessageStatus, NodeKind, ProposalAction, ProposalState,
+        ConflictAlert, ConflictType, ContactIdentity, GraphStore, IdentityType, InsightType,
+        KnowledgeNode, MessageStatus, NodeKind, ProactiveInsight, ProposalAction, ProposalState,
         RelayChannel, RelayContact, RelayMessage, RelationKind, Relationship, TrustLevel,
+        TrustModel,
     };
     use tempfile::TempDir;
 
     async fn create_test_engine() -> (MindVaultEngine, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let config = EngineConfig {
+        let mut config = EngineConfig {
             data_dir: temp_dir.path().to_string_lossy().to_string(),
             ..Default::default()
         };
+        config.embedding.provider = "noop".into();
         let engine = MindVaultEngine::init(config).await.unwrap();
         (engine, temp_dir)
     }
@@ -2716,6 +3461,7 @@ mod tests {
             data_dir: temp_dir.path().to_string_lossy().to_string(),
             ..Default::default()
         };
+        config.embedding.provider = "noop".into();
         config.ai.auto_tagging_enabled = true;
         config.ai.auto_tagging_similarity_seed_limit = 8;
         config.ai.auto_tagging_max_generated_tags = 6;
@@ -2745,6 +3491,7 @@ mod tests {
             data_dir: temp_dir.path().to_string_lossy().to_string(),
             ..Default::default()
         };
+        config.embedding.provider = "noop".into();
         config.linking.auto_backlinks_enabled = false;
         let engine = MindVaultEngine::init(config).await.unwrap();
         (engine, temp_dir)
@@ -3689,5 +4436,202 @@ mod tests {
         assert!(resolved.is_some());
         let (_key, resolved_template) = resolved.unwrap();
         assert_eq!(resolved_template.id, template.id);
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests for Phase 1–3 features
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_insight_generate_and_list() {
+        let (engine, _tmp) = create_test_engine().await;
+
+        // Store a test insight directly via the underlying store
+        let insight = ProactiveInsight {
+            id: Uuid::now_v7(),
+            title: "Test Insight".into(),
+            content: "Something interesting".into(),
+            insight_type: InsightType::General,
+            related_node_ids: vec![],
+            importance: 0.8,
+            created_at: Utc::now(),
+            dismissed_at: None,
+        };
+        engine.store.nodes.log_insight(&insight).await.unwrap();
+
+        // List and verify
+        let insights = engine.list_insights(10, 0).await.unwrap();
+        assert!(!insights.is_empty(), "should have at least one insight");
+        assert_eq!(insights[0].title, "Test Insight");
+
+        // Dismiss (delete)
+        let deleted = engine.delete_insight(insight.id).await.unwrap();
+        assert!(deleted);
+
+        let after = engine.list_insights(10, 0).await.unwrap();
+        assert!(
+            after.iter().all(|i| i.id != insight.id),
+            "insight should be dismissed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_conflict_detection_on_contradictory_nodes() {
+        let (engine, _tmp) = create_test_engine().await;
+
+        // Store two nodes
+        let node_a = engine
+            .store_node(
+                KnowledgeNode::new(NodeKind::Fact, "The sky is blue")
+                    .with_tags(vec!["sky".into()]),
+            )
+            .await
+            .unwrap();
+        let node_b = engine
+            .store_node(
+                KnowledgeNode::new(NodeKind::Fact, "The sky is green")
+                    .with_tags(vec!["sky".into()]),
+            )
+            .await
+            .unwrap();
+
+        // Manually insert a conflict alert
+        let alert = ConflictAlert {
+            id: Uuid::now_v7(),
+            node_a: node_a.id,
+            node_b: node_b.id,
+            conflict_type: ConflictType::Contradiction,
+            score: 0.95,
+            explanation: "Contradictory claims about sky color".into(),
+            resolved: false,
+            created_at: Utc::now(),
+        };
+        engine.store.nodes.insert_conflict(&alert).await.unwrap();
+
+        // List unresolved conflicts
+        let conflicts = engine.list_conflicts(Some(false), 10, 0).await.unwrap();
+        assert!(!conflicts.is_empty());
+        assert_eq!(conflicts[0].node_a, node_a.id);
+
+        // Resolve
+        let resolved = engine.resolve_conflict(alert.id).await.unwrap();
+        assert!(resolved);
+
+        // Verify the conflict is now marked resolved
+        let fetched = engine.get_conflict(alert.id).await.unwrap().unwrap();
+        assert!(fetched.resolved, "conflict should be resolved");
+
+        // Resolving again should return false (already resolved)
+        let re_resolved = engine.resolve_conflict(alert.id).await.unwrap();
+        assert!(!re_resolved);
+    }
+
+    #[tokio::test]
+    async fn test_contact_identity_crud() {
+        let (engine, _tmp) = create_test_engine().await;
+
+        let contact_id = Uuid::now_v7();
+        let identity = ContactIdentity {
+            id: Uuid::now_v7(),
+            contact_id,
+            identity_type: IdentityType::Email,
+            identity_value: "alice@example.com".into(),
+            verified: false,
+            verified_at: None,
+            created_at: Utc::now(),
+        };
+
+        // Add
+        engine.add_contact_identity(&identity).await.unwrap();
+
+        // List
+        let list = engine.list_contact_identities(contact_id).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].identity_value, "alice@example.com");
+        assert!(!list[0].verified);
+
+        // Verify
+        let verified = engine.verify_contact_identity(identity.id).await.unwrap();
+        assert!(verified);
+
+        let list = engine.list_contact_identities(contact_id).await.unwrap();
+        assert!(list[0].verified);
+
+        // Delete
+        let deleted = engine.delete_contact_identity(identity.id).await.unwrap();
+        assert!(deleted);
+
+        let list = engine.list_contact_identities(contact_id).await.unwrap();
+        assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_trust_model_defaults_and_update() {
+        let (engine, _tmp) = create_test_engine().await;
+
+        let contact_id = Uuid::now_v7();
+
+        // No trust model yet
+        let model = engine.get_trust_model(contact_id).await.unwrap();
+        assert!(model.is_none());
+
+        // Set with defaults (all false)
+        let mut tm = TrustModel {
+            contact_id,
+            ..Default::default()
+        };
+        engine.set_trust_model(&tm).await.unwrap();
+
+        let stored = engine.get_trust_model(contact_id).await.unwrap().unwrap();
+        assert!(!stored.can_query);
+        assert!(!stored.can_inject_context);
+        assert!(!stored.can_auto_reply);
+        assert!(stored.allowed_namespaces.is_empty());
+
+        // Update
+        tm.can_query = true;
+        tm.allowed_namespaces = vec!["research".into()];
+        engine.set_trust_model(&tm).await.unwrap();
+
+        let updated = engine.get_trust_model(contact_id).await.unwrap().unwrap();
+        assert!(updated.can_query);
+        assert_eq!(updated.allowed_namespaces, vec!["research"]);
+    }
+
+    #[tokio::test]
+    async fn test_federation_peer_add_and_list() {
+        let (engine, _tmp) = create_test_engine().await;
+
+        let peer = crate::federation::FederationPeer {
+            id: Uuid::now_v7(),
+            vault_id: "vault-test-123".into(),
+            display_name: "Test Vault".into(),
+            endpoint: "http://127.0.0.1:19470".into(),
+            public_key: None,
+            allowed_namespaces: vec![],
+            max_results: 10,
+            enabled: true,
+            last_seen: None,
+            created_at: Utc::now(),
+            shared_secret: Some("secret123".into()),
+        };
+
+        engine.federation.add_peer(peer.clone()).await;
+
+        let peers = engine.federation.list_peers().await;
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].vault_id, "vault-test-123");
+
+        // Find by vault ID
+        let found = engine
+            .federation
+            .find_peer_by_vault_id("vault-test-123")
+            .await;
+        assert!(found.is_some());
+
+        // Remove
+        let removed = engine.federation.remove_peer(peer.id).await;
+        assert!(removed);
+        assert!(engine.federation.list_peers().await.is_empty());
     }
 }

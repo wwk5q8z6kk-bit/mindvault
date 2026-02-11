@@ -282,7 +282,6 @@ impl PluginRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn test_manager(dir: &std::path::Path) -> PluginManager {
         PluginManager::new(dir.to_path_buf())
@@ -325,6 +324,85 @@ mod tests {
         let runtime = PluginRuntime::new(mgr);
         assert!(runtime.get_plugin("missing").is_none());
         assert!(runtime.get_plugin_hooks("missing").is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Create a minimal plugin directory with a manifest.json (no real WASM).
+    fn create_test_plugin_dir(base: &std::path::Path, name: &str, hooks: Vec<&str>) {
+        let plugin_dir = base.join(name);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+
+        let manifest = crate::manifest::PluginManifest {
+            id: uuid::Uuid::now_v7().to_string(),
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            description: Some("Test plugin".to_string()),
+            author: None,
+            permissions: vec![],
+            hooks: hooks.into_iter().map(String::from).collect(),
+            entry_point: None,
+            repository: None,
+            license: None,
+            homepage: None,
+            checksum: None,
+            min_mindvault_version: None,
+            keywords: vec![],
+        };
+        let json = serde_json::to_string_pretty(&manifest).unwrap();
+        std::fs::write(plugin_dir.join("manifest.json"), json).unwrap();
+        // Write a dummy wasm file (won't actually be executed without wasm-runtime feature)
+        std::fs::write(plugin_dir.join("plugin.wasm"), b"dummy").unwrap();
+    }
+
+    #[test]
+    fn runtime_scan_loads_plugin_with_hooks() {
+        let tmp = std::env::temp_dir().join(format!("mv_rt_hooks_{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        create_test_plugin_dir(&tmp, "hello-plugin", vec!["post_ingest", "pre_query"]);
+
+        let mgr = test_manager(&tmp);
+        let mut runtime = PluginRuntime::new(mgr);
+        let loaded = runtime.scan_and_load().unwrap();
+        assert_eq!(loaded, 1);
+        assert_eq!(runtime.plugin_count(), 1);
+
+        let info = runtime.get_plugin("hello-plugin");
+        assert!(info.is_some());
+        let info = info.unwrap();
+        assert_eq!(info.name, "hello-plugin");
+
+        let hooks = runtime.get_plugin_hooks("hello-plugin").unwrap();
+        assert_eq!(hooks.len(), 2);
+        assert!(hooks.contains(&"post_ingest".to_string()));
+        assert!(hooks.contains(&"pre_query".to_string()));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn runtime_reload_plugin_resets_state() {
+        let tmp = std::env::temp_dir().join(format!("mv_rt_reload_{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        create_test_plugin_dir(&tmp, "reload-test", vec!["post_ingest"]);
+
+        let mgr = test_manager(&tmp);
+        let mut runtime = PluginRuntime::new(mgr);
+        runtime.scan_and_load().unwrap();
+        assert_eq!(runtime.plugin_count(), 1);
+
+        // Reload the plugin
+        runtime.reload_plugin("reload-test").unwrap();
+        assert_eq!(runtime.plugin_count(), 1);
+
+        let hooks = runtime.get_plugin_hooks("reload-test").unwrap();
+        assert_eq!(hooks, vec!["post_ingest".to_string()]);
+
+        // Reload nonexistent plugin should fail
+        let err = runtime.reload_plugin("nonexistent");
+        assert!(err.is_err());
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

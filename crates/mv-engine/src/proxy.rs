@@ -67,6 +67,10 @@ fn is_private_ip(addr: IpAddr) -> bool {
         IpAddr::V6(v6) => {
             v6.is_loopback()           // ::1
             || v6.is_unspecified()     // ::
+            // IPv6-mapped IPv4 (::ffff:x.x.x.x) — check the inner v4
+            || v6.to_ipv4_mapped()
+                .map(|v4| is_private_ip(IpAddr::V4(v4)))
+                .unwrap_or(false)
             // fd00::/8 (unique local)
             || (v6.segments()[0] & 0xff00) == 0xfd00
             // fe80::/10 (link-local)
@@ -743,6 +747,13 @@ mod tests {
     fn check_scopes_read_policy_allows_get() {
         let required = derive_http_scopes("GET");
         assert!(check_scopes(&required, &["read".into()]).is_ok());
+    }
+
+    #[test]
+    fn ssrf_blocks_ipv6_mapped_ipv4() {
+        assert!(check_ssrf("http://[::ffff:127.0.0.1]:8080/api").is_err());
+        assert!(check_ssrf("http://[::ffff:192.168.1.1]/secret").is_err());
+        assert!(check_ssrf("http://[::ffff:10.0.0.1]/secret").is_err());
     }
 
     #[test]

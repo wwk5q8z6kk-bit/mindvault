@@ -260,6 +260,18 @@ Client secrets are stored in the Sovereign Keychain; the vault must be unsealed 
 
 Tokens returned are standard Bearer tokens (internally backed by access keys with expiry).
 
+### Public Shares (Read‑Only Links)
+
+Public shares provide read‑only access to a single node using a high‑entropy token:
+
+- Create share: `POST /api/v1/shares` (returns a one‑time token + URL)
+- List shares: `GET /api/v1/shares?node_id=...`
+- Revoke share: `DELETE /api/v1/shares/{id}`
+- Read share: `GET /public/shares/{token}`
+
+Browsers render a read‑only HTML view; request `Accept: application/json` for raw JSON.
+Treat share URLs as secrets. Tokens are stored hashed and are not recoverable once created.
+
 ## Runtime Diagnostics
 
 Embedding provider diagnostics are available via:
@@ -308,6 +320,24 @@ model = "llama3.2"
 ```
 
 For remote providers, set `base_url` to the API endpoint and supply `MINDVAULT_LLM_API_KEY` (or `OPENAI_API_KEY`). If no provider is available, MindVault falls back to heuristic outputs.
+
+## AI Sidecar Proxy (Optional)
+
+MindVault can proxy OpenAI‑compatible requests to a local Python sidecar:
+
+```toml
+[ai_sidecar]
+enabled = true
+base_url = "http://127.0.0.1:8100"
+timeout_secs = 30
+```
+
+Endpoints:
+
+- `GET /api/v1/ai/health`
+- `GET /api/v1/ai/models`
+- `POST /api/v1/ai/embeddings`
+- `POST /api/v1/ai/chat/completions`
 
 ## Watcher Agent (Proactive Monitoring)
 

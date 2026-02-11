@@ -32,6 +32,7 @@ A modern web-based administrative interface for MindVault, providing an intuitiv
 - **Node Version History**: Non-template node edits now keep restorable history with inline diff preview directly in the editor modal
 - **Relationship Context Inspector**: Editor modal now surfaces incoming/outgoing graph links (kind, namespace, weight, auto-managed markers, and auto-link source provenance)
 - **Relationship Jump Navigation**: Click a related-node title in relationship context to jump directly into that node
+- **Public Share Links**: Create read-only share links per node with optional expiry and revoke controls
 
 ### Daily Notes
 - **Daily Notes Workspace**: Dedicated tab for daily planning/journaling notes
@@ -118,6 +119,7 @@ cors_allowed_origins = ["http://localhost:3000", "http://localhost:8080"]
 5. **Run Saved Queries**: Use "Run" to execute stored filters instantly
 6. **Persistent Inputs**: Search form and filter inputs are remembered between sessions
 7. **Reset Tab Inputs**: Each tab now has a “Reset Tab” action to clear only that panel’s saved inputs
+8. **Quick Reset Shortcut**: Use `Ctrl/Cmd + Alt + R` to reset the active tab
 6. **Update Active Presets**: Load a saved query, edit fields, then click "Update Active"
 7. **View Results**: Browse scored results with match source information
 
@@ -188,6 +190,10 @@ The web interface communicates with MindVault's REST API endpoints:
 - `POST /api/v1/files/{node_id}/{attachment_id}/reindex` - Re-run attachment extraction/OCR and refresh indexed metadata
 - `GET /api/v1/files/{node_id}/{attachment_id}` - Download an attachment (`?inline=true` for preview)
 - `DELETE /api/v1/files/{node_id}/{attachment_id}` - Remove an attachment from a node
+- `POST /api/v1/shares` - Create a public share link for a node
+- `GET /api/v1/shares` - List public share links (filter by `node_id`)
+- `DELETE /api/v1/shares/{id}` - Revoke a share link
+- `GET /public/shares/{token}` - Read-only public share content
 
 ## Browser Support
 

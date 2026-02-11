@@ -188,6 +188,16 @@ pub async fn auth_middleware_with_state(
     mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    if request.uri().path().starts_with("/public/shares/") {
+        request.extensions_mut().insert(AuthContext {
+            subject: Some("public-share".into()),
+            role: AuthRole::Read,
+            namespace: None,
+            consumer_name: None,
+        });
+        return Ok(next.run(request).await);
+    }
+
     if request.uri().path() == "/api/v1/oauth/token" {
         request.extensions_mut().insert(AuthContext::system_admin());
         return Ok(next.run(request).await);

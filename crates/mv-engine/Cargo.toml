@@ -2,6 +2,10 @@
 name = "mv-engine"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Orchestration engine combining all MindVault backends"
+repository.workspace = true
 
 [features]
 default = ["local-embeddings"]

@@ -684,6 +684,26 @@
                         </div>
                     </div>
                     <div class="form-group">
+                        <label>Public Shares:</label>
+                        <div class="share-controls">
+                            <div class="share-input">
+                                <label for="share-expires-at">Expires At (optional):</label>
+                                <input type="datetime-local" id="share-expires-at">
+                            </div>
+                            <div class="share-actions">
+                                <button type="button" id="create-share-btn" class="btn primary">Create Share Link</button>
+                                <button type="button" id="refresh-shares-btn" class="btn">Refresh</button>
+                            </div>
+                        </div>
+                        <div id="share-output" class="share-output">
+                            <p class="template-empty">Create a share link to grant read-only access to this node.</p>
+                        </div>
+                        <div id="share-list" class="share-list">
+                            <p class="template-empty">No shares loaded yet.</p>
+                        </div>
+                        <div class="form-help">Share tokens are only shown once. Revoke and re-create to rotate a link.</div>
+                    </div>
+                    <div class="form-group">
                         <label>Node History:</label>
                         <div id="node-version-history" class="node-version-history">
                             <p class="template-empty">Version history appears after the first edit save.</p>

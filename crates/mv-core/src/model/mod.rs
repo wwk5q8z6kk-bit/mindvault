@@ -229,6 +229,61 @@ pub struct AccessKey {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicShare {
+    pub id: Uuid,
+    pub node_id: Uuid,
+    pub token_hash: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+impl PublicShare {
+    pub fn is_active(&self) -> bool {
+        if self.revoked_at.is_some() {
+            return false;
+        }
+        if let Some(expires_at) = self.expires_at {
+            return Utc::now() < expires_at;
+        }
+        true
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeComment {
+    pub id: Uuid,
+    pub node_id: Uuid,
+    pub author: Option<String>,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+impl NodeComment {
+    pub fn is_resolved(&self) -> bool {
+        self.resolved_at.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpConnector {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub publisher: Option<String>,
+    pub version: String,
+    pub homepage_url: Option<String>,
+    pub repository_url: Option<String>,
+    pub config_schema: serde_json::Value,
+    pub capabilities: Vec<String>,
+    pub verified: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 // ---------------------------------------------------------------------------
 // Temporal Metadata
 // ---------------------------------------------------------------------------

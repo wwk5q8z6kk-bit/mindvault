@@ -115,7 +115,8 @@ export class MindVaultAdmin {
         this.currentPage = 1;
         this.pageSize = 20;
         this.currentFilters = {};
-        this.editorMode = 'wysiwyg';
+        this.editorMode = this.editorMode || 'wysiwyg';
+        this.activeTabPreference = this.activeTabPreference || 'nodes-tab';
         this.tiptapEditor = null;
         this.suppressEditorSync = false;
         this.editorSyncTimer = null;
@@ -188,6 +189,13 @@ export class MindVaultAdmin {
         this.fileAttachments = document.getElementById('file-attachments');
         this.nodeVersionHistory = document.getElementById('node-version-history');
         this.nodeRelationshipOverview = document.getElementById('node-relationship-overview');
+        this.shareExpiresInput = document.getElementById('share-expires-at');
+        this.createShareBtn = document.getElementById('create-share-btn');
+        this.refreshSharesBtn = document.getElementById('refresh-shares-btn');
+        this.shareOutput = document.getElementById('share-output');
+        this.shareList = document.getElementById('share-list');
+        this.shareLinksById = new Map();
+        this.latestShareByNode = new Map();
         this.auditContent = document.getElementById('audit-content');
         this.loadMoreAuditBtn = document.getElementById('load-more-audit-btn');
         this.panelStatus = this.cachePanelStatus();
@@ -217,11 +225,9 @@ export class MindVaultAdmin {
         this.initializeTemplateControls();
         this.captureFormStateDefaults();
         this.restoreFormState();
+        this.restoreStartupTab({ skipLoad: true });
         this.loadNodes();
-        this.loadStats();
-        this.loadSavedSearches();
-        this.loadPermissionTemplates();
-        this.loadAccessKeys();
+        this.loadActiveTabData();
         this.resetPermissionTemplateForm();
     }
 
@@ -547,6 +553,18 @@ export class MindVaultAdmin {
         document.getElementById('close-modal-btn').addEventListener('click', () => this.hideModal());
         document.getElementById('cancel-node-btn').addEventListener('click', () => this.hideModal());
         document.getElementById('node-form').addEventListener('submit', (event) => this.saveNode(event));
+        if (this.createShareBtn) {
+            this.createShareBtn.addEventListener('click', () => this.createPublicShare());
+        }
+        if (this.refreshSharesBtn) {
+            this.refreshSharesBtn.addEventListener('click', () => {
+                if (this.currentEditingNode?.id) {
+                    this.loadNodeShares(this.currentEditingNode.id);
+                } else {
+                    this.setShareListPlaceholder('Create or select a node to manage shares.');
+                }
+            });
+        }
         document.getElementById('close-template-version-modal-btn').addEventListener('click', () => {
             this.hideTemplateVersionModal();
         });
@@ -794,18 +812,22 @@ export class MindVaultAdmin {
         this.fileAttachments.addEventListener('change', (event) => {
             this.handleFileSelection(event.target.files);
         });
+
+        document.addEventListener('keydown', (event) => this.handleGlobalKeydown(event));
     }
 
     setEditorMode(mode) {
-        this.editorMode = mode;
+        const normalized = ['wysiwyg', 'markdown', 'split'].includes(mode) ? mode : 'wysiwyg';
+        this.editorMode = normalized;
+        this.persistSetting('editorMode', this.editorMode);
         document.querySelectorAll('.editor-mode-btn').forEach((button) => {
-            button.classList.toggle('active', button.dataset.editorMode === mode);
+            button.classList.toggle('active', button.dataset.editorMode === this.editorMode);
         });
 
         this.editorSurface.classList.remove('mode-wysiwyg', 'mode-markdown', 'mode-split');
-        this.editorSurface.classList.add(`mode-${mode}`);
+        this.editorSurface.classList.add(`mode-${this.editorMode}`);
 
-        if (mode === 'markdown') {
+        if (this.editorMode === 'markdown') {
             this.syncMarkdownFromRichEditor();
             this.hideWysiwygWikiLinkSuggestions();
             if (this.tiptapEditor) {
@@ -876,6 +898,22 @@ export class MindVaultAdmin {
         }
 
         this.syncMarkdownFromRichEditor();
+    }
+
+    handleGlobalKeydown(event) {
+        if (!event) {
+            return;
+        }
+        const key = String(event.key || '').toLowerCase();
+        const isResetShortcut = (event.ctrlKey || event.metaKey)
+            && event.altKey
+            && !event.shiftKey
+            && key === 'r';
+        if (!isResetShortcut) {
+            return;
+        }
+        event.preventDefault();
+        this.resetActiveTabState();
     }
 
     debounceEditorSync(source) {
@@ -2289,35 +2327,78 @@ export class MindVaultAdmin {
     }
 
     switchTab(tabId) {
+        const resolvedTabId = this.resolveTabId(tabId);
         document.querySelectorAll('.tab').forEach((tab) => tab.classList.remove('active'));
-        document.getElementById(tabId).classList.add('active');
+        document.getElementById(resolvedTabId).classList.add('active');
 
         document.querySelectorAll('.panel').forEach((panel) => panel.classList.remove('active'));
-        const panelId = tabId.replace('-tab', '-panel');
+        const panelId = resolvedTabId.replace('-tab', '-panel');
         document.getElementById(panelId).classList.add('active');
 
-        if (tabId === 'stats-tab') {
-            this.loadStats();
+        this.activeTabPreference = resolvedTabId;
+        this.persistSetting('activeTab', resolvedTabId);
+        this.loadActiveTabData();
+    }
+
+    resolveTabId(tabId) {
+        if (tabId && document.getElementById(tabId)) {
+            return tabId;
+        }
+        return 'nodes-tab';
+    }
+
+    restoreStartupTab(options = {}) {
+        const targetTab = this.resolveTabId(this.activeTabPreference || 'nodes-tab');
+        this.switchTabWithOptions(targetTab, options);
+    }
+
+    switchTabWithOptions(tabId, options = {}) {
+        const resolvedTabId = this.resolveTabId(tabId);
+        document.querySelectorAll('.tab').forEach((tab) => tab.classList.remove('active'));
+        document.getElementById(resolvedTabId).classList.add('active');
+
+        document.querySelectorAll('.panel').forEach((panel) => panel.classList.remove('active'));
+        const panelId = resolvedTabId.replace('-tab', '-panel');
+        document.getElementById(panelId).classList.add('active');
+
+        if (!options.suppressPersist) {
+            this.activeTabPreference = resolvedTabId;
+            this.persistSetting('activeTab', resolvedTabId);
         }
 
+        if (!options.skipLoad) {
+            this.loadActiveTabData();
+        }
+    }
+
+    loadActiveTabData() {
+        const tabId = this.activeTabId();
         if (tabId === 'daily-tab') {
             this.loadDailyNotes();
             this.loadDueTasks();
             this.loadFocusTasks();
+            return;
         }
-
         if (tabId === 'calendar-tab') {
             this.loadCalendarItems();
+            return;
         }
-
         if (tabId === 'templates-tab') {
             this.loadTemplatePacks();
             this.loadTemplates();
+            return;
         }
-
         if (tabId === 'access-tab') {
             this.loadPermissionTemplates();
             this.loadAccessKeys();
+            return;
+        }
+        if (tabId === 'stats-tab') {
+            this.loadStats();
+            return;
+        }
+        if (tabId === 'search-tab') {
+            this.loadSavedSearches();
         }
     }
 
@@ -2537,6 +2618,77 @@ export class MindVaultAdmin {
         this.loadPermissionTemplates();
         this.loadAccessKeys();
         this.showNotification('Access tab reset.', 'success');
+    }
+
+    resetActiveTabState() {
+        const activeTab = this.activeTabId();
+        switch (activeTab) {
+            case 'nodes-tab':
+                if (!this.shouldConfirmReset('Reset Nodes tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('nodes');
+                this.loadNodes();
+                break;
+            case 'daily-tab':
+                if (!this.shouldConfirmReset('Reset Daily Notes tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('daily');
+                this.loadDailyNotes();
+                this.loadDueTasks();
+                this.loadFocusTasks();
+                break;
+            case 'calendar-tab':
+                if (!this.shouldConfirmReset('Reset Calendar tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('calendar');
+                this.loadCalendarItems();
+                break;
+            case 'templates-tab':
+                if (!this.shouldConfirmReset('Reset Templates tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('templates');
+                this.loadTemplatePacks();
+                this.loadTemplates();
+                break;
+            case 'access-tab':
+                if (!this.shouldConfirmReset('Reset Access tab inputs?')) {
+                    return;
+                }
+                this.resetAccessTabState();
+                break;
+            case 'search-tab':
+                if (!this.shouldConfirmReset('Reset Search tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('search');
+                this.activeSavedSearchId = null;
+                this.renderSavedSearches();
+                this.renderSearchResults([]);
+                break;
+            case 'graph-tab':
+                if (!this.shouldConfirmReset('Reset Graph tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('graph');
+                const graphContainer = document.getElementById('graph-container');
+                if (graphContainer) {
+                    graphContainer.innerHTML = '<p>Enter a node ID to load a graph.</p>';
+                }
+                break;
+            case 'stats-tab':
+                if (!this.shouldConfirmReset('Reset Stats tab inputs?')) {
+                    return;
+                }
+                this.resetFormStateGroup('stats');
+                this.loadStats();
+                break;
+            default:
+                break;
+        }
     }
 
     cachePanelStatus() {
@@ -5357,6 +5509,7 @@ export class MindVaultAdmin {
         }
         this.setNodeVersionHistoryPlaceholder('Version history appears after the first edit save.');
         this.setNodeRelationshipOverviewPlaceholder('Relationship context appears when editing an existing node.');
+        this.resetShareState();
         document.getElementById('node-modal').classList.add('active');
     }
 
@@ -5371,6 +5524,9 @@ export class MindVaultAdmin {
         document.getElementById('node-importance').value = node.importance ?? 0.5;
         this.currentEditingNode = node;
         this.applySchedulingInputsFromMetadata(node);
+        if (this.shareExpiresInput) {
+            this.shareExpiresInput.value = '';
+        }
 
         document.getElementById('node-form').dataset.nodeId = node.id;
         this.aiSuggestions.classList.remove('active');
@@ -5386,6 +5542,7 @@ export class MindVaultAdmin {
             this.loadNodeVersionHistory(node.id);
         }
         this.loadNodeRelationshipOverview(node.id);
+        this.loadNodeShares(node.id);
         document.getElementById('node-modal').classList.add('active');
     }
 
@@ -5403,6 +5560,7 @@ export class MindVaultAdmin {
         }
         this.setNodeVersionHistoryPlaceholder('Version history appears after the first edit save.');
         this.setNodeRelationshipOverviewPlaceholder('Relationship context appears when editing an existing node.');
+        this.resetShareState();
         this.clearAutoComplete();
         this.clearWikiLinkSuggestions();
     }
@@ -5419,6 +5577,220 @@ export class MindVaultAdmin {
             return;
         }
         this.nodeRelationshipOverview.innerHTML = `<p class="template-empty">${this.escapeHtml(message)}</p>`;
+    }
+
+    resetShareState() {
+        if (this.shareExpiresInput) {
+            this.shareExpiresInput.value = '';
+        }
+        this.setShareOutputPlaceholder('Create a share link to grant read-only access to this node.');
+        this.setShareListPlaceholder('No shares loaded yet.');
+    }
+
+    setShareOutputPlaceholder(message) {
+        if (!this.shareOutput) {
+            return;
+        }
+        this.shareOutput.innerHTML = `<p class="template-empty">${this.escapeHtml(message)}</p>`;
+    }
+
+    setShareListPlaceholder(message) {
+        if (!this.shareList) {
+            return;
+        }
+        this.shareList.innerHTML = `<p class="template-empty">${this.escapeHtml(message)}</p>`;
+    }
+
+    renderShareOutput(nodeId) {
+        if (!this.shareOutput) {
+            return;
+        }
+        const share = this.latestShareByNode.get(nodeId);
+        if (!share) {
+            this.setShareOutputPlaceholder('Create a share link to grant read-only access to this node.');
+            return;
+        }
+
+        this.shareOutput.innerHTML = `
+            <div class="share-card">
+                <div class="share-link">${this.escapeHtml(share.url)}</div>
+                <div class="share-meta">
+                    <span>Created: ${this.formatDateTime(share.created_at)}</span>
+                    <span>Expires: ${share.expires_at ? this.formatDateTime(share.expires_at) : 'never'}</span>
+                </div>
+                <div class="share-buttons">
+                    <button type="button" class="btn" data-share-copy="${share.id}">Copy Link</button>
+                </div>
+            </div>
+        `;
+
+        const copyBtn = this.shareOutput.querySelector('[data-share-copy]');
+        if (copyBtn) {
+            copyBtn.addEventListener('click', () => this.copyShareLink(share.url));
+        }
+    }
+
+    renderShareList(shares, nodeId) {
+        if (!this.shareList) {
+            return;
+        }
+        if (!Array.isArray(shares) || shares.length === 0) {
+            this.setShareListPlaceholder('No public shares created yet.');
+            return;
+        }
+
+        const now = Date.now();
+        this.shareList.innerHTML = shares
+            .map((share) => {
+                const expiresAt = share.expires_at ? Date.parse(share.expires_at) : null;
+                const isExpired = expiresAt ? expiresAt <= now : false;
+                const isRevoked = Boolean(share.revoked_at);
+                const status = isRevoked ? 'revoked' : isExpired ? 'expired' : 'active';
+                const cached = this.shareLinksById.get(share.id);
+                const linkHtml = cached
+                    ? `<div class="share-link">${this.escapeHtml(cached.url)}</div>`
+                    : '<div class="form-help">Link not stored. Create a new share to get a link.</div>';
+                const actions = isRevoked
+                    ? ''
+                    : `<button type="button" class="btn danger" data-share-revoke="${share.id}">Revoke</button>`;
+                const copyBtn = cached
+                    ? `<button type="button" class="btn" data-share-copy="${share.id}">Copy Link</button>`
+                    : '';
+                return `
+                    <div class="share-card">
+                        ${linkHtml}
+                        <div class="share-meta">
+                            <span>Status: ${status}</span>
+                            <span>Created: ${this.formatDateTime(share.created_at)}</span>
+                            <span>Expires: ${share.expires_at ? this.formatDateTime(share.expires_at) : 'never'}</span>
+                            ${share.revoked_at ? `<span>Revoked: ${this.formatDateTime(share.revoked_at)}</span>` : ''}
+                        </div>
+                        <div class="share-buttons">
+                            ${copyBtn}
+                            ${actions}
+                        </div>
+                    </div>
+                `;
+            })
+            .join('');
+
+        this.shareList.querySelectorAll('[data-share-copy]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const shareId = button.dataset.shareCopy;
+                const cached = this.shareLinksById.get(shareId);
+                if (cached) {
+                    this.copyShareLink(cached.url);
+                }
+            });
+        });
+
+        this.shareList.querySelectorAll('[data-share-revoke]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const shareId = button.dataset.shareRevoke;
+                if (shareId) {
+                    this.revokePublicShare(shareId, nodeId);
+                }
+            });
+        });
+    }
+
+    async loadNodeShares(nodeId) {
+        if (!nodeId) {
+            this.resetShareState();
+            return;
+        }
+        this.setShareListPlaceholder('Loading shares...');
+        try {
+            const params = new URLSearchParams({
+                node_id: nodeId,
+                include_revoked: 'true'
+            });
+            const shares = await this.apiCall(`/api/v1/shares?${params.toString()}`, { silent: true });
+            this.renderShareList(shares, nodeId);
+            this.renderShareOutput(nodeId);
+        } catch (error) {
+            this.setShareListPlaceholder('Failed to load shares.');
+        }
+    }
+
+    async createPublicShare() {
+        if (!this.currentEditingNode?.id) {
+            this.showNotification('Save the node before creating a share link.', 'warning');
+            return;
+        }
+        let expiresAt;
+        const rawExpires = this.shareExpiresInput?.value?.trim();
+        if (rawExpires) {
+            const parsed = new Date(rawExpires);
+            if (Number.isNaN(parsed.getTime())) {
+                this.showNotification('Invalid expiration date/time.', 'warning');
+                return;
+            }
+            expiresAt = parsed.toISOString();
+        }
+
+        try {
+            const payload = {
+                node_id: this.currentEditingNode.id,
+                expires_at: expiresAt
+            };
+            const response = await this.apiCall('/api/v1/shares', {
+                method: 'POST',
+                body: JSON.stringify(payload)
+            });
+            const shareUrl = response.url?.startsWith('http')
+                ? response.url
+                : `${this.apiBase.replace(/\/$/, '')}${response.url}`;
+            const share = {
+                id: response.id,
+                url: shareUrl,
+                token: response.token,
+                created_at: response.created_at,
+                expires_at: response.expires_at
+            };
+            this.shareLinksById.set(response.id, share);
+            this.latestShareByNode.set(this.currentEditingNode.id, share);
+            this.renderShareOutput(this.currentEditingNode.id);
+            await this.loadNodeShares(this.currentEditingNode.id);
+            this.showNotification('Share link created.', 'success');
+        } catch (error) {
+            this.showNotification('Failed to create share link.', 'error');
+        }
+    }
+
+    async revokePublicShare(shareId, nodeId) {
+        if (!shareId) {
+            return;
+        }
+        const confirmed = window.confirm('Revoke this share link?');
+        if (!confirmed) {
+            return;
+        }
+
+        try {
+            await this.apiCall(`/api/v1/shares/${encodeURIComponent(shareId)}`, {
+                method: 'DELETE'
+            });
+            this.shareLinksById.delete(shareId);
+            if (nodeId) {
+                await this.loadNodeShares(nodeId);
+            }
+            this.showNotification('Share revoked.', 'success');
+        } catch (error) {
+            this.showNotification('Failed to revoke share.', 'error');
+        }
+    }
+
+    async copyShareLink(link) {
+        if (!link) {
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(link);
+            this.showNotification('Share link copied.', 'success');
+        } catch (error) {
+            this.showNotification('Failed to copy share link.', 'error');
+        }
     }
 
     async loadNodeRelationshipOverview(nodeId) {

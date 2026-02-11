@@ -382,6 +382,56 @@ pub trait PolicyStore: Send + Sync {
 
 fn _assert_policy_store_object_safe(_: &dyn PolicyStore) {}
 
+/// Storage for public share links.
+#[async_trait]
+pub trait ShareStore: Send + Sync {
+    async fn insert_public_share(&self, share: &PublicShare) -> MvResult<()>;
+    async fn get_public_share(&self, id: Uuid) -> MvResult<Option<PublicShare>>;
+    async fn get_public_share_by_hash(&self, token_hash: &str) -> MvResult<Option<PublicShare>>;
+    async fn list_public_shares(
+        &self,
+        node_id: Option<Uuid>,
+        include_revoked: bool,
+    ) -> MvResult<Vec<PublicShare>>;
+    async fn revoke_public_share(&self, id: Uuid, revoked_at: DateTime<Utc>) -> MvResult<bool>;
+}
+
+fn _assert_share_store_object_safe(_: &dyn ShareStore) {}
+
+/// Storage for node comments and annotations.
+#[async_trait]
+pub trait CommentStore: Send + Sync {
+    async fn insert_comment(&self, comment: &NodeComment) -> MvResult<()>;
+    async fn get_comment(&self, id: Uuid) -> MvResult<Option<NodeComment>>;
+    async fn list_comments(
+        &self,
+        node_id: Uuid,
+        include_resolved: bool,
+    ) -> MvResult<Vec<NodeComment>>;
+    async fn resolve_comment(&self, id: Uuid, resolved_at: DateTime<Utc>) -> MvResult<bool>;
+    async fn delete_comment(&self, id: Uuid) -> MvResult<bool>;
+}
+
+fn _assert_comment_store_object_safe(_: &dyn CommentStore) {}
+
+/// Registry for MCP connectors (marketplace catalog).
+#[async_trait]
+pub trait McpConnectorStore: Send + Sync {
+    async fn insert_mcp_connector(&self, connector: &McpConnector) -> MvResult<()>;
+    async fn get_mcp_connector(&self, id: Uuid) -> MvResult<Option<McpConnector>>;
+    async fn list_mcp_connectors(
+        &self,
+        publisher: Option<&str>,
+        verified: Option<bool>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<McpConnector>>;
+    async fn update_mcp_connector(&self, connector: &McpConnector) -> MvResult<bool>;
+    async fn delete_mcp_connector(&self, id: Uuid) -> MvResult<bool>;
+}
+
+fn _assert_mcp_connector_store_object_safe(_: &dyn McpConnectorStore) {}
+
 /// Storage for proxy audit log entries.
 #[async_trait]
 pub trait ProxyAuditStore: Send + Sync {

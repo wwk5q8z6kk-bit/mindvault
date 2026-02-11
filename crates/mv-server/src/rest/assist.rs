@@ -344,6 +344,121 @@ pub fn generate_refine_transform(
     markdown.trim_end().to_string()
 }
 
+fn extract_decisions(input: &str, search_results: &[SearchResult], limit: usize) -> Vec<String> {
+    let mut decisions = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let keywords = [
+        "decided",
+        "decision",
+        "agreed",
+        "approved",
+        "resolved",
+        "we will",
+        "we'll",
+        "commit",
+    ];
+
+    let mut candidates = split_candidate_sentences(input);
+    for result in search_results {
+        candidates.extend(split_candidate_sentences(&result.node.content));
+    }
+
+    for sentence in candidates {
+        let normalized = sentence.to_ascii_lowercase();
+        if !keywords.iter().any(|keyword| normalized.contains(keyword)) {
+            continue;
+        }
+        if !seen.insert(normalized.clone()) {
+            continue;
+        }
+        let trimmed = sentence.trim();
+        if trimmed.len() < 8 {
+            continue;
+        }
+        decisions.push(trimmed.to_string());
+        if decisions.len() >= limit {
+            break;
+        }
+    }
+
+    decisions
+}
+
+fn extract_questions(input: &str, search_results: &[SearchResult], limit: usize) -> Vec<String> {
+    let mut questions = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    let mut candidates = split_candidate_sentences(input);
+    for result in search_results {
+        candidates.extend(split_candidate_sentences(&result.node.content));
+    }
+
+    for sentence in candidates {
+        let trimmed = sentence.trim();
+        if trimmed.len() < 6 {
+            continue;
+        }
+        if !trimmed.contains('?') && !trimmed.to_ascii_lowercase().starts_with("q:") {
+            continue;
+        }
+        let normalized = trimmed.to_ascii_lowercase();
+        if !seen.insert(normalized) {
+            continue;
+        }
+        questions.push(trimmed.trim_end_matches('?').to_string() + "?");
+        if questions.len() >= limit {
+            break;
+        }
+    }
+
+    questions
+}
+
+pub fn generate_meeting_notes_transform(
+    input: &str,
+    search_results: &[SearchResult],
+    limit: usize,
+) -> String {
+    let summary = generate_summary_transform(input, search_results, limit.clamp(1, 4));
+    let actions = generate_action_items_transform(input, search_results, limit.clamp(2, 6));
+    let decisions = extract_decisions(input, search_results, limit.clamp(1, 6));
+    let questions = extract_questions(input, search_results, limit.clamp(1, 6));
+
+    let mut markdown = String::new();
+    markdown.push_str("### Meeting Summary\n");
+    markdown.push_str(summary.trim());
+    markdown.push_str("\n\n### Decisions\n");
+    if decisions.is_empty() {
+        markdown.push_str("- No explicit decisions captured.\n");
+    } else {
+        for decision in decisions {
+            markdown.push_str("- ");
+            markdown.push_str(decision.trim());
+            markdown.push('\n');
+        }
+    }
+
+    markdown.push_str("\n### Action Items\n");
+    for action in actions {
+        markdown.push_str("- [ ] ");
+        markdown.push_str(action.trim());
+        markdown.push('\n');
+    }
+
+    markdown.push_str("\n### Open Questions\n");
+    if questions.is_empty() {
+        markdown.push_str("- No open questions captured.\n");
+    } else {
+        for question in questions {
+            markdown.push_str("- ");
+            markdown.push_str(question.trim());
+            markdown.push('\n');
+        }
+    }
+
+    markdown.trim_end().to_string()
+}
+
 pub fn generate_completion_suggestions(
     input: &str,
     search_results: &[SearchResult],

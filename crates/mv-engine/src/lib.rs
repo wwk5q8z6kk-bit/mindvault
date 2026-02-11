@@ -3,6 +3,7 @@ pub mod ai_autotag;
 pub mod autonomy;
 pub mod backlinks;
 pub mod backup;
+pub mod circuit_breaker;
 pub mod concept;
 pub mod config;
 pub mod conflict;

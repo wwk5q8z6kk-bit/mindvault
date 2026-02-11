@@ -34,7 +34,7 @@ mod assist;
 use assist::{
     collect_completion_sources, generate_action_items_transform, generate_autocomplete_completions,
     generate_completion_suggestions, generate_link_suggestions, generate_refine_transform,
-    generate_summary_transform,
+    generate_summary_transform, generate_meeting_notes_transform,
 };
 #[path = "rest/attachments.rs"]
 pub(crate) mod attachments;
@@ -69,10 +69,14 @@ use node_versions::{
 mod autonomy;
 #[path = "rest/exchange.rs"]
 mod exchange;
+#[path = "rest/comments.rs"]
+mod comments;
 #[path = "rest/feedback.rs"]
 mod feedback;
 #[path = "rest/keychain.rs"]
 mod keychain;
+#[path = "rest/mcp_marketplace.rs"]
+mod mcp_marketplace;
 #[path = "rest/relay.rs"]
 mod relay;
 #[path = "rest/safeguards.rs"]
@@ -110,13 +114,19 @@ mod plans;
 mod contact_identity;
 #[path = "rest/models.rs"]
 mod models;
+#[path = "rest/shares.rs"]
+mod shares;
+#[path = "rest/google_calendar.rs"]
+mod google_calendar;
+#[path = "rest/ai_proxy.rs"]
+mod ai_proxy;
 
 use crate::audit::{audit_middleware, list_audit_entries, AuditConfig, AuditEntry, AuditLogger};
 use crate::auth::{
     auth_middleware_with_state, authorize_namespace, authorize_read, authorize_write,
     namespace_for_create, scoped_namespace, AuthContext,
 };
-use crate::limits::{enforce_namespace_quota, enforce_rate_limit, NamespaceQuotaError};
+use crate::limits::{enforce_namespace_quota, enforce_rate_limit, NamespaceQuotaError, RateLimitStatus};
 use crate::metrics::{init_metrics, metrics_handler, metrics_middleware};
 use crate::openapi::swagger_ui;
 use crate::state::AppState;
@@ -156,6 +166,26 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/calendar/items", get(list_calendar_items))
         .route("/api/v1/calendar/ical", get(export_calendar_ical))
         .route("/api/v1/calendar/ical/import", post(import_calendar_ical))
+        .route(
+            "/api/v1/calendar/google/status",
+            get(google_calendar::google_calendar_status),
+        )
+        .route(
+            "/api/v1/calendar/google/sync",
+            post(google_calendar::google_calendar_sync),
+        )
+        .route(
+            "/api/v1/shares",
+            get(shares::list_public_shares).post(shares::create_public_share),
+        )
+        .route(
+            "/api/v1/shares/:id",
+            delete(shares::revoke_public_share),
+        )
+        .route(
+            "/public/shares/:token",
+            get(shares::get_public_share),
+        )
         .route("/api/v1/tasks/due", get(list_due_tasks))
         .route("/api/v1/briefing", get(daily_briefing))
         .route("/api/v1/agent/context", get(get_agent_context))
@@ -370,6 +400,18 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             "/api/v1/nodes/:id",
             get(get_node).put(update_node).delete(delete_node),
         )
+        .route(
+            "/api/v1/nodes/:id/comments",
+            post(comments::create_node_comment).get(comments::list_node_comments),
+        )
+        .route(
+            "/api/v1/nodes/:id/comments/:comment_id/resolve",
+            put(comments::resolve_node_comment),
+        )
+        .route(
+            "/api/v1/nodes/:id/comments/:comment_id",
+            delete(comments::delete_node_comment),
+        )
         .route("/api/v1/recall", post(recall))
         .route("/api/v1/search", get(search))
         .route("/api/v1/graph/relationships", post(add_relationship))
@@ -417,6 +459,14 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route(
             "/api/v1/proxy/approvals/:id",
             get(proxy::get_approval).post(proxy::decide_approval),
+        )
+        // --- AI Sidecar Proxy ---
+        .route("/api/v1/ai/health", get(ai_proxy::ai_health))
+        .route("/api/v1/ai/models", get(ai_proxy::ai_models))
+        .route("/api/v1/ai/embeddings", post(ai_proxy::ai_embeddings))
+        .route(
+            "/api/v1/ai/chat/completions",
+            post(ai_proxy::ai_chat_completions),
         )
         // --- Sovereign Keychain ---
         .route("/api/v1/keychain/init", post(keychain::init_vault))
@@ -601,6 +651,18 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/plugins/runtime/:name", get(plugins::runtime_get_plugin).delete(plugins::runtime_unload_plugin))
         .route("/api/v1/plugins/runtime/:name/reload", post(plugins::runtime_reload_plugin))
         .route("/api/v1/plugins/runtime/:name/hooks", get(plugins::runtime_plugin_hooks))
+        // --- MCP Marketplace ---
+        .route(
+            "/api/v1/mcp/connectors",
+            get(mcp_marketplace::list_mcp_connectors)
+                .post(mcp_marketplace::create_mcp_connector),
+        )
+        .route(
+            "/api/v1/mcp/connectors/:id",
+            get(mcp_marketplace::get_mcp_connector)
+                .put(mcp_marketplace::update_mcp_connector)
+                .delete(mcp_marketplace::delete_mcp_connector),
+        )
         // --- Federation ---
         .route(
             "/api/v1/federation/peers",
@@ -1975,23 +2037,43 @@ async fn rate_limit_middleware(request: Request, next: Next) -> Response {
         return StatusCode::UNAUTHORIZED.into_response();
     };
 
-    if let Err(rate) = enforce_rate_limit(&auth) {
-        let body = serde_json::json!({
-            "error": "rate limit exceeded",
-            "retry_after_seconds": rate.retry_after_secs,
-            "limit": rate.max_requests,
-            "window_seconds": rate.window_secs,
-        });
-        let mut response = (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
-        if let Ok(value) = HeaderValue::from_str(&rate.retry_after_secs.to_string()) {
+    match enforce_rate_limit(&auth) {
+        Ok(status) => {
+            let mut response = next.run(request).await;
+            append_rate_limit_headers(response.headers_mut(), &status);
             response
-                .headers_mut()
-                .insert(axum::http::header::RETRY_AFTER, value);
         }
-        return response;
+        Err(rate) => {
+            let body = serde_json::json!({
+                "error": "rate limit exceeded",
+                "retry_after_seconds": rate.retry_after_secs,
+                "limit": rate.max_requests,
+                "window_seconds": rate.window_secs,
+            });
+            let mut response = (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
+            if let Ok(value) = HeaderValue::from_str(&rate.retry_after_secs.to_string()) {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::RETRY_AFTER, value);
+            }
+            response
+        }
     }
+}
 
-    next.run(request).await
+fn append_rate_limit_headers(headers: &mut axum::http::HeaderMap, status: &RateLimitStatus) {
+    if status.limit == 0 {
+        return; // Rate limiting disabled
+    }
+    if let Ok(v) = HeaderValue::from_str(&status.limit.to_string()) {
+        headers.insert("X-RateLimit-Limit", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&status.remaining.to_string()) {
+        headers.insert("X-RateLimit-Remaining", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&status.reset_secs.to_string()) {
+        headers.insert("X-RateLimit-Reset", v);
+    }
 }
 
 fn parse_kind_list(
@@ -5133,6 +5215,7 @@ enum AssistTransformMode {
     Summarize,
     ActionItems,
     Refine,
+    MeetingNotes,
 }
 
 impl AssistTransformMode {
@@ -5142,9 +5225,10 @@ impl AssistTransformMode {
             "summarize" | "summary" => Ok(Self::Summarize),
             "action_items" | "action-items" | "actions" | "tasks" => Ok(Self::ActionItems),
             "refine" | "rewrite" | "clarify" => Ok(Self::Refine),
+            "meeting" | "meeting_notes" | "meeting-notes" | "notes" => Ok(Self::MeetingNotes),
             _ => Err((
                 StatusCode::BAD_REQUEST,
-                "mode must be one of summarize|action_items|refine".into(),
+                "mode must be one of summarize|action_items|refine|meeting".into(),
             )),
         }
     }
@@ -5154,6 +5238,7 @@ impl AssistTransformMode {
             Self::Summarize => "summarize",
             Self::ActionItems => "action_items",
             Self::Refine => "refine",
+            Self::MeetingNotes => "meeting",
         }
     }
 }
@@ -5450,6 +5535,15 @@ async fn assist_transform(
                 )
                 .await
             }
+            AssistTransformMode::MeetingNotes => {
+                llm::llm_meeting_notes(
+                    llm_provider.as_ref(),
+                    &req.text,
+                    &context_snippets,
+                    transform_limit.min(6),
+                )
+                .await
+            }
         };
 
         match llm_result {
@@ -5495,6 +5589,9 @@ fn heuristic_transform(
                 .join("\n")
         }
         AssistTransformMode::Refine => generate_refine_transform(text, results, limit.min(6)),
+        AssistTransformMode::MeetingNotes => {
+            generate_meeting_notes_transform(text, results, limit.min(6))
+        }
     }
 }
 
@@ -10176,15 +10273,14 @@ async fn get_node(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<Option<KnowledgeNode>>, (StatusCode, String)> {
+) -> Result<Json<KnowledgeNode>, (StatusCode, String)> {
     authorize_read(&auth)?;
     let uuid = parse_uuid_param(&id, "node id")?;
 
-    let node = state.engine.get_node(uuid).await.map_err(map_mv_error)?;
+    let node = state.engine.get_node(uuid).await.map_err(map_mv_error)?
+        .ok_or((StatusCode::NOT_FOUND, "node not found".into()))?;
 
-    if let Some(ref node) = node {
-        authorize_namespace(&auth, &node.namespace)?;
-    }
+    authorize_namespace(&auth, &node.namespace)?;
 
     Ok(Json(node))
 }
@@ -11396,6 +11492,10 @@ mod tests {
         assert!(matches!(
             AssistTransformMode::parse(Some("clarify")),
             Ok(AssistTransformMode::Refine)
+        ));
+        assert!(matches!(
+            AssistTransformMode::parse(Some("meeting")),
+            Ok(AssistTransformMode::MeetingNotes)
         ));
         assert!(AssistTransformMode::parse(Some("unsupported")).is_err());
     }

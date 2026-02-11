@@ -1,0 +1,11 @@
+{
+  "id": "hello-world",
+  "name": "Hello World",
+  "version": "0.1.0",
+  "description": "A minimal example plugin that logs a greeting on post_ingest",
+  "author": "MindVault Contributors",
+  "permissions": ["read_nodes"],
+  "hooks": ["post_ingest"],
+  "license": "MIT",
+  "keywords": ["example", "hello-world"]
+}

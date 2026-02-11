@@ -38,7 +38,12 @@
 		listBlockedSenders,
 		addBlockedSender,
 		removeBlockedSender,
-		type BlockedSender
+		listAutoApproveRules,
+		addAutoApproveRule,
+		updateAutoApproveRule,
+		removeAutoApproveRule,
+		type BlockedSender,
+		type AutoApproveRule
 	} from '$lib/api/safeguards';
 	import { listAdapterStatuses, type AdapterStatus } from '$lib/api/adapters';
 	import { fetchAiModels } from '$lib/api/agent';
@@ -126,6 +131,46 @@
 	let newBlockedReason = '';
 	let newBlockedExpires = '';
 
+	// Auto-approve rules
+	let autoApproveRules: AutoApproveRule[] = [];
+	let autoApproveLoading = false;
+	let autoApproveError = '';
+	let addingAutoApprove = false;
+	let removingAutoApproveId = '';
+	let savingAutoApproveId = '';
+	let editingAutoApproveId = '';
+	let newAutoApproveName = '';
+	let newAutoApproveSender = '';
+	let newAutoApproveActions = '';
+	let newAutoApproveConfidence = '0.9';
+	let editAutoApprove = {
+		name: '',
+		sender_pattern: '',
+		action_types: '',
+		min_confidence: '0.9'
+	};
+
+	function parseActionTypes(input: string): string[] {
+		return input
+			.split(',')
+			.map((item) => item.trim())
+			.filter((item) => item.length > 0);
+	}
+
+	function clampConfidence(value: string, fallback: number): number {
+		const parsed = Number.parseFloat(value);
+		if (Number.isNaN(parsed)) return fallback;
+		return Math.min(1, Math.max(0, parsed));
+	}
+
+	function formatActionTypes(rule: AutoApproveRule): string {
+		return rule.action_types.length > 0 ? rule.action_types.join(', ') : 'any';
+	}
+
+	function formatSenderPattern(rule: AutoApproveRule): string {
+		return rule.sender_pattern?.trim() || 'any';
+	}
+
 	async function loadBlockedSenders() {
 		blockedLoading = true;
 		blockedError = '';
@@ -135,6 +180,107 @@
 			blockedError = e?.message ?? 'Failed to load blocked senders';
 		} finally {
 			blockedLoading = false;
+		}
+	}
+
+	async function loadAutoApproveRules() {
+		autoApproveLoading = true;
+		autoApproveError = '';
+		try {
+			autoApproveRules = await listAutoApproveRules();
+		} catch (e: any) {
+			autoApproveError = e?.message ?? 'Failed to load auto-approve rules';
+		} finally {
+			autoApproveLoading = false;
+		}
+	}
+
+	async function handleAddAutoApprove() {
+		if (!newAutoApproveName.trim()) return;
+		addingAutoApprove = true;
+		try {
+			const actions = parseActionTypes(newAutoApproveActions);
+			const payload = {
+				name: newAutoApproveName.trim(),
+				min_confidence: clampConfidence(newAutoApproveConfidence, 0.9),
+				sender_pattern: newAutoApproveSender.trim() || undefined,
+				action_types: actions.length > 0 ? actions : undefined
+			};
+			const created = await addAutoApproveRule(payload);
+			autoApproveRules = [created, ...autoApproveRules];
+			newAutoApproveName = '';
+			newAutoApproveSender = '';
+			newAutoApproveActions = '';
+			newAutoApproveConfidence = '0.9';
+			pushToast('Auto-approve rule added', 'success');
+		} catch (e: any) {
+			pushToast(e?.message ?? 'Failed to add auto-approve rule', 'danger');
+		} finally {
+			addingAutoApprove = false;
+		}
+	}
+
+	async function handleToggleAutoApprove(rule: AutoApproveRule) {
+		savingAutoApproveId = rule.id;
+		try {
+			const updated = await updateAutoApproveRule(rule.id, { enabled: !rule.enabled });
+			autoApproveRules = autoApproveRules.map((item) => (item.id === rule.id ? updated : item));
+		} catch (e: any) {
+			pushToast(e?.message ?? 'Failed to update rule', 'danger');
+		} finally {
+			savingAutoApproveId = '';
+		}
+	}
+
+	function startEditAutoApprove(rule: AutoApproveRule) {
+		editingAutoApproveId = rule.id;
+		editAutoApprove = {
+			name: rule.name,
+			sender_pattern: rule.sender_pattern ?? '',
+			action_types: rule.action_types.join(', '),
+			min_confidence: rule.min_confidence.toString()
+		};
+	}
+
+	function cancelEditAutoApprove() {
+		editingAutoApproveId = '';
+	}
+
+	async function handleSaveAutoApprove(rule: AutoApproveRule) {
+		if (!editAutoApprove.name.trim()) {
+			pushToast('Rule name is required', 'warning');
+			return;
+		}
+		savingAutoApproveId = rule.id;
+		try {
+			const updated = await updateAutoApproveRule(rule.id, {
+				name: editAutoApprove.name.trim(),
+				sender_pattern: editAutoApprove.sender_pattern.trim()
+					? editAutoApprove.sender_pattern.trim()
+					: null,
+				action_types: parseActionTypes(editAutoApprove.action_types),
+				min_confidence: clampConfidence(editAutoApprove.min_confidence, rule.min_confidence)
+			});
+			autoApproveRules = autoApproveRules.map((item) => (item.id === updated.id ? updated : item));
+			editingAutoApproveId = '';
+			pushToast('Rule updated', 'success');
+		} catch (e: any) {
+			pushToast(e?.message ?? 'Failed to update rule', 'danger');
+		} finally {
+			savingAutoApproveId = '';
+		}
+	}
+
+	async function handleRemoveAutoApprove(id: string) {
+		removingAutoApproveId = id;
+		try {
+			await removeAutoApproveRule(id);
+			autoApproveRules = autoApproveRules.filter((item) => item.id !== id);
+			pushToast('Rule removed', 'success');
+		} catch (e: any) {
+			pushToast(e?.message ?? 'Failed to remove rule', 'danger');
+		} finally {
+			removingAutoApproveId = '';
 		}
 	}
 
@@ -248,6 +394,7 @@
 
 	// Load blocked senders on mount
 	loadBlockedSenders();
+	loadAutoApproveRules();
 
 	function handleThemeChange(mode: ThemeMode) {
 		setTheme(mode);
@@ -1052,6 +1199,214 @@
 					disabled={addingBlocked || !newBlockedPattern.trim()}
 				>
 					{addingBlocked ? 'Blocking...' : 'Block Sender'}
+				</button>
+			</div>
+		</section>
+
+		<!-- Auto-Approve Rules -->
+		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+			<div class="flex items-center justify-between">
+				<div>
+					<h3 class="text-sm font-semibold text-white">Auto-Approve Rules</h3>
+					<p class="mt-1 text-[11px] text-slate-400">
+						Automatically approve matching proposals. Leave sender/actions empty to match any.
+					</p>
+				</div>
+				<button
+					class="rounded-lg border border-slate-700 px-2.5 py-1.5 text-[10px] text-slate-300 hover:bg-slate-800"
+					on:click={loadAutoApproveRules}
+					disabled={autoApproveLoading}
+				>
+					{autoApproveLoading ? 'Loading...' : 'Refresh'}
+				</button>
+			</div>
+
+			{#if autoApproveError}
+				<div
+					class="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300"
+				>
+					{autoApproveError}
+				</div>
+			{/if}
+
+			<div class="mt-3 space-y-2">
+				{#if autoApproveRules.length === 0}
+					<p class="text-xs text-slate-500">No auto-approve rules configured.</p>
+				{:else}
+					{#each autoApproveRules as rule (rule.id)}
+						<div class="rounded-lg border border-slate-800/60 px-3 py-2.5">
+							<div class="flex items-center justify-between gap-3">
+								<div class="min-w-0">
+									<div class="flex items-center gap-2">
+										<span class="truncate text-xs font-semibold text-white">{rule.name}</span>
+										<span
+											class="rounded px-1.5 py-0.5 text-[10px] {rule.enabled
+												? 'bg-emerald-500/15 text-emerald-300'
+												: 'bg-slate-700 text-slate-400'}"
+										>
+											{rule.enabled ? 'enabled' : 'disabled'}
+										</span>
+									</div>
+									<div class="mt-1 text-[10px] text-slate-500">
+										Sender: {formatSenderPattern(rule)} · Actions: {formatActionTypes(rule)} · Min
+										conf: {(rule.min_confidence * 100).toFixed(0)}%
+									</div>
+								</div>
+								<div class="flex items-center gap-2">
+									<button
+										class="rounded-md border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+										on:click={() => handleToggleAutoApprove(rule)}
+										disabled={savingAutoApproveId === rule.id}
+									>
+										{rule.enabled ? 'Disable' : 'Enable'}
+									</button>
+									<button
+										class="rounded-md border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800"
+										on:click={() => startEditAutoApprove(rule)}
+									>
+										Edit
+									</button>
+									<button
+										class="rounded-md border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+										on:click={() => handleRemoveAutoApprove(rule.id)}
+										disabled={removingAutoApproveId === rule.id}
+									>
+										{removingAutoApproveId === rule.id ? 'Removing...' : 'Remove'}
+									</button>
+								</div>
+							</div>
+
+							{#if editingAutoApproveId === rule.id}
+								<div class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+									<div>
+										<label class="text-[10px] uppercase tracking-wider text-slate-500" for="auto-name"
+											>Name</label
+										>
+										<input
+											id="auto-name"
+											class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+											bind:value={editAutoApprove.name}
+										/>
+									</div>
+									<div>
+										<label class="text-[10px] uppercase tracking-wider text-slate-500" for="auto-sender"
+											>Sender Pattern</label
+										>
+										<input
+											id="auto-sender"
+											class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+											placeholder="e.g. relay* or agent-*"
+											bind:value={editAutoApprove.sender_pattern}
+										/>
+									</div>
+									<div>
+										<label
+											class="text-[10px] uppercase tracking-wider text-slate-500"
+											for="auto-actions"
+											>Action Types</label
+										>
+										<input
+											id="auto-actions"
+											class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+											placeholder="relay.reply, create_node"
+											bind:value={editAutoApprove.action_types}
+										/>
+									</div>
+									<div>
+										<label
+											class="text-[10px] uppercase tracking-wider text-slate-500"
+											for="auto-confidence"
+											>Min Confidence</label
+										>
+										<input
+											id="auto-confidence"
+											type="number"
+											min="0"
+											max="1"
+											step="0.05"
+											class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+											bind:value={editAutoApprove.min_confidence}
+										/>
+									</div>
+								</div>
+								<div class="mt-3 flex gap-2">
+									<button
+										class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+										on:click={() => handleSaveAutoApprove(rule)}
+										disabled={savingAutoApproveId === rule.id}
+									>
+										{savingAutoApproveId === rule.id ? 'Saving...' : 'Save'}
+									</button>
+									<button
+										class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
+										on:click={cancelEditAutoApprove}
+									>
+										Cancel
+									</button>
+								</div>
+							{/if}
+						</div>
+					{/each}
+				{/if}
+			</div>
+
+			<div class="mt-4 border-t border-slate-800/60 pt-4">
+				<h4 class="text-[10px] uppercase tracking-wider text-slate-500">Add Rule</h4>
+				<div class="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
+					<div>
+						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="new-auto-name"
+							>Name</label
+						>
+						<input
+							id="new-auto-name"
+							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							placeholder="Relay suggestions"
+							bind:value={newAutoApproveName}
+						/>
+					</div>
+					<div>
+						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="new-auto-sender"
+							>Sender Pattern</label
+						>
+						<input
+							id="new-auto-sender"
+							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							placeholder="relay* or agent-*"
+							bind:value={newAutoApproveSender}
+						/>
+					</div>
+					<div>
+						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="new-auto-actions"
+							>Action Types</label
+						>
+						<input
+							id="new-auto-actions"
+							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							placeholder="relay.reply, create_node"
+							bind:value={newAutoApproveActions}
+						/>
+					</div>
+					<div>
+						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="new-auto-confidence"
+							>Min Confidence</label
+						>
+						<input
+							id="new-auto-confidence"
+							type="number"
+							min="0"
+							max="1"
+							step="0.05"
+							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							bind:value={newAutoApproveConfidence}
+						/>
+					</div>
+				</div>
+				<button
+					class="mt-3 rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+					on:click={handleAddAutoApprove}
+					disabled={addingAutoApprove || !newAutoApproveName.trim()}
+				>
+					{addingAutoApprove ? 'Adding...' : 'Add Rule'}
 				</button>
 			</div>
 		</section>

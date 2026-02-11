@@ -156,6 +156,9 @@ impl SqliteNodeStore {
             (22, include_str!("../../../migrations/022_adapter_poll_state.sql")),
             (23, include_str!("../../../migrations/023_conversations.sql")),
             (24, include_str!("../../../migrations/024_plans.sql")),
+            (25, include_str!("../../../migrations/025_public_shares.sql")),
+            (26, include_str!("../../../migrations/026_node_comments.sql")),
+            (27, include_str!("../../../migrations/027_mcp_connectors.sql")),
         ];
 
         // Migration 001 must always run first to create schema_version table.
@@ -318,6 +321,79 @@ fn parse_metadata_json(
         }),
         None => Ok(Default::default()),
     }
+}
+
+fn row_to_public_share(row: &rusqlite::Row<'_>) -> rusqlite::Result<PublicShare> {
+    let id_str: String = row.get(0)?;
+    let node_id_str: String = row.get(1)?;
+    let token_hash: String = row.get(2)?;
+    let created_at_str: String = row.get(3)?;
+    let expires_at_str: Option<String> = row.get(4)?;
+    let revoked_at_str: Option<String> = row.get(5)?;
+
+    Ok(PublicShare {
+        id: parse_uuid_str(0, &id_str)?,
+        node_id: parse_uuid_str(1, &node_id_str)?,
+        token_hash,
+        created_at: parse_dt_strict(3, &created_at_str)?,
+        expires_at: parse_optional_dt_strict(4, expires_at_str)?,
+        revoked_at: parse_optional_dt_strict(5, revoked_at_str)?,
+    })
+}
+
+fn row_to_node_comment(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeComment> {
+    let id_str: String = row.get(0)?;
+    let node_id_str: String = row.get(1)?;
+    let author: Option<String> = row.get(2)?;
+    let body: String = row.get(3)?;
+    let created_at_str: String = row.get(4)?;
+    let updated_at_str: String = row.get(5)?;
+    let resolved_at_str: Option<String> = row.get(6)?;
+
+    Ok(NodeComment {
+        id: parse_uuid_str(0, &id_str)?,
+        node_id: parse_uuid_str(1, &node_id_str)?,
+        author,
+        body,
+        created_at: parse_dt_strict(4, &created_at_str)?,
+        updated_at: parse_dt_strict(5, &updated_at_str)?,
+        resolved_at: parse_optional_dt_strict(6, resolved_at_str)?,
+    })
+}
+
+fn row_to_mcp_connector(row: &rusqlite::Row<'_>) -> rusqlite::Result<McpConnector> {
+    let id_str: String = row.get(0)?;
+    let name: String = row.get(1)?;
+    let description: Option<String> = row.get(2)?;
+    let publisher: Option<String> = row.get(3)?;
+    let version: String = row.get(4)?;
+    let homepage_url: Option<String> = row.get(5)?;
+    let repository_url: Option<String> = row.get(6)?;
+    let config_schema_json: String = row.get(7)?;
+    let capabilities_json: String = row.get(8)?;
+    let verified: i32 = row.get(9)?;
+    let created_at_str: String = row.get(10)?;
+    let updated_at_str: String = row.get(11)?;
+
+    let config_schema =
+        serde_json::from_str(&config_schema_json).unwrap_or_else(|_| serde_json::json!({}));
+    let capabilities: Vec<String> =
+        serde_json::from_str(&capabilities_json).unwrap_or_default();
+
+    Ok(McpConnector {
+        id: parse_uuid_str(0, &id_str)?,
+        name,
+        description,
+        publisher,
+        version,
+        homepage_url,
+        repository_url,
+        config_schema,
+        capabilities,
+        verified: verified != 0,
+        created_at: parse_dt_strict(10, &created_at_str)?,
+        updated_at: parse_dt_strict(11, &updated_at_str)?,
+    })
 }
 
 #[async_trait]
@@ -3326,6 +3402,332 @@ impl PolicyStore for SqliteNodeStore {
     }
 }
 
+#[async_trait]
+impl ShareStore for SqliteNodeStore {
+    async fn insert_public_share(&self, share: &PublicShare) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO public_shares (id, node_id, token_hash, created_at, expires_at, revoked_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    share.id.to_string(),
+                    share.node_id.to_string(),
+                    share.token_hash,
+                    share.created_at.to_rfc3339(),
+                    share.expires_at.map(|dt| dt.to_rfc3339()),
+                    share.revoked_at.map(|dt| dt.to_rfc3339()),
+                ],
+            )
+            .map_err(|e| MvError::Storage(format!("insert public_share failed: {e}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_public_share(&self, id: Uuid) -> MvResult<Option<PublicShare>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, node_id, token_hash, created_at, expires_at, revoked_at
+                     FROM public_shares WHERE id = ?1",
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+            let share = stmt
+                .query_row(params![id.to_string()], row_to_public_share)
+                .optional()
+                .map_err(|e| MvError::Storage(format!("select public_share failed: {e}")))?;
+            Ok(share)
+        })
+    }
+
+    async fn get_public_share_by_hash(&self, token_hash: &str) -> MvResult<Option<PublicShare>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, node_id, token_hash, created_at, expires_at, revoked_at
+                     FROM public_shares WHERE token_hash = ?1",
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+            let share = stmt
+                .query_row(params![token_hash], row_to_public_share)
+                .optional()
+                .map_err(|e| MvError::Storage(format!("select public_share failed: {e}")))?;
+            Ok(share)
+        })
+    }
+
+    async fn list_public_shares(
+        &self,
+        node_id: Option<Uuid>,
+        include_revoked: bool,
+    ) -> MvResult<Vec<PublicShare>> {
+        self.with_conn(|conn| {
+            let mut sql =
+                "SELECT id, node_id, token_hash, created_at, expires_at, revoked_at FROM public_shares"
+                    .to_string();
+            let mut params_refs: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+            let mut conditions: Vec<String> = Vec::new();
+
+            if let Some(node_id) = node_id {
+                conditions.push(format!("node_id = ?{}", params_refs.len() + 1));
+                params_refs.push(Box::new(node_id.to_string()));
+            }
+
+            if !include_revoked {
+                conditions.push("revoked_at IS NULL".to_string());
+            }
+
+            if !conditions.is_empty() {
+                sql.push_str(" WHERE ");
+                sql.push_str(&conditions.join(" AND "));
+            }
+
+            sql.push_str(" ORDER BY created_at DESC");
+
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+
+            let param_slice: Vec<&dyn rusqlite::ToSql> =
+                params_refs.iter().map(|p| p.as_ref() as &dyn rusqlite::ToSql).collect();
+            let shares = stmt
+                .query_map(param_slice.as_slice(), row_to_public_share)
+                .map_err(|e| MvError::Storage(format!("list public_shares failed: {e}")))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| MvError::Storage(format!("collect public_shares failed: {e}")))?;
+
+            Ok(shares)
+        })
+    }
+
+    async fn revoke_public_share(&self, id: Uuid, revoked_at: DateTime<Utc>) -> MvResult<bool> {
+        self.with_conn(|conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE public_shares SET revoked_at = ?2 WHERE id = ?1",
+                    params![id.to_string(), revoked_at.to_rfc3339()],
+                )
+                .map_err(|e| MvError::Storage(format!("revoke public_share failed: {e}")))?;
+            Ok(updated > 0)
+        })
+    }
+}
+
+#[async_trait]
+impl CommentStore for SqliteNodeStore {
+    async fn insert_comment(&self, comment: &NodeComment) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO node_comments (id, node_id, author, body, created_at, updated_at, resolved_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    comment.id.to_string(),
+                    comment.node_id.to_string(),
+                    comment.author,
+                    comment.body,
+                    comment.created_at.to_rfc3339(),
+                    comment.updated_at.to_rfc3339(),
+                    comment.resolved_at.map(|dt| dt.to_rfc3339()),
+                ],
+            )
+            .map_err(|e| MvError::Storage(format!("insert comment failed: {e}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_comment(&self, id: Uuid) -> MvResult<Option<NodeComment>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, node_id, author, body, created_at, updated_at, resolved_at
+                     FROM node_comments WHERE id = ?1",
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+            let comment = stmt
+                .query_row(params![id.to_string()], row_to_node_comment)
+                .optional()
+                .map_err(|e| MvError::Storage(format!("select comment failed: {e}")))?;
+            Ok(comment)
+        })
+    }
+
+    async fn list_comments(
+        &self,
+        node_id: Uuid,
+        include_resolved: bool,
+    ) -> MvResult<Vec<NodeComment>> {
+        self.with_conn(|conn| {
+            let mut sql = String::from(
+                "SELECT id, node_id, author, body, created_at, updated_at, resolved_at
+                 FROM node_comments WHERE node_id = ?1",
+            );
+            if !include_resolved {
+                sql.push_str(" AND resolved_at IS NULL");
+            }
+            sql.push_str(" ORDER BY created_at DESC");
+
+            let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+            let comments = stmt
+                .query_map(params![node_id.to_string()], row_to_node_comment)
+                .map_err(|e| MvError::Storage(format!("list comments failed: {e}")))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| MvError::Storage(format!("collect comments failed: {e}")))?;
+            Ok(comments)
+        })
+    }
+
+    async fn resolve_comment(&self, id: Uuid, resolved_at: DateTime<Utc>) -> MvResult<bool> {
+        self.with_conn(|conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE node_comments SET resolved_at = ?2, updated_at = ?2 WHERE id = ?1",
+                    params![id.to_string(), resolved_at.to_rfc3339()],
+                )
+                .map_err(|e| MvError::Storage(format!("resolve comment failed: {e}")))?;
+            Ok(updated > 0)
+        })
+    }
+
+    async fn delete_comment(&self, id: Uuid) -> MvResult<bool> {
+        self.with_conn(|conn| {
+            let affected = conn
+                .execute("DELETE FROM node_comments WHERE id = ?1", params![id.to_string()])
+                .map_err(|e| MvError::Storage(format!("delete comment failed: {e}")))?;
+            Ok(affected > 0)
+        })
+    }
+}
+
+#[async_trait]
+impl McpConnectorStore for SqliteNodeStore {
+    async fn insert_mcp_connector(&self, connector: &McpConnector) -> MvResult<()> {
+        self.with_conn(|conn| {
+            let config_schema_json = serde_json::to_string(&connector.config_schema)?;
+            let capabilities_json = serde_json::to_string(&connector.capabilities)?;
+            conn.execute(
+                "INSERT INTO mcp_connectors (id, name, description, publisher, version, homepage_url, repository_url, config_schema, capabilities_json, verified, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    connector.id.to_string(),
+                    connector.name,
+                    connector.description,
+                    connector.publisher,
+                    connector.version,
+                    connector.homepage_url,
+                    connector.repository_url,
+                    config_schema_json,
+                    capabilities_json,
+                    if connector.verified { 1 } else { 0 },
+                    connector.created_at.to_rfc3339(),
+                    connector.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|e| MvError::Storage(format!("insert mcp connector failed: {e}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_mcp_connector(&self, id: Uuid) -> MvResult<Option<McpConnector>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, name, description, publisher, version, homepage_url, repository_url, config_schema, capabilities_json, verified, created_at, updated_at
+                     FROM mcp_connectors WHERE id = ?1",
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))?;
+            let connector = stmt
+                .query_row(params![id.to_string()], row_to_mcp_connector)
+                .optional()
+                .map_err(|e| MvError::Storage(format!("select mcp connector failed: {e}")))?;
+            Ok(connector)
+        })
+    }
+
+    async fn list_mcp_connectors(
+        &self,
+        publisher: Option<&str>,
+        verified: Option<bool>,
+        limit: usize,
+        offset: usize,
+    ) -> MvResult<Vec<McpConnector>> {
+        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut sql = String::from(
+            "SELECT id, name, description, publisher, version, homepage_url, repository_url, config_schema, capabilities_json, verified, created_at, updated_at
+             FROM mcp_connectors WHERE 1=1",
+        );
+        let mut params_box: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(publisher) = publisher {
+            sql.push_str(&format!(" AND publisher = ?{}", params_box.len() + 1));
+            params_box.push(Box::new(publisher.to_string()));
+        }
+        if let Some(verified) = verified {
+            sql.push_str(&format!(" AND verified = ?{}", params_box.len() + 1));
+            params_box.push(Box::new(if verified { 1 } else { 0 }));
+        }
+
+        sql.push_str(&format!(
+            " ORDER BY name ASC LIMIT ?{} OFFSET ?{}",
+            params_box.len() + 1,
+            params_box.len() + 2
+        ));
+        params_box.push(Box::new(limit as i64));
+        params_box.push(Box::new(offset as i64));
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_box.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query_map(params_refs.as_slice(), row_to_mcp_connector)
+            .map_err(|e| MvError::Storage(format!("list mcp connectors failed: {e}")))?;
+        let mut connectors = Vec::new();
+        for row in rows {
+            connectors.push(row.map_err(|e| MvError::Storage(e.to_string()))?);
+        }
+        Ok(connectors)
+    }
+
+    async fn update_mcp_connector(&self, connector: &McpConnector) -> MvResult<bool> {
+        self.with_conn(|conn| {
+            let config_schema_json = serde_json::to_string(&connector.config_schema)?;
+            let capabilities_json = serde_json::to_string(&connector.capabilities)?;
+            let updated = conn
+                .execute(
+                    "UPDATE mcp_connectors
+                     SET name = ?2, description = ?3, publisher = ?4, version = ?5, homepage_url = ?6,
+                         repository_url = ?7, config_schema = ?8, capabilities_json = ?9, verified = ?10, updated_at = ?11
+                     WHERE id = ?1",
+                    params![
+                        connector.id.to_string(),
+                        connector.name,
+                        connector.description,
+                        connector.publisher,
+                        connector.version,
+                        connector.homepage_url,
+                        connector.repository_url,
+                        config_schema_json,
+                        capabilities_json,
+                        if connector.verified { 1 } else { 0 },
+                        connector.updated_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(|e| MvError::Storage(format!("update mcp connector failed: {e}")))?;
+            Ok(updated > 0)
+        })
+    }
+
+    async fn delete_mcp_connector(&self, id: Uuid) -> MvResult<bool> {
+        self.with_conn(|conn| {
+            let affected = conn
+                .execute(
+                    "DELETE FROM mcp_connectors WHERE id = ?1",
+                    params![id.to_string()],
+                )
+                .map_err(|e| MvError::Storage(format!("delete mcp connector failed: {e}")))?;
+            Ok(affected > 0)
+        })
+    }
+}
+
 fn row_to_policy(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccessPolicy> {
     let id_str: String = row.get(0)?;
     let secret_key: String = row.get(1)?;
@@ -4319,5 +4721,204 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(facts, 2);
+    }
+
+    #[tokio::test]
+    async fn test_public_share_lifecycle() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let node = KnowledgeNode::new(NodeKind::Fact, "Shared note")
+            .with_title("Shared")
+            .with_namespace("default");
+        let node_id = node.id;
+        store.insert(&node).await.unwrap();
+
+        let share = PublicShare {
+            id: Uuid::now_v7(),
+            node_id,
+            token_hash: "hash-abc".to_string(),
+            created_at: Utc::now(),
+            expires_at: None,
+            revoked_at: None,
+        };
+
+        store.insert_public_share(&share).await.unwrap();
+
+        let fetched = store.get_public_share(share.id).await.unwrap().unwrap();
+        assert_eq!(fetched.node_id, node_id);
+        assert_eq!(fetched.token_hash, "hash-abc");
+
+        let by_hash = store
+            .get_public_share_by_hash("hash-abc")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(by_hash.id, share.id);
+
+        let shares = store
+            .list_public_shares(Some(node_id), false)
+            .await
+            .unwrap();
+        assert_eq!(shares.len(), 1);
+
+        let revoked = store
+            .revoke_public_share(share.id, Utc::now())
+            .await
+            .unwrap();
+        assert!(revoked);
+
+        let active = store
+            .list_public_shares(Some(node_id), false)
+            .await
+            .unwrap();
+        assert!(active.is_empty());
+
+        let all = store
+            .list_public_shares(Some(node_id), true)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(all[0].revoked_at.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests for Phase 1–3 storage features
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_adapter_poll_state_round_trip() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+
+        // Initially empty
+        let state = store.get_poll_state("discord").await.unwrap();
+        assert!(state.is_none());
+
+        // Upsert
+        store
+            .upsert_poll_state("discord", "cursor-abc-123", 5)
+            .await
+            .unwrap();
+
+        let state = store.get_poll_state("discord").await.unwrap().unwrap();
+        assert_eq!(state.adapter_name, "discord");
+        assert_eq!(state.cursor, "cursor-abc-123");
+        assert_eq!(state.messages_received, 5);
+
+        // Upsert again — cursor updates, messages_received accumulates
+        store
+            .upsert_poll_state("discord", "cursor-def-456", 3)
+            .await
+            .unwrap();
+
+        let state = store.get_poll_state("discord").await.unwrap().unwrap();
+        assert_eq!(state.cursor, "cursor-def-456");
+        assert_eq!(state.messages_received, 8); // 5 + 3
+
+        // List
+        store
+            .upsert_poll_state("slack", "slack-cursor", 1)
+            .await
+            .unwrap();
+        let all = store.list_poll_states().await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        // Delete
+        let deleted = store.delete_poll_state("discord").await.unwrap();
+        assert!(deleted);
+        assert!(store.get_poll_state("discord").await.unwrap().is_none());
+
+        let not_found = store.delete_poll_state("nonexistent").await.unwrap();
+        assert!(!not_found);
+    }
+
+    #[tokio::test]
+    async fn test_contact_identity_storage() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+
+        let contact_id = Uuid::now_v7();
+        let identity = ContactIdentity {
+            id: Uuid::now_v7(),
+            contact_id,
+            identity_type: IdentityType::Email,
+            identity_value: "bob@example.com".into(),
+            verified: false,
+            verified_at: None,
+            created_at: Utc::now(),
+        };
+
+        // Add
+        store.add_contact_identity(&identity).await.unwrap();
+
+        // List
+        let list = store.list_contact_identities(contact_id).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].identity_value, "bob@example.com");
+        assert!(!list[0].verified);
+
+        // Verify
+        let verified = store.verify_contact_identity(identity.id).await.unwrap();
+        assert!(verified);
+
+        let list = store.list_contact_identities(contact_id).await.unwrap();
+        assert!(list[0].verified);
+        assert!(list[0].verified_at.is_some());
+
+        // Verify again (already verified) — should return false
+        let re_verified = store.verify_contact_identity(identity.id).await.unwrap();
+        assert!(!re_verified);
+
+        // Delete
+        let deleted = store.delete_contact_identity(identity.id).await.unwrap();
+        assert!(deleted);
+        assert!(store
+            .list_contact_identities(contact_id)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_trust_model_storage() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+
+        let contact_id = Uuid::now_v7();
+
+        // Not present initially
+        assert!(store.get_trust_model(contact_id).await.unwrap().is_none());
+
+        // Set
+        let model = TrustModel {
+            contact_id,
+            can_query: true,
+            can_inject_context: false,
+            can_auto_reply: false,
+            allowed_namespaces: vec!["research".into(), "notes".into()],
+            max_confidence_override: Some(0.9),
+            updated_at: Utc::now(),
+        };
+        store.set_trust_model(&model).await.unwrap();
+
+        let stored = store.get_trust_model(contact_id).await.unwrap().unwrap();
+        assert!(stored.can_query);
+        assert!(!stored.can_inject_context);
+        assert_eq!(stored.allowed_namespaces, vec!["research", "notes"]);
+        assert!((stored.max_confidence_override.unwrap() - 0.9).abs() < f64::EPSILON);
+
+        // Update (upsert)
+        let updated_model = TrustModel {
+            contact_id,
+            can_query: true,
+            can_inject_context: true,
+            can_auto_reply: true,
+            allowed_namespaces: vec!["all".into()],
+            max_confidence_override: None,
+            updated_at: Utc::now(),
+        };
+        store.set_trust_model(&updated_model).await.unwrap();
+
+        let stored = store.get_trust_model(contact_id).await.unwrap().unwrap();
+        assert!(stored.can_inject_context);
+        assert!(stored.can_auto_reply);
+        assert_eq!(stored.allowed_namespaces, vec!["all"]);
+        assert!(stored.max_confidence_override.is_none());
     }
 }

@@ -4,7 +4,10 @@ const SETTINGS_KEYS = {
   autoComplete: 'mindvaultSettingAutoComplete',
   autoLinking: 'mindvaultSettingAutoLinking',
   autoSuggestCooldown: 'mindvaultSettingAutoSuggestCooldownMinutes',
-  confirmTabReset: 'mindvaultSettingConfirmTabReset'
+  confirmTabReset: 'mindvaultSettingConfirmTabReset',
+  activeTab: 'mindvaultSettingActiveTab',
+  editorMode: 'mindvaultSettingEditorMode',
+  showPowerControls: 'mindvaultSettingShowPowerControls'
 };
 
 const DEFAULT_SETTINGS = {
@@ -12,7 +15,10 @@ const DEFAULT_SETTINGS = {
   autoComplete: true,
   autoLinking: true,
   autoSuggestCooldownMinutes: 0,
-  confirmTabReset: true
+  confirmTabReset: true,
+  activeTab: 'nodes-tab',
+  editorMode: 'wysiwyg',
+  showPowerControls: true
 };
 
 function readBool(key, fallback) {
@@ -30,6 +36,14 @@ function readNumber(key, fallback) {
   }
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function readString(key, fallback) {
+  const raw = localStorage.getItem(key);
+  if (raw === null || raw === undefined || raw === '') {
+    return fallback;
+  }
+  return String(raw);
 }
 
 function normalizeApiBase(raw) {
@@ -72,6 +86,18 @@ export const settingsFeature = {
     this.confirmResetEnabled = readBool(
       SETTINGS_KEYS.confirmTabReset,
       DEFAULT_SETTINGS.confirmTabReset
+    );
+    this.activeTabPreference = readString(
+      SETTINGS_KEYS.activeTab,
+      DEFAULT_SETTINGS.activeTab
+    );
+    this.editorMode = readString(
+      SETTINGS_KEYS.editorMode,
+      DEFAULT_SETTINGS.editorMode
+    );
+    this.showPowerControls = readBool(
+      SETTINGS_KEYS.showPowerControls,
+      DEFAULT_SETTINGS.showPowerControls
     );
     this.apiBaseOverride = normalizeApiBase(localStorage.getItem(SETTINGS_KEYS.apiBase));
   },
@@ -118,6 +144,11 @@ export const settingsFeature = {
     const settingsConfirmReset = document.getElementById('settings-confirm-reset');
     if (settingsConfirmReset) {
       settingsConfirmReset.checked = Boolean(this.confirmResetEnabled);
+    }
+
+    const settingsPowerControls = document.getElementById('settings-power-controls');
+    if (settingsPowerControls) {
+      settingsPowerControls.checked = Boolean(this.showPowerControls);
     }
 
     const suggestCooldown = document.getElementById('settings-suggest-cooldown');
@@ -209,6 +240,16 @@ export const settingsFeature = {
       settingsConfirmReset.addEventListener('change', () => {
         this.confirmResetEnabled = Boolean(settingsConfirmReset.checked);
         this.persistSetting('confirmTabReset', this.confirmResetEnabled);
+      });
+    }
+
+    if (settingsPowerControls) {
+      settingsPowerControls.addEventListener('change', () => {
+        this.showPowerControls = Boolean(settingsPowerControls.checked);
+        this.persistSetting('showPowerControls', this.showPowerControls);
+        if (typeof this.applyPowerControlsVisibility === 'function') {
+          this.applyPowerControlsVisibility();
+        }
       });
     }
 

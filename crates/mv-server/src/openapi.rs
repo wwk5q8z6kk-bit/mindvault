@@ -50,7 +50,11 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "proactive", description = "Proactive insight generation"),
         (name = "graph-extra", description = "Graph relationship management"),
         (name = "clips", description = "Web clip import and enrichment"),
-        (name = "secrets", description = "Server-side secret storage")
+        (name = "secrets", description = "Server-side secret storage"),
+        (name = "ai", description = "AI sidecar proxy"),
+        (name = "sharing", description = "Public share links"),
+        (name = "comments", description = "Node comments and annotations"),
+        (name = "mcp-marketplace", description = "MCP connector registry")
     ),
     paths(
         // Health
@@ -62,6 +66,11 @@ use utoipa_swagger_ui::SwaggerUi;
         get_node,
         update_node,
         delete_node,
+        // Comments
+        create_node_comment,
+        list_node_comments,
+        resolve_node_comment,
+        delete_node_comment,
         // Recall & Search
         recall,
         search,
@@ -75,6 +84,24 @@ use utoipa_swagger_ui::SwaggerUi;
         list_calendar_items,
         export_calendar_ical,
         import_calendar_ical,
+        google_calendar_status,
+        google_calendar_sync,
+        // AI sidecar proxy
+        ai_health,
+        ai_models,
+        ai_embeddings,
+        ai_chat_completions,
+        // Sharing
+        create_public_share,
+        list_public_shares,
+        revoke_public_share,
+        get_public_share,
+        // MCP Marketplace
+        list_mcp_connectors,
+        get_mcp_connector,
+        create_mcp_connector,
+        update_mcp_connector,
+        delete_mcp_connector,
         // Tasks
         list_due_tasks,
         prioritize_tasks,
@@ -272,6 +299,11 @@ use utoipa_swagger_ui::SwaggerUi;
             OAuthTokenRequest,
             OAuthTokenResponse,
             FederationIdentityResponse,
+            NodeCommentResponse,
+            CreateNodeCommentRequest,
+            McpConnectorResponse,
+            CreateMcpConnectorRequest,
+            UpdateMcpConnectorRequest,
         )
     )
 )]
@@ -372,6 +404,65 @@ async fn delete_node() {}
 
 #[utoipa::path(
     post,
+    path = "/api/v1/nodes/{id}/comments",
+    tag = "comments",
+    params(
+        ("id" = String, Path, description = "Node UUID")
+    ),
+    responses(
+        (status = 200, description = "Comment created", body = NodeCommentResponse),
+        (status = 404, description = "Node not found")
+    )
+)]
+async fn create_node_comment() {}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/nodes/{id}/comments",
+    tag = "comments",
+    params(
+        ("id" = String, Path, description = "Node UUID"),
+        ("include_resolved" = Option<bool>, Query, description = "Include resolved comments")
+    ),
+    responses(
+        (status = 200, description = "Node comments", body = Vec<NodeCommentResponse>),
+        (status = 404, description = "Node not found")
+    )
+)]
+async fn list_node_comments() {}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/nodes/{id}/comments/{comment_id}/resolve",
+    tag = "comments",
+    params(
+        ("id" = String, Path, description = "Node UUID"),
+        ("comment_id" = String, Path, description = "Comment UUID")
+    ),
+    responses(
+        (status = 200, description = "Comment resolved", body = NodeCommentResponse),
+        (status = 404, description = "Comment not found")
+    )
+)]
+async fn resolve_node_comment() {}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/nodes/{id}/comments/{comment_id}",
+    tag = "comments",
+    params(
+        ("id" = String, Path, description = "Node UUID"),
+        ("comment_id" = String, Path, description = "Comment UUID")
+    ),
+    responses(
+        (status = 200, description = "Comment deleted", body = NodeCommentResponse),
+        (status = 404, description = "Comment not found")
+    )
+)]
+async fn delete_node_comment() {}
+
+#[utoipa::path(
+    post,
     path = "/api/v1/recall",
     tag = "recall",
     request_body = RecallRequest,
@@ -435,6 +526,93 @@ async fn export_calendar_ical() {}
 
 #[utoipa::path(post, path = "/api/v1/calendar/ical/import", tag = "calendar", responses((status = 200)))]
 async fn import_calendar_ical() {}
+
+#[utoipa::path(get, path = "/api/v1/calendar/google/status", tag = "calendar", responses((status = 200)))]
+async fn google_calendar_status() {}
+
+#[utoipa::path(post, path = "/api/v1/calendar/google/sync", tag = "calendar", responses((status = 200)))]
+async fn google_calendar_sync() {}
+
+#[utoipa::path(get, path = "/api/v1/ai/health", tag = "ai", responses((status = 200)))]
+async fn ai_health() {}
+
+#[utoipa::path(get, path = "/api/v1/ai/models", tag = "ai", responses((status = 200)))]
+async fn ai_models() {}
+
+#[utoipa::path(post, path = "/api/v1/ai/embeddings", tag = "ai", responses((status = 200)))]
+async fn ai_embeddings() {}
+
+#[utoipa::path(post, path = "/api/v1/ai/chat/completions", tag = "ai", responses((status = 200)))]
+async fn ai_chat_completions() {}
+
+#[utoipa::path(post, path = "/api/v1/shares", tag = "sharing", responses((status = 200)))]
+async fn create_public_share() {}
+
+#[utoipa::path(get, path = "/api/v1/shares", tag = "sharing", responses((status = 200)))]
+async fn list_public_shares() {}
+
+#[utoipa::path(delete, path = "/api/v1/shares/{id}", tag = "sharing", params(("id" = String, Path)), responses((status = 200)))]
+async fn revoke_public_share() {}
+
+#[utoipa::path(get, path = "/public/shares/{token}", tag = "sharing", params(("token" = String, Path)), responses((status = 200), (status = 404)))]
+async fn get_public_share() {}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/mcp/connectors",
+    tag = "mcp-marketplace",
+    params(
+        ("publisher" = Option<String>, Query, description = "Filter by publisher"),
+        ("verified" = Option<bool>, Query, description = "Filter by verification"),
+        ("limit" = Option<usize>, Query, description = "Page size"),
+        ("offset" = Option<usize>, Query, description = "Pagination offset")
+    ),
+    responses((status = 200, description = "MCP connectors", body = Vec<McpConnectorResponse>))
+)]
+async fn list_mcp_connectors() {}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/mcp/connectors/{id}",
+    tag = "mcp-marketplace",
+    params(("id" = String, Path, description = "Connector UUID")),
+    responses(
+        (status = 200, description = "Connector found", body = McpConnectorResponse),
+        (status = 404, description = "Connector not found")
+    )
+)]
+async fn get_mcp_connector() {}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/mcp/connectors",
+    tag = "mcp-marketplace",
+    request_body = CreateMcpConnectorRequest,
+    responses((status = 200, description = "Connector created", body = McpConnectorResponse))
+)]
+async fn create_mcp_connector() {}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/mcp/connectors/{id}",
+    tag = "mcp-marketplace",
+    params(("id" = String, Path, description = "Connector UUID")),
+    request_body = UpdateMcpConnectorRequest,
+    responses(
+        (status = 200, description = "Connector updated", body = McpConnectorResponse),
+        (status = 404, description = "Connector not found")
+    )
+)]
+async fn update_mcp_connector() {}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/mcp/connectors/{id}",
+    tag = "mcp-marketplace",
+    params(("id" = String, Path, description = "Connector UUID")),
+    responses((status = 204, description = "Connector deleted"), (status = 404, description = "Connector not found"))
+)]
+async fn delete_mcp_connector() {}
 
 #[utoipa::path(get, path = "/api/v1/tasks/due", tag = "tasks", responses((status = 200)))]
 async fn list_due_tasks() {}
@@ -1075,6 +1253,65 @@ pub struct OAuthTokenResponse {
     pub token_type: String,
     pub expires_in: u64,
     pub scope: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct CreateNodeCommentRequest {
+    pub body: String,
+    pub author: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct NodeCommentResponse {
+    pub id: String,
+    pub node_id: String,
+    pub author: Option<String>,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct CreateMcpConnectorRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub publisher: Option<String>,
+    pub version: String,
+    pub homepage_url: Option<String>,
+    pub repository_url: Option<String>,
+    pub config_schema: Option<serde_json::Value>,
+    pub capabilities: Option<Vec<String>>,
+    pub verified: Option<bool>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateMcpConnectorRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub publisher: Option<String>,
+    pub version: Option<String>,
+    pub homepage_url: Option<String>,
+    pub repository_url: Option<String>,
+    pub config_schema: Option<serde_json::Value>,
+    pub capabilities: Option<Vec<String>>,
+    pub verified: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct McpConnectorResponse {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub publisher: Option<String>,
+    pub version: String,
+    pub homepage_url: Option<String>,
+    pub repository_url: Option<String>,
+    pub config_schema: serde_json::Value,
+    pub capabilities: Vec<String>,
+    pub verified: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Create the Swagger UI router.

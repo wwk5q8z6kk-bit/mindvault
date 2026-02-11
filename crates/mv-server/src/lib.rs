@@ -89,6 +89,7 @@ pub async fn start_server(
     let state = Arc::new(AppState::new_with_channels(engine, change_tx, agent_tx));
     spawn_agent_change_processor(Arc::clone(&state), shutdown_tx.subscribe());
     spawn_recurrence_and_reminder_scheduler(Arc::clone(&state));
+    spawn_google_calendar_sync(Arc::clone(&state.engine), shutdown_tx.subscribe());
     adapter_poll::spawn_adapter_polling(Arc::clone(&state), shutdown_tx.subscribe());
     email::spawn_email_adapter(Arc::clone(&state), shutdown_tx.subscribe());
 
@@ -583,6 +584,58 @@ fn spawn_recurrence_and_reminder_scheduler(state: Arc<AppState>) {
             tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
         }
     });
+}
+
+fn spawn_google_calendar_sync(
+    engine: Arc<MindVaultEngine>,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) {
+    let config = engine.config.google_calendar.clone();
+    if !config.enabled {
+        return;
+    }
+
+    let interval_secs = config.sync_interval_secs.max(60);
+    let calendar_id = config.calendar_id.clone();
+    let calendar_id_for_task = calendar_id.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    tracing::info!("google calendar sync shutting down");
+                    break;
+                }
+                _ = interval.tick() => {
+                    match engine.sync_google_calendar().await {
+                        Ok(report) => {
+                            tracing::info!(
+                                calendar_id = %report.calendar_id,
+                                fetched = report.fetched,
+                                created = report.created,
+                                updated = report.updated,
+                                deleted = report.deleted,
+                                skipped = report.skipped,
+                                exported_created = report.exported_created,
+                                exported_updated = report.exported_updated,
+                                "google calendar sync completed"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                calendar_id = %calendar_id_for_task,
+                                error = %err,
+                                "google calendar sync failed"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    tracing::info!(interval_secs, calendar_id = %calendar_id, "google calendar sync spawned");
 }
 
 async fn dispatch_task_reminders_with_notifications(

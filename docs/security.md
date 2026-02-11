@@ -23,6 +23,14 @@ For machine-to-machine access, MindVault supports OAuth2 client credentials flow
 - Register clients via `POST /api/v1/oauth/clients`
 - Exchange credentials at `POST /api/v1/oauth/token`
 
+### Public Shares
+Public share links provide read-only access to a single node:
+- Tokens are high-entropy and stored as SHA-256 hashes
+- Links can be created with optional expiry timestamps
+- Revoke instantly via `DELETE /api/v1/shares/{id}`
+- Access is via `GET /public/shares/{token}` and bypasses auth, so treat links as secrets
+- The browser view is read-only and noindexed; request JSON with `Accept: application/json`
+
 ## Encryption at Rest
 
 When enabled (`encryption.enabled = true` in config):

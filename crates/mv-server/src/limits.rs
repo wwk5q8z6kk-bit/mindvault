@@ -45,6 +45,14 @@ pub struct RateLimitExceeded {
     pub window_secs: u64,
 }
 
+/// Returned on successful rate-limit check with remaining capacity info.
+#[derive(Debug, Clone, Copy)]
+pub struct RateLimitStatus {
+    pub limit: usize,
+    pub remaining: usize,
+    pub reset_secs: u64,
+}
+
 #[derive(Debug)]
 pub enum NamespaceQuotaError {
     Exceeded {
@@ -68,13 +76,17 @@ impl RequestRateLimiter {
         }
     }
 
-    fn check(&self, key: &str) -> Result<(), RateLimitExceeded> {
+    fn check(&self, key: &str) -> Result<RateLimitStatus, RateLimitExceeded> {
         self.check_at(key, Instant::now())
     }
 
-    fn check_at(&self, key: &str, now: Instant) -> Result<(), RateLimitExceeded> {
+    fn check_at(&self, key: &str, now: Instant) -> Result<RateLimitStatus, RateLimitExceeded> {
         if !self.config.enabled {
-            return Ok(());
+            return Ok(RateLimitStatus {
+                limit: 0,
+                remaining: 0,
+                reset_secs: 0,
+            });
         }
 
         let mut buckets = match self.buckets.lock() {
@@ -110,8 +122,22 @@ impl RequestRateLimiter {
             });
         }
 
+        let reset_secs = queue
+            .front()
+            .map(|front| {
+                self.config
+                    .window
+                    .saturating_sub(now.duration_since(*front))
+                    .as_secs()
+            })
+            .unwrap_or(self.config.window.as_secs());
+
         queue.push_back(now);
-        Ok(())
+        Ok(RateLimitStatus {
+            limit: self.config.max_requests,
+            remaining: self.config.max_requests.saturating_sub(queue.len()),
+            reset_secs,
+        })
     }
 }
 
@@ -119,7 +145,7 @@ static RATE_LIMITER: OnceLock<RequestRateLimiter> = OnceLock::new();
 static PROXY_RATE_LIMITER: OnceLock<RequestRateLimiter> = OnceLock::new();
 static NAMESPACE_NODE_QUOTA: OnceLock<Option<usize>> = OnceLock::new();
 
-pub fn enforce_rate_limit(auth: &AuthContext) -> Result<(), RateLimitExceeded> {
+pub fn enforce_rate_limit(auth: &AuthContext) -> Result<RateLimitStatus, RateLimitExceeded> {
     let key = rate_limit_key(auth);
     RATE_LIMITER
         .get_or_init(|| RequestRateLimiter::new(RateLimitConfig::from_env()))
@@ -155,6 +181,7 @@ pub fn enforce_proxy_rate_limit(
             })
         })
         .check(&key)
+        .map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +219,7 @@ pub fn enforce_keychain_read_rate_limit(
             })
         })
         .check(&key)
+        .map(|_| ())
 }
 
 pub async fn enforce_namespace_quota(
@@ -308,6 +336,29 @@ mod tests {
         assert!(limiter
             .check_at("proxy:alice:KEY", now + Duration::from_secs(1))
             .is_err());
+    }
+
+    #[test]
+    fn rate_limiter_returns_remaining_count() {
+        let limiter = RequestRateLimiter::new(RateLimitConfig {
+            enabled: true,
+            max_requests: 3,
+            window: Duration::from_secs(60),
+        });
+        let now = Instant::now();
+
+        let status = limiter.check_at("k", now).unwrap();
+        assert_eq!(status.limit, 3);
+        assert_eq!(status.remaining, 2);
+
+        let status = limiter.check_at("k", now + Duration::from_secs(1)).unwrap();
+        assert_eq!(status.remaining, 1);
+
+        let status = limiter.check_at("k", now + Duration::from_secs(2)).unwrap();
+        assert_eq!(status.remaining, 0);
+
+        // Next one should be rejected
+        assert!(limiter.check_at("k", now + Duration::from_secs(3)).is_err());
     }
 
     #[test]

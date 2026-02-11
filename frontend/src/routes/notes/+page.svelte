@@ -28,6 +28,7 @@
 	import AiSuggestionsPanel from '$lib/components/AiSuggestionsPanel.svelte';
 	import { fetchAgentContext, agentStore } from '$lib/api/agent';
 	import VersionHistory from '$lib/components/VersionHistory.svelte';
+	import PublicSharePanel from '$lib/components/PublicSharePanel.svelte';
 	import { createVirtualizer } from '@tanstack/svelte-virtual';
 
 	let notes: NoteWithKind[] = [];
@@ -1132,6 +1133,13 @@
 					onEmbed={handleAttachmentEmbed}
 					title="Attachments"
 					description="Files linked to this note."
+				/>
+			</div>
+
+			<div class="mt-4">
+				<PublicSharePanel
+					nodeId={selectedNote.id}
+					nodeTitle={selectedNote.title ?? 'Untitled'}
 				/>
 			</div>
 		{/if}

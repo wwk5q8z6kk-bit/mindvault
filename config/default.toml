@@ -39,6 +39,31 @@ smtp_starttls = true
 # mindvault secret set MINDVAULT_EMAIL_IMAP_PASSWORD
 # mindvault secret set MINDVAULT_EMAIL_SMTP_PASSWORD
 
+[google_calendar]
+enabled = false
+namespace = "default"
+calendar_id = "primary"
+sync_interval_secs = 900
+lookback_days = 30
+lookahead_days = 90
+max_results = 250
+import_events = true
+export_events = false
+# OAuth2 credentials should be provided via environment variables:
+# - MINDVAULT_GOOGLE_CALENDAR_CLIENT_ID
+# - MINDVAULT_GOOGLE_CALENDAR_CLIENT_SECRET
+# - MINDVAULT_GOOGLE_CALENDAR_REFRESH_TOKEN
+# Optionally override:
+# - MINDVAULT_GOOGLE_CALENDAR_ENABLED
+# - MINDVAULT_GOOGLE_CALENDAR_NAMESPACE
+# - MINDVAULT_GOOGLE_CALENDAR_CALENDAR_ID
+# - MINDVAULT_GOOGLE_CALENDAR_SYNC_INTERVAL_SECS
+# - MINDVAULT_GOOGLE_CALENDAR_LOOKBACK_DAYS
+# - MINDVAULT_GOOGLE_CALENDAR_LOOKAHEAD_DAYS
+# - MINDVAULT_GOOGLE_CALENDAR_MAX_RESULTS
+# - MINDVAULT_GOOGLE_CALENDAR_IMPORT_EVENTS
+# - MINDVAULT_GOOGLE_CALENDAR_EXPORT_EVENTS
+
 [embedding]
 provider = "local_fastembed"
 model = "bge-small-en-v1.5"
@@ -61,6 +86,11 @@ base_url = "http://localhost:11434/v1"
 model = "llama3.2"
 max_tokens = 512
 temperature = 0.3
+timeout_secs = 30
+
+[ai_sidecar]
+enabled = false
+base_url = "http://127.0.0.1:8100"
 timeout_secs = 30
 
 [watcher]

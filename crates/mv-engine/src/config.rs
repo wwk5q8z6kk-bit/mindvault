@@ -24,12 +24,16 @@ pub struct EngineConfig {
     #[serde(default)]
     pub planning: PlanningConfig,
     pub email: EmailAdapterConfig,
+    #[serde(default)]
+    pub google_calendar: GoogleCalendarConfig,
     pub linking: LinkingConfig,
     pub daily_notes: DailyNotesConfig,
     pub recurrence: RecurrenceConfig,
     pub encryption: EncryptionConfig,
     pub watcher: WatcherConfig,
     pub keychain: KeychainConfig,
+    #[serde(default)]
+    pub ai_sidecar: AiSidecarConfig,
 }
 
 /// Configuration for keychain lifecycle automation.
@@ -52,6 +56,27 @@ impl Default for KeychainConfig {
             auto_rotate_enabled: false,
             auto_rotate_interval_days: 90,
             auto_rotate_grace_hours: 24,
+        }
+    }
+}
+
+/// Configuration for the Python AI sidecar proxy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiSidecarConfig {
+    /// Whether the AI sidecar proxy is enabled.
+    pub enabled: bool,
+    /// Base URL of the Python AI sidecar.
+    pub base_url: String,
+    /// Request timeout in seconds.
+    pub timeout_secs: u64,
+}
+
+impl Default for AiSidecarConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: "http://127.0.0.1:8100".into(),
+            timeout_secs: 30,
         }
     }
 }
@@ -156,12 +181,14 @@ impl Default for EngineConfig {
             local_llm: LocalLlmConfig::default(),
             planning: PlanningConfig::default(),
             email: EmailAdapterConfig::default(),
+            google_calendar: GoogleCalendarConfig::default(),
             linking: LinkingConfig::default(),
             daily_notes: DailyNotesConfig::default(),
             recurrence: RecurrenceConfig::default(),
             encryption: EncryptionConfig::default(),
             watcher: WatcherConfig::default(),
             keychain: KeychainConfig::default(),
+            ai_sidecar: AiSidecarConfig::default(),
         }
     }
 }
@@ -224,6 +251,41 @@ impl Default for EmailAdapterConfig {
             smtp_username: None,
             smtp_from: None,
             smtp_starttls: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoogleCalendarConfig {
+    pub enabled: bool,
+    pub namespace: String,
+    pub calendar_id: String,
+    pub sync_interval_secs: u64,
+    pub lookback_days: i64,
+    pub lookahead_days: i64,
+    pub max_results: usize,
+    pub import_events: bool,
+    pub export_events: bool,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub refresh_token: Option<String>,
+}
+
+impl Default for GoogleCalendarConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            namespace: "default".into(),
+            calendar_id: "primary".into(),
+            sync_interval_secs: 900,
+            lookback_days: 30,
+            lookahead_days: 90,
+            max_results: 250,
+            import_events: true,
+            export_events: false,
+            client_id: None,
+            client_secret: None,
+            refresh_token: None,
         }
     }
 }
