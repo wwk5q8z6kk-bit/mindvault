@@ -3,6 +3,14 @@
 ## Objective
 Show that MindVault is secure by default, searchable, and stable for live demo conditions.
 
+## Prereqs / Notes
+
+- Use the build coordinator for any `cargo` operation: `~/.mindvault/scripts/mv-check`.
+- Demo scripts write a temporary config to `/tmp/mindvault-demo.toml` and default to port `9570`.
+- `scripts/smoke_test.sh` defaults to local FastEmbed embeddings. You can override via
+  `MV_EMBEDDING_PROVIDER`, `MV_EMBEDDING_MODEL`, and `MV_EMBEDDING_DIMENSIONS`.
+- Swagger UI builds download from GitHub; offline builds need `SWAGGER_UI_DOWNLOAD_URL` set to a local file.
+
 ## 60-second Validation
 
 ```bash
@@ -35,7 +43,13 @@ This runs format, clippy, tests, connector checks, and the smoke test.
 
 ```bash
 MINDVAULT_AUTH_TOKEN=demo-token \
-  cargo run -p mv-cli -- server start --foreground --config /tmp/mindvault-demo.toml
+  ./target/debug/mv server start --foreground --config /tmp/mindvault-demo.toml
+```
+
+If `./target/debug/mv` is missing, build via:
+
+```bash
+~/.mindvault/scripts/mv-check build -p mv-cli
 ```
 
 2. Store memory:
@@ -62,7 +76,7 @@ curl -X POST http://127.0.0.1:9570/api/v1/recall \
 MINDVAULT_AUTH_TOKEN=demo-token \
 MINDVAULT_AUTH_ROLE=read \
 MINDVAULT_AUTH_NAMESPACE=demo \
-  cargo run -p mv-cli -- server start --foreground --config /tmp/mindvault-demo.toml
+  ./target/debug/mv server start --foreground --config /tmp/mindvault-demo.toml
 ```
 
 This token can read from `demo`, but write requests return `403`.
@@ -74,7 +88,7 @@ MINDVAULT_AUTH_TOKEN=demo-token \
 MINDVAULT_RATE_LIMIT_REQUESTS=3 \
 MINDVAULT_RATE_LIMIT_WINDOW_SECS=60 \
 MINDVAULT_NAMESPACE_NODE_QUOTA=100 \
-  cargo run -p mv-cli -- server start --foreground --config /tmp/mindvault-demo.toml
+  ./target/debug/mv server start --foreground --config /tmp/mindvault-demo.toml
 ```
 
 After 3 authenticated requests in the 60-second window for the same identity, REST returns `429`.
@@ -85,27 +99,56 @@ After 3 authenticated requests in the 60-second window for the same identity, RE
 MINDVAULT_AUTH_TOKEN=demo-token \
 MINDVAULT_AI_AUTO_TAGGING_ENABLED=true \
 MINDVAULT_AI_AUTO_TAGGING_MAX_GENERATED_TAGS=6 \
-  cargo run -p mv-cli -- server start --foreground --config /tmp/mindvault-demo.toml
+  ./target/debug/mv server start --foreground --config /tmp/mindvault-demo.toml
 ```
 
 Store a node without tags and verify tags are auto-enriched on create/update.
 
+## Offline Embeddings (Demo Config Override)
+
+If you do not want OpenAI network calls during demos, create a local config file:
+
+```toml
+[server]
+bind_host = "127.0.0.1"
+rest_port = 9570
+grpc_port = 50071
+
+[storage]
+data_dir = "/tmp/mindvault-demo-data"
+
+[embedding]
+provider = "local_fastembed"
+model = "bge-small-en-v1.5"
+dimensions = 384
+```
+
+Then start the server with:
+
+```bash
+./target/debug/mv server start --foreground --config /tmp/mindvault-demo.toml
+```
+
 ## Pre-Submit Checklist
 
 ```bash
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+~/.mindvault/scripts/mv-check fmt -- --check
+~/.mindvault/scripts/mv-check clippy --workspace --all-targets -- -D warnings
+~/.mindvault/scripts/mv-check test --workspace
 ```
+
+If `mv-check` does not support `fmt`/`clippy` in your environment, run the
+corresponding `cargo fmt` / `cargo clippy` commands in a single-session build
+window to avoid lock contention.
 
 ## Vector Index Rebuild
 
 When embedding settings change or namespace-aware vector filtering is enabled, rebuild LanceDB:
 
 ```bash
-cargo run -p mv-cli -- db rebuild-vectors --dry-run
-cargo run -p mv-cli -- db rebuild-vectors --batch-size 64
-cargo run -p mv-cli -- db rebuild-vectors --batch-size 64 --apply --confirm
+./target/debug/mv db rebuild-vectors --dry-run
+./target/debug/mv db rebuild-vectors --batch-size 64
+./target/debug/mv db rebuild-vectors --batch-size 64 --apply --confirm
 ```
 
 Stop the server before running `--apply` to avoid file locks.

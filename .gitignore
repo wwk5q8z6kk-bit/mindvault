@@ -18,6 +18,9 @@ examples/**/target/
 .vscode/
 *.iml
 
+# Claude Code (per-developer permissions)
+.claude/settings.local.json
+
 # Node (for connectors)
 node_modules/
 connectors/*/dist/

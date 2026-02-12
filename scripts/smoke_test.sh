@@ -13,6 +13,9 @@ BIND_HOST="127.0.0.1"
 TOKEN="${MINDVAULT_AUTH_TOKEN:-demo-token}"
 CONFIG_PATH="${MV_CONFIG_PATH:-/tmp/mindvault-demo.toml}"
 LOG_PATH="${MV_LOG_PATH:-/tmp/mindvault-demo-server.log}"
+EMBEDDING_PROVIDER="${MV_EMBEDDING_PROVIDER:-local_fastembed}"
+EMBEDDING_MODEL="${MV_EMBEDDING_MODEL:-bge-small-en-v1.5}"
+EMBEDDING_DIMENSIONS="${MV_EMBEDDING_DIMENSIONS:-384}"
 
 cat > "$CONFIG_PATH" <<CFG
 [server]
@@ -25,9 +28,9 @@ cors_allowed_origins = ["http://localhost:3000"]
 data_dir = "/tmp/mindvault-demo-data"
 
 [embedding]
-provider = "openai"
-model = "text-embedding-3-small"
-dimensions = 1536
+provider = "$EMBEDDING_PROVIDER"
+model = "$EMBEDDING_MODEL"
+dimensions = $EMBEDDING_DIMENSIONS
 CFG
 
 cleanup() {

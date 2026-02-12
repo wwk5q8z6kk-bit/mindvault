@@ -98,6 +98,7 @@ enabled = true
 interval_secs = 300
 lookback_hours = 24
 max_nodes_per_cycle = 50
+expiry_days = 7
 
 [search]
 default_limit = 10
@@ -198,6 +199,7 @@ enabled = false
 # - MINDVAULT_AUTH_ROLE (admin|write|read, optional)
 # - MINDVAULT_AUTH_NAMESPACE (namespace scope for shared token, optional)
 # - MINDVAULT_JWT_SECRET (HS256 JWT secret, optional)
+# - MINDVAULT_ALLOW_INSECURE_BIND (set true to allow non-local bind without auth)
 # - MINDVAULT_RATE_LIMIT_REQUESTS (requests per window, default 120; 0 disables)
 # - MINDVAULT_RATE_LIMIT_WINDOW_SECS (window size, default 60)
 # - MINDVAULT_NAMESPACE_NODE_QUOTA (max nodes per namespace, optional)
