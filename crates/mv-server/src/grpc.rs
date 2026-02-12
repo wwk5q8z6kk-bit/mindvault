@@ -137,8 +137,8 @@ async fn auth_context_from_request_with_state<T>(
         let value_str = value
             .to_str()
             .map_err(|_| Status::unauthenticated("invalid auth token"))?;
-        let header_value =
-            HeaderValue::from_str(value_str).map_err(|_| Status::unauthenticated("invalid auth token"))?;
+        let header_value = HeaderValue::from_str(value_str)
+            .map_err(|_| Status::unauthenticated("invalid auth token"))?;
         headers.insert("authorization", header_value);
     }
 
@@ -207,6 +207,14 @@ fn scoped_namespace_grpc(
         }
         (Some(allowed), None) => Ok(Some(allowed.clone())),
     }
+}
+
+#[allow(clippy::result_large_err)]
+fn ensure_vault_unsealed(state: &AppState) -> Result<(), Status> {
+    if state.engine.config.sealed_mode && !state.engine.keychain.is_unsealed_sync() {
+        return Err(Status::failed_precondition("Vault sealed - please unseal"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -286,6 +294,7 @@ impl MindVaultService for MindVaultGrpc {
     ) -> Result<Response<StoreNodeResponse>, Status> {
         let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_write(&auth)?;
+        ensure_vault_unsealed(&self.state)?;
 
         let req = request.into_inner();
         let kind: NodeKind = req
@@ -361,6 +370,7 @@ impl MindVaultService for MindVaultGrpc {
     ) -> Result<Response<GetNodeResponse>, Status> {
         let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_read(&auth)?;
+        ensure_vault_unsealed(&self.state)?;
 
         let req = request.into_inner();
         let uuid = Uuid::parse_str(&req.id)
@@ -390,6 +400,7 @@ impl MindVaultService for MindVaultGrpc {
     ) -> Result<Response<UpdateNodeResponse>, Status> {
         let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_write(&auth)?;
+        ensure_vault_unsealed(&self.state)?;
 
         let req = request.into_inner();
         let proto_node = req
@@ -474,6 +485,7 @@ impl MindVaultService for MindVaultGrpc {
     ) -> Result<Response<DeleteNodeResponse>, Status> {
         let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_write(&auth)?;
+        ensure_vault_unsealed(&self.state)?;
 
         let req = request.into_inner();
         let uuid = Uuid::parse_str(&req.id)
@@ -509,6 +521,7 @@ impl MindVaultService for MindVaultGrpc {
     ) -> Result<Response<RecallResponse>, Status> {
         let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_read(&auth)?;
+        ensure_vault_unsealed(&self.state)?;
 
         let req = request.into_inner();
         validate_query_text("text", &req.text).map_err(Status::invalid_argument)?;
@@ -576,6 +589,7 @@ impl MindVaultService for MindVaultGrpc {
     ) -> Result<Response<ListNodesResponse>, Status> {
         let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_read(&auth)?;
+        ensure_vault_unsealed(&self.state)?;
 
         let req = request.into_inner();
 
@@ -626,6 +640,7 @@ impl MindVaultService for MindVaultGrpc {
     ) -> Result<Response<AddRelationshipResponse>, Status> {
         let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_write(&auth)?;
+        ensure_vault_unsealed(&self.state)?;
 
         let req = request.into_inner();
 
@@ -676,6 +691,7 @@ impl MindVaultService for MindVaultGrpc {
     ) -> Result<Response<GetNeighborsResponse>, Status> {
         let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_read(&auth)?;
+        ensure_vault_unsealed(&self.state)?;
 
         let req = request.into_inner();
         let uuid = Uuid::parse_str(&req.node_id)
@@ -725,6 +741,7 @@ impl MindVaultService for MindVaultGrpc {
     ) -> Result<Response<HealthResponse>, Status> {
         let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_read(&auth)?;
+        ensure_vault_unsealed(&self.state)?;
 
         let count = self
             .state
@@ -748,6 +765,7 @@ impl MindVaultService for MindVaultGrpc {
     ) -> Result<Response<Self::WatchChangesStream>, Status> {
         let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_read(&auth)?;
+        ensure_vault_unsealed(&self.state)?;
 
         let requested_namespace = request.into_inner().namespace;
         let namespace_filter = scoped_namespace_grpc(&auth, requested_namespace)?;
@@ -823,6 +841,25 @@ fn map_keychain_status(err: mv_core::MvError) -> Status {
     }
 }
 
+async fn log_unseal_attempt(
+    state: &AppState,
+    subject: &str,
+    method: &str,
+    outcome: &str,
+    reason: Option<&str>,
+) {
+    let logic = match reason {
+        Some(reason) => {
+            format!("subject={subject} method={method} outcome={outcome} reason={reason}")
+        }
+        None => format!("subject={subject} method={method} outcome={outcome}"),
+    };
+    let entry = ChronicleEntry::new("unseal_attempt", logic);
+    if let Err(err) = state.engine.log_chronicle(&entry).await {
+        tracing::warn!(error = %err, "failed to log unseal_attempt chronicle entry");
+    }
+}
+
 #[tonic::async_trait]
 impl KeychainService for KeychainGrpc {
     async fn init_vault(
@@ -855,22 +892,52 @@ impl KeychainService for KeychainGrpc {
         &self,
         request: Request<proto::UnsealRequest>,
     ) -> Result<Response<proto::UnsealResponse>, Status> {
-        let _auth = ensure_admin(&self.state, &request).await?;
+        let auth = ensure_admin(&self.state, &request).await?;
         let req = request.into_inner();
         let engine = &self.state.engine;
+        let subject = auth.subject.as_deref().unwrap_or("grpc");
+        let method = if req.from_macos_keychain {
+            "macos_keychain"
+        } else {
+            "preferred"
+        };
 
-        if req.from_macos_keychain {
-            engine
-                .keychain
-                .unseal_from_macos_keychain("grpc")
-                .await
-                .map_err(map_keychain_status)?;
+        let unseal_result = if req.from_macos_keychain {
+            engine.keychain.unseal_from_macos_keychain(subject).await
         } else {
             engine
                 .keychain
-                .unseal(&req.password.unwrap_or_default(), "grpc")
+                .unseal_with_preferred_master_key(
+                    req.password.as_deref().filter(|value| !value.is_empty()),
+                    subject,
+                )
                 .await
-                .map_err(map_keychain_status)?;
+                .map(|_| ())
+        };
+
+        match unseal_result {
+            Ok(()) => {
+                log_unseal_attempt(&self.state, subject, method, "success", None).await;
+                if self.state.engine.keychain.degraded_security_mode() {
+                    tracing::warn!(
+                        "vault unsealed in degraded security mode (passphrase fallback)"
+                    );
+                }
+                if let Err(err) = self.state.engine.migrate_sealed_storage().await {
+                    let _ = self.state.engine.keychain.seal("system").await;
+                    return Err(map_keychain_status(err));
+                }
+                if let Err(err) = self.state.engine.rebuild_runtime_indexes().await {
+                    let _ = self.state.engine.keychain.seal("system").await;
+                    return Err(map_keychain_status(err));
+                }
+            }
+            Err(err) => {
+                let reason = err.to_string();
+                log_unseal_attempt(&self.state, subject, method, "fail", Some(reason.as_str()))
+                    .await;
+                return Err(map_keychain_status(err));
+            }
         }
 
         Ok(Response::new(proto::UnsealResponse {
@@ -883,6 +950,7 @@ impl KeychainService for KeychainGrpc {
         request: Request<proto::SealRequest>,
     ) -> Result<Response<proto::SealResponse>, Status> {
         let _auth = ensure_admin(&self.state, &request).await?;
+        ensure_vault_unsealed(&self.state)?;
 
         self.state
             .engine
@@ -922,6 +990,7 @@ impl KeychainService for KeychainGrpc {
         request: Request<proto::RotateKeyRequest>,
     ) -> Result<Response<proto::RotateKeyResponse>, Status> {
         let _auth = ensure_admin(&self.state, &request).await?;
+        ensure_vault_unsealed(&self.state)?;
         let req = request.into_inner();
 
         self.state
@@ -950,6 +1019,7 @@ impl KeychainService for KeychainGrpc {
         request: Request<proto::StoreCredentialRequest>,
     ) -> Result<Response<proto::CredentialResponse>, Status> {
         let _auth = ensure_admin(&self.state, &request).await?;
+        ensure_vault_unsealed(&self.state)?;
         let req = request.into_inner();
 
         let domain_id: Uuid = req
@@ -998,6 +1068,7 @@ impl KeychainService for KeychainGrpc {
         request: Request<proto::ReadCredentialRequest>,
     ) -> Result<Response<proto::ReadCredentialResponse>, Status> {
         let _auth = ensure_admin(&self.state, &request).await?;
+        ensure_vault_unsealed(&self.state)?;
         let req = request.into_inner();
 
         let id: Uuid = req
@@ -1030,6 +1101,7 @@ impl KeychainService for KeychainGrpc {
         request: Request<proto::ListCredentialsRequest>,
     ) -> Result<Response<proto::ListCredentialsResponse>, Status> {
         let _auth = ensure_admin(&self.state, &request).await?;
+        ensure_vault_unsealed(&self.state)?;
         let req = request.into_inner();
 
         let domain_id = req
@@ -1085,6 +1157,7 @@ impl KeychainService for KeychainGrpc {
         request: Request<proto::DestroyCredentialRequest>,
     ) -> Result<Response<proto::DestroyCredentialResponse>, Status> {
         let _auth = ensure_admin(&self.state, &request).await?;
+        ensure_vault_unsealed(&self.state)?;
         let req = request.into_inner();
 
         let id: Uuid = req
@@ -1109,6 +1182,7 @@ impl KeychainService for KeychainGrpc {
         request: Request<proto::GenerateProofRequest>,
     ) -> Result<Response<proto::ZkProofResponse>, Status> {
         let _auth = ensure_admin(&self.state, &request).await?;
+        ensure_vault_unsealed(&self.state)?;
         let req = request.into_inner();
 
         let credential_id: Uuid = req
@@ -1135,6 +1209,7 @@ impl KeychainService for KeychainGrpc {
         request: Request<proto::VerifyProofRequest>,
     ) -> Result<Response<proto::VerifyProofResponse>, Status> {
         let _auth = ensure_admin(&self.state, &request).await?;
+        ensure_vault_unsealed(&self.state)?;
         let req = request.into_inner();
 
         // Deserialize the proof from JSON

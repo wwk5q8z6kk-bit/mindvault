@@ -22,8 +22,7 @@ pub struct WatcherReport {
 }
 
 /// Callback for broadcasting watcher discoveries to connected clients.
-pub type WatcherNotifier =
-    Arc<dyn Fn(&WatcherReport) + Send + Sync>;
+pub type WatcherNotifier = Arc<dyn Fn(&WatcherReport) + Send + Sync>;
 
 /// The Watcher Agent monitors vault changes and generates proposals.
 pub struct WatcherAgent {
@@ -58,6 +57,10 @@ impl WatcherAgent {
 
     /// Run a single watcher cycle
     pub async fn run_cycle(&self) -> MvResult<WatcherReport> {
+        if self.engine.config.sealed_mode && !self.engine.keychain.is_unsealed_sync() {
+            return Ok(WatcherReport::default());
+        }
+
         // Check quiet hours
         let gate = crate::autonomy::AutonomyGate::new(self.engine.store.clone());
         if gate.is_in_quiet_hours().await.unwrap_or(false) {
@@ -82,7 +85,9 @@ impl WatcherAgent {
                 );
                 let _ = self.engine.store.nodes.log_chronicle(&entry).await;
             }
-            Err(e) => report.errors.push(format!("Proposal expiration failed: {e}")),
+            Err(e) => report
+                .errors
+                .push(format!("Proposal expiration failed: {e}")),
             _ => {}
         }
 

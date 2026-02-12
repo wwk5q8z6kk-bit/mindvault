@@ -3,13 +3,14 @@ use std::sync::Arc;
 
 use mv_core::*;
 
+use crate::sealed_runtime::sealed_mode_enabled;
 use crate::sqlite::SqliteNodeStore;
-use crate::vector::{LanceVectorStore, NoopEmbedder};
+use crate::vector::{InMemoryVectorStore, LanceVectorStore, NoopEmbedder};
 
 /// Unified storage that wraps SQLite node store + LanceDB vector store + embedder.
 pub struct UnifiedStore {
     pub nodes: Arc<SqliteNodeStore>,
-    pub vectors: Option<Arc<LanceVectorStore>>,
+    pub vectors: Option<Arc<dyn VectorStore>>,
     pub embedder: Arc<dyn Embedder>,
 }
 
@@ -22,7 +23,11 @@ impl UnifiedStore {
         let lancedb_path = data_dir.join("lancedb");
 
         let nodes = Arc::new(SqliteNodeStore::open(&sqlite_path)?);
-        let vectors = Arc::new(LanceVectorStore::open(&lancedb_path, dimensions).await?);
+        let vectors: Arc<dyn VectorStore> = if sealed_mode_enabled() {
+            Arc::new(InMemoryVectorStore::new(dimensions))
+        } else {
+            Arc::new(LanceVectorStore::open(&lancedb_path, dimensions).await?)
+        };
         let embedder: Arc<dyn Embedder> = Arc::new(NoopEmbedder::new(dimensions));
 
         Ok(Self {

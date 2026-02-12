@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[cfg(feature = "local-embeddings")]
 use std::sync::Mutex;
@@ -11,6 +12,7 @@ use async_trait::async_trait;
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use tokio::sync::OnceCell;
+use tokio::sync::RwLock;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -25,6 +27,40 @@ pub struct LanceVectorStore {
     dimensions: usize,
     table: OnceCell<lancedb::Table>,
     namespace_supported: AtomicBool,
+}
+
+pub struct InMemoryVectorStore {
+    dimensions: usize,
+    entries: RwLock<HashMap<Uuid, (Vec<f32>, Option<String>)>>,
+}
+
+impl InMemoryVectorStore {
+    pub fn new(dimensions: usize) -> Self {
+        Self {
+            dimensions,
+            entries: RwLock::new(HashMap::new()),
+        }
+    }
+
+    fn cosine_similarity(left: &[f32], right: &[f32]) -> f64 {
+        let mut dot = 0.0f64;
+        let mut left_norm = 0.0f64;
+        let mut right_norm = 0.0f64;
+
+        for idx in 0..left.len() {
+            let l = left[idx] as f64;
+            let r = right[idx] as f64;
+            dot += l * r;
+            left_norm += l * l;
+            right_norm += r * r;
+        }
+
+        if left_norm == 0.0 || right_norm == 0.0 {
+            0.0
+        } else {
+            dot / (left_norm.sqrt() * right_norm.sqrt())
+        }
+    }
 }
 
 impl LanceVectorStore {
@@ -129,10 +165,7 @@ impl LanceVectorStore {
     }
 
     fn disable_namespace(&self) {
-        if self
-            .namespace_supported
-            .swap(false, Ordering::Relaxed)
-        {
+        if self.namespace_supported.swap(false, Ordering::Relaxed) {
             warn!(
                 "LanceDB table does not support namespace column. Falling back to legacy schema. Rebuild the vector table to enable namespace filtering."
             );
@@ -243,7 +276,12 @@ impl LanceVectorStore {
 
         let mut include_namespace = self.should_use_namespace();
         let namespaces = if include_namespace {
-            Some(items.iter().map(|(_, _, _, ns)| ns.clone()).collect::<Vec<_>>())
+            Some(
+                items
+                    .iter()
+                    .map(|(_, _, _, ns)| ns.clone())
+                    .collect::<Vec<_>>(),
+            )
         } else {
             None
         };
@@ -318,9 +356,7 @@ impl LanceVectorStore {
             }
         }
 
-        let stream = query
-            .execute()
-            .await;
+        let stream = query.execute().await;
 
         let stream = match stream {
             Ok(stream) => stream,
@@ -448,6 +484,76 @@ impl VectorStore for LanceVectorStore {
             .delete(&format!("id = '{}'", id))
             .await
             .map_err(|e| MvError::Storage(format!("lancedb delete: {e}")))?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl VectorStore for InMemoryVectorStore {
+    async fn upsert(
+        &self,
+        id: Uuid,
+        embedding: Vec<f32>,
+        _content: &str,
+        namespace: Option<&str>,
+    ) -> MvResult<()> {
+        if embedding.len() != self.dimensions {
+            return Err(MvError::InvalidInput(format!(
+                "embedding dimension mismatch: expected {}, got {}",
+                self.dimensions,
+                embedding.len()
+            )));
+        }
+        let mut guard = self.entries.write().await;
+        guard.insert(id, (embedding, namespace.map(str::to_string)));
+        Ok(())
+    }
+
+    async fn search(
+        &self,
+        embedding: Vec<f32>,
+        limit: usize,
+        min_score: f64,
+        namespace: Option<&str>,
+    ) -> MvResult<Vec<(Uuid, f64)>> {
+        if embedding.len() != self.dimensions {
+            return Err(MvError::InvalidInput(format!(
+                "query embedding dimension mismatch: expected {}, got {}",
+                self.dimensions,
+                embedding.len()
+            )));
+        }
+
+        let guard = self.entries.read().await;
+        let mut results = Vec::new();
+
+        for (id, (candidate, candidate_namespace)) in guard.iter() {
+            if let Some(ns) = namespace {
+                if candidate_namespace.as_deref() != Some(ns) {
+                    continue;
+                }
+            }
+            let score = Self::cosine_similarity(&embedding, candidate);
+            if score >= min_score {
+                results.push((*id, score));
+            }
+        }
+
+        results.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if results.len() > limit {
+            results.truncate(limit);
+        }
+        Ok(results)
+    }
+
+    async fn delete(&self, id: Uuid) -> MvResult<()> {
+        let mut guard = self.entries.write().await;
+        guard.remove(&id);
         Ok(())
     }
 }

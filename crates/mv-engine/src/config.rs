@@ -29,6 +29,11 @@ pub struct EngineConfig {
     pub linking: LinkingConfig,
     pub daily_notes: DailyNotesConfig,
     pub recurrence: RecurrenceConfig,
+    #[serde(default)]
+    pub sealed_mode: bool,
+    #[serde(default)]
+    pub encryption_config: EncryptionConfig,
+    #[serde(default)]
     pub encryption: EncryptionConfig,
     pub watcher: WatcherConfig,
     pub keychain: KeychainConfig,
@@ -165,6 +170,7 @@ impl EncryptionConfig {
 
 impl Default for EngineConfig {
     fn default() -> Self {
+        let encryption = EncryptionConfig::default();
         Self {
             data_dir: shellexpand("~/.mindvault/data"),
             profile: OwnerProfileConfig::default(),
@@ -185,7 +191,9 @@ impl Default for EngineConfig {
             linking: LinkingConfig::default(),
             daily_notes: DailyNotesConfig::default(),
             recurrence: RecurrenceConfig::default(),
-            encryption: EncryptionConfig::default(),
+            sealed_mode: false,
+            encryption_config: encryption.clone(),
+            encryption,
             watcher: WatcherConfig::default(),
             keychain: KeychainConfig::default(),
             ai_sidecar: AiSidecarConfig::default(),

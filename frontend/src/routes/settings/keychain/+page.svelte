@@ -838,6 +838,11 @@
 							</span>
 						{/if}
 					</div>
+					{#if $keychainStore.degradedSecurity}
+						<div class="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+							Degraded security mode: hardware-backed key storage is unavailable, passphrase fallback is active.
+						</div>
+					{/if}
 					<div class="mt-3 grid grid-cols-3 gap-3">
 						<div class="rounded-lg border border-slate-800/60 px-3 py-2.5 text-center">
 							<div class="text-lg font-bold text-white">{$keychainStore.epoch ?? 0}</div>

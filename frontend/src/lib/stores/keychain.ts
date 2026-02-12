@@ -7,6 +7,7 @@ export interface KeychainState {
 	autoSealSecs: number | null;
 	credentialCount: number | null;
 	domainCount: number | null;
+	degradedSecurity: boolean;
 	loading: boolean;
 }
 
@@ -16,6 +17,7 @@ const initial: KeychainState = {
 	autoSealSecs: null,
 	credentialCount: null,
 	domainCount: null,
+	degradedSecurity: false,
 	loading: false
 };
 
@@ -31,6 +33,7 @@ export async function pollVaultStatus(): Promise<void> {
 			autoSealSecs: res.auto_seal_remaining_secs,
 			credentialCount: res.credential_count,
 			domainCount: res.domain_count,
+			degradedSecurity: res.degraded_security ?? false,
 			loading: false
 		});
 	} catch {

@@ -26,6 +26,7 @@ export interface VaultStatusResponse {
 	created_at: string | null;
 	last_rotated_at: string | null;
 	auto_seal_remaining_secs: number | null;
+	degraded_security: boolean;
 }
 
 export interface DomainKey {

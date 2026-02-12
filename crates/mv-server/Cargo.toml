@@ -16,6 +16,7 @@ wip = ["mv-engine/wip"]
 [dependencies]
 mv-core = { workspace = true }
 mv-engine = { workspace = true, features = ["image-embeddings"] }
+mv-storage = { workspace = true }
 mv-plugin = { workspace = true }
 axum = { workspace = true }
 tonic = { workspace = true }

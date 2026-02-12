@@ -14,6 +14,8 @@ use axum::{
     routing::{delete, get, patch, post, put},
     Extension, Json, Router,
 };
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
@@ -28,13 +30,14 @@ use mv_engine::recurrence::{
     TASK_COMPLETED_METADATA_KEY, TASK_DUE_AT_METADATA_KEY, TASK_REMINDER_SENT_AT_METADATA_KEY,
     TASK_REMINDER_STATUS_METADATA_KEY,
 };
+use mv_storage::vault_crypto::VaultCrypto;
 
 #[path = "rest/assist.rs"]
 mod assist;
 use assist::{
     collect_completion_sources, generate_action_items_transform, generate_autocomplete_completions,
-    generate_completion_suggestions, generate_link_suggestions, generate_refine_transform,
-    generate_summary_transform, generate_meeting_notes_transform,
+    generate_completion_suggestions, generate_link_suggestions, generate_meeting_notes_transform,
+    generate_refine_transform, generate_summary_transform,
 };
 #[path = "rest/attachments.rs"]
 pub(crate) mod attachments;
@@ -67,10 +70,10 @@ use node_versions::{
 };
 #[path = "rest/autonomy.rs"]
 mod autonomy;
-#[path = "rest/exchange.rs"]
-mod exchange;
 #[path = "rest/comments.rs"]
 mod comments;
+#[path = "rest/exchange.rs"]
+mod exchange;
 #[path = "rest/feedback.rs"]
 mod feedback;
 #[path = "rest/keychain.rs"]
@@ -86,47 +89,49 @@ mod secrets;
 #[path = "rest/voice.rs"]
 mod voice;
 use voice::{is_audio_file, transcribe_audio, transcribe_audio_api, WhisperConfig};
-#[path = "rest/federation.rs"]
-mod federation;
 #[path = "rest/adapters.rs"]
 mod adapters;
-#[path = "rest/plugins.rs"]
-mod plugins;
-#[path = "rest/profile.rs"]
-mod profile;
-#[path = "rest/consumers.rs"]
-mod consumers;
-#[path = "rest/policies.rs"]
-mod policies;
-#[path = "rest/proxy.rs"]
-mod proxy;
-#[path = "rest/sync.rs"]
-mod sync;
+#[path = "rest/ai_proxy.rs"]
+mod ai_proxy;
 #[path = "rest/conflicts.rs"]
 mod conflicts;
+#[path = "rest/consumers.rs"]
+mod consumers;
+#[path = "rest/contact_identity.rs"]
+mod contact_identity;
 #[path = "rest/conversations.rs"]
 mod conversations;
 #[path = "rest/distill.rs"]
 mod distill;
-#[path = "rest/plans.rs"]
-mod plans;
-#[path = "rest/contact_identity.rs"]
-mod contact_identity;
-#[path = "rest/models.rs"]
-mod models;
-#[path = "rest/shares.rs"]
-mod shares;
+#[path = "rest/federation.rs"]
+mod federation;
 #[path = "rest/google_calendar.rs"]
 mod google_calendar;
-#[path = "rest/ai_proxy.rs"]
-mod ai_proxy;
+#[path = "rest/models.rs"]
+mod models;
+#[path = "rest/plans.rs"]
+mod plans;
+#[path = "rest/plugins.rs"]
+mod plugins;
+#[path = "rest/policies.rs"]
+mod policies;
+#[path = "rest/profile.rs"]
+mod profile;
+#[path = "rest/proxy.rs"]
+mod proxy;
+#[path = "rest/shares.rs"]
+mod shares;
+#[path = "rest/sync.rs"]
+mod sync;
 
 use crate::audit::{audit_middleware, list_audit_entries, AuditConfig, AuditEntry, AuditLogger};
 use crate::auth::{
     auth_middleware_with_state, authorize_namespace, authorize_read, authorize_write,
     namespace_for_create, scoped_namespace, AuthContext,
 };
-use crate::limits::{enforce_namespace_quota, enforce_rate_limit, NamespaceQuotaError, RateLimitStatus};
+use crate::limits::{
+    enforce_namespace_quota, enforce_rate_limit, NamespaceQuotaError, RateLimitStatus,
+};
 use crate::metrics::{init_metrics, metrics_handler, metrics_middleware};
 use crate::openapi::swagger_ui;
 use crate::state::AppState;
@@ -178,14 +183,8 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             "/api/v1/shares",
             get(shares::list_public_shares).post(shares::create_public_share),
         )
-        .route(
-            "/api/v1/shares/:id",
-            delete(shares::revoke_public_share),
-        )
-        .route(
-            "/public/shares/:token",
-            get(shares::get_public_share),
-        )
+        .route("/api/v1/shares/:id", delete(shares::revoke_public_share))
+        .route("/public/shares/:token", get(shares::get_public_share))
         .route("/api/v1/tasks/due", get(list_due_tasks))
         .route("/api/v1/briefing", get(daily_briefing))
         .route("/api/v1/agent/context", get(get_agent_context))
@@ -210,10 +209,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             "/api/v1/insights/cross-namespace",
             get(insight_cross_namespace),
         )
-        .route(
-            "/api/v1/insights/:id/dismiss",
-            post(dismiss_insight),
-        )
+        .route("/api/v1/insights/:id/dismiss", post(dismiss_insight))
         .route("/api/v1/insights/scan", post(insight_full_scan))
         .route("/api/v1/insights/clusters", get(insight_embedding_clusters))
         .route(
@@ -250,10 +246,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             "/api/v1/autonomy/action-log",
             get(autonomy::list_action_log),
         )
-        .route(
-            "/api/v1/autonomy/evaluate",
-            post(autonomy::evaluate),
-        )
+        .route("/api/v1/autonomy/evaluate", post(autonomy::evaluate))
         .route(
             "/api/v1/exchange/proposals",
             get(exchange::list_proposals).post(exchange::submit_proposal),
@@ -438,17 +431,32 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             put(safeguards::update_auto_approve_rule).delete(safeguards::remove_auto_approve_rule),
         )
         .route("/api/v1/secrets/status", get(secrets::secret_status))
-        .route("/api/v1/secrets/unlock", post(secrets::unlock_encrypted_file))
+        .route(
+            "/api/v1/secrets/unlock",
+            post(secrets::unlock_encrypted_file),
+        )
         .route("/api/v1/secrets", post(secrets::set_secret))
         .route("/api/v1/secrets/:key", delete(secrets::delete_secret))
         // --- Owner Profile ---
-        .route("/api/v1/profile", get(profile::get_profile).put(profile::update_profile))
+        .route(
+            "/api/v1/profile",
+            get(profile::get_profile).put(profile::update_profile),
+        )
         // --- Consumer Profiles ---
-        .route("/api/v1/consumers", post(consumers::create_consumer).get(consumers::list_consumers))
+        .route(
+            "/api/v1/consumers",
+            post(consumers::create_consumer).get(consumers::list_consumers),
+        )
         .route("/api/v1/consumers/whoami", get(consumers::whoami))
-        .route("/api/v1/consumers/:id", get(consumers::get_consumer).delete(consumers::revoke_consumer))
+        .route(
+            "/api/v1/consumers/:id",
+            get(consumers::get_consumer).delete(consumers::revoke_consumer),
+        )
         // --- Access Policies ---
-        .route("/api/v1/policies", post(policies::set_policy).get(policies::list_policies))
+        .route(
+            "/api/v1/policies",
+            post(policies::set_policy).get(policies::list_policies),
+        )
         .route("/api/v1/policies/matrix", get(policies::policy_matrix))
         .route("/api/v1/policies/my-access", get(policies::my_access))
         .route("/api/v1/policies/:id", delete(policies::delete_policy))
@@ -620,43 +628,48 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             "/api/v1/adapters",
             get(adapters::list_adapters).post(adapters::register_adapter),
         )
-        .route(
-            "/api/v1/adapters/statuses",
-            get(adapters::list_statuses),
-        )
+        .route("/api/v1/adapters/statuses", get(adapters::list_statuses))
         .route(
             "/api/v1/adapters/:id",
             get(adapters::get_adapter_status).delete(adapters::remove_adapter),
         )
-        .route(
-            "/api/v1/adapters/:id/send",
-            post(adapters::send_message),
-        )
-        .route(
-            "/api/v1/adapters/:id/health",
-            post(adapters::health_check),
-        )
+        .route("/api/v1/adapters/:id/send", post(adapters::send_message))
+        .route("/api/v1/adapters/:id/health", post(adapters::health_check))
         .route("/api/v1/multimodal/status", get(multimodal_status))
         // --- Device Sync ---
         .route("/api/v1/sync/export", post(sync::sync_export))
         .route("/api/v1/sync/import", post(sync::sync_import))
         .route("/api/v1/sync/status", get(sync::sync_status))
-        .route("/api/v1/sync/conflicts/:id/resolve", post(sync::resolve_sync_conflict))
+        .route(
+            "/api/v1/sync/conflicts/:id/resolve",
+            post(sync::resolve_sync_conflict),
+        )
         // --- Plugin System ---
-        .route("/api/v1/plugins", get(plugins::list_plugins).post(plugins::install_plugin))
+        .route(
+            "/api/v1/plugins",
+            get(plugins::list_plugins).post(plugins::install_plugin),
+        )
         .route("/api/v1/plugins/hooks", get(plugins::list_hook_points))
         .route("/api/v1/plugins/reload", post(plugins::reload_plugins))
         .route("/api/v1/plugins/:name", delete(plugins::uninstall_plugin))
         // --- Plugin Runtime ---
         .route("/api/v1/plugins/runtime", get(plugins::runtime_list))
-        .route("/api/v1/plugins/runtime/:name", get(plugins::runtime_get_plugin).delete(plugins::runtime_unload_plugin))
-        .route("/api/v1/plugins/runtime/:name/reload", post(plugins::runtime_reload_plugin))
-        .route("/api/v1/plugins/runtime/:name/hooks", get(plugins::runtime_plugin_hooks))
+        .route(
+            "/api/v1/plugins/runtime/:name",
+            get(plugins::runtime_get_plugin).delete(plugins::runtime_unload_plugin),
+        )
+        .route(
+            "/api/v1/plugins/runtime/:name/reload",
+            post(plugins::runtime_reload_plugin),
+        )
+        .route(
+            "/api/v1/plugins/runtime/:name/hooks",
+            get(plugins::runtime_plugin_hooks),
+        )
         // --- MCP Marketplace ---
         .route(
             "/api/v1/mcp/connectors",
-            get(mcp_marketplace::list_mcp_connectors)
-                .post(mcp_marketplace::create_mcp_connector),
+            get(mcp_marketplace::list_mcp_connectors).post(mcp_marketplace::create_mcp_connector),
         )
         .route(
             "/api/v1/mcp/connectors/:id",
@@ -709,10 +722,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         // --- Phase 3: Plans ---
         .route("/api/v1/plans", post(plans::create_plan))
         .route("/api/v1/plans/:id", get(plans::get_plan))
-        .route(
-            "/api/v1/plans/:id/approve",
-            post(plans::approve_plan),
-        )
+        .route("/api/v1/plans/:id/approve", post(plans::approve_plan))
         // --- Phase 3: Distillation ---
         .route("/api/v1/distill", post(distill::distill))
         // --- Phase 3: Local Models ---
@@ -726,7 +736,10 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/provenance/audit", get(provenance_audit))
         // --- Performance Diagnostics ---
         .route("/api/v1/diagnostics/health", get(diagnostics_health))
-        .route("/api/v1/diagnostics/performance", get(diagnostics_performance))
+        .route(
+            "/api/v1/diagnostics/performance",
+            get(diagnostics_performance),
+        )
         .route("/api/v1/audit", get(list_audit_logs))
         .route("/metrics", get(metrics_handler))
         .merge(swagger_ui())
@@ -737,6 +750,10 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             state.clone(),
             auth_middleware_with_state,
         ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            sealed_mode_middleware,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -745,6 +762,35 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
     } else {
         router.layer(build_cors_layer(cors_allowed_origins))
     }
+}
+
+async fn sealed_mode_middleware(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !state.engine.config.sealed_mode || state.engine.keychain.is_unsealed_sync() {
+        return next.run(request).await;
+    }
+
+    let path = request.uri().path();
+    let is_allowed = matches!(
+        path,
+        "/api/v1/keychain/status" | "/api/v1/keychain/unseal" | "/api/v1/keychain/init"
+    );
+
+    if is_allowed {
+        return next.run(request).await;
+    }
+
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "error": "Vault sealed - please unseal",
+            "code": "vault_sealed",
+        })),
+    )
+        .into_response()
 }
 
 fn build_cors_layer(cors_allowed_origins: &[String]) -> CorsLayer {
@@ -5129,6 +5175,105 @@ async fn resolve_attachment_path(
     Ok(canonical_candidate)
 }
 
+const SEALED_BLOB_MAGIC: &[u8; 4] = b"MVB1";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SealedBlobEnvelope {
+    v: u8,
+    wrapped_dek: String,
+    ciphertext: String,
+}
+
+async fn encrypt_attachment_bytes_for_storage(
+    state: &Arc<AppState>,
+    namespace: &str,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, (StatusCode, String)> {
+    if !state.engine.config.sealed_mode {
+        return Ok(plaintext.to_vec());
+    }
+    if !state.engine.keychain.is_unsealed_sync() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Vault sealed - please unseal".to_string(),
+        ));
+    }
+
+    let dek = VaultCrypto::generate_node_dek();
+    let wrapped_dek = state
+        .engine
+        .keychain
+        .wrap_namespace_dek(namespace, &dek)
+        .await
+        .map_err(map_mv_error)?;
+    let ciphertext = VaultCrypto::aes_gcm_encrypt_pub(&dek, plaintext).map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("blob encrypt failed: {err}"),
+        )
+    })?;
+    let envelope = SealedBlobEnvelope {
+        v: 1,
+        wrapped_dek,
+        ciphertext: BASE64.encode(ciphertext),
+    };
+    let envelope_json = serde_json::to_vec(&envelope).map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("blob envelope encode failed: {err}"),
+        )
+    })?;
+    let mut out = Vec::with_capacity(SEALED_BLOB_MAGIC.len() + envelope_json.len());
+    out.extend_from_slice(SEALED_BLOB_MAGIC);
+    out.extend_from_slice(&envelope_json);
+    Ok(out)
+}
+
+async fn decrypt_attachment_bytes_from_storage(
+    state: &Arc<AppState>,
+    namespace: &str,
+    payload: &[u8],
+) -> Result<Vec<u8>, (StatusCode, String)> {
+    if payload.len() < SEALED_BLOB_MAGIC.len()
+        || &payload[..SEALED_BLOB_MAGIC.len()] != SEALED_BLOB_MAGIC
+    {
+        return Ok(payload.to_vec());
+    }
+
+    if !state.engine.keychain.is_unsealed_sync() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Vault sealed - please unseal".to_string(),
+        ));
+    }
+
+    let envelope: SealedBlobEnvelope = serde_json::from_slice(&payload[SEALED_BLOB_MAGIC.len()..])
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("blob envelope decode failed: {err}"),
+            )
+        })?;
+    let dek = state
+        .engine
+        .keychain
+        .unwrap_namespace_dek(namespace, &envelope.wrapped_dek)
+        .await
+        .map_err(map_mv_error)?;
+    let ciphertext = BASE64.decode(&envelope.ciphertext).map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("blob ciphertext decode failed: {err}"),
+        )
+    })?;
+    VaultCrypto::aes_gcm_decrypt_pub(&dek, &ciphertext).map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("blob decrypt failed: {err}"),
+        )
+    })
+}
+
 async fn list_nodes_for_export(
     state: &AppState,
     namespace: Option<String>,
@@ -5368,8 +5513,7 @@ async fn assist_completion(
     if suggestions.is_empty() {
         suggestions = generate_completion_suggestions(&req.text, &results, suggestion_limit);
     } else if suggestions.len() < suggestion_limit {
-        let mut fallback =
-            generate_completion_suggestions(&req.text, &results, suggestion_limit);
+        let mut fallback = generate_completion_suggestions(&req.text, &results, suggestion_limit);
         let mut seen: std::collections::HashSet<String> =
             suggestions.iter().map(|s| s.to_ascii_lowercase()).collect();
         for item in fallback.drain(..) {
@@ -6355,7 +6499,11 @@ async fn apply_intent(
         .ok_or_else(|| (StatusCode::NOT_FOUND, "intent not found".to_string()))?;
 
     // Execute the intent action
-    let result = state.engine.apply_intent(uuid).await.map_err(map_mv_error)?;
+    let result = state
+        .engine
+        .apply_intent(uuid)
+        .await
+        .map_err(map_mv_error)?;
 
     // Record feedback for learning
     let fb = AgentFeedback::new(intent.intent_type.to_string(), "applied")
@@ -7116,7 +7264,9 @@ async fn upload_file(
 
     let stored_file_name = format!("{attachment_id}-{file_name}");
     let stored_path = scoped_dir.join(&stored_file_name);
-    tokio::fs::write(&stored_path, &file_bytes)
+    let encrypted_bytes =
+        encrypt_attachment_bytes_for_storage(&state, &node.namespace, &file_bytes).await?;
+    tokio::fs::write(&stored_path, &encrypted_bytes)
         .await
         .map_err(|err| {
             (
@@ -7385,7 +7535,9 @@ async fn upload_voice_note(
 
     let stored_file_name = format!("{attachment_id}-{file_name}");
     let stored_path = scoped_dir.join(&stored_file_name);
-    tokio::fs::write(&stored_path, &file_bytes)
+    let encrypted_bytes =
+        encrypt_attachment_bytes_for_storage(&state, &target_namespace, &file_bytes).await?;
+    tokio::fs::write(&stored_path, &encrypted_bytes)
         .await
         .map_err(|err| {
             (
@@ -7783,12 +7935,14 @@ async fn reindex_attachment(
     }
 
     let safe_path = resolve_attachment_path(&state, node_id, &attachment).await?;
-    let file_bytes = tokio::fs::read(&safe_path).await.map_err(|err| {
+    let raw_file_bytes = tokio::fs::read(&safe_path).await.map_err(|err| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to read attachment file: {err}"),
         )
     })?;
+    let file_bytes =
+        decrypt_attachment_bytes_from_storage(&state, &node.namespace, &raw_file_bytes).await?;
     let file_name_for_extraction = attachment.file_name.clone();
     let content_type_for_extraction = attachment.content_type.clone();
     let extraction: AttachmentTextExtractionOutcome = tokio::task::spawn_blocking(move || {
@@ -7938,7 +8092,7 @@ async fn reindex_failed_attachments(
             }
         };
 
-        let file_bytes = match tokio::fs::read(&safe_path).await {
+        let raw_file_bytes = match tokio::fs::read(&safe_path).await {
             Ok(bytes) => bytes,
             Err(err) => {
                 failed += 1;
@@ -7956,6 +8110,27 @@ async fn reindex_failed_attachments(
                 continue;
             }
         };
+        let file_bytes =
+            match decrypt_attachment_bytes_from_storage(&state, &node.namespace, &raw_file_bytes)
+                .await
+            {
+                Ok(bytes) => bytes,
+                Err((code, message)) => {
+                    failed += 1;
+                    items.push(AttachmentBatchReindexItemResponse {
+                        attachment_id,
+                        file_name: attachment.file_name.clone(),
+                        previous_status,
+                        extraction_status: attachment.extraction_status.clone(),
+                        extracted_chars: attachment.extracted_chars,
+                        outcome: "failed".to_string(),
+                        message: Some(format!("{code}: {message}")),
+                        search_chunk_count: None,
+                        search_preview: None,
+                    });
+                    continue;
+                }
+            };
 
         let file_name_for_extraction = attachment.file_name.clone();
         let content_type_for_extraction = attachment.content_type.clone();
@@ -8073,12 +8248,13 @@ async fn download_attachment(
         .find(|item| item.id == attachment_id)
         .ok_or((StatusCode::NOT_FOUND, "attachment not found".into()))?;
     let safe_path = resolve_attachment_path(&state, node_id, attachment).await?;
-    let bytes = tokio::fs::read(&safe_path).await.map_err(|err| {
+    let raw_bytes = tokio::fs::read(&safe_path).await.map_err(|err| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to read file: {err}"),
         )
     })?;
+    let bytes = decrypt_attachment_bytes_from_storage(&state, &node.namespace, &raw_bytes).await?;
 
     let mut response = Response::new(Body::from(bytes));
     let content_type = attachment
@@ -10301,7 +10477,11 @@ async fn get_node(
     authorize_read(&auth)?;
     let uuid = parse_uuid_param(&id, "node id")?;
 
-    let node = state.engine.get_node(uuid).await.map_err(map_mv_error)?
+    let node = state
+        .engine
+        .get_node(uuid)
+        .await
+        .map_err(map_mv_error)?
         .ok_or((StatusCode::NOT_FOUND, "node not found".into()))?;
 
     authorize_namespace(&auth, &node.namespace)?;
@@ -12634,8 +12814,8 @@ mod tests {
             .single()
             .expect("valid datetime");
 
-        let mut task = KnowledgeNode::new(NodeKind::Task, "Finish weekly planning")
-            .with_namespace("ops");
+        let mut task =
+            KnowledgeNode::new(NodeKind::Task, "Finish weekly planning").with_namespace("ops");
         task.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
             serde_json::Value::String(due_task_at.to_rfc3339()),
@@ -12725,8 +12905,7 @@ mod tests {
             serde_json::Value::Bool(true),
         );
 
-        let mut event =
-            KnowledgeNode::new(NodeKind::Event, "Client kickoff").with_namespace("ops");
+        let mut event = KnowledgeNode::new(NodeKind::Event, "Client kickoff").with_namespace("ops");
         event.metadata.insert(
             EVENT_START_AT_METADATA_KEY.into(),
             serde_json::Value::String(event_start_at.to_rfc3339()),
@@ -12840,14 +13019,12 @@ mod tests {
             .single()
             .expect("valid datetime");
 
-        let mut task =
-            KnowledgeNode::new(NodeKind::Task, "Finalize agenda").with_namespace("ops");
+        let mut task = KnowledgeNode::new(NodeKind::Task, "Finalize agenda").with_namespace("ops");
         task.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
             serde_json::Value::String(task_due_at.to_rfc3339()),
         );
-        let mut event =
-            KnowledgeNode::new(NodeKind::Event, "Client sync").with_namespace("ops");
+        let mut event = KnowledgeNode::new(NodeKind::Event, "Client sync").with_namespace("ops");
         event.metadata.insert(
             EVENT_START_AT_METADATA_KEY.into(),
             serde_json::Value::String(event_start_at.to_rfc3339()),
@@ -12975,8 +13152,8 @@ mod tests {
     #[tokio::test]
     async fn export_calendar_ical_handler_returns_calendar_headers() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
-        let mut task = KnowledgeNode::new(NodeKind::Task, "Prepare weekly report")
-            .with_namespace("ops");
+        let mut task =
+            KnowledgeNode::new(NodeKind::Task, "Prepare weekly report").with_namespace("ops");
         task.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
             serde_json::Value::String("2026-02-06T09:00:00Z".to_string()),
@@ -13032,8 +13209,8 @@ mod tests {
             .single()
             .expect("valid datetime");
 
-        let mut task_a = KnowledgeNode::new(NodeKind::Task, "Finish incident review")
-            .with_namespace("ops");
+        let mut task_a =
+            KnowledgeNode::new(NodeKind::Task, "Finish incident review").with_namespace("ops");
         task_a.metadata.insert(
             TASK_DUE_AT_METADATA_KEY.into(),
             serde_json::Value::String(due_a.to_rfc3339()),
@@ -13247,8 +13424,7 @@ mod tests {
         let task = state
             .engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Task, "Draft launch checklist")
-                    .with_namespace("ops"),
+                KnowledgeNode::new(NodeKind::Task, "Draft launch checklist").with_namespace("ops"),
             )
             .await
             .expect("task should store");
@@ -13261,9 +13437,8 @@ mod tests {
             .with_ymd_and_hms(2026, 2, 6, 11, 0, 0)
             .single()
             .expect("valid datetime");
-        let mut time_block =
-            KnowledgeNode::new(NodeKind::Event, "Focus block: launch checklist")
-                .with_namespace("ops");
+        let mut time_block = KnowledgeNode::new(NodeKind::Event, "Focus block: launch checklist")
+            .with_namespace("ops");
         time_block.tags.push("time-block".to_string());
         time_block.metadata.insert(
             EVENT_START_AT_METADATA_KEY.to_string(),
@@ -13429,8 +13604,7 @@ mod tests {
         let stored = state
             .engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "This is a fact node")
-                    .with_namespace("ops"),
+                KnowledgeNode::new(NodeKind::Fact, "This is a fact node").with_namespace("ops"),
             )
             .await
             .expect("fact should store");
@@ -13900,7 +14074,10 @@ mod tests {
         assert_eq!(auto_only.total_backlinks, 1);
         assert_eq!(auto_only.backlinks.len(), 1);
         assert!(auto_only.backlinks[0].auto_managed);
-        assert_eq!(auto_only.backlinks[0].auto_source.as_deref(), Some("wikilink"));
+        assert_eq!(
+            auto_only.backlinks[0].auto_source.as_deref(),
+            Some("wikilink")
+        );
 
         let Json(by_source) = get_node_backlinks(
             Extension(AuthContext::system_admin()),
@@ -13915,7 +14092,10 @@ mod tests {
         .expect("source-filtered backlinks should load");
         assert_eq!(by_source.total_backlinks, 1);
         assert_eq!(by_source.backlinks.len(), 1);
-        assert_eq!(by_source.backlinks[0].auto_source.as_deref(), Some("wikilink"));
+        assert_eq!(
+            by_source.backlinks[0].auto_source.as_deref(),
+            Some("wikilink")
+        );
 
         let Json(paged) = get_node_backlinks(
             Extension(AuthContext::system_admin()),
@@ -13938,8 +14118,7 @@ mod tests {
     #[tokio::test]
     async fn list_node_attachments_returns_download_urls() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
-        let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -13992,8 +14171,7 @@ mod tests {
     #[tokio::test]
     async fn list_node_attachments_supports_query_and_status_filters() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
-        let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14139,8 +14317,7 @@ mod tests {
     #[tokio::test]
     async fn list_node_attachments_supports_limit_and_offset() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
-        let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14197,8 +14374,7 @@ mod tests {
     #[tokio::test]
     async fn list_node_attachments_paged_returns_counts_and_facets() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
-        let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14274,8 +14450,7 @@ mod tests {
     #[tokio::test]
     async fn list_node_attachments_paged_supports_sort_orders() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
-        let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14335,8 +14510,7 @@ mod tests {
     #[tokio::test]
     async fn get_attachment_chunks_returns_paginated_chunks() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
-        let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14394,8 +14568,7 @@ mod tests {
     #[tokio::test]
     async fn get_attachment_chunks_falls_back_to_text_index_when_chunk_index_missing() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
-        let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14446,9 +14619,7 @@ mod tests {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let stored = state
             .engine
-            .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops"),
-            )
+            .store_node(KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops"))
             .await
             .expect("node should store");
 
@@ -14527,8 +14698,7 @@ mod tests {
     #[tokio::test]
     async fn reindex_attachment_rejects_transcribed_status() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
-        let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14569,9 +14739,7 @@ mod tests {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let stored = state
             .engine
-            .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops"),
-            )
+            .store_node(KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops"))
             .await
             .expect("node should store");
 
@@ -14753,8 +14921,7 @@ mod tests {
     #[tokio::test]
     async fn delete_attachment_removes_metadata_entry() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
-        let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14819,8 +14986,7 @@ mod tests {
     #[tokio::test]
     async fn delete_filtered_attachments_supports_dry_run_and_confirmation_guards() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
-        let mut node =
-            KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops");
         node.metadata.insert(
             "attachments".into(),
             serde_json::json!([
@@ -14904,9 +15070,7 @@ mod tests {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let stored = state
             .engine
-            .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops"),
-            )
+            .store_node(KnowledgeNode::new(NodeKind::Fact, "Attachment node").with_namespace("ops"))
             .await
             .expect("node should store");
 

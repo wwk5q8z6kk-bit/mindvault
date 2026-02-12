@@ -12,8 +12,8 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
-use tracing::warn;
 use sharks::{Share, Sharks};
+use tracing::warn;
 use zeroize::Zeroizing;
 
 use crate::crypto::EncryptionConfig;
@@ -27,13 +27,13 @@ const VERIFICATION_SENTINEL: &[u8] = b"MINDVAULT_VAULT_SENTINEL_V1";
 const CIPHERTEXT_VERSION_1: u8 = 0x01;
 
 // Argon2 parameter floor values (below these, unseal is refused)
-const ARGON2_MIN_MEMORY_KIB: u32 = 16384; // 16 MiB
-const ARGON2_MIN_ITERATIONS: u32 = 2;
-const ARGON2_MIN_PARALLELISM: u32 = 1;
+const ARGON2_MIN_MEMORY_KIB: u32 = 65536; // 64 MiB
+const ARGON2_MIN_ITERATIONS: u32 = 4;
+const ARGON2_MIN_PARALLELISM: u32 = 4;
 
 // Argon2 recommended values (below these, a warning is logged)
 const ARGON2_REC_MEMORY_KIB: u32 = 65536; // 64 MiB
-const ARGON2_REC_ITERATIONS: u32 = 3;
+const ARGON2_REC_ITERATIONS: u32 = 4;
 const ARGON2_REC_PARALLELISM: u32 = 4;
 
 /// Validate Argon2 parameters. Returns an error if below the absolute minimum floor.
@@ -235,6 +235,21 @@ impl VaultCrypto {
         hk.expand(derivation_info.as_bytes(), okm.as_mut())
             .map_err(|e| VaultCryptoError::KeyDerivation(e.to_string()))?;
         Ok(okm)
+    }
+
+    /// Derive a namespace-scoped KEK for sealed-mode data envelope operations.
+    pub fn derive_namespace_kek(
+        &self,
+        namespace: &str,
+    ) -> Result<Zeroizing<[u8; KEY_SIZE]>, VaultCryptoError> {
+        self.derive_domain_key(&format!("sealed-namespace-kek:{namespace}"))
+    }
+
+    /// Generate a random per-node DEK.
+    pub fn generate_node_dek() -> [u8; KEY_SIZE] {
+        let mut dek = [0u8; KEY_SIZE];
+        OsRng.fill_bytes(&mut dek);
+        dek
     }
 
     /// Derive a credential-level key: two-level HKDF derivation.
@@ -607,6 +622,58 @@ impl VaultCrypto {
     ) -> Result<Vec<u8>, VaultCryptoError> {
         aes_gcm_encrypt(key, plaintext)
     }
+
+    /// Public helper for AES-256-GCM decryption (expects nonce-prefixed ciphertext).
+    pub fn aes_gcm_decrypt_pub(
+        key: &[u8; KEY_SIZE],
+        data: &[u8],
+    ) -> Result<Vec<u8>, VaultCryptoError> {
+        aes_gcm_decrypt(key, data)
+    }
+
+    /// Wrap a raw DEK under a namespace KEK and encode as base64.
+    pub fn wrap_dek(
+        namespace_kek: &[u8; KEY_SIZE],
+        dek: &[u8; KEY_SIZE],
+    ) -> Result<String, VaultCryptoError> {
+        let wrapped = aes_gcm_encrypt(namespace_kek, dek)?;
+        Ok(BASE64.encode(wrapped))
+    }
+
+    /// Unwrap a base64-encoded DEK using a namespace KEK.
+    pub fn unwrap_dek(
+        namespace_kek: &[u8; KEY_SIZE],
+        wrapped_b64: &str,
+    ) -> Result<[u8; KEY_SIZE], VaultCryptoError> {
+        let wrapped = BASE64
+            .decode(wrapped_b64)
+            .map_err(|e| VaultCryptoError::Decryption(format!("base64: {e}")))?;
+        let plaintext = aes_gcm_decrypt(namespace_kek, &wrapped)?;
+        if plaintext.len() != KEY_SIZE {
+            return Err(VaultCryptoError::Decryption(
+                "invalid unwrapped dek length".to_string(),
+            ));
+        }
+        let mut dek = [0u8; KEY_SIZE];
+        dek.copy_from_slice(&plaintext);
+        Ok(dek)
+    }
+
+    /// Backward-compatible alias for `wrap_dek`.
+    pub fn wrap_node_dek(
+        namespace_kek: &[u8; KEY_SIZE],
+        dek: &[u8; KEY_SIZE],
+    ) -> Result<String, VaultCryptoError> {
+        Self::wrap_dek(namespace_kek, dek)
+    }
+
+    /// Backward-compatible alias for `unwrap_dek`.
+    pub fn unwrap_node_dek(
+        namespace_kek: &[u8; KEY_SIZE],
+        wrapped_b64: &str,
+    ) -> Result<[u8; KEY_SIZE], VaultCryptoError> {
+        Self::unwrap_dek(namespace_kek, wrapped_b64)
+    }
 }
 
 impl Default for VaultCrypto {
@@ -636,10 +703,7 @@ impl VaultCrypto {
     ///
     /// Output format: `[salt(16)] || [AES-GCM ciphertext]`
     /// where the AES key is derived via Argon2id(passphrase, salt).
-    pub fn encrypt_share(
-        share_data: &[u8],
-        passphrase: &str,
-    ) -> Result<Vec<u8>, VaultCryptoError> {
+    pub fn encrypt_share(share_data: &[u8], passphrase: &str) -> Result<Vec<u8>, VaultCryptoError> {
         let mut salt = [0u8; SHARE_SALT_SIZE];
         OsRng.fill_bytes(&mut salt);
 
@@ -653,10 +717,7 @@ impl VaultCrypto {
     }
 
     /// Decrypt a Shamir share's data with a passphrase.
-    pub fn decrypt_share(
-        encrypted: &[u8],
-        passphrase: &str,
-    ) -> Result<Vec<u8>, VaultCryptoError> {
+    pub fn decrypt_share(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>, VaultCryptoError> {
         if encrypted.len() < SHARE_SALT_SIZE + 1 + NONCE_SIZE + 16 {
             return Err(VaultCryptoError::Decryption(
                 "encrypted share too short".into(),
@@ -671,10 +732,7 @@ impl VaultCrypto {
 
     /// Derive an AES-256 key from a passphrase and salt using lightweight Argon2id
     /// (tuned for interactive share entry, not vault unsealing).
-    fn derive_share_key(
-        passphrase: &str,
-        salt: &[u8],
-    ) -> Result<[u8; KEY_SIZE], VaultCryptoError> {
+    fn derive_share_key(passphrase: &str, salt: &[u8]) -> Result<[u8; KEY_SIZE], VaultCryptoError> {
         let argon2 = Argon2::new(
             argon2::Algorithm::Argon2id,
             argon2::Version::V0x13,
@@ -836,6 +894,16 @@ mod tests {
         let k1 = vc.derive_domain_key("domain:api-keys").unwrap();
         let k2 = vc.derive_domain_key("domain:ssh-keys").unwrap();
         assert_ne!(k1.as_ref(), k2.as_ref());
+    }
+
+    #[test]
+    fn derive_namespace_kek_is_stable_and_scoped() {
+        let vc = test_crypto();
+        let a1 = vc.derive_namespace_kek("default").unwrap();
+        let a2 = vc.derive_namespace_kek("default").unwrap();
+        let b = vc.derive_namespace_kek("other").unwrap();
+        assert_eq!(a1.as_ref(), a2.as_ref());
+        assert_ne!(a1.as_ref(), b.as_ref());
     }
 
     #[test]
@@ -1021,7 +1089,7 @@ mod tests {
         let config = EncryptionConfig {
             enabled: true,
             argon2_memory_kib: 1024, // below 16384 floor
-            argon2_iterations: 3,
+            argon2_iterations: 4,
             argon2_parallelism: 4,
         };
         assert!(validate_argon2_params(&config).is_err());
@@ -1031,6 +1099,16 @@ mod tests {
     fn validate_argon2_accepts_good_params() {
         let config = EncryptionConfig::default();
         assert!(validate_argon2_params(&config).is_ok());
+    }
+
+    #[test]
+    fn wrap_unwrap_node_dek_roundtrip() {
+        let vc = test_crypto();
+        let kek = vc.derive_namespace_kek("default").unwrap();
+        let dek = VaultCrypto::generate_node_dek();
+        let wrapped = VaultCrypto::wrap_node_dek(&kek, &dek).unwrap();
+        let unwrapped = VaultCrypto::unwrap_node_dek(&kek, &wrapped).unwrap();
+        assert_eq!(dek, unwrapped);
     }
 
     // --- Shamir tests ---
@@ -1043,12 +1121,10 @@ mod tests {
         assert_eq!(shares.len(), 3);
 
         // Any 2 shares should recover the key
-        let recovered =
-            VaultCrypto::recover_from_shares(&shares[0..2], 2).unwrap();
+        let recovered = VaultCrypto::recover_from_shares(&shares[0..2], 2).unwrap();
         assert_eq!(&*recovered, &*original_key);
 
-        let recovered2 =
-            VaultCrypto::recover_from_shares(&shares[1..3], 2).unwrap();
+        let recovered2 = VaultCrypto::recover_from_shares(&shares[1..3], 2).unwrap();
         assert_eq!(&*recovered2, &*original_key);
 
         let recovered3 =
@@ -1063,8 +1139,7 @@ mod tests {
         let shares = vc.split_master_key(3, 5).unwrap();
         assert_eq!(shares.len(), 5);
 
-        let recovered =
-            VaultCrypto::recover_from_shares(&shares[0..3], 3).unwrap();
+        let recovered = VaultCrypto::recover_from_shares(&shares[0..3], 3).unwrap();
         assert_eq!(&*recovered, &*original_key);
     }
 

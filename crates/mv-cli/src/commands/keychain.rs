@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use std::io::{self, Write};
 use std::sync::Arc;
 
-use mv_engine::keychain::KeychainEngine;
+use mv_engine::keychain::{KeychainEngine, MasterKeySource};
 use mv_storage::keychain::SqliteKeychainStore;
 
 use super::{load_config, shellexpand};
@@ -154,27 +154,48 @@ pub async fn unseal(
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         println!("vault unsealed (from macOS Keychain)");
     } else {
-        let password = if from_env {
-            std::env::var("MINDVAULT_VAULT_PASSWORD").context("MINDVAULT_VAULT_PASSWORD not set")?
+        let source = if from_env {
+            let password =
+                std::env::var("MINDVAULT_VAULT_PASSWORD").context("MINDVAULT_VAULT_PASSWORD not set")?;
+            engine
+                .unseal_with_preferred_master_key(Some(&password), "cli")
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?
         } else {
-            prompt_password("Enter vault password: ")?
+            match engine.unseal_with_preferred_master_key(None, "cli").await {
+                Ok(source) => source,
+                Err(_) => {
+                    let password = prompt_password("Enter vault password: ")?;
+                    engine
+                        .unseal_with_preferred_master_key(Some(&password), "cli")
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                }
+            }
         };
-        engine
-            .unseal(&password, "cli")
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        println!("vault unsealed");
+
+        match source {
+            MasterKeySource::SecureEnclave => println!("vault unsealed (from Secure Enclave)"),
+            MasterKeySource::OsSecureStorage => println!("vault unsealed (from OS secure storage)"),
+            MasterKeySource::PassphraseArgon2id => println!("vault unsealed"),
+        }
     }
 
     if timeout > 0 {
         println!("auto-seal timeout: {timeout}s");
+    }
+    if engine.degraded_security_mode() {
+        eprintln!("warning: degraded security mode active (passphrase fallback in use)");
     }
     Ok(())
 }
 
 pub async fn seal(config_path: &str) -> Result<()> {
     let engine = build_engine(config_path).await?;
-    engine.seal("cli").await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    engine
+        .seal("cli")
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("vault sealed");
     Ok(())
 }
@@ -206,6 +227,9 @@ pub async fn status(config_path: &str) -> Result<()> {
         if m.macos_keychain_service.is_some() {
             println!("macOS bridge:   enabled");
         }
+    }
+    if engine.degraded_security_mode() {
+        println!("Security mode:  degraded (passphrase fallback)");
     }
     Ok(())
 }
@@ -527,7 +551,9 @@ pub async fn audit_verify(config_path: &str) -> Result<()> {
             println!("audit chain integrity: OK (signatures verified)");
         }
         "chain_only_valid" => {
-            println!("audit chain integrity: OK (chain valid, vault sealed — signatures not checked)");
+            println!(
+                "audit chain integrity: OK (chain valid, vault sealed — signatures not checked)"
+            );
         }
         _ => {
             println!("audit chain integrity: FAILED");

@@ -31,7 +31,7 @@ impl Default for EncryptionConfig {
         Self {
             enabled: false,
             argon2_memory_kib: 65536, // 64 MiB
-            argon2_iterations: 3,
+            argon2_iterations: 4,
             argon2_parallelism: 4,
         }
     }
@@ -52,7 +52,7 @@ impl EncryptionConfig {
         let argon2_iterations = std::env::var("MINDVAULT_ENCRYPTION_ARGON2_ITERATIONS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(3);
+            .unwrap_or(4);
 
         let argon2_parallelism = std::env::var("MINDVAULT_ENCRYPTION_ARGON2_PARALLELISM")
             .ok()

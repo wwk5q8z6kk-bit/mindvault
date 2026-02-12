@@ -2,17 +2,31 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use chrono::Utc;
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
+use crate::sealed_runtime::{runtime_root_key, sealed_mode_enabled};
+use crate::vault_crypto::VaultCrypto;
 use mv_core::*;
 
 /// Default number of connections in the pool.
 /// SQLite WAL mode supports 1 writer + N readers, so even a small pool
 /// eliminates head-of-line blocking for concurrent read queries.
 const DEFAULT_POOL_SIZE: usize = 4;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SealedNodePayload {
+    title: Option<String>,
+    content: String,
+    source: Option<String>,
+    metadata: std::collections::HashMap<String, serde_json::Value>,
+}
 
 pub struct SqliteNodeStore {
     /// Connection pool — round-robin across `DEFAULT_POOL_SIZE` connections.
@@ -90,7 +104,10 @@ impl SqliteNodeStore {
         //
         // SQLITE_OPEN_URI is required for rusqlite to parse the URI; the
         // default OpenFlags do NOT include it.
-        let uri = format!("file:memdb{}?mode=memory&cache=shared", uuid::Uuid::new_v4());
+        let uri = format!(
+            "file:memdb{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4()
+        );
         let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
             | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
             | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -113,11 +130,8 @@ impl SqliteNodeStore {
     }
 
     pub fn open_read_only(path: &Path) -> MvResult<Self> {
-        let conn = Connection::open_with_flags(
-            path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .map_err(|e| MvError::Storage(format!("failed to open sqlite (read-only): {e}")))?;
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| MvError::Storage(format!("failed to open sqlite (read-only): {e}")))?;
 
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA query_only=ON;")
             .map_err(|e| MvError::Storage(format!("pragma error: {e}")))?;
@@ -139,26 +153,60 @@ impl SqliteNodeStore {
         // Versions 002, 009, 017-021 are keychain-only and applied in
         // SqliteKeychainStore — they are intentionally excluded here.
         const MIGRATIONS: &[(i64, &str)] = &[
-            (1,  include_str!("../../../migrations/001_initial.sql")),
-            (3,  include_str!("../../../migrations/003_agentic.sql")),
-            (4,  include_str!("../../../migrations/004_exchange.sql")),
-            (5,  include_str!("../../../migrations/005_relay_safeguards.sql")),
-            (6,  include_str!("../../../migrations/006_feedback.sql")),
-            (7,  include_str!("../../../migrations/007_autonomy.sql")),
-            (8,  include_str!("../../../migrations/008_relay.sql")),
+            (1, include_str!("../../../migrations/001_initial.sql")),
+            (3, include_str!("../../../migrations/003_agentic.sql")),
+            (4, include_str!("../../../migrations/004_exchange.sql")),
+            (
+                5,
+                include_str!("../../../migrations/005_relay_safeguards.sql"),
+            ),
+            (6, include_str!("../../../migrations/006_feedback.sql")),
+            (7, include_str!("../../../migrations/007_autonomy.sql")),
+            (8, include_str!("../../../migrations/008_relay.sql")),
             (10, include_str!("../../../migrations/010_profile.sql")),
-            (11, include_str!("../../../migrations/011_consumer_profiles.sql")),
-            (12, include_str!("../../../migrations/012_access_policies.sql")),
+            (
+                11,
+                include_str!("../../../migrations/011_consumer_profiles.sql"),
+            ),
+            (
+                12,
+                include_str!("../../../migrations/012_access_policies.sql"),
+            ),
             (13, include_str!("../../../migrations/013_proxy_audit.sql")),
             (14, include_str!("../../../migrations/014_conflicts.sql")),
-            (15, include_str!("../../../migrations/015_contact_identity.sql")),
-            (16, include_str!("../../../migrations/016_approval_queue.sql")),
-            (22, include_str!("../../../migrations/022_adapter_poll_state.sql")),
-            (23, include_str!("../../../migrations/023_conversations.sql")),
+            (
+                15,
+                include_str!("../../../migrations/015_contact_identity.sql"),
+            ),
+            (
+                16,
+                include_str!("../../../migrations/016_approval_queue.sql"),
+            ),
+            (
+                22,
+                include_str!("../../../migrations/022_adapter_poll_state.sql"),
+            ),
+            (
+                23,
+                include_str!("../../../migrations/023_conversations.sql"),
+            ),
             (24, include_str!("../../../migrations/024_plans.sql")),
-            (25, include_str!("../../../migrations/025_public_shares.sql")),
-            (26, include_str!("../../../migrations/026_node_comments.sql")),
-            (27, include_str!("../../../migrations/027_mcp_connectors.sql")),
+            (
+                25,
+                include_str!("../../../migrations/025_public_shares.sql"),
+            ),
+            (
+                26,
+                include_str!("../../../migrations/026_node_comments.sql"),
+            ),
+            (
+                27,
+                include_str!("../../../migrations/027_mcp_connectors.sql"),
+            ),
+            (
+                28,
+                include_str!("../../../migrations/028_sealed_node_payloads.sql"),
+            ),
         ];
 
         // Migration 001 must always run first to create schema_version table.
@@ -190,12 +238,69 @@ impl SqliteNodeStore {
         Ok(())
     }
 
+    fn as_sql_conversion_error(column: usize, message: impl Into<String>) -> rusqlite::Error {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                message.into(),
+            )),
+        )
+    }
+
+    fn derive_namespace_kek(namespace: &str) -> MvResult<[u8; 32]> {
+        let root = runtime_root_key().ok_or(MvError::VaultSealed)?;
+        let mut crypto = VaultCrypto::new();
+        crypto.set_master_key(Zeroizing::new(root));
+        let key = crypto
+            .derive_namespace_kek(namespace)
+            .map_err(|err| MvError::Storage(format!("derive namespace key failed: {err}")))?;
+        Ok(*key)
+    }
+
+    fn encrypt_node_payload(node: &KnowledgeNode) -> MvResult<(String, String)> {
+        let kek = Self::derive_namespace_kek(&node.namespace)?;
+        let dek = VaultCrypto::generate_node_dek();
+        let payload = SealedNodePayload {
+            title: node.title.clone(),
+            content: node.content.clone(),
+            source: node.source.clone(),
+            metadata: node.metadata.clone(),
+        };
+        let plaintext = serde_json::to_vec(&payload)
+            .map_err(|err| MvError::Storage(format!("serialize sealed payload: {err}")))?;
+        let ciphertext = VaultCrypto::aes_gcm_encrypt_pub(&dek, &plaintext)
+            .map_err(|err| MvError::Storage(format!("encrypt sealed payload: {err}")))?;
+        let wrapped_dek = VaultCrypto::wrap_node_dek(&kek, &dek)
+            .map_err(|err| MvError::Storage(format!("wrap node dek failed: {err}")))?;
+        Ok((wrapped_dek, BASE64.encode(ciphertext)))
+    }
+
+    fn decrypt_node_payload(
+        namespace: &str,
+        wrapped_dek: &str,
+        payload_ciphertext: &str,
+    ) -> MvResult<SealedNodePayload> {
+        let kek = Self::derive_namespace_kek(namespace)?;
+        let dek = VaultCrypto::unwrap_node_dek(&kek, wrapped_dek)
+            .map_err(|err| MvError::Storage(format!("unwrap node dek failed: {err}")))?;
+        let ciphertext = BASE64
+            .decode(payload_ciphertext)
+            .map_err(|err| MvError::Storage(format!("decode sealed payload failed: {err}")))?;
+        let plaintext = VaultCrypto::aes_gcm_decrypt_pub(&dek, &ciphertext)
+            .map_err(|err| MvError::Storage(format!("decrypt sealed payload failed: {err}")))?;
+        let payload: SealedNodePayload = serde_json::from_slice(&plaintext)
+            .map_err(|err| MvError::Storage(format!("parse sealed payload failed: {err}")))?;
+        Ok(payload)
+    }
+
     fn row_to_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeNode> {
         let id_str: String = row.get(0)?;
         let kind_str: String = row.get(1)?;
-        let title: Option<String> = row.get(2)?;
+        let mut title: Option<String> = row.get(2)?;
         let content: String = row.get(3)?;
-        let source: Option<String> = row.get(4)?;
+        let mut source: Option<String> = row.get(4)?;
         let namespace: String = row.get(5)?;
         let importance: f64 = row.get(6)?;
         let created_at: String = row.get(7)?;
@@ -204,7 +309,49 @@ impl SqliteNodeStore {
         let access_count: u64 = row.get(10)?;
         let version: u32 = row.get(11)?;
         let expires_at: Option<String> = row.get(12)?;
-        let metadata_json: Option<String> = row.get(13)?;
+        let mut metadata_json: Option<String> = row.get(13)?;
+        let payload_ciphertext: Option<String> = row.get(14).ok();
+        let wrapped_dek: Option<String> = row.get(15).ok();
+
+        if let (Some(payload_ciphertext), Some(wrapped_dek)) = (payload_ciphertext, wrapped_dek) {
+            let payload = Self::decrypt_node_payload(&namespace, &wrapped_dek, &payload_ciphertext)
+                .map_err(|err| {
+                    Self::as_sql_conversion_error(
+                        14,
+                        format!("failed to decrypt node payload: {err}"),
+                    )
+                })?;
+            title = payload.title;
+            source = payload.source;
+            metadata_json = Some(serde_json::to_string(&payload.metadata).map_err(|err| {
+                Self::as_sql_conversion_error(
+                    13,
+                    format!("failed to reserialize node metadata: {err}"),
+                )
+            })?);
+
+            return Ok(KnowledgeNode {
+                id: parse_uuid_str(0, &id_str)?,
+                kind: kind_str
+                    .parse()
+                    .map_err(|err: String| Self::as_sql_conversion_error(1, err))?,
+                title,
+                content: payload.content,
+                source,
+                namespace,
+                tags: Vec::new(),
+                importance,
+                temporal: TemporalMeta {
+                    created_at: parse_dt_strict(7, &created_at)?,
+                    updated_at: parse_dt_strict(8, &updated_at)?,
+                    last_accessed_at: parse_dt_strict(9, &last_accessed_at)?,
+                    access_count,
+                    version,
+                    expires_at: parse_optional_dt_strict(12, expires_at)?,
+                },
+                metadata: parse_metadata_json(metadata_json)?,
+            });
+        }
 
         let id = parse_uuid_str(0, &id_str)?;
         let kind: NodeKind = kind_str.parse().map_err(|err: String| {
@@ -377,8 +524,7 @@ fn row_to_mcp_connector(row: &rusqlite::Row<'_>) -> rusqlite::Result<McpConnecto
 
     let config_schema =
         serde_json::from_str(&config_schema_json).unwrap_or_else(|_| serde_json::json!({}));
-    let capabilities: Vec<String> =
-        serde_json::from_str(&capabilities_json).unwrap_or_default();
+    let capabilities: Vec<String> = serde_json::from_str(&capabilities_json).unwrap_or_default();
 
     Ok(McpConnector {
         id: parse_uuid_str(0, &id_str)?,
@@ -400,18 +546,38 @@ fn row_to_mcp_connector(row: &rusqlite::Row<'_>) -> rusqlite::Result<McpConnecto
 impl NodeStore for SqliteNodeStore {
     async fn insert(&self, node: &KnowledgeNode) -> MvResult<()> {
         self.with_conn(|conn| {
-            let metadata_json = serde_json::to_string(&node.metadata)?;
+            let (title, content, source, metadata_json, payload_ciphertext, payload_wrapped_dek) =
+                if sealed_mode_enabled() {
+                    let (wrapped_dek, ciphertext) = Self::encrypt_node_payload(node)?;
+                    (
+                        None,
+                        String::new(),
+                        None,
+                        None,
+                        Some(ciphertext),
+                        Some(wrapped_dek),
+                    )
+                } else {
+                    (
+                        node.title.clone(),
+                        node.content.clone(),
+                        node.source.clone(),
+                        Some(serde_json::to_string(&node.metadata)?),
+                        None,
+                        None,
+                    )
+                };
 
             conn.execute(
                 "INSERT INTO knowledge_nodes (id, kind, title, content, source, namespace, importance,
-                 created_at, updated_at, last_accessed_at, access_count, version, expires_at, metadata_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 created_at, updated_at, last_accessed_at, access_count, version, expires_at, metadata_json, payload_ciphertext, payload_wrapped_dek)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     node.id.to_string(),
                     node.kind.as_str(),
-                    node.title,
-                    node.content,
-                    node.source,
+                    title,
+                    content,
+                    source,
                     node.namespace,
                     node.importance,
                     node.temporal.created_at.to_rfc3339(),
@@ -421,6 +587,8 @@ impl NodeStore for SqliteNodeStore {
                     node.temporal.version,
                     node.temporal.expires_at.map(|dt| dt.to_rfc3339()),
                     metadata_json,
+                    payload_ciphertext,
+                    payload_wrapped_dek,
                 ],
             )
             .map_err(|e| MvError::Storage(format!("insert failed: {e}")))?;
@@ -437,7 +605,7 @@ impl NodeStore for SqliteNodeStore {
                 .prepare(
                     "SELECT id, kind, title, content, source, namespace, importance,
                      created_at, updated_at, last_accessed_at, access_count, version,
-                     expires_at, metadata_json FROM knowledge_nodes WHERE id = ?1",
+                     expires_at, metadata_json, payload_ciphertext, payload_wrapped_dek FROM knowledge_nodes WHERE id = ?1",
                 )
                 .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -460,20 +628,40 @@ impl NodeStore for SqliteNodeStore {
             .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
-        let metadata_json = serde_json::to_string(&node.metadata)?;
+        let (title, content, source, metadata_json, payload_ciphertext, payload_wrapped_dek) =
+            if sealed_mode_enabled() {
+                let (wrapped_dek, ciphertext) = Self::encrypt_node_payload(node)?;
+                (
+                    None,
+                    String::new(),
+                    None,
+                    None,
+                    Some(ciphertext),
+                    Some(wrapped_dek),
+                )
+            } else {
+                (
+                    node.title.clone(),
+                    node.content.clone(),
+                    node.source.clone(),
+                    Some(serde_json::to_string(&node.metadata)?),
+                    None,
+                    None,
+                )
+            };
 
         let rows = conn
             .execute(
-                "UPDATE knowledge_nodes SET kind = ?2, title = ?3, content = ?4, source = ?5,
+                "UPDATE knowledge_nodes SET kind = ?2, title = ?3, content = ?4, source = ?5, payload_ciphertext = ?14, payload_wrapped_dek = ?15,
                  namespace = ?6, importance = ?7, updated_at = ?8, last_accessed_at = ?9,
                  access_count = ?10, version = ?11, expires_at = ?12, metadata_json = ?13
                  WHERE id = ?1",
                 params![
                     node.id.to_string(),
                     node.kind.as_str(),
-                    node.title,
-                    node.content,
-                    node.source,
+                    title,
+                    content,
+                    source,
                     node.namespace,
                     node.importance,
                     node.temporal.updated_at.to_rfc3339(),
@@ -482,6 +670,8 @@ impl NodeStore for SqliteNodeStore {
                     node.temporal.version,
                     node.temporal.expires_at.map(|dt| dt.to_rfc3339()),
                     metadata_json,
+                    payload_ciphertext,
+                    payload_wrapped_dek,
                 ],
             )
             .map_err(|e| MvError::Storage(format!("update failed: {e}")))?;
@@ -520,7 +710,7 @@ impl NodeStore for SqliteNodeStore {
         let mut sql = String::from(
             "SELECT id, kind, title, content, source, namespace, importance,
              created_at, updated_at, last_accessed_at, access_count, version,
-             expires_at, metadata_json FROM knowledge_nodes WHERE 1=1",
+             expires_at, metadata_json, payload_ciphertext, payload_wrapped_dek FROM knowledge_nodes WHERE 1=1",
         );
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut param_idx = 1;
@@ -727,7 +917,7 @@ impl SqliteNodeStore {
             .prepare(
                 "SELECT id, kind, title, content, source, namespace, importance,
                  created_at, updated_at, last_accessed_at, access_count, version,
-                 expires_at, metadata_json FROM knowledge_nodes WHERE source = ?1 LIMIT 1",
+                 expires_at, metadata_json, payload_ciphertext, payload_wrapped_dek FROM knowledge_nodes WHERE source = ?1 LIMIT 1",
             )
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -741,7 +931,29 @@ impl SqliteNodeStore {
                 node.tags = Self::load_tags(&conn, node.id)?;
                 Ok(Some(node))
             }
-            None => Ok(None),
+            None => {
+                if !sealed_mode_enabled() {
+                    return Ok(None);
+                }
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, kind, title, content, source, namespace, importance,
+                         created_at, updated_at, last_accessed_at, access_count, version,
+                         expires_at, metadata_json, payload_ciphertext, payload_wrapped_dek FROM knowledge_nodes WHERE payload_ciphertext IS NOT NULL",
+                    )
+                    .map_err(|e| MvError::Storage(e.to_string()))?;
+                let rows = stmt
+                    .query_map([], Self::row_to_node)
+                    .map_err(|e| MvError::Storage(e.to_string()))?;
+                for row in rows {
+                    let mut node = row.map_err(|e| MvError::Storage(e.to_string()))?;
+                    if node.source.as_deref() == Some(source) {
+                        node.tags = Self::load_tags(&conn, node.id)?;
+                        return Ok(Some(node));
+                    }
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -2379,8 +2591,10 @@ impl ProfileStore for SqliteNodeStore {
                     "UPDATE owner_profile SET {} WHERE id = 'owner'",
                     sets.join(", ")
                 );
-                let params: Vec<&dyn rusqlite::types::ToSql> =
-                    values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                let params: Vec<&dyn rusqlite::types::ToSql> = values
+                    .iter()
+                    .map(|v| v as &dyn rusqlite::types::ToSql)
+                    .collect();
                 conn.execute(&sql, params.as_slice())
                     .map_err(|e| MvError::Storage(e.to_string()))?;
             }
@@ -3157,7 +3371,10 @@ use mv_core::{ConsumerProfile, ConsumerStore};
 #[async_trait]
 impl ConsumerStore for SqliteNodeStore {
     async fn create_consumer(&self, profile: &ConsumerProfile) -> MvResult<()> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let metadata_json = serde_json::to_string(&profile.metadata)
             .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
@@ -3179,7 +3396,10 @@ impl ConsumerStore for SqliteNodeStore {
     }
 
     async fn get_consumer(&self, id: Uuid) -> MvResult<Option<ConsumerProfile>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, description, token_hash, created_at, last_used_at, revoked_at, metadata_json
@@ -3194,7 +3414,10 @@ impl ConsumerStore for SqliteNodeStore {
     }
 
     async fn get_consumer_by_name(&self, name: &str) -> MvResult<Option<ConsumerProfile>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, description, token_hash, created_at, last_used_at, revoked_at, metadata_json
@@ -3208,8 +3431,14 @@ impl ConsumerStore for SqliteNodeStore {
         Ok(result)
     }
 
-    async fn get_consumer_by_token_hash(&self, token_hash: &str) -> MvResult<Option<ConsumerProfile>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+    async fn get_consumer_by_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> MvResult<Option<ConsumerProfile>> {
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, description, token_hash, created_at, last_used_at, revoked_at, metadata_json
@@ -3224,7 +3453,10 @@ impl ConsumerStore for SqliteNodeStore {
     }
 
     async fn list_consumers(&self) -> MvResult<Vec<ConsumerProfile>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, description, token_hash, created_at, last_used_at, revoked_at, metadata_json
@@ -3242,7 +3474,10 @@ impl ConsumerStore for SqliteNodeStore {
     }
 
     async fn revoke_consumer(&self, id: Uuid) -> MvResult<bool> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
         let affected = conn
             .execute(
@@ -3254,7 +3489,10 @@ impl ConsumerStore for SqliteNodeStore {
     }
 
     async fn touch_consumer(&self, id: Uuid) -> MvResult<()> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE consumer_profiles SET last_used_at = ?2 WHERE id = ?1",
@@ -3301,9 +3539,12 @@ use mv_core::{AccessPolicy, PolicyStore};
 #[async_trait]
 impl PolicyStore for SqliteNodeStore {
     async fn set_policy(&self, policy: &AccessPolicy) -> MvResult<()> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
-        let scopes_json = serde_json::to_string(&policy.scopes)
+        let conn = self
+            .conn()
+            .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
+        let scopes_json =
+            serde_json::to_string(&policy.scopes).map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
             "INSERT OR REPLACE INTO access_policies (id, secret_key, consumer, allowed, scopes_json, max_ttl_seconds, expires_at, require_approval, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -3325,7 +3566,10 @@ impl PolicyStore for SqliteNodeStore {
     }
 
     async fn get_policy(&self, id: Uuid) -> MvResult<Option<AccessPolicy>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, secret_key, consumer, allowed, scopes_json, max_ttl_seconds, expires_at, require_approval, created_at, updated_at
@@ -3339,8 +3583,15 @@ impl PolicyStore for SqliteNodeStore {
         Ok(result)
     }
 
-    async fn get_policy_for(&self, secret_key: &str, consumer: &str) -> MvResult<Option<AccessPolicy>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+    async fn get_policy_for(
+        &self,
+        secret_key: &str,
+        consumer: &str,
+    ) -> MvResult<Option<AccessPolicy>> {
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, secret_key, consumer, allowed, scopes_json, max_ttl_seconds, expires_at, require_approval, created_at, updated_at
@@ -3359,7 +3610,10 @@ impl PolicyStore for SqliteNodeStore {
         secret_key: Option<&str>,
         consumer: Option<&str>,
     ) -> MvResult<Vec<AccessPolicy>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
 
         let mut sql = "SELECT id, secret_key, consumer, allowed, scopes_json, max_ttl_seconds, expires_at, require_approval, created_at, updated_at FROM access_policies".to_string();
         let mut conditions: Vec<String> = Vec::new();
@@ -3380,7 +3634,9 @@ impl PolicyStore for SqliteNodeStore {
         }
         sql.push_str(" ORDER BY created_at DESC");
 
-        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             params_box.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
@@ -3394,9 +3650,15 @@ impl PolicyStore for SqliteNodeStore {
     }
 
     async fn delete_policy(&self, id: Uuid) -> MvResult<bool> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let affected = conn
-            .execute("DELETE FROM access_policies WHERE id = ?1", params![id.to_string()])
+            .execute(
+                "DELETE FROM access_policies WHERE id = ?1",
+                params![id.to_string()],
+            )
             .map_err(|e| MvError::Storage(e.to_string()))?;
         Ok(affected > 0)
     }
@@ -3565,7 +3827,9 @@ impl CommentStore for SqliteNodeStore {
             }
             sql.push_str(" ORDER BY created_at DESC");
 
-            let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| MvError::Storage(e.to_string()))?;
             let comments = stmt
                 .query_map(params![node_id.to_string()], row_to_node_comment)
                 .map_err(|e| MvError::Storage(format!("list comments failed: {e}")))?
@@ -3590,7 +3854,10 @@ impl CommentStore for SqliteNodeStore {
     async fn delete_comment(&self, id: Uuid) -> MvResult<bool> {
         self.with_conn(|conn| {
             let affected = conn
-                .execute("DELETE FROM node_comments WHERE id = ?1", params![id.to_string()])
+                .execute(
+                    "DELETE FROM node_comments WHERE id = ?1",
+                    params![id.to_string()],
+                )
                 .map_err(|e| MvError::Storage(format!("delete comment failed: {e}")))?;
             Ok(affected > 0)
         })
@@ -3649,7 +3916,10 @@ impl McpConnectorStore for SqliteNodeStore {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<McpConnector>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut sql = String::from(
             "SELECT id, name, description, publisher, version, homepage_url, repository_url, config_schema, capabilities_json, verified, created_at, updated_at
              FROM mcp_connectors WHERE 1=1",
@@ -3673,7 +3943,9 @@ impl McpConnectorStore for SqliteNodeStore {
         params_box.push(Box::new(limit as i64));
         params_box.push(Box::new(offset as i64));
 
-        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             params_box.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
@@ -3766,7 +4038,10 @@ use mv_core::{ProxyAuditEntry, ProxyAuditStore};
 #[async_trait]
 impl ProxyAuditStore for SqliteNodeStore {
     async fn log_proxy_audit(&self, entry: &ProxyAuditEntry) -> MvResult<()> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
             "INSERT INTO proxy_audit_log (id, consumer, secret_ref, action, target, intent, timestamp, success, sanitized, error, request_summary, response_status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
@@ -3797,7 +4072,10 @@ impl ProxyAuditStore for SqliteNodeStore {
         error: Option<&str>,
         response_status: Option<i32>,
     ) -> MvResult<()> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
             "UPDATE proxy_audit_log SET success = ?2, sanitized = ?3, error = ?4, response_status = ?5 WHERE id = ?1",
             params![
@@ -3818,9 +4096,14 @@ impl ProxyAuditStore for SqliteNodeStore {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<ProxyAuditEntry>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
 
-        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(c) = consumer {
+        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(c) =
+            consumer
+        {
             (
                 "SELECT id, consumer, secret_ref, action, target, intent, timestamp, success, sanitized, error, request_summary, response_status
                  FROM proxy_audit_log WHERE consumer = ?1 ORDER BY timestamp DESC LIMIT ?2 OFFSET ?3".to_string(),
@@ -3834,7 +4117,9 @@ impl ProxyAuditStore for SqliteNodeStore {
             )
         };
 
-        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             params_box.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
@@ -3887,7 +4172,10 @@ fn row_to_proxy_audit(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProxyAuditEnt
 #[async_trait::async_trait]
 impl ApprovalStore for SqliteNodeStore {
     async fn create_approval(&self, request: &ApprovalRequest) -> MvResult<()> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let scopes_json = serde_json::to_string(&request.scopes)
             .map_err(|e| MvError::Storage(format!("serialize scopes: {e}")))?;
         conn.execute(
@@ -3910,13 +4198,17 @@ impl ApprovalStore for SqliteNodeStore {
     }
 
     async fn get_approval(&self, id: Uuid) -> MvResult<Option<ApprovalRequest>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn.prepare(
             "SELECT id, consumer, secret_key, intent, request_summary, state, created_at, expires_at, decided_at, decided_by, deny_reason, scopes
              FROM proxy_approvals WHERE id = ?1"
         ).map_err(|e| MvError::Storage(e.to_string()))?;
 
-        let mut rows = stmt.query_map(params![id.to_string()], row_to_approval)
+        let mut rows = stmt
+            .query_map(params![id.to_string()], row_to_approval)
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
         match rows.next() {
@@ -3926,10 +4218,18 @@ impl ApprovalStore for SqliteNodeStore {
         }
     }
 
-    async fn list_pending_approvals(&self, consumer: Option<&str>) -> MvResult<Vec<ApprovalRequest>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+    async fn list_pending_approvals(
+        &self,
+        consumer: Option<&str>,
+    ) -> MvResult<Vec<ApprovalRequest>> {
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
 
-        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(c) = consumer {
+        let (sql, params_box): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(c) =
+            consumer
+        {
             (
                 "SELECT id, consumer, secret_key, intent, request_summary, state, created_at, expires_at, decided_at, decided_by, deny_reason, scopes
                  FROM proxy_approvals WHERE state = 'pending' AND consumer = ?1 ORDER BY created_at DESC".to_string(),
@@ -3943,7 +4243,9 @@ impl ApprovalStore for SqliteNodeStore {
             )
         };
 
-        let mut stmt = conn.prepare(&sql).map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             params_box.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
@@ -3963,7 +4265,10 @@ impl ApprovalStore for SqliteNodeStore {
         decided_by: Option<&str>,
         deny_reason: Option<&str>,
     ) -> MvResult<bool> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let new_state = if approved { "approved" } else { "denied" };
         let now = chrono::Utc::now().to_rfc3339();
         let affected = conn.execute(
@@ -3982,7 +4287,10 @@ impl ApprovalStore for SqliteNodeStore {
     }
 
     async fn expire_approvals(&self) -> MvResult<usize> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = chrono::Utc::now().to_rfc3339();
         let affected = conn.execute(
             "UPDATE proxy_approvals SET state = 'expired' WHERE state = 'pending' AND expires_at <= ?1",
@@ -3997,7 +4305,10 @@ impl ApprovalStore for SqliteNodeStore {
         consumer: &str,
         secret_key: &str,
     ) -> MvResult<Option<ApprovalRequest>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let now = chrono::Utc::now().to_rfc3339();
         let mut stmt = conn.prepare(
             "SELECT id, consumer, secret_key, intent, request_summary, state, created_at, expires_at, decided_at, decided_by, deny_reason, scopes
@@ -4006,7 +4317,8 @@ impl ApprovalStore for SqliteNodeStore {
              ORDER BY decided_at DESC LIMIT 1"
         ).map_err(|e| MvError::Storage(e.to_string()))?;
 
-        let mut rows = stmt.query_map(params![consumer, secret_key, now], row_to_approval)
+        let mut rows = stmt
+            .query_map(params![consumer, secret_key, now], row_to_approval)
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
         match rows.next() {
@@ -4033,9 +4345,11 @@ fn row_to_approval(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApprovalRequest>
 
     let id = parse_uuid_str(0, &id_str)?;
     let state: ApprovalState = state_str.parse().map_err(|e: String| {
-        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-        ))
+        rusqlite::Error::FromSqlConversionFailure(
+            5,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        )
     })?;
     let scopes: Vec<String> = serde_json::from_str(&scopes_json).unwrap_or_default();
 
@@ -4048,7 +4362,11 @@ fn row_to_approval(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApprovalRequest>
         state,
         created_at: parse_dt_strict(6, &created_at_str)?,
         expires_at: parse_dt_strict(7, &expires_at_str)?,
-        decided_at: decided_at_str.as_deref().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&chrono::Utc))),
+        decided_at: decided_at_str.as_deref().and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|d| d.with_timezone(&chrono::Utc))
+        }),
         decided_by,
         deny_reason,
         scopes,
@@ -4062,7 +4380,10 @@ fn row_to_approval(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApprovalRequest>
 #[async_trait]
 impl ConflictStore for SqliteNodeStore {
     async fn insert_conflict(&self, alert: &ConflictAlert) -> MvResult<()> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
             "INSERT OR IGNORE INTO conflicts (id, node_a, node_b, conflict_type, score, explanation, resolved, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -4082,7 +4403,10 @@ impl ConflictStore for SqliteNodeStore {
     }
 
     async fn get_conflict(&self, id: Uuid) -> MvResult<Option<ConflictAlert>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let result = conn
             .query_row(
                 "SELECT id, node_a, node_b, conflict_type, score, explanation, resolved, created_at
@@ -4101,7 +4425,10 @@ impl ConflictStore for SqliteNodeStore {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<ConflictAlert>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let limit_i = limit as i64;
         let offset_i = offset as i64;
         let results = match resolved {
@@ -4143,7 +4470,10 @@ impl ConflictStore for SqliteNodeStore {
     }
 
     async fn resolve_conflict(&self, id: Uuid) -> MvResult<bool> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let updated = conn
             .execute(
                 "UPDATE conflicts SET resolved = 1 WHERE id = ?1 AND resolved = 0",
@@ -4194,7 +4524,10 @@ fn row_to_conflict(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConflictAlert> {
 #[async_trait]
 impl ContactIdentityStore for SqliteNodeStore {
     async fn add_contact_identity(&self, identity: &ContactIdentity) -> MvResult<()> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
             "INSERT INTO contact_identities (id, contact_id, identity_type, identity_value, verified, verified_at, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -4213,7 +4546,10 @@ impl ContactIdentityStore for SqliteNodeStore {
     }
 
     async fn list_contact_identities(&self, contact_id: Uuid) -> MvResult<Vec<ContactIdentity>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, contact_id, identity_type, identity_value, verified, verified_at, created_at
@@ -4231,7 +4567,10 @@ impl ContactIdentityStore for SqliteNodeStore {
     }
 
     async fn delete_contact_identity(&self, id: Uuid) -> MvResult<bool> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let deleted = conn
             .execute(
                 "DELETE FROM contact_identities WHERE id = ?1",
@@ -4242,7 +4581,10 @@ impl ContactIdentityStore for SqliteNodeStore {
     }
 
     async fn verify_contact_identity(&self, id: Uuid) -> MvResult<bool> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let updated = conn
             .execute(
                 "UPDATE contact_identities SET verified = 1, verified_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
@@ -4254,7 +4596,10 @@ impl ContactIdentityStore for SqliteNodeStore {
     }
 
     async fn get_trust_model(&self, contact_id: Uuid) -> MvResult<Option<TrustModel>> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let result = conn
             .query_row(
                 "SELECT contact_id, can_query, can_inject_context, can_auto_reply, allowed_namespaces, max_confidence_override, updated_at
@@ -4268,7 +4613,10 @@ impl ContactIdentityStore for SqliteNodeStore {
     }
 
     async fn set_trust_model(&self, model: &TrustModel) -> MvResult<()> {
-        let conn = self.conn().lock().map_err(|e| MvError::Storage(e.to_string()))?;
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
         let ns_json = serde_json::to_string(&model.allowed_namespaces)
             .map_err(|e| MvError::Storage(format!("serialize namespaces: {e}")))?;
         conn.execute(
@@ -4447,11 +4795,7 @@ impl AdapterPollStore for SqliteNodeStore {
 
 #[async_trait]
 impl ConversationStore for SqliteNodeStore {
-    async fn create_conversation(
-        &self,
-        id: Uuid,
-        title: Option<&str>,
-    ) -> MvResult<()> {
+    async fn create_conversation(&self, id: Uuid, title: Option<&str>) -> MvResult<()> {
         let id_s = id.to_string();
         let title_s = title.map(|t| t.to_string());
         self.with_conn(move |conn| {
@@ -4567,8 +4911,7 @@ impl ConversationStore for SqliteNodeStore {
 
             let mut convs = Vec::new();
             for row in rows {
-                let (id_str, title, ts_str) =
-                    row.map_err(|e| MvError::Storage(e.to_string()))?;
+                let (id_str, title, ts_str) = row.map_err(|e| MvError::Storage(e.to_string()))?;
                 let id = Uuid::parse_str(&id_str)
                     .map_err(|e| MvError::Storage(format!("invalid uuid: {e}")))?;
                 let ts = chrono::DateTime::parse_from_rfc3339(&ts_str)
@@ -4772,10 +5115,7 @@ mod tests {
             .unwrap();
         assert!(active.is_empty());
 
-        let all = store
-            .list_public_shares(Some(node_id), true)
-            .await
-            .unwrap();
+        let all = store.list_public_shares(Some(node_id), true).await.unwrap();
         assert_eq!(all.len(), 1);
         assert!(all[0].revoked_at.is_some());
     }

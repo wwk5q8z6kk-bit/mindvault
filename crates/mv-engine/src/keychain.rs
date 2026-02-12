@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use chrono::{Datelike, DateTime, Timelike, Utc};
+use chrono::{DateTime, Datelike, Timelike, Utc};
 use rand::RngCore;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -19,7 +19,12 @@ use mv_core::error::{MvError, MvResult};
 use mv_core::model::keychain::*;
 use mv_core::traits::KeychainStore;
 use mv_storage::crypto::EncryptionConfig;
-use mv_storage::vault_crypto::{validate_argon2_params, ShamirShare, VaultCrypto, VaultCryptoError};
+use mv_storage::sealed_runtime::{
+    clear_runtime_root_key, runtime_is_degraded_security, set_runtime_root_key,
+};
+use mv_storage::vault_crypto::{
+    validate_argon2_params, ShamirShare, VaultCrypto, VaultCryptoError,
+};
 
 use crate::config::KeychainConfig;
 
@@ -151,6 +156,23 @@ pub struct ShamirStatus {
     pub ready: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MasterKeySource {
+    SecureEnclave,
+    OsSecureStorage,
+    PassphraseArgon2id,
+}
+
+impl MasterKeySource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SecureEnclave => "secure_enclave",
+            Self::OsSecureStorage => "os_secure_storage",
+            Self::PassphraseArgon2id => "passphrase_argon2id",
+        }
+    }
+}
+
 pub struct KeychainEngine {
     pub store: Arc<dyn KeychainStore>,
     crypto: RwLock<VaultCrypto>,
@@ -181,6 +203,8 @@ impl KeychainEngine {
         auto_seal_timeout: Option<Duration>,
         keychain_db_path: Option<std::path::PathBuf>,
     ) -> MvResult<Self> {
+        clear_runtime_root_key();
+
         // Disable core dumps to prevent leaking key material
         #[cfg(unix)]
         unsafe {
@@ -214,11 +238,116 @@ impl KeychainEngine {
         }
     }
 
+    fn require_hardware_mode() -> bool {
+        std::env::var("MINDVAULT_REQUIRE_HARDWARE")
+            .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
+            .unwrap_or(false)
+    }
+
+    pub fn os_secure_storage_available(&self) -> bool {
+        self.cred_store.status().iter().any(|backend| {
+            backend.source == mv_core::credentials::SecretSource::OsKeyring && backend.available
+        })
+    }
+
+    pub fn degraded_security_mode(&self) -> bool {
+        runtime_is_degraded_security()
+    }
+
+    async fn refresh_runtime_storage_key(&self, degraded_security: bool) -> MvResult<()> {
+        let root = {
+            let crypto = self.crypto.read().await;
+            crypto.extract_master_key().map_err(map_crypto_err)?
+        };
+        set_runtime_root_key(*root, degraded_security);
+        Ok(())
+    }
+
+    pub async fn derive_namespace_kek(&self, namespace: &str) -> MvResult<[u8; 32]> {
+        let crypto = self.crypto.read().await;
+        let key = crypto
+            .derive_namespace_kek(namespace)
+            .map_err(map_crypto_err)?;
+        Ok(*key)
+    }
+
+    pub async fn wrap_namespace_dek(&self, namespace: &str, dek: &[u8; 32]) -> MvResult<String> {
+        let kek = self.derive_namespace_kek(namespace).await?;
+        VaultCrypto::wrap_dek(&kek, dek).map_err(map_crypto_err)
+    }
+
+    pub async fn unwrap_namespace_dek(
+        &self,
+        namespace: &str,
+        wrapped_dek: &str,
+    ) -> MvResult<[u8; 32]> {
+        let kek = self.derive_namespace_kek(namespace).await?;
+        VaultCrypto::unwrap_dek(&kek, wrapped_dek).map_err(map_crypto_err)
+    }
+
+    async fn try_unseal_from_secure_storage(
+        &self,
+        subject: &str,
+    ) -> MvResult<Option<MasterKeySource>> {
+        #[cfg(target_os = "macos")]
+        {
+            if self
+                .cred_store
+                .get_secret_string("MINDVAULT_SE_WRAPPED_KEY")
+                .is_some()
+            {
+                self.unseal_from_secure_enclave().await?;
+                return Ok(Some(MasterKeySource::SecureEnclave));
+            }
+        }
+
+        if self
+            .cred_store
+            .get_secret_string("MINDVAULT_VAULT_KEY")
+            .is_some()
+        {
+            self.unseal_from_os_keyring(subject).await?;
+            return Ok(Some(MasterKeySource::OsSecureStorage));
+        }
+
+        Ok(None)
+    }
+
+    pub async fn unseal_with_preferred_master_key(
+        &self,
+        passphrase: Option<&str>,
+        subject: &str,
+    ) -> MvResult<MasterKeySource> {
+        if Self::require_hardware_mode() && !self.os_secure_storage_available() {
+            return Err(MvError::Keychain(
+                "MINDVAULT_REQUIRE_HARDWARE=true but OS secure storage is unavailable".to_string(),
+            ));
+        }
+
+        if let Some(source) = self.try_unseal_from_secure_storage(subject).await? {
+            return Ok(source);
+        }
+
+        if let Some(passphrase) = passphrase {
+            self.unseal(passphrase, subject).await?;
+            return Ok(MasterKeySource::PassphraseArgon2id);
+        }
+
+        Err(MvError::Keychain(
+            "no usable master key in OS secure storage and no passphrase provided".to_string(),
+        ))
+    }
+
     // -----------------------------------------------------------------------
     // Vault lifecycle
     // -----------------------------------------------------------------------
 
-    pub async fn initialize_vault(&self, password: &str, macos_bridge: bool, subject: &str) -> MvResult<()> {
+    pub async fn initialize_vault(
+        &self,
+        password: &str,
+        macos_bridge: bool,
+        subject: &str,
+    ) -> MvResult<()> {
         // Check if already initialized
         if self.store.get_vault_meta().await?.is_some() {
             return Err(MvError::Keychain("vault already initialized".to_string()));
@@ -284,11 +413,18 @@ impl KeychainEngine {
 
         self.audit_log(KeychainAuditAction::VaultInitialized, subject, None, None)
             .await?;
+        self.refresh_runtime_storage_key(true).await?;
 
         Ok(())
     }
 
     pub async fn unseal(&self, password: &str, subject: &str) -> MvResult<()> {
+        if Self::require_hardware_mode() && !self.os_secure_storage_available() {
+            return Err(MvError::Keychain(
+                "MINDVAULT_REQUIRE_HARDWARE=true but OS secure storage is unavailable".to_string(),
+            ));
+        }
+
         // Check lockout
         {
             let locked = self.locked_until.read().await;
@@ -390,16 +526,25 @@ impl KeychainEngine {
 
         self.audit_log(KeychainAuditAction::VaultUnlocked, subject, None, None)
             .await?;
+        self.refresh_runtime_storage_key(true).await?;
 
         Ok(())
     }
 
-    pub async fn unseal_from_macos_keychain(&self, subject: &str) -> MvResult<()> {
+    pub async fn unseal_from_os_keyring(&self, subject: &str) -> MvResult<()> {
         let password = self
             .cred_store
             .get_secret_string("MINDVAULT_VAULT_KEY")
-            .ok_or_else(|| MvError::Keychain("vault key not found in macOS Keychain".to_string()))?;
-        self.unseal(&password, subject).await
+            .ok_or_else(|| {
+                MvError::Keychain("vault key not found in OS secure storage".to_string())
+            })?;
+        self.unseal(&password, subject).await?;
+        self.refresh_runtime_storage_key(false).await?;
+        Ok(())
+    }
+
+    pub async fn unseal_from_macos_keychain(&self, subject: &str) -> MvResult<()> {
+        self.unseal_from_os_keyring(subject).await
     }
 
     pub fn store_to_macos_keychain(&self, password: &str) -> MvResult<()> {
@@ -449,8 +594,8 @@ impl KeychainEngine {
                 .iter()
                 .zip(pws.iter())
                 .map(|(s, pw)| {
-                    let encrypted = VaultCrypto::encrypt_share(&s.data, pw)
-                        .map_err(map_crypto_err)?;
+                    let encrypted =
+                        VaultCrypto::encrypt_share(&s.data, pw).map_err(map_crypto_err)?;
                     Ok(BASE64.encode(encrypted))
                 })
                 .collect::<MvResult<Vec<String>>>()?
@@ -514,7 +659,9 @@ impl KeychainEngine {
         // Re-split with a new random polynomial (same master key, new shares)
         let shares = {
             let crypto = self.crypto.read().await;
-            crypto.split_master_key(threshold, total).map_err(map_crypto_err)?
+            crypto
+                .split_master_key(threshold, total)
+                .map_err(map_crypto_err)?
         };
 
         let encoded: Vec<String> = if let Some(ref pws) = passphrases {
@@ -622,8 +769,7 @@ impl KeychainEngine {
             )));
         }
 
-        let key = VaultCrypto::recover_from_shares(&shares, threshold)
-            .map_err(map_crypto_err)?;
+        let key = VaultCrypto::recover_from_shares(&shares, threshold).map_err(map_crypto_err)?;
 
         // Inject the recovered key
         {
@@ -660,13 +806,10 @@ impl KeychainEngine {
             pending.clear();
         }
 
-        self.audit_log(
-            KeychainAuditAction::ShamirUnseal,
-            subject,
-            None,
-            None,
-        )
-        .await?;
+        self.refresh_runtime_storage_key(true).await?;
+
+        self.audit_log(KeychainAuditAction::ShamirUnseal, subject, None, None)
+            .await?;
 
         Ok(())
     }
@@ -710,6 +853,7 @@ impl KeychainEngine {
             let mut crypto = self.crypto.write().await;
             crypto.seal();
         }
+        clear_runtime_root_key();
         self.audit_log(KeychainAuditAction::VaultLocked, subject, None, None)
             .await?;
         Ok(())
@@ -906,13 +1050,17 @@ impl KeychainEngine {
                     let plain_name = crypto
                         .decrypt_metadata_with_epoch(&cred.name, old_epoch)
                         .map_err(map_crypto_err)?;
-                    cred.name = crypto.encrypt_metadata(&plain_name).map_err(map_crypto_err)?;
+                    cred.name = crypto
+                        .encrypt_metadata(&plain_name)
+                        .map_err(map_crypto_err)?;
                     if let Some(ref desc) = cred.description {
                         let plain_desc = crypto
                             .decrypt_metadata_with_epoch(desc, old_epoch)
                             .map_err(map_crypto_err)?;
                         cred.description = Some(
-                            crypto.encrypt_metadata(&plain_desc).map_err(map_crypto_err)?,
+                            crypto
+                                .encrypt_metadata(&plain_desc)
+                                .map_err(map_crypto_err)?,
                         );
                     }
                 }
@@ -1021,9 +1169,15 @@ impl KeychainEngine {
             .await?
             .ok_or_else(|| MvError::Keychain("vault not initialized".to_string()))?;
 
-        let mut cred = StoredCredential::new(domain_id, &encrypted_name, kind, encrypted, &cred_derivation)
-            .with_tags(tags)
-            .with_epoch(meta.key_epoch);
+        let mut cred = StoredCredential::new(
+            domain_id,
+            &encrypted_name,
+            kind,
+            encrypted,
+            &cred_derivation,
+        )
+        .with_tags(tags)
+        .with_epoch(meta.key_epoch);
         cred.metadata_encrypted = true;
 
         if let Some(exp) = expires_at {
@@ -1060,7 +1214,9 @@ impl KeychainEngine {
             .ok_or_else(|| MvError::Keychain("credential not found".to_string()))?;
 
         if cred.state == CredentialState::Destroyed {
-            return Err(MvError::Keychain("credential has been destroyed".to_string()));
+            return Err(MvError::Keychain(
+                "credential has been destroyed".to_string(),
+            ));
         }
 
         let domain = self
@@ -1080,7 +1236,9 @@ impl KeychainEngine {
                 )
                 .map_err(map_crypto_err)?;
             if cred.metadata_encrypted {
-                cred.name = crypto.decrypt_metadata(&cred.name).map_err(map_crypto_err)?;
+                cred.name = crypto
+                    .decrypt_metadata(&cred.name)
+                    .map_err(map_crypto_err)?;
                 if let Some(ref desc) = cred.description {
                     cred.description = Some(crypto.decrypt_metadata(desc).map_err(map_crypto_err)?);
                 }
@@ -1183,7 +1341,9 @@ impl KeychainEngine {
         // Return with decrypted metadata
         if cred.metadata_encrypted {
             let crypto = self.crypto.read().await;
-            cred.name = crypto.decrypt_metadata(&cred.name).map_err(map_crypto_err)?;
+            cred.name = crypto
+                .decrypt_metadata(&cred.name)
+                .map_err(map_crypto_err)?;
             if let Some(ref desc) = cred.description {
                 cred.description = Some(crypto.decrypt_metadata(desc).map_err(map_crypto_err)?);
             }
@@ -1242,7 +1402,9 @@ impl KeychainEngine {
         // Return with decrypted metadata
         if cred.metadata_encrypted {
             let crypto = self.crypto.read().await;
-            cred.name = crypto.decrypt_metadata(&cred.name).map_err(map_crypto_err)?;
+            cred.name = crypto
+                .decrypt_metadata(&cred.name)
+                .map_err(map_crypto_err)?;
             if let Some(ref desc) = cred.description {
                 cred.description = Some(crypto.decrypt_metadata(desc).map_err(map_crypto_err)?);
             }
@@ -1576,7 +1738,9 @@ impl KeychainEngine {
             .ok_or_else(|| MvError::Keychain("parent delegation not found".to_string()))?;
 
         if parent.revoked_at.is_some() {
-            return Err(MvError::Keychain("parent delegation is revoked".to_string()));
+            return Err(MvError::Keychain(
+                "parent delegation is revoked".to_string(),
+            ));
         }
         if !parent.permissions.can_delegate {
             return Err(MvError::Keychain(
@@ -1584,7 +1748,9 @@ impl KeychainEngine {
             ));
         }
         if parent.depth + 1 >= parent.max_depth {
-            return Err(MvError::Keychain("delegation depth limit reached".to_string()));
+            return Err(MvError::Keychain(
+                "delegation depth limit reached".to_string(),
+            ));
         }
 
         let cred = self
@@ -1893,6 +2059,7 @@ impl KeychainEngine {
             let mut crypto = self.crypto.write().await;
             crypto.set_master_key(key);
         }
+        self.refresh_runtime_storage_key(false).await?;
         self.audit_log(
             KeychainAuditAction::VaultUnlocked,
             "secure_enclave",
@@ -2015,7 +2182,10 @@ impl KeychainEngine {
                 match engine.run_lifecycle_transitions().await {
                     Ok(count) => {
                         if count > 0 {
-                            tracing::info!(transitioned = count, "lifecycle scheduler: transitions applied");
+                            tracing::info!(
+                                transitioned = count,
+                                "lifecycle scheduler: transitions applied"
+                            );
                         }
                     }
                     Err(e) => {
@@ -2136,13 +2306,16 @@ impl KeychainEngine {
         self.store.save_vault_meta(&updated_meta).await?;
 
         // Re-encrypt all credentials
-        self.re_encrypt_all_credentials(old_epoch, new_epoch).await?;
+        self.re_encrypt_all_credentials(old_epoch, new_epoch)
+            .await?;
 
         // If Shamir is enabled, re-split the new key and store share 1 in OS Keychain
         if let (Some(threshold), Some(total)) = (meta.shamir_threshold, meta.shamir_total) {
             let shares = {
                 let crypto = self.crypto.read().await;
-                crypto.split_master_key(threshold, total).map_err(map_crypto_err)?
+                crypto
+                    .split_master_key(threshold, total)
+                    .map_err(map_crypto_err)?
             };
             // Store first share in OS Keychain for convenience
             if let Some(first_share) = shares.first() {
@@ -2248,7 +2421,9 @@ impl KeychainEngine {
 
         // Return with decrypted metadata
         if cred.metadata_encrypted {
-            cred.name = crypto.decrypt_metadata(&cred.name).map_err(map_crypto_err)?;
+            cred.name = crypto
+                .decrypt_metadata(&cred.name)
+                .map_err(map_crypto_err)?;
             if let Some(ref desc) = cred.description {
                 cred.description = Some(crypto.decrypt_metadata(desc).map_err(map_crypto_err)?);
             }
@@ -2262,10 +2437,15 @@ impl KeychainEngine {
     /// Find a domain by name, or create it if it does not exist.
     pub async fn find_or_create_domain(&self, name: &str, subject: &str) -> MvResult<Uuid> {
         let domains = self.store.list_domains().await?;
-        if let Some(d) = domains.iter().find(|d| d.name == name && d.revoked_at.is_none()) {
+        if let Some(d) = domains
+            .iter()
+            .find(|d| d.name == name && d.revoked_at.is_none())
+        {
             return Ok(d.id);
         }
-        let domain = self.create_domain(name, Some("Auto-created for agent bridge"), subject).await?;
+        let domain = self
+            .create_domain(name, Some("Auto-created for agent bridge"), subject)
+            .await?;
         Ok(domain.id)
     }
 }
@@ -2318,10 +2498,16 @@ mod tests {
     #[tokio::test]
     async fn update_credential_metadata_applies_fields() {
         let engine = test_engine().await;
-        engine.initialize_vault("test-password", false, "test").await.unwrap();
+        engine
+            .initialize_vault("test-password", false, "test")
+            .await
+            .unwrap();
         engine.unseal("test-password", "test").await.unwrap();
 
-        let domain_id = engine.find_or_create_domain("oauth-clients", "test").await.unwrap();
+        let domain_id = engine
+            .find_or_create_domain("oauth-clients", "test")
+            .await
+            .unwrap();
         let stored = engine
             .store_credential(
                 domain_id,
@@ -2360,10 +2546,7 @@ mod tests {
         assert_eq!(updated.description.as_deref(), Some("AI Manager"));
         assert_eq!(updated.tags.len(), 2);
         assert_eq!(
-            updated
-                .metadata
-                .get("template_id")
-                .and_then(|v| v.as_str()),
+            updated.metadata.get("template_id").and_then(|v| v.as_str()),
             Some("template-123")
         );
     }
@@ -2371,16 +2554,51 @@ mod tests {
     #[tokio::test]
     async fn wrong_password_rejected() {
         let engine = test_engine().await;
-        engine.initialize_vault("correct", false, "test").await.unwrap();
+        engine
+            .initialize_vault("correct", false, "test")
+            .await
+            .unwrap();
         engine.seal("test").await.unwrap();
         let result = engine.unseal("wrong", "test").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
+    async fn preferred_unseal_falls_back_to_passphrase_when_secure_storage_missing() {
+        let engine = test_engine().await;
+        engine
+            .initialize_vault("fallback-pass", false, "test")
+            .await
+            .unwrap();
+        engine.seal("test").await.unwrap();
+
+        let source = engine
+            .unseal_with_preferred_master_key(Some("fallback-pass"), "test")
+            .await
+            .unwrap();
+        assert_eq!(source, MasterKeySource::PassphraseArgon2id);
+    }
+
+    #[tokio::test]
+    async fn preferred_unseal_without_sources_fails() {
+        let engine = test_engine().await;
+        engine
+            .initialize_vault("fallback-pass", false, "test")
+            .await
+            .unwrap();
+        engine.seal("test").await.unwrap();
+
+        let result = engine.unseal_with_preferred_master_key(None, "test").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
     async fn credential_store_and_read() {
         let engine = test_engine().await;
-        engine.initialize_vault("pass", false, "test").await.unwrap();
+        engine
+            .initialize_vault("pass", false, "test")
+            .await
+            .unwrap();
 
         let domain = engine
             .create_domain("api-keys", Some("API key storage"), "test")
@@ -2408,10 +2626,21 @@ mod tests {
     #[tokio::test]
     async fn delegation_chain() {
         let engine = test_engine().await;
-        engine.initialize_vault("pass", false, "test").await.unwrap();
+        engine
+            .initialize_vault("pass", false, "test")
+            .await
+            .unwrap();
         let domain = engine.create_domain("test", None, "test").await.unwrap();
         let cred = engine
-            .store_credential(domain.id, "key1", "api_key", b"secret", vec![], None, "test")
+            .store_credential(
+                domain.id,
+                "key1",
+                "api_key",
+                b"secret",
+                vec![],
+                None,
+                "test",
+            )
             .await
             .unwrap();
 
@@ -2459,21 +2688,38 @@ mod tests {
     #[tokio::test]
     async fn zk_proof_roundtrip() {
         let engine = test_engine().await;
-        engine.initialize_vault("pass", false, "test").await.unwrap();
+        engine
+            .initialize_vault("pass", false, "test")
+            .await
+            .unwrap();
         let domain = engine.create_domain("test", None, "test").await.unwrap();
         let cred = engine
-            .store_credential(domain.id, "key1", "api_key", b"secret-value", vec![], None, "test")
+            .store_credential(
+                domain.id,
+                "key1",
+                "api_key",
+                b"secret-value",
+                vec![],
+                None,
+                "test",
+            )
             .await
             .unwrap();
 
-        let proof = engine.generate_proof(cred.id, "nonce-123", "test").await.unwrap();
+        let proof = engine
+            .generate_proof(cred.id, "nonce-123", "test")
+            .await
+            .unwrap();
         assert!(engine.verify_proof(&proof, "test").await.unwrap());
     }
 
     #[tokio::test]
     async fn audit_chain_integrity() {
         let engine = test_engine().await;
-        engine.initialize_vault("pass", false, "test").await.unwrap();
+        engine
+            .initialize_vault("pass", false, "test")
+            .await
+            .unwrap();
         engine.create_domain("test", None, "test").await.unwrap();
 
         assert!(engine.verify_audit_integrity().await.unwrap().is_valid());
@@ -2485,7 +2731,10 @@ mod tests {
     #[tokio::test]
     async fn shamir_enable_seal_submit_unseal() {
         let engine = test_engine().await;
-        engine.initialize_vault("pass", false, "test").await.unwrap();
+        engine
+            .initialize_vault("pass", false, "test")
+            .await
+            .unwrap();
 
         // Enable Shamir 2-of-3
         let shares = engine.enable_shamir(2, 3, "test", None).await.unwrap();
@@ -2517,9 +2766,20 @@ mod tests {
         assert_eq!(state, VaultState::Unsealed);
 
         // Verify we can still read credentials (master key reconstructed correctly)
-        let domain = engine.create_domain("test-shamir", None, "test").await.unwrap();
+        let domain = engine
+            .create_domain("test-shamir", None, "test")
+            .await
+            .unwrap();
         let cred = engine
-            .store_credential(domain.id, "key1", "api_key", b"shamir-secret", vec![], None, "test")
+            .store_credential(
+                domain.id,
+                "key1",
+                "api_key",
+                b"shamir-secret",
+                vec![],
+                None,
+                "test",
+            )
             .await
             .unwrap();
         let (_, plaintext, _) = engine.read_credential(cred.id, "test").await.unwrap();

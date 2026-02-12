@@ -11,8 +11,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use base64::Engine;
-use mv_core::model::keychain::*;
-use mv_core::MvError;
+use mv_core::{model::keychain::*, ChronicleEntry, MvError};
 
 use crate::auth::{authorize_write, AuthContext};
 use crate::limits::enforce_keychain_read_rate_limit;
@@ -50,6 +49,26 @@ fn require_admin(auth: &AuthContext) -> Result<(), (StatusCode, String)> {
     Ok(())
 }
 
+async fn log_unseal_attempt(
+    state: &Arc<AppState>,
+    subject: &str,
+    method: &str,
+    outcome: &str,
+    reason: Option<&str>,
+) {
+    let logic = match reason {
+        Some(reason) => {
+            format!("subject={subject} method={method} outcome={outcome} reason={reason}")
+        }
+        None => format!("subject={subject} method={method} outcome={outcome}"),
+    };
+
+    let entry = ChronicleEntry::new("unseal_attempt", logic);
+    if let Err(err) = state.engine.log_chronicle(&entry).await {
+        tracing::warn!(error = %err, "failed to log unseal_attempt chronicle entry");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DTOs
 // ---------------------------------------------------------------------------
@@ -81,6 +100,7 @@ pub struct VaultStatusResponse {
     pub auto_seal_remaining_secs: Option<u64>,
     pub shamir_enabled: bool,
     pub last_lifecycle_run: Option<String>,
+    pub degraded_security: bool,
 }
 
 #[derive(Deserialize)]
@@ -208,18 +228,29 @@ pub async fn unseal_vault(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_admin(&auth)?;
     let subject = auth.subject.as_deref().unwrap_or("anonymous");
-    if body.from_secure_enclave {
+    let method = if body.from_secure_enclave {
+        "secure_enclave"
+    } else if body.from_macos_keychain {
+        "macos_keychain"
+    } else {
+        "preferred"
+    };
+
+    let unseal_result: Result<(), MvError> = if body.from_secure_enclave {
         #[cfg(target_os = "macos")]
         {
-            state
-                .engine
-                .keychain
-                .unseal_from_secure_enclave()
-                .await
-                .map_err(map_keychain_error)?;
+            state.engine.keychain.unseal_from_secure_enclave().await
         }
         #[cfg(not(target_os = "macos"))]
         {
+            log_unseal_attempt(
+                &state,
+                subject,
+                method,
+                "fail",
+                Some("secure_enclave_requires_macos"),
+            )
+            .await;
             return Err((
                 StatusCode::BAD_REQUEST,
                 "Secure Enclave only available on macOS".into(),
@@ -231,18 +262,41 @@ pub async fn unseal_vault(
             .keychain
             .unseal_from_macos_keychain(subject)
             .await
-            .map_err(map_keychain_error)?;
     } else {
-        let password = body
-            .password
-            .ok_or((StatusCode::BAD_REQUEST, "password required".into()))?;
         state
             .engine
             .keychain
-            .unseal(&password, subject)
+            .unseal_with_preferred_master_key(
+                body.password.as_deref().filter(|value| !value.is_empty()),
+                subject,
+            )
             .await
-            .map_err(map_keychain_error)?;
+            .map(|_| ())
+    };
+
+    match unseal_result {
+        Ok(()) => {
+            log_unseal_attempt(&state, subject, method, "success", None).await;
+            if state.engine.keychain.degraded_security_mode() {
+                tracing::warn!("vault unsealed in degraded security mode (passphrase fallback)");
+            }
+        }
+        Err(err) => {
+            let reason = err.to_string();
+            log_unseal_attempt(&state, subject, method, "fail", Some(reason.as_str())).await;
+            return Err(map_keychain_error(err));
+        }
     }
+
+    if let Err(err) = state.engine.migrate_sealed_storage().await {
+        let _ = state.engine.keychain.seal("system").await;
+        return Err(map_keychain_error(err));
+    }
+    if let Err(err) = state.engine.rebuild_runtime_indexes().await {
+        let _ = state.engine.keychain.seal("system").await;
+        return Err(map_keychain_error(err));
+    }
+
     // Start auto-seal timer after successful unseal
     state.engine.keychain.start_auto_seal().await;
     Ok(Json(serde_json::json!({"status": "unsealed"})))
@@ -315,6 +369,7 @@ pub async fn vault_status(
         auto_seal_remaining_secs: seal_remaining,
         shamir_enabled,
         last_lifecycle_run: last_lifecycle,
+        degraded_security: state.engine.keychain.degraded_security_mode(),
     }))
 }
 
@@ -571,7 +626,14 @@ pub async fn create_delegation(
     let delegation = state
         .engine
         .keychain
-        .create_delegation(cred_id, &body.delegatee, perms, expires_at, body.max_depth, subject)
+        .create_delegation(
+            cred_id,
+            &body.delegatee,
+            perms,
+            expires_at,
+            body.max_depth,
+            subject,
+        )
         .await
         .map_err(map_keychain_error)?;
     Ok((StatusCode::CREATED, Json(delegation)))
@@ -973,7 +1035,9 @@ pub async fn list_domain_acls(
         .list_domain_acls(domain_uuid)
         .await
         .map_err(map_keychain_error)?;
-    Ok(Json(acls.into_iter().map(|a| serde_json::json!(a)).collect()))
+    Ok(Json(
+        acls.into_iter().map(|a| serde_json::json!(a)).collect(),
+    ))
 }
 
 pub async fn delete_domain_acl(

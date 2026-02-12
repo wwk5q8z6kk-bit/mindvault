@@ -5286,6 +5286,7 @@ dependencies = [
  "mv-core",
  "mv-engine",
  "mv-plugin",
+ "mv-storage",
  "native-tls",
  "prost 0.13.5",
  "rand 0.8.5",

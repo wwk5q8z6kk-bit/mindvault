@@ -165,6 +165,7 @@ struct FileRecurrenceConfig {
 
 #[derive(Debug, Default, Deserialize)]
 struct FileEncryptionConfig {
+    sealed_mode: Option<bool>,
     enabled: Option<bool>,
     argon2_memory_kib: Option<u32>,
     argon2_iterations: Option<u32>,
@@ -547,17 +548,24 @@ pub fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
         }
 
         if let Some(encryption) = file_config.encryption {
+            if let Some(sealed_mode) = encryption.sealed_mode {
+                engine.sealed_mode = sealed_mode;
+            }
             if let Some(enabled) = encryption.enabled {
                 engine.encryption.enabled = enabled;
+                engine.encryption_config.enabled = enabled;
             }
             if let Some(argon2_memory_kib) = encryption.argon2_memory_kib {
                 engine.encryption.argon2_memory_kib = argon2_memory_kib;
+                engine.encryption_config.argon2_memory_kib = argon2_memory_kib;
             }
             if let Some(argon2_iterations) = encryption.argon2_iterations {
                 engine.encryption.argon2_iterations = argon2_iterations;
+                engine.encryption_config.argon2_iterations = argon2_iterations;
             }
             if let Some(argon2_parallelism) = encryption.argon2_parallelism {
                 engine.encryption.argon2_parallelism = argon2_parallelism;
+                engine.encryption_config.argon2_parallelism = argon2_parallelism;
             }
         }
 
@@ -896,15 +904,22 @@ fn apply_env_overrides(engine: &mut EngineConfig, server: &mut ServerRuntimeConf
 
     if let Some(value) = parse_env_bool("MINDVAULT_ENCRYPTION_ENABLED") {
         engine.encryption.enabled = value;
+        engine.encryption_config.enabled = value;
+    }
+    if let Some(value) = parse_env_bool("MINDVAULT_SEALED_MODE") {
+        engine.sealed_mode = value;
     }
     if let Some(value) = parse_env::<u32>("MINDVAULT_ENCRYPTION_ARGON2_MEMORY_KIB") {
         engine.encryption.argon2_memory_kib = value;
+        engine.encryption_config.argon2_memory_kib = value;
     }
     if let Some(value) = parse_env::<u32>("MINDVAULT_ENCRYPTION_ARGON2_ITERATIONS") {
         engine.encryption.argon2_iterations = value;
+        engine.encryption_config.argon2_iterations = value;
     }
     if let Some(value) = parse_env::<u32>("MINDVAULT_ENCRYPTION_ARGON2_PARALLELISM") {
         engine.encryption.argon2_parallelism = value;
+        engine.encryption_config.argon2_parallelism = value;
     }
 
     if let Ok(value) = std::env::var("MINDVAULT_BIND_HOST") {
@@ -936,6 +951,9 @@ fn apply_env_overrides(engine: &mut EngineConfig, server: &mut ServerRuntimeConf
                 .collect();
         }
     }
+
+    // Transitional compatibility: keep both fields aligned during phased migration.
+    engine.encryption_config = engine.encryption.clone();
 }
 
 fn parse_env<T: std::str::FromStr>(key: &str) -> Option<T> {
@@ -997,8 +1015,8 @@ import_events = false
 export_events = true
 "#;
 
-        let path = std::env::temp_dir()
-            .join(format!("mindvault-config-{}.toml", uuid::Uuid::now_v7()));
+        let path =
+            std::env::temp_dir().join(format!("mindvault-config-{}.toml", uuid::Uuid::now_v7()));
         std::fs::write(&path, config).expect("write temp config");
 
         let runtime = load_runtime_config(path.to_str().expect("path should be valid"))

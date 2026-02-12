@@ -9,7 +9,9 @@ use mv_core::credentials::CredentialStore;
 use mv_core::*;
 use mv_graph::store::SqliteGraphStore;
 use mv_index::tantivy_index::TantivyFullTextIndex;
+use mv_storage::sealed_runtime::{clear_runtime_root_key, set_sealed_mode_enabled};
 use mv_storage::unified::UnifiedStore;
+use mv_storage::vault_crypto::VaultCrypto;
 use mv_storage::vector::{KnowledgeVaultIndexNoteEmbeddingFastembedLocalEmbedder, OpenAiEmbedder};
 use rand::RngCore;
 use reqwest::StatusCode as HttpStatusCode;
@@ -53,6 +55,7 @@ const TASK_STATUS_ALT_METADATA_KEY: &str = "status";
 const TASK_ESTIMATE_MINUTES_METADATA_KEY: &str = "task_estimate_minutes";
 const TASK_ESTIMATE_MINUTES_ALT_METADATA_KEY: &str = "task_estimate_min";
 const TASK_ESTIMATE_MIN_METADATA_KEY: &str = "estimate_min";
+const SEALED_BLOB_MAGIC: &[u8; 4] = b"MVB1";
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct KnowledgeVaultIndexNoteEmbeddingProviderRuntimeStatus {
@@ -171,6 +174,9 @@ pub struct MindVaultEngine {
 impl MindVaultEngine {
     /// Initialize the engine from configuration.
     pub async fn init(config: EngineConfig) -> MvResult<Self> {
+        set_sealed_mode_enabled(config.sealed_mode);
+        clear_runtime_root_key();
+
         let data_dir = PathBuf::from(&config.data_dir);
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| MvError::Storage(format!("create data dir: {e}")))?;
@@ -218,9 +224,13 @@ impl MindVaultEngine {
 
         let store = Arc::new(store);
 
-        // Initialize Tantivy FTS
-        let tantivy_path = data_dir.join("tantivy");
-        let fts = Arc::new(TantivyFullTextIndex::open(&tantivy_path)?);
+        // In sealed mode, keep full-text index in-memory to avoid plaintext index files at rest.
+        let fts = if config.sealed_mode {
+            Arc::new(TantivyFullTextIndex::open_in_memory()?)
+        } else {
+            let tantivy_path = data_dir.join("tantivy");
+            Arc::new(TantivyFullTextIndex::open(&tantivy_path)?)
+        };
 
         // Initialize graph store (shares SQLite connection via separate connection)
         let graph_conn = rusqlite::Connection::open(data_dir.join("mindvault.sqlite"))
@@ -243,7 +253,8 @@ impl MindVaultEngine {
         let llm_api_key = credential_store
             .get_secret_string("MINDVAULT_LLM_API_KEY")
             .or_else(|| credential_store.get_secret_string("OPENAI_API_KEY"));
-        let llm = llm::init_llm_provider_with_local(&config.llm, &config.local_llm, llm_api_key).await;
+        let llm =
+            llm::init_llm_provider_with_local(&config.llm, &config.local_llm, llm_api_key).await;
 
         let recall = RecallPipeline::new(
             Arc::clone(&store),
@@ -304,6 +315,153 @@ impl MindVaultEngine {
         engine.proactive.set_engine(Arc::clone(&engine));
         engine.insight.set_engine(Arc::clone(&engine));
         Ok(engine)
+    }
+
+    pub async fn rebuild_runtime_indexes(&self) -> MvResult<()> {
+        if !self.config.sealed_mode {
+            return Ok(());
+        }
+        if !self.keychain.is_unsealed_sync() {
+            return Err(MvError::VaultSealed);
+        }
+
+        let nodes = self
+            .store
+            .nodes
+            .list(&QueryFilters::default(), 100_000, 0)
+            .await?;
+        for node in &nodes {
+            self.fts.index_node(node)?;
+            if let Some(ref vectors) = self.store.vectors {
+                if let Ok(embedding) = self.store.embedder.embed(&node.content).await {
+                    let _ = vectors
+                        .upsert(node.id, embedding, &node.content, Some(&node.namespace))
+                        .await;
+                }
+            }
+        }
+        self.fts.commit()?;
+        Ok(())
+    }
+
+    async fn encrypt_blob_for_namespace(
+        &self,
+        namespace: &str,
+        plaintext: &[u8],
+    ) -> MvResult<Vec<u8>> {
+        let dek = VaultCrypto::generate_node_dek();
+        let wrapped_dek = self.keychain.wrap_namespace_dek(namespace, &dek).await?;
+        let ciphertext = VaultCrypto::aes_gcm_encrypt_pub(&dek, plaintext)
+            .map_err(|err| MvError::Storage(format!("blob encrypt failed: {err}")))?;
+        let envelope = serde_json::json!({
+            "v": 1,
+            "wrapped_dek": wrapped_dek,
+            "ciphertext": base64::engine::general_purpose::STANDARD.encode(ciphertext),
+        });
+        let body = serde_json::to_vec(&envelope)
+            .map_err(|err| MvError::Storage(format!("blob envelope encode failed: {err}")))?;
+        let mut out = Vec::with_capacity(SEALED_BLOB_MAGIC.len() + body.len());
+        out.extend_from_slice(SEALED_BLOB_MAGIC);
+        out.extend_from_slice(&body);
+        Ok(out)
+    }
+
+    async fn migrate_legacy_attachments_for_node(&self, node: &KnowledgeNode) -> MvResult<usize> {
+        let attachments = node
+            .metadata
+            .get("attachments")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        if attachments.is_empty() {
+            return Ok(0);
+        }
+
+        let expected_base = PathBuf::from(&self.config.data_dir)
+            .join("blobs")
+            .join(node.id.to_string());
+        let canonical_base = match tokio::fs::canonicalize(&expected_base).await {
+            Ok(path) => path,
+            Err(_) => return Ok(0),
+        };
+
+        let mut migrated = 0usize;
+        for attachment in attachments {
+            let Some(stored_path) = attachment
+                .get("stored_path")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let candidate = PathBuf::from(stored_path);
+            let canonical_candidate = match tokio::fs::canonicalize(&candidate).await {
+                Ok(path) => path,
+                Err(_) => continue,
+            };
+            if !canonical_candidate.starts_with(&canonical_base) {
+                continue;
+            }
+
+            let bytes = match tokio::fs::read(&canonical_candidate).await {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            if bytes.starts_with(SEALED_BLOB_MAGIC) {
+                continue;
+            }
+
+            let encrypted = self
+                .encrypt_blob_for_namespace(&node.namespace, &bytes)
+                .await?;
+            tokio::fs::write(&canonical_candidate, encrypted)
+                .await
+                .map_err(|err| MvError::Storage(format!("rewrite attachment failed: {err}")))?;
+            migrated += 1;
+        }
+
+        Ok(migrated)
+    }
+
+    pub async fn migrate_sealed_storage(&self) -> MvResult<()> {
+        if !self.config.sealed_mode {
+            return Ok(());
+        }
+        if !self.keychain.is_unsealed_sync() {
+            return Err(MvError::VaultSealed);
+        }
+
+        let nodes = self
+            .store
+            .nodes
+            .list(&QueryFilters::default(), 100_000, 0)
+            .await?;
+        let mut migrated_nodes = 0usize;
+        let mut migrated_blobs = 0usize;
+        for node in &nodes {
+            self.store.nodes.update(node).await?;
+            migrated_nodes += 1;
+            migrated_blobs += self.migrate_legacy_attachments_for_node(node).await?;
+        }
+
+        for legacy_index_dir in ["tantivy", "lancedb"] {
+            let path = PathBuf::from(&self.config.data_dir).join(legacy_index_dir);
+            if tokio::fs::metadata(&path).await.is_ok() {
+                let _ = tokio::fs::remove_dir_all(&path).await;
+            }
+        }
+
+        tracing::info!(
+            migrated_nodes,
+            migrated_blobs,
+            "sealed storage migration completed"
+        );
+        Ok(())
+    }
+
+    /// Returns true when sealed mode is enabled in runtime config.
+    pub fn is_sealed(&self) -> bool {
+        self.config.sealed_mode && !self.keychain.is_unsealed_sync()
     }
 
     /// Set up the enrichment pipeline. Returns the worker that should be spawned.
@@ -609,7 +767,10 @@ impl MindVaultEngine {
         node_id: Uuid,
         include_resolved: bool,
     ) -> MvResult<Vec<NodeComment>> {
-        self.store.nodes.list_comments(node_id, include_resolved).await
+        self.store
+            .nodes
+            .list_comments(node_id, include_resolved)
+            .await
     }
 
     pub async fn get_node_comment(&self, comment_id: Uuid) -> MvResult<Option<NodeComment>> {
@@ -756,7 +917,8 @@ impl MindVaultEngine {
             ));
         }
 
-        let access_token = google_refresh_access_token(client_id, client_secret, refresh_token).await?;
+        let access_token =
+            google_refresh_access_token(client_id, client_secret, refresh_token).await?;
         let adapter_name = format!("google-calendar:{calendar_id}");
         let existing_sync = self
             .store
@@ -786,7 +948,8 @@ impl MindVaultEngine {
 
         let mut sync_token = existing_sync;
         for attempt in 0..2 {
-            match google_list_events(&access_token, calendar_id, config, sync_token.as_deref()).await
+            match google_list_events(&access_token, calendar_id, config, sync_token.as_deref())
+                .await
             {
                 Ok((events, next_sync_token)) => {
                     report.fetched = events.len();
@@ -804,8 +967,11 @@ impl MindVaultEngine {
                             };
 
                             if matches!(event.status.as_deref(), Some("cancelled")) {
-                                if let Some(existing) =
-                                    self.store.nodes.find_by_source(&event_source(calendar_id, event_id)).await?
+                                if let Some(existing) = self
+                                    .store
+                                    .nodes
+                                    .find_by_source(&event_source(calendar_id, event_id))
+                                    .await?
                                 {
                                     let _ = self.delete_node(existing.id).await?;
                                     deleted += 1;
@@ -982,16 +1148,18 @@ impl MindVaultEngine {
     ///
     /// Hashes the token, looks up by hash, returns None if not found or revoked.
     /// Touches `last_used_at` on success.
-    pub async fn resolve_consumer_token(
-        &self,
-        token: &str,
-    ) -> MvResult<Option<ConsumerProfile>> {
+    pub async fn resolve_consumer_token(&self, token: &str) -> MvResult<Option<ConsumerProfile>> {
         let mut hasher = Sha256::new();
         hasher.update(token.as_bytes());
         let digest = hasher.finalize();
         let token_hash = URL_SAFE_NO_PAD.encode(digest);
 
-        let profile = match self.store.nodes.get_consumer_by_token_hash(&token_hash).await? {
+        let profile = match self
+            .store
+            .nodes
+            .get_consumer_by_token_hash(&token_hash)
+            .await?
+        {
             Some(p) => p,
             None => return Ok(None),
         };
@@ -1032,11 +1200,7 @@ impl MindVaultEngine {
     ///
     /// Returns `PolicyDecision::Allow` with TTL/scopes or `PolicyDecision::Deny` with reason.
     /// Default deny: no matching policy means deny.
-    pub async fn check_policy(
-        &self,
-        secret_key: &str,
-        consumer: &str,
-    ) -> MvResult<PolicyDecision> {
+    pub async fn check_policy(&self, secret_key: &str, consumer: &str) -> MvResult<PolicyDecision> {
         let policy = self
             .store
             .nodes
@@ -1045,7 +1209,9 @@ impl MindVaultEngine {
 
         match policy {
             None => Ok(PolicyDecision::Deny {
-                reason: format!("no policy found for consumer '{consumer}' on secret '{secret_key}'"),
+                reason: format!(
+                    "no policy found for consumer '{consumer}' on secret '{secret_key}'"
+                ),
             }),
             Some(p) => {
                 if !p.allowed {
@@ -1081,10 +1247,7 @@ impl MindVaultEngine {
         secret_key: Option<&str>,
         consumer: Option<&str>,
     ) -> MvResult<Vec<AccessPolicy>> {
-        self.store
-            .nodes
-            .list_policies(secret_key, consumer)
-            .await
+        self.store.nodes.list_policies(secret_key, consumer).await
     }
 
     /// Delete an access policy by ID.
@@ -1237,7 +1400,8 @@ impl MindVaultEngine {
             return Ok(profile);
         };
 
-        let mut contact = RelayContact::new(display_name, signature_key).with_trust(TrustLevel::Full);
+        let mut contact =
+            RelayContact::new(display_name, signature_key).with_trust(TrustLevel::Full);
         contact.vault_address = vault_address;
         contact.notes = Some(PROFILE_OWNER_CONTACT_NOTES.to_string());
 
@@ -1457,10 +1621,9 @@ impl MindVaultEngine {
                         .with_thread(thread_id)
                         .with_content_type(ContentType::Text);
                 reply.recipient_contact_id = Some(sender_id);
-                reply.metadata.insert(
-                    "auto_reply".to_string(),
-                    serde_json::Value::Bool(true),
-                );
+                reply
+                    .metadata
+                    .insert("auto_reply".to_string(), serde_json::Value::Bool(true));
                 reply.metadata.insert(
                     "basis_message_id".to_string(),
                     serde_json::Value::String(stored.id.to_string()),
@@ -1610,7 +1773,9 @@ impl MindVaultEngine {
         namespace: Option<String>,
     ) -> MvResult<(KnowledgeNode, bool)> {
         if !self.config.daily_notes.enabled {
-            return Err(MvError::InvalidInput("daily notes are disabled".to_string()));
+            return Err(MvError::InvalidInput(
+                "daily notes are disabled".to_string(),
+            ));
         }
 
         let daily_namespace =
@@ -2639,7 +2804,10 @@ impl MindVaultEngine {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<ConflictAlert>> {
-        self.store.nodes.list_conflicts(resolved, limit, offset).await
+        self.store
+            .nodes
+            .list_conflicts(resolved, limit, offset)
+            .await
     }
 
     /// Get a single conflict alert.
@@ -2660,7 +2828,10 @@ impl MindVaultEngine {
     }
 
     /// List identities for a contact.
-    pub async fn list_contact_identities(&self, contact_id: Uuid) -> MvResult<Vec<ContactIdentity>> {
+    pub async fn list_contact_identities(
+        &self,
+        contact_id: Uuid,
+    ) -> MvResult<Vec<ContactIdentity>> {
         self.store.nodes.list_contact_identities(contact_id).await
     }
 
@@ -3203,23 +3374,18 @@ async fn google_list_events(
 ) -> Result<(Vec<GoogleEvent>, Option<String>), GoogleCalendarFetchError> {
     let client = reqwest::Client::new();
     let encoded_calendar = byte_serialize(calendar_id.as_bytes()).collect::<String>();
-    let url = format!(
-        "https://www.googleapis.com/calendar/v3/calendars/{encoded_calendar}/events"
-    );
+    let url = format!("https://www.googleapis.com/calendar/v3/calendars/{encoded_calendar}/events");
 
     let max_results = config.max_results.to_string();
     let mut page_token: Option<String> = None;
     let mut events: Vec<GoogleEvent> = Vec::new();
 
     let next_sync_token = loop {
-        let mut request = client
-            .get(&url)
-            .bearer_auth(access_token)
-            .query(&[
-                ("singleEvents", "true"),
-                ("showDeleted", "true"),
-                ("maxResults", max_results.as_str()),
-            ]);
+        let mut request = client.get(&url).bearer_auth(access_token).query(&[
+            ("singleEvents", "true"),
+            ("showDeleted", "true"),
+            ("maxResults", max_results.as_str()),
+        ]);
 
         if let Some(token) = sync_token {
             request = request.query(&[("syncToken", token)]);
@@ -3322,9 +3488,7 @@ async fn google_export_events(
     let nodes = engine.store.nodes.list(&filters, 1000, 0).await?;
     let client = reqwest::Client::new();
     let encoded_calendar = byte_serialize(calendar_id.as_bytes()).collect::<String>();
-    let url = format!(
-        "https://www.googleapis.com/calendar/v3/calendars/{encoded_calendar}/events"
-    );
+    let url = format!("https://www.googleapis.com/calendar/v3/calendars/{encoded_calendar}/events");
 
     for mut node in nodes {
         let start_at = node
@@ -3344,7 +3508,10 @@ async fn google_export_events(
             continue;
         };
 
-        let summary = node.title.clone().unwrap_or_else(|| "MindVault Event".to_string());
+        let summary = node
+            .title
+            .clone()
+            .unwrap_or_else(|| "MindVault Event".to_string());
         let description = node.content.clone();
 
         let mut payload = serde_json::json!({
@@ -3368,9 +3535,10 @@ async fn google_export_events(
                 .bearer_auth(access_token)
                 .json(&payload);
 
-            let response = request.send().await.map_err(|e| {
-                MvError::Storage(format!("google event update failed: {e}"))
-            })?;
+            let response = request
+                .send()
+                .await
+                .map_err(|e| MvError::Storage(format!("google event update failed: {e}")))?;
 
             if !response.status().is_success() {
                 let status = response.status();
@@ -3439,7 +3607,7 @@ mod tests {
     use mv_core::{
         ConflictAlert, ConflictType, ContactIdentity, GraphStore, IdentityType, InsightType,
         KnowledgeNode, MessageStatus, NodeKind, ProactiveInsight, ProposalAction, ProposalState,
-        RelayChannel, RelayContact, RelayMessage, RelationKind, Relationship, TrustLevel,
+        RelationKind, Relationship, RelayChannel, RelayContact, RelayMessage, TrustLevel,
         TrustModel,
     };
     use tempfile::TempDir;
@@ -3612,15 +3780,17 @@ mod tests {
         let contact = engine.relay.get_contact(contact_id).await.unwrap().unwrap();
         assert_eq!(contact.display_name, "Owner");
         assert_eq!(contact.public_key, "pk-owner");
-        assert_eq!(contact.vault_address.as_deref(), Some("mailto:owner@example.com"));
+        assert_eq!(
+            contact.vault_address.as_deref(),
+            Some("mailto:owner@example.com")
+        );
     }
 
     #[tokio::test]
     async fn test_relay_inbound_creates_reply_proposal() {
         let (engine, _tmp_dir) = create_test_engine().await;
 
-        let contact = RelayContact::new("Alice", "pk-alice")
-            .with_trust(TrustLevel::ContextInject);
+        let contact = RelayContact::new("Alice", "pk-alice").with_trust(TrustLevel::ContextInject);
         engine.relay.add_contact(&contact).await.unwrap();
 
         let channel = RelayChannel::direct(contact.id);
@@ -3632,11 +3802,8 @@ mod tests {
         );
         engine.store_node(node).await.unwrap();
 
-        let message = RelayMessage::inbound(
-            channel.id,
-            contact.id,
-            "Can you share the Atlas roadmap?",
-        );
+        let message =
+            RelayMessage::inbound(channel.id, contact.id, "Can you share the Atlas roadmap?");
         let outcome = engine
             .receive_relay_message(message, "default")
             .await
@@ -3663,7 +3830,11 @@ mod tests {
             NodeKind::Fact,
             "Rust async tokio memory pipeline for background jobs".to_string(),
         )
-        .with_tags(vec!["rust".to_string(), "async".to_string(), "tokio".to_string()]);
+        .with_tags(vec![
+            "rust".to_string(),
+            "async".to_string(),
+            "tokio".to_string(),
+        ]);
         let _seed_node = engine.store_node(seed).await.unwrap();
 
         let stored = engine
@@ -3849,9 +4020,11 @@ mod tests {
     async fn test_store_node_auto_links_event_kind_without_tags() {
         let (engine, _tmp_dir) = create_test_engine().await;
         let namespace = engine.config.daily_notes.namespace.clone();
-        let event_node =
-            KnowledgeNode::new(NodeKind::Event, "Team planning sync at 10:00 UTC".to_string())
-                .with_namespace(namespace.clone());
+        let event_node = KnowledgeNode::new(
+            NodeKind::Event,
+            "Team planning sync at 10:00 UTC".to_string(),
+        )
+        .with_namespace(namespace.clone());
 
         let stored_event = engine.store_node(event_node).await.unwrap();
         let day = stored_event.temporal.created_at.date_naive();
@@ -3875,8 +4048,9 @@ mod tests {
     async fn test_update_node_auto_link_does_not_duplicate_daily_edge() {
         let (engine, _tmp_dir) = create_test_engine().await;
         let namespace = engine.config.daily_notes.namespace.clone();
-        let task_node = KnowledgeNode::new(NodeKind::Event, "Capture meeting action items".to_string())
-            .with_namespace(namespace.clone());
+        let task_node =
+            KnowledgeNode::new(NodeKind::Event, "Capture meeting action items".to_string())
+                .with_namespace(namespace.clone());
         let stored_task = engine.store_node(task_node).await.unwrap();
         let day = stored_task.temporal.created_at.date_naive();
         let daily_note = engine
@@ -3951,9 +4125,12 @@ mod tests {
         let namespace = "knowledge".to_string();
         let title_target = engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "Project Beta release sequencing".to_string())
-                    .with_namespace(namespace.clone())
-                    .with_title("Project Beta"),
+                KnowledgeNode::new(
+                    NodeKind::Fact,
+                    "Project Beta release sequencing".to_string(),
+                )
+                .with_namespace(namespace.clone())
+                .with_title("Project Beta"),
             )
             .await
             .unwrap();
@@ -4216,8 +4393,9 @@ mod tests {
     #[tokio::test]
     async fn test_rollforward_recurring_tasks_is_idempotent_for_same_instant() {
         let (engine, _tmp_dir) = create_test_engine().await;
-        let mut template = KnowledgeNode::new(NodeKind::Task, "Weekly planning template".to_string())
-            .with_namespace("ops");
+        let mut template =
+            KnowledgeNode::new(NodeKind::Task, "Weekly planning template".to_string())
+                .with_namespace("ops");
         template.metadata.insert(
             TASK_RECURRENCE_METADATA_KEY.into(),
             serde_json::json!({
@@ -4482,8 +4660,7 @@ mod tests {
         // Store two nodes
         let node_a = engine
             .store_node(
-                KnowledgeNode::new(NodeKind::Fact, "The sky is blue")
-                    .with_tags(vec!["sky".into()]),
+                KnowledgeNode::new(NodeKind::Fact, "The sky is blue").with_tags(vec!["sky".into()]),
             )
             .await
             .unwrap();

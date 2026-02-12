@@ -1,5 +1,5 @@
-pub mod audit;
 pub mod adapter_poll;
+pub mod audit;
 pub mod auth;
 pub mod email;
 pub mod grpc;
@@ -30,6 +30,12 @@ pub struct ServerConfig {
     pub socket_path: Option<String>,
     pub cors_allowed_origins: Vec<String>,
     pub engine_config: EngineConfig,
+}
+
+fn require_hardware_from_env() -> bool {
+    std::env::var("MINDVAULT_REQUIRE_HARDWARE")
+        .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
+        .unwrap_or(false)
 }
 
 impl Default for ServerConfig {
@@ -65,6 +71,12 @@ pub async fn start_server(
 
     tracing::info!("initializing MindVault engine...");
     let mut engine = MindVaultEngine::init(config.engine_config).await?;
+    if require_hardware_from_env() && !engine.keychain.os_secure_storage_available() {
+        return Err(std::io::Error::other(
+            "MINDVAULT_REQUIRE_HARDWARE=true but OS secure storage is unavailable",
+        )
+        .into());
+    }
 
     // Create broadcast channel early so enrichment can use it
     let (change_tx, _) = tokio::sync::broadcast::channel::<state::ChangeNotification>(256);
@@ -91,7 +103,11 @@ pub async fn start_server(
     let (agent_tx, _) = tokio::sync::broadcast::channel::<state::AgentNotification>(256);
 
     // Spawn watcher agent with notification forwarding
-    spawn_watcher_agent(Arc::clone(&engine), agent_tx.clone(), shutdown_tx.subscribe());
+    spawn_watcher_agent(
+        Arc::clone(&engine),
+        agent_tx.clone(),
+        shutdown_tx.subscribe(),
+    );
 
     let state = Arc::new(AppState::new_with_channels(engine, change_tx, agent_tx));
     spawn_agent_change_processor(Arc::clone(&state), shutdown_tx.subscribe());
@@ -153,9 +169,9 @@ pub async fn start_server(
             .add_service(
                 grpc::proto::mind_vault_service_server::MindVaultServiceServer::new(service),
             )
-            .add_service(grpc::proto::keychain_service_server::KeychainServiceServer::new(
-                keychain_service,
-            ))
+            .add_service(
+                grpc::proto::keychain_service_server::KeychainServiceServer::new(keychain_service),
+            )
             .serve(addr)
             .await
             .ok();
@@ -256,8 +272,13 @@ fn spawn_watcher_agent(
     });
 
     let agent = Arc::new(
-        WatcherAgent::new(Arc::clone(&engine), intent_engine, proactive_engine, watcher_config)
-            .with_notifier(notifier),
+        WatcherAgent::new(
+            Arc::clone(&engine),
+            intent_engine,
+            proactive_engine,
+            watcher_config,
+        )
+        .with_notifier(notifier),
     );
 
     tokio::spawn(async move {
@@ -310,6 +331,10 @@ async fn process_agent_change_notification(
     intent_engine: &IntentEngine,
     notification: state::ChangeNotification,
 ) {
+    if state.engine.config.sealed_mode && !state.engine.keychain.is_unsealed_sync() {
+        return;
+    }
+
     match notification.operation.as_str() {
         "create" | "update" | "enriched" => {}
         _ => return,
@@ -462,6 +487,9 @@ async fn ensure_today_daily_note_on_startup_best_effort(engine: &Arc<MindVaultEn
     if !engine.config.daily_notes.enabled {
         return;
     }
+    if engine.config.sealed_mode && !engine.keychain.is_unsealed_sync() {
+        return;
+    }
 
     let today = Utc::now().date_naive();
     match engine.ensure_daily_note(today, None).await {
@@ -506,6 +534,10 @@ fn spawn_daily_note_scheduler(engine: Arc<MindVaultEngine>) {
                 "mindvault_daily_note_scheduler_sleep_until_next_utc_midnight"
             );
             tokio::time::sleep(sleep_duration).await;
+
+            if engine.config.sealed_mode && !engine.keychain.is_unsealed_sync() {
+                continue;
+            }
 
             let today = Utc::now().date_naive();
             match engine.ensure_daily_note(today, None).await {
@@ -553,6 +585,11 @@ fn spawn_recurrence_and_reminder_scheduler(state: Arc<AppState>) {
         .max(1);
     tokio::spawn(async move {
         loop {
+            if state.engine.config.sealed_mode && !state.engine.keychain.is_unsealed_sync() {
+                tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                continue;
+            }
+
             let now = Utc::now();
             match state
                 .engine
@@ -609,6 +646,9 @@ fn spawn_google_calendar_sync(
                     break;
                 }
                 _ = interval.tick() => {
+                    if engine.config.sealed_mode && !engine.keychain.is_unsealed_sync() {
+                        continue;
+                    }
                     match engine.sync_google_calendar().await {
                         Ok(report) => {
                             tracing::info!(
@@ -737,12 +777,20 @@ fn auth_enabled_from_env() -> bool {
 }
 
 fn allow_insecure_bind_from_env() -> bool {
-    allow_insecure_bind_value(std::env::var("MINDVAULT_ALLOW_INSECURE_BIND").ok().as_deref())
+    allow_insecure_bind_value(
+        std::env::var("MINDVAULT_ALLOW_INSECURE_BIND")
+            .ok()
+            .as_deref(),
+    )
 }
 
 fn auth_enabled_from_env_values(jwt_secret: Option<&str>, auth_token: Option<&str>) -> bool {
-    jwt_secret.map(|value| !value.trim().is_empty()).unwrap_or(false)
-        || auth_token.map(|value| !value.trim().is_empty()).unwrap_or(false)
+    jwt_secret
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        || auth_token
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
 }
 
 fn allow_insecure_bind_value(raw: Option<&str>) -> bool {
