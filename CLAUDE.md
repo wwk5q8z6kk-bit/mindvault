@@ -30,16 +30,58 @@ The coordinator provides:
 **NEVER run `pkill -f cargo` or `kill` on cargo processes.** Other sessions depend
 on them. Use `~/.mindvault/scripts/mv-check-cleanup --status` to see what's running.
 
-## Project Structure
+## Workspace Layout
 
-Rust workspace with 7+ crates:
-- `mv-core` — Core types, credential store, model definitions
-- `mv-storage` — SQLite + LanceDB persistence layer
-- `mv-index` — Tantivy full-text search index
-- `mv-graph` — petgraph-based knowledge graph
-- `mv-engine` — Orchestration engine combining all backends
-- `mv-server` — axum REST + tonic gRPC server
-- `mv-cli` — CLI binary (`mv` command)
+- `crates/` — Rust workspace crates (core, storage, engine, server, CLI, plugins, MCP).
+- `frontend/` — SvelteKit UI (Tauri shell lives here).
+- `web/` — Admin web UI (static, no framework).
+- `extensions/` — Web clipper extension.
+- `connectors/` — External connectors (MCP, OpenClaw).
+- `config/` — Default config and examples.
+- `docs/` — Architecture, ADRs, onboarding, security, performance.
+- `migrations/` — SQLite schema migrations.
+
+## Cargo Features (Common)
+
+Storage / Engine / Server share these flags:
+
+- `local-embeddings` (default): FastEmbed + local embedding models  
+  `crates/mv-storage/Cargo.toml`, `crates/mv-engine/Cargo.toml`, `crates/mv-server/Cargo.toml`
+- `image-embeddings`: image embedding models (engine)
+- `local-llm`: local LLM backends (engine/server)
+- `wip`: WIP features (engine/server)
+
+## Configuration & Environment
+
+Baseline config: `config/default.toml`.  
+Most keys map to `MINDVAULT_*` environment variables.
+
+Examples (see comments in `config/default.toml`):
+- Auth: `MINDVAULT_AUTH_TOKEN`, `MINDVAULT_AUTH_ROLE`, `MINDVAULT_JWT_SECRET`
+- Rate limits: `MINDVAULT_RATE_LIMIT_REQUESTS`, `MINDVAULT_RATE_LIMIT_WINDOW_SECS`
+- Google Calendar: `MINDVAULT_GOOGLE_CALENDAR_*`
+- Encryption: `MINDVAULT_ENCRYPTION_*`
+- AI auto‑tagging: `MINDVAULT_AI_AUTO_TAGGING_*`
+- Daily notes: `MINDVAULT_DAILY_NOTES_*`
+- Recurrence: `MINDVAULT_RECURRENCE_*`
+- AI sidecar (CLI override): `MINDVAULT_AI_SIDECAR_*`  
+  (`crates/mv-cli/src/commands/mod.rs`)
+
+## Testing Guidance
+
+Always use the coordinator:
+
+```bash
+# run a single test
+~/.mindvault/scripts/mv-check test -p mv-server -- public_share_lifecycle
+```
+
+Integration tests may require `-- --test-threads=1` for determinism.
+
+## Swagger UI Build Note
+
+`utoipa-swagger-ui` downloads a release from GitHub during build. Offline builds
+need `SWAGGER_UI_DOWNLOAD_URL` set to a local file or require network access.
 
 ## Known Build Issues
 
