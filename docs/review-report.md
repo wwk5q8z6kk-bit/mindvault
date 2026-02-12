@@ -23,6 +23,10 @@ This report corrects earlier misstatements and anchors each claim to code.
   `crates/mv-engine/src/sync/clock.rs`
 - **Editor is TipTap** (not “TiTip”).  
   `frontend/package.json`, `frontend/src/lib/components/editor/`
+- **Metrics are implemented and exposed**, not pending.  
+  `crates/mv-server/src/rest.rs` (`/api/v1/metrics/*`, `/metrics`)
+- **ADRs and architecture docs already exist** (not missing).  
+  `docs/adr/README.md`, `docs/architecture/system-overview.md`
 
 ---
 
@@ -113,5 +117,4 @@ graph TB
 
 1. **Keep documentation in sync with code** by updating this report after major merges.  
 2. **Expand developer docs** (CLAUDE + runbook) to reduce onboarding friction.  
-3. **Add a short ADR index** (if not already present) to anchor key decisions.  
-
+3. **Track P0/P1 execution explicitly** with a living checklist tied to owners/files.

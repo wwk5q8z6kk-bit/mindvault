@@ -7,6 +7,7 @@
 - `adr/README.md`: ADR index (architecture decisions).
 - `plugin-development.md`: WASM plugin authoring and lifecycle.
 - `review-report.md`: Source-linked codebase re-review (Feb 2026).
+- `p0-p1-execution-checklist.md`: Living checklist for P0/P1 hardening work.
 - API docs: `/api/docs` (Swagger UI) and `/api/openapi.json` (OpenAPI JSON).
 - Sharing API: `/api/v1/shares` and `/public/shares/{token}` (see REST OpenAPI).
 - Google Calendar sync: `/api/v1/calendar/google/*` endpoints (see onboarding).
