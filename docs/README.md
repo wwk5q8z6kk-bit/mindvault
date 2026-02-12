@@ -4,7 +4,9 @@
 - `architecture/system-overview.md`: High-level MindVault architecture diagram and data flow.
 - `architecture/components.md`: Component boundaries and invariants (legacy RLM notes).
 - `architecture/invariants.md`: Runtime invariants (legacy RLM notes).
+- `adr/README.md`: ADR index (architecture decisions).
 - `plugin-development.md`: WASM plugin authoring and lifecycle.
+- `review-report.md`: Source-linked codebase re-review (Feb 2026).
 - API docs: `/api/docs` (Swagger UI) and `/api/openapi.json` (OpenAPI JSON).
 - Sharing API: `/api/v1/shares` and `/public/shares/{token}` (see REST OpenAPI).
 - Google Calendar sync: `/api/v1/calendar/google/*` endpoints (see onboarding).
