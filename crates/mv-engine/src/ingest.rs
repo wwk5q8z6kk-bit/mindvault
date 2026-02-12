@@ -136,6 +136,17 @@ impl IngestPipeline {
         }
 
         self.graph.remove_node_relationships(id).await?;
+
+        // Clean up attachment blob files
+        let blob_dir = std::path::PathBuf::from(&self.config.data_dir)
+            .join("blobs")
+            .join(id.to_string());
+        if blob_dir.is_dir() {
+            if let Err(e) = tokio::fs::remove_dir_all(&blob_dir).await {
+                tracing::warn!(node_id = %id, error = %e, "failed to remove blob directory");
+            }
+        }
+
         self.store.nodes.delete(id).await
     }
 

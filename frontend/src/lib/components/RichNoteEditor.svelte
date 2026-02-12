@@ -989,15 +989,15 @@
 		padding: 0.75rem;
 	}
 
-	.mv-editor-mermaid-preview .mv-mermaid,
-	.mv-editor-mermaid-preview .mermaid {
+	:global(.mv-editor-mermaid-preview .mv-mermaid),
+	:global(.mv-editor-mermaid-preview .mermaid) {
 		background: rgba(15, 23, 42, 0.6);
 		border-radius: 0.5rem;
 		padding: 0.5rem;
 		overflow-x: auto;
 	}
 
-	.mv-editor-mermaid-preview .mv-html-block {
+	:global(.mv-editor-mermaid-preview .mv-html-block) {
 		background: rgba(15, 23, 42, 0.6);
 		border-radius: 0.5rem;
 		padding: 0.5rem;

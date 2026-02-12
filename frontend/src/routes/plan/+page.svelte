@@ -315,7 +315,7 @@
 				{/if}
 
 				<a
-					href="/calendar"
+					href="/tasks?view=calendar"
 					class="mt-4 inline-flex items-center gap-1.5 text-[10px] text-sky-400 hover:text-sky-300"
 				>
 					<span>Apply to calendar</span>
@@ -362,7 +362,7 @@
 				<span>Manage Tasks</span>
 			</a>
 			<a
-				href="/calendar"
+				href="/tasks?view=calendar"
 				class="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
 			>
 				<span>View Calendar</span>

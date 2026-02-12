@@ -477,29 +477,38 @@
 				<div class="border-b border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-4 py-3">
 					<div class="grid gap-2 md:grid-cols-2">
 						<div>
-							<label class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]"
+							<label
+								for="contact-display-name"
+								class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]"
 								>Display name</label
 							>
 							<input
+								id="contact-display-name"
 								class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-xs text-[rgb(var(--mv-text))]"
 								bind:value={contactEditor.display_name}
 							/>
 						</div>
 						<div>
-							<label class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]"
+							<label
+								for="contact-vault-address"
+								class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]"
 								>Vault address</label
 							>
 							<input
+								id="contact-vault-address"
 								class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-xs text-[rgb(var(--mv-text))]"
 								placeholder="mailto:..."
 								bind:value={contactEditor.vault_address}
 							/>
 						</div>
 						<div>
-							<label class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]"
+							<label
+								for="contact-trust-level"
+								class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]"
 								>Trust level</label
 							>
 							<select
+								id="contact-trust-level"
 								class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-xs text-[rgb(var(--mv-text))]"
 								bind:value={contactEditor.trust_level}
 							>
@@ -509,10 +518,13 @@
 							</select>
 						</div>
 						<div>
-							<label class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]"
+							<label
+								for="contact-notes"
+								class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]"
 								>Notes</label
 							>
 							<textarea
+								id="contact-notes"
 								class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] px-2 py-1 text-xs text-[rgb(var(--mv-text))]"
 								rows="2"
 								bind:value={contactEditor.notes}

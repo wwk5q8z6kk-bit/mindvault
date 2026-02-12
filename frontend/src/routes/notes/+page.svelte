@@ -20,6 +20,30 @@
 	import type { NodeAttachment } from '$lib/api/files';
 	import type { Note } from '$lib/api/notes';
 	import { markdownToHTML } from '$lib/editor';
+	import ViewToggle from '$lib/components/ViewToggle.svelte';
+	import DistillPanel from '$lib/components/DistillPanel.svelte';
+	import { createViewMode, setViewMode } from '$lib/utils/view-mode';
+	import { setViewPreference } from '$lib/stores/view-preferences';
+	import NotesGraphView from '$lib/components/NotesGraphView.svelte';
+	import NotesCanvasView from '$lib/components/NotesCanvasView.svelte';
+	import NotesPdfView from '$lib/components/NotesPdfView.svelte';
+	import NotesMediaView from '$lib/components/NotesMediaView.svelte';
+
+	const currentView = createViewMode('list', ['list', 'graph', 'canvas', 'pdf', 'media']);
+
+	const notesViews = [
+		{ key: 'list', label: 'List' },
+		{ key: 'graph', label: 'Graph' },
+		{ key: 'canvas', label: 'Canvas' },
+		{ key: 'pdf', label: 'PDF' },
+		{ key: 'media', label: 'Media' }
+	];
+
+	function handleViewChange(event: CustomEvent<string>) {
+		const view = event.detail;
+		setViewPreference('notes', view);
+		setViewMode(view, 'list');
+	}
 
 	// Extended Note with kind for filtering
 	interface NoteWithKind extends Note {
@@ -39,6 +63,7 @@
 	let markdown = '';
 	let loading = false;
 	let saving = false;
+	let showDistillPanel = false;
 	let showVersionHistory = false;
 	let searchQuery = '';
 	let tagFilter = '';
@@ -46,7 +71,14 @@
 	let autoTagging = false;
 
 	// Note-like kinds that should appear in the notes view
-	const NOTE_LIKE_KINDS: NodeKind[] = ['fact', 'decision', 'procedure', 'observation', 'preference', 'concept'];
+	const NOTE_LIKE_KINDS: NodeKind[] = [
+		'fact',
+		'decision',
+		'procedure',
+		'observation',
+		'preference',
+		'concept'
+	];
 	let extractingActionItems = false;
 	let suggestedTags: string[] = [];
 	let showAiSuggestions = true;
@@ -75,7 +107,8 @@
 	});
 
 	$: selectedCount = selectedNoteIds.size;
-	$: allDisplayedSelected = displayedNotes.length > 0 && displayedNotes.every((n) => selectedNoteIds.has(n.id));
+	$: allDisplayedSelected =
+		displayedNotes.length > 0 && displayedNotes.every((n) => selectedNoteIds.has(n.id));
 
 	$: allTags = [...new Set(notes.flatMap((n) => n.tags ?? []))].sort();
 	$: displayedNotes = notes.filter((n) => {
@@ -291,7 +324,12 @@
 
 	async function bulkDeleteNotes() {
 		if (selectedCount === 0) return;
-		if (!confirm(`Delete ${selectedCount} note${selectedCount > 1 ? 's' : ''}? This cannot be undone.`)) return;
+		if (
+			!confirm(
+				`Delete ${selectedCount} note${selectedCount > 1 ? 's' : ''}? This cannot be undone.`
+			)
+		)
+			return;
 
 		bulkProcessing = true;
 		let successCount = 0;
@@ -346,7 +384,10 @@
 		bulkTagInput = '';
 
 		if (successCount > 0) {
-			pushToast(`Added tag "${tag}" to ${successCount} note${successCount > 1 ? 's' : ''}`, 'success');
+			pushToast(
+				`Added tag "${tag}" to ${successCount} note${successCount > 1 ? 's' : ''}`,
+				'success'
+			);
 			await loadNotes();
 		}
 	}
@@ -374,7 +415,10 @@
 		bulkProcessing = false;
 
 		if (successCount > 0) {
-			pushToast(`Removed tag "${tag}" from ${successCount} note${successCount > 1 ? 's' : ''}`, 'success');
+			pushToast(
+				`Removed tag "${tag}" from ${successCount} note${successCount > 1 ? 's' : ''}`,
+				'success'
+			);
 			await loadNotes();
 		}
 	}
@@ -557,7 +601,10 @@
 
 		exporting = false;
 		showExportModal = false;
-		pushToast(`Exported ${notesToExport.length} note${notesToExport.length === 1 ? '' : 's'}`, 'success');
+		pushToast(
+			`Exported ${notesToExport.length} note${notesToExport.length === 1 ? '' : 's'}`,
+			'success'
+		);
 	}
 
 	function handleAttachmentEmbed(payload: { attachment: NodeAttachment; inlineUrl: string }) {
@@ -565,7 +612,6 @@
 		markdown = buildAttachmentEmbedMarkdown(markdown, payload.attachment, payload.inlineUrl);
 		pushToast('Attachment embedded in note.', 'success');
 	}
-
 
 	async function togglePin() {
 		if (!selectedNote) return;
@@ -745,43 +791,79 @@
 
 <svelte:window on:keydown={handleKeydown} />
 
-<div class="grid gap-6 lg:grid-cols-12">
+<div class="flex items-center justify-between">
+	<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">Notes</h2>
+	<div class="flex gap-2">
+		<button
+			class="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-200 hover:bg-sky-500/20"
+			on:click={() => {
+				showDistillPanel = true;
+			}}
+		>
+			Summarize
+		</button>
+		{#if selectedNote}
+			<a
+				href={`/chat?node=${selectedNote.id}`}
+				class="rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-2 text-xs text-violet-200 hover:bg-violet-500/20"
+			>
+				Ask About Note
+			</a>
+		{/if}
+		{#if $currentView === 'list'}
+			<button
+				class={`rounded-lg border px-3 py-2 text-xs transition ${
+					bulkMode
+						? 'border-sky-500 bg-sky-500/20 text-sky-300'
+						: 'border-[rgb(var(--mv-border))] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]'
+				}`}
+				on:click={toggleBulkMode}
+				title={bulkMode ? 'Exit bulk mode' : 'Select multiple notes'}
+			>
+				{bulkMode ? 'Done' : 'Select'}
+			</button>
+			<button
+				class="rounded-lg bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))]/90 hover:bg-[rgb(var(--mv-panel-strong))]/80"
+				on:click={newNote}
+			>
+				New note
+			</button>
+		{/if}
+	</div>
+</div>
+
+<div class="mt-4">
+	<ViewToggle
+		views={notesViews}
+		activeView={$currentView}
+		variant="tabs"
+		size="sm"
+		on:change={handleViewChange}
+	/>
+</div>
+
+{#if $currentView === 'list'}
+<div class="mt-4 grid gap-6 lg:grid-cols-12">
 	<section class="lg:col-span-4">
-		<div class="flex items-center justify-between">
-			<div>
-				<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">Notes</h2>
-				<p class="text-xs text-[rgb(var(--mv-muted))]/60">
-					{#if bulkMode && selectedCount > 0}
-						{selectedCount} selected
-					{:else}
-						{displayedNotes.length}{displayedNotes.length !== notes.length ? ` / ${notes.length}` : ''} notes
-					{/if}
-				</p>
-				<p class="mt-0.5 text-[10px] text-[rgb(var(--mv-muted))]/30">
-					<kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1">j</kbd>/<kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1">k</kbd> navigate,
-					<kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1">Enter</kbd> open,
-					<kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1">x</kbd> select
-				</p>
-			</div>
-			<div class="flex gap-2">
-				<button
-					class={`rounded-lg border px-3 py-2 text-xs transition ${
-						bulkMode
-							? 'border-sky-500 bg-sky-500/20 text-sky-300'
-							: 'border-[rgb(var(--mv-border))] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]'
-					}`}
-					on:click={toggleBulkMode}
-					title={bulkMode ? 'Exit bulk mode' : 'Select multiple notes'}
-				>
-					{bulkMode ? 'Done' : 'Select'}
-				</button>
-				<button
-					class="rounded-lg bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))]/90 hover:bg-[rgb(var(--mv-panel-strong))]/80"
-					on:click={newNote}
-				>
-					New note
-				</button>
-			</div>
+		<div class="mt-4 flex items-center justify-between">
+			<p class="text-xs text-[rgb(var(--mv-muted))]/60">
+				{#if bulkMode && selectedCount > 0}
+					{selectedCount} selected
+				{:else}
+					{displayedNotes.length}{displayedNotes.length !== notes.length
+						? ` / ${notes.length}`
+						: ''} notes
+				{/if}
+			</p>
+			<p class="text-[10px] text-[rgb(var(--mv-muted))]/30">
+				<kbd
+					class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1"
+					>j</kbd
+				>/<kbd
+					class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1"
+					>k</kbd
+				> navigate
+			</p>
 		</div>
 
 		<div class="mt-3 flex flex-wrap gap-2">
@@ -816,7 +898,9 @@
 		</div>
 
 		{#if bulkMode && displayedNotes.length > 0}
-			<div class="mt-3 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/50 p-3">
+			<div
+				class="mt-3 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/50 p-3"
+			>
 				<div class="flex flex-wrap items-center gap-2">
 					<button
 						class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80"
@@ -881,12 +965,18 @@
 
 		<div class="mt-3" bind:this={listContainer}>
 			{#if loading}
-				<div class="rounded-lg border border-[rgb(var(--mv-border))] p-4 text-xs text-[rgb(var(--mv-muted))]/60">
+				<div
+					class="rounded-lg border border-[rgb(var(--mv-border))] p-4 text-xs text-[rgb(var(--mv-muted))]/60"
+				>
 					Loading notes...
 				</div>
 			{:else if notes.length === 0}
-				<div class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-6 text-center">
-					<div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-sky-500/20 text-sm text-sky-300">
+				<div
+					class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-6 text-center"
+				>
+					<div
+						class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-sky-500/20 text-sm text-sky-300"
+					>
 						N
 					</div>
 					<h3 class="text-sm font-medium text-[rgb(var(--mv-text))]">No notes yet</h3>
@@ -900,16 +990,23 @@
 						Create your first note
 					</button>
 					<p class="mt-2 text-[10px] text-[rgb(var(--mv-muted))]/30">
-						<kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5">Cmd+Shift+N</kbd> for quick capture
+						<kbd
+							class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5"
+							>Cmd+Shift+N</kbd
+						> for quick capture
 					</p>
 				</div>
 			{:else if displayedNotes.length === 0}
-				<div class="rounded-lg border border-dashed border-[rgb(var(--mv-border))] p-4 text-xs text-[rgb(var(--mv-muted))]/60">
+				<div
+					class="rounded-lg border border-dashed border-[rgb(var(--mv-border))] p-4 text-xs text-[rgb(var(--mv-muted))]/60"
+				>
 					No notes match your search.
 				</div>
 			{:else}
 				<div bind:this={notesListParentRef} style="max-height: 70vh; overflow-y: auto;">
-					<div style="height: {$notesVirtualizer.getTotalSize()}px; width: 100%; position: relative;">
+					<div
+						style="height: {$notesVirtualizer.getTotalSize()}px; width: 100%; position: relative;"
+					>
 						{#each $notesVirtualizer.getVirtualItems() as row (row.key)}
 							{@const note = displayedNotes[row.index]}
 							{@const idx = row.index}
@@ -919,9 +1016,7 @@
 								<div
 									data-note-item
 									class={`flex items-start gap-2 rounded-lg border px-3 py-2 mb-2 text-left text-xs transition ${
-										idx === focusedIndex
-											? 'ring-1 ring-sky-400/50'
-											: ''
+										idx === focusedIndex ? 'ring-1 ring-sky-400/50' : ''
 									} ${
 										selectedNoteIds.has(note.id)
 											? 'border-sky-500 bg-sky-500/10'
@@ -945,10 +1040,12 @@
 										on:mouseenter={() => {
 											focusedIndex = idx;
 										}}
-										on:click={() => bulkMode ? toggleNoteSelection(note.id) : selectNote(note)}
+										on:click={() => (bulkMode ? toggleNoteSelection(note.id) : selectNote(note))}
 									>
 										<div class="flex items-center gap-1.5">
-											<span class={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${kindBadgeClass(note.kind)}`}>
+											<span
+												class={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${kindBadgeClass(note.kind)}`}
+											>
 												{kindLabel(note.kind)}
 											</span>
 											{#if note.pinned}<span class="text-amber-400" title="Pinned">*</span>{/if}
@@ -957,7 +1054,10 @@
 										{#if note.tags && note.tags.length > 0}
 											<div class="mt-1 flex flex-wrap gap-1">
 												{#each note.tags.slice(0, 3) as tag}
-													<span class="rounded bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-[9px] text-[rgb(var(--mv-muted))]/60">{tag}</span>
+													<span
+														class="rounded bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-[9px] text-[rgb(var(--mv-muted))]/60"
+														>{tag}</span
+													>
 												{/each}
 											</div>
 										{/if}
@@ -1000,7 +1100,10 @@
 		</div>
 
 		<div class="mt-4">
-			<label class="text-xs uppercase tracking-wide text-[rgb(var(--mv-muted))]/40" for="note-title">
+			<label
+				class="text-xs uppercase tracking-wide text-[rgb(var(--mv-muted))]/40"
+				for="note-title"
+			>
 				Title
 			</label>
 			<input
@@ -1036,7 +1139,11 @@
 					on:click={() => {
 						if (!selectedNote) return;
 						const content = `# ${selectedNote.title ?? 'Untitled'}\n\n${selectedNote.markdown ?? ''}`;
-						const filename = (selectedNote.title ?? 'untitled').replace(/[^a-zA-Z0-9-_ ]/g, '').trim().replace(/\s+/g, '-') + '.md';
+						const filename =
+							(selectedNote.title ?? 'untitled')
+								.replace(/[^a-zA-Z0-9-_ ]/g, '')
+								.trim()
+								.replace(/\s+/g, '-') + '.md';
 						const blob = new Blob([content], { type: 'text/markdown' });
 						const url = URL.createObjectURL(blob);
 						const a = document.createElement('a');
@@ -1053,7 +1160,9 @@
 				</button>
 				<button
 					class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
-					on:click={() => { showVersionHistory = true; }}
+					on:click={() => {
+						showVersionHistory = true;
+					}}
 				>
 					History
 				</button>
@@ -1092,7 +1201,9 @@
 					{/each}
 					<button
 						class="text-[10px] text-[rgb(var(--mv-muted))]/40 hover:text-[rgb(var(--mv-text))]"
-						on:click={() => { suggestedTags = []; }}
+						on:click={() => {
+							suggestedTags = [];
+						}}
 					>
 						dismiss
 					</button>
@@ -1104,10 +1215,7 @@
 			</div>
 
 			<div class="mt-4">
-				<SuggestedConnections
-					nodeId={selectedNote.id}
-					content={selectedNote.markdown ?? ''}
-				/>
+				<SuggestedConnections nodeId={selectedNote.id} content={selectedNote.markdown ?? ''} />
 			</div>
 
 			{#if showAiSuggestions}
@@ -1120,7 +1228,9 @@
 							const refreshed = notes.find((n) => n.id === selectedNote?.id);
 							if (refreshed) selectNote(refreshed);
 						}}
-						on:dismissed={() => { showAiSuggestions = false; }}
+						on:dismissed={() => {
+							showAiSuggestions = false;
+						}}
 					/>
 				</div>
 			{/if}
@@ -1131,7 +1241,9 @@
 						{#if agentContextLoading}
 							<div class="h-2 w-2 rounded-full bg-sky-400 animate-pulse"></div>
 						{/if}
-						<h4 class="text-[10px] font-bold uppercase tracking-wider text-sky-400">Agent Context</h4>
+						<h4 class="text-[10px] font-bold uppercase tracking-wider text-sky-400">
+							Agent Context
+						</h4>
 					</div>
 					<p class="text-xs text-[rgb(var(--mv-muted))] leading-relaxed">{$agentStore.summary}</p>
 					{#if $agentStore.relatedNodes.length > 0}
@@ -1159,19 +1271,13 @@
 				/>
 			</div>
 
-				<div class="mt-4">
-					<PublicSharePanel
-						nodeId={selectedNote.id}
-						nodeTitle={selectedNote.title ?? 'Untitled'}
-					/>
-				</div>
-				<div class="mt-4">
-					<CommentsPanel
-						nodeId={selectedNote.id}
-						nodeTitle={selectedNote.title ?? 'Untitled'}
-					/>
-				</div>
-			{/if}
+			<div class="mt-4">
+				<PublicSharePanel nodeId={selectedNote.id} nodeTitle={selectedNote.title ?? 'Untitled'} />
+			</div>
+			<div class="mt-4">
+				<CommentsPanel nodeId={selectedNote.id} nodeTitle={selectedNote.title ?? 'Untitled'} />
+			</div>
+		{/if}
 	</section>
 </div>
 
@@ -1193,27 +1299,31 @@
 <!-- Export Modal -->
 {#if showExportModal}
 	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-		<div class="w-full max-w-sm rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-5 shadow-xl">
+		<div
+			class="w-full max-w-sm rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-5 shadow-xl"
+		>
 			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Export Notes</h3>
 			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]/60">
 				Export {selectedCount} selected note{selectedCount === 1 ? '' : 's'}
 			</p>
 
 			<div class="mt-4">
-				<span class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/40">Format</span>
+				<span class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/40"
+					>Format</span
+				>
 				<div class="mt-2 grid grid-cols-3 gap-2">
-					{#each [
-						{ value: 'markdown', label: 'Markdown', desc: '.md file' },
-						{ value: 'json', label: 'JSON', desc: 'Structured data' },
-						{ value: 'html', label: 'HTML', desc: 'Styled page' }
-					] as format}
+					{#each [{ value: 'markdown', label: 'Markdown', desc: '.md file' }, { value: 'json', label: 'JSON', desc: 'Structured data' }, { value: 'html', label: 'HTML', desc: 'Styled page' }] as format}
 						<button
 							class="rounded-lg border px-3 py-2 text-left transition {exportFormat === format.value
 								? 'border-sky-500 bg-sky-500/10'
 								: 'border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/50 hover:border-[rgb(var(--mv-muted))]/40'}"
 							on:click={() => (exportFormat = format.value as ExportFormat)}
 						>
-							<div class="text-xs font-medium {exportFormat === format.value ? 'text-sky-300' : 'text-[rgb(var(--mv-text))]/90'}">
+							<div
+								class="text-xs font-medium {exportFormat === format.value
+									? 'text-sky-300'
+									: 'text-[rgb(var(--mv-text))]/90'}"
+							>
 								{format.label}
 							</div>
 							<div class="text-[9px] text-[rgb(var(--mv-muted))]/40">{format.desc}</div>
@@ -1230,7 +1340,9 @@
 							style="width: {exportProgress}%"
 						></div>
 					</div>
-					<p class="mt-1 text-center text-[10px] text-[rgb(var(--mv-muted))]/60">Preparing export...</p>
+					<p class="mt-1 text-center text-[10px] text-[rgb(var(--mv-muted))]/60">
+						Preparing export...
+					</p>
 				</div>
 			{/if}
 
@@ -1247,9 +1359,41 @@
 					on:click={bulkExportNotes}
 					disabled={exporting || selectedCount === 0}
 				>
-					{exporting ? 'Exporting...' : `Export ${selectedCount} Note${selectedCount === 1 ? '' : 's'}`}
+					{exporting
+						? 'Exporting...'
+						: `Export ${selectedCount} Note${selectedCount === 1 ? '' : 's'}`}
 				</button>
 			</div>
 		</div>
 	</div>
 {/if}
+
+{:else if $currentView === 'graph' || $currentView === 'canvas'}
+	{#key $currentView}
+		{#if $currentView === 'graph'}
+			<div class="mt-4">
+				<NotesGraphView />
+			</div>
+		{:else}
+			<div class="mt-4">
+				<NotesCanvasView />
+			</div>
+		{/if}
+	{/key}
+{:else if $currentView === 'pdf'}
+	<div class="mt-4">
+		<NotesPdfView />
+	</div>
+{:else if $currentView === 'media'}
+	<div class="mt-4">
+		<NotesMediaView />
+	</div>
+{/if}
+
+<DistillPanel
+	open={showDistillPanel}
+	defaultNamespace={selectedNote?.namespace ?? 'default'}
+	on:close={() => {
+		showDistillPanel = false;
+	}}
+/>

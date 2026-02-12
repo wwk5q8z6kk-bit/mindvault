@@ -132,9 +132,9 @@
 	function handleApply(view: SavedView) {
 		setActiveSavedView(view);
 		if (view.view_type === 'kanban') {
-			goto('/kanban');
+			goto('/tasks?view=kanban');
 		} else if (view.view_type === 'calendar') {
-			goto('/calendar');
+			goto('/tasks?view=calendar');
 		} else {
 			goto('/tasks');
 		}

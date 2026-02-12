@@ -2,6 +2,7 @@ import { fetchJson } from './client';
 import type { SearchResultDto } from './types';
 
 export type { SearchResultDto };
+export type SearchMode = 'fulltext' | 'hybrid' | 'semantic';
 
 export type SavedSearch = {
 	id: string;
@@ -69,6 +70,24 @@ export async function searchHybrid(query: string, limit = 20): Promise<SearchRes
 		method: 'POST',
 		body: JSON.stringify({ text: query, strategy: 'hybrid', limit })
 	});
+}
+
+/** Semantic/vector search via POST /api/v1/recall */
+export async function searchSemantic(query: string, limit = 20): Promise<SearchResultDto[]> {
+	return await fetchJson<SearchResultDto[]>('/api/v1/recall', {
+		method: 'POST',
+		body: JSON.stringify({ text: query, strategy: 'vector', limit })
+	});
+}
+
+export async function searchByMode(
+	query: string,
+	mode: SearchMode,
+	limit = 20
+): Promise<SearchResultDto[]> {
+	if (mode === 'semantic') return searchSemantic(query, limit);
+	if (mode === 'hybrid') return searchHybrid(query, limit);
+	return searchFts(query, limit);
 }
 
 export async function searchFullTextNodes(query: string, limit = 8): Promise<SearchResultDto[]> {

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { get } from 'svelte/store';
 	import { onMount, tick } from 'svelte';
+	import { scale } from 'svelte/transition';
 	import { quickAddTaskOptimistic } from '$lib/stores/tasks';
 	import { createNoteOptimistic } from '$lib/stores/notes';
 	import { createNode } from '$lib/api/nodes';
@@ -18,7 +19,11 @@
 		type QuickCaptureMode,
 		type QuickCaptureTarget
 	} from '$lib/capture/quick-capture';
-	import { findCapturePresetForEvent, loadCapturePresets, type CapturePreset } from '$lib/capture/presets';
+	import {
+		findCapturePresetForEvent,
+		loadCapturePresets,
+		type CapturePreset
+	} from '$lib/capture/presets';
 
 	const NOTE_KINDS: { value: NodeKind; label: string; description: string }[] = [
 		{ value: 'fact', label: 'Note', description: 'General note or thought' },
@@ -470,9 +475,7 @@
 			const requestedMode = isQuickCaptureMode(detail?.mode) ? detail.mode : 'task';
 			const requestedTarget = isQuickCaptureTarget(detail?.target) ? detail.target : null;
 			const requestedPrefill =
-				typeof detail?.prefill === 'string' && detail.prefill.trim()
-					? detail.prefill
-					: null;
+				typeof detail?.prefill === 'string' && detail.prefill.trim() ? detail.prefill : null;
 			const resolvedMode =
 				requestedMode === 'voice' && !voiceEnabled ? ('task' as CaptureType) : requestedMode;
 			void openCapture(resolvedMode, requestedTarget, requestedPrefill);
@@ -497,9 +500,9 @@
 <svelte:window on:keydown={handleGlobalKeydown} />
 
 {#if open}
-	<div class="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]" role="presentation">
+	<div class="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]" role="presentation">
 		<div
-			class="absolute inset-0 bg-black/50"
+			class="absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity"
 			on:click={close}
 			on:keydown={(e) => e.key === 'Escape' && close()}
 			role="button"
@@ -507,59 +510,66 @@
 			aria-label="Close quick capture"
 		></div>
 		<div
-			class="relative z-10 w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl"
+			class="relative z-10 w-full max-w-lg mv-card p-5 ring-1 ring-white/10"
 			role="dialog"
 			aria-modal="true"
 			aria-label="Quick capture"
+			transition:scale={{ duration: 200, start: 0.95 }}
 		>
 			<div class="relative flex items-center gap-2">
-				<div class="flex rounded-lg border border-slate-700 bg-slate-800 p-0.5">
+				<div
+					class="flex rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/50 p-1"
+				>
 					<button
-						class="rounded-md px-2.5 py-1 text-[10px] font-medium transition {captureType === 'task'
-							? 'bg-violet-500/20 text-violet-300'
-							: 'text-slate-400 hover:text-white'}"
+						class="rounded-md px-3 py-1.5 text-[11px] font-semibold transition-all {captureType ===
+						'task'
+							? 'bg-[rgb(var(--mv-accent))]/20 text-[rgb(var(--mv-accent-strong))] shadow-sm'
+							: 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-panel))]/50'}"
 						on:click={() => void openCapture('task')}
 					>
 						Task
 					</button>
 					<button
-						class="relative rounded-md px-2.5 py-1 text-[10px] font-medium transition {captureType ===
+						class="relative rounded-md px-3 py-1.5 text-[11px] font-semibold transition-all {captureType ===
 						'note'
-							? 'bg-sky-500/20 text-sky-300'
-							: 'text-slate-400 hover:text-white'}"
-							on:click={() => {
-								void openCapture('note');
-								showKindPicker = !showKindPicker && captureType === 'note';
-							}}
-						>
+							? 'bg-[rgb(var(--mv-accent))]/20 text-[rgb(var(--mv-accent-strong))] shadow-sm'
+							: 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-panel))]/50'}"
+						on:click={() => {
+							void openCapture('note');
+							showKindPicker = !showKindPicker && captureType === 'note';
+						}}
+					>
 						{NOTE_KINDS.find((k) => k.value === noteKind)?.label ?? 'Note'}
-						<span class="ml-0.5 text-[8px]">▼</span>
+						<span class="ml-1 text-[8px] opacity-70">▼</span>
 					</button>
 					<button
-						class="rounded-md px-2.5 py-1 text-[10px] font-medium transition {captureType === 'link'
-							? 'bg-emerald-500/20 text-emerald-300'
-							: 'text-slate-400 hover:text-white'}"
-							on:click={() => void openCapture('link')}
-						>
+						class="rounded-md px-3 py-1.5 text-[11px] font-semibold transition-all {captureType ===
+						'link'
+							? 'bg-[rgb(var(--mv-success))]/20 text-[rgb(var(--mv-success))] shadow-sm'
+							: 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-panel))]/50'}"
+						on:click={() => void openCapture('link')}
+					>
 						Link
 					</button>
 					{#if voiceEnabled}
 						<button
-							class="rounded-md px-2.5 py-1 text-[10px] font-medium transition {captureType ===
+							class="rounded-md px-3 py-1.5 text-[11px] font-semibold transition-all {captureType ===
 							'voice'
-								? 'bg-rose-500/20 text-rose-300'
-								: 'text-slate-400 hover:text-white'}"
-								on:click={() => void openCapture('voice')}
-							>
+								? 'bg-[rgb(var(--mv-danger))]/20 text-[rgb(var(--mv-danger))] shadow-sm'
+								: 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-panel))]/50'}"
+							on:click={() => void openCapture('voice')}
+						>
 							Voice
 						</button>
 					{/if}
 				</div>
-				<span class="text-[10px] text-slate-500">Tab to switch</span>
-				<label class="ml-2 flex items-center gap-1 text-[10px] text-slate-500">
+				<span class="text-[10px] text-[rgb(var(--mv-muted))]">Tab to switch</span>
+				<label
+					class="ml-auto flex items-center gap-2 text-[10px] font-medium text-[rgb(var(--mv-muted))]"
+				>
 					Target
 					<select
-						class="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-200 outline-none"
+						class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-2 py-1 text-[10px] text-[rgb(var(--mv-text))] outline-none focus:border-[rgb(var(--mv-accent))]"
 						aria-label="Capture target"
 						value={captureTarget}
 						on:change={(event) => {
@@ -578,14 +588,14 @@
 
 				{#if showKindPicker && captureType === 'note'}
 					<div
-						class="absolute left-0 top-full z-20 mt-1 w-56 rounded-xl border border-slate-700 bg-slate-800 p-1 shadow-xl"
+						class="absolute left-14 top-full z-20 mt-2 w-56 rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] p-1 shadow-xl ring-1 ring-black/10"
 					>
 						{#each NOTE_KINDS as kind (kind.value)}
 							<button
 								class="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition {noteKind ===
 								kind.value
-									? 'bg-sky-500/15 text-sky-300'
-									: 'text-slate-300 hover:bg-slate-700/60'}"
+									? 'bg-[rgb(var(--mv-accent))]/15 text-[rgb(var(--mv-accent-strong))]'
+									: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel))]/80 hover:text-[rgb(var(--mv-text))]'}"
 								on:click={() => {
 									noteKind = kind.value;
 									showKindPicker = false;
@@ -593,28 +603,23 @@
 							>
 								<div>
 									<div class="text-xs font-medium">{kind.label}</div>
-									<div class="text-[10px] text-slate-500">{kind.description}</div>
+									<div class="text-[10px] opacity-70">{kind.description}</div>
 								</div>
 							</button>
 						{/each}
 					</div>
 				{/if}
-				<span class="ml-auto text-[10px] text-slate-500">
-					<kbd class="rounded border border-slate-700 bg-slate-800 px-1 py-0.5 text-[9px]"
-						>Cmd+Enter</kbd
-					> to save
-				</span>
 			</div>
 
 			{#if captureType === 'voice'}
 				<div
-					class="mt-3 flex flex-col items-center gap-3 rounded-xl border border-slate-700/60 bg-slate-800/40 p-4"
+					class="mt-4 flex flex-col items-center gap-3 rounded-xl border border-[rgb(var(--mv-border))]/50 bg-[rgb(var(--mv-panel-strong))]/30 p-6"
 				>
 					{#if !audioBlob}
 						<button
-							class="flex h-16 w-16 items-center justify-center rounded-full transition {isRecording
-								? 'bg-red-500 text-white animate-pulse'
-								: 'border-2 border-rose-500/40 text-rose-400 hover:bg-rose-500/10'}"
+							class="flex h-16 w-16 items-center justify-center rounded-full transition-all duration-300 {isRecording
+								? 'bg-[rgb(var(--mv-danger))] text-white animate-pulse scale-110 shadow-lg shadow-[rgb(var(--mv-danger))]/40'
+								: 'border-2 border-[rgb(var(--mv-danger))]/40 text-[rgb(var(--mv-danger))] hover:bg-[rgb(var(--mv-danger))]/10 hover:scale-105'}"
 							on:click={() => {
 								isRecording ? stopRecording() : startRecording();
 							}}
@@ -634,23 +639,20 @@
 								</svg>
 							{/if}
 						</button>
-						<p class="text-xs text-slate-400">
+						<p class="text-xs font-medium text-[rgb(var(--mv-muted))]">
 							{isRecording ? formatRecordingTime(recordingDuration) : 'Tap to record'}
 						</p>
 					{:else}
 						<audio src={audioUrl} controls class="w-full rounded-lg">
 							<track kind="captions" />
 						</audio>
-						<button
-							class="rounded-lg border border-slate-700 px-3 py-1 text-[10px] text-slate-300 hover:bg-slate-800"
-							on:click={discardRecording}
-						>
+						<button class="mv-btn mv-btn-secondary text-xs" on:click={discardRecording}>
 							Discard & re-record
 						</button>
 					{/if}
 				</div>
 				<input
-					class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-xs text-white placeholder-slate-500 outline-none focus:border-sky-500"
+					class="mv-input mt-3"
 					placeholder="Add a title or description (optional)"
 					bind:value={text}
 					bind:this={inputEl}
@@ -659,7 +661,7 @@
 				/>
 			{:else}
 				<input
-					class="mt-3 w-full rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-sky-500"
+					class="mv-input mt-4 text-base py-3"
 					placeholder={captureType === 'task'
 						? 'buy milk tomorrow 5pm p2 #home'
 						: captureType === 'link'
@@ -678,28 +680,30 @@
 				</div>
 			{:else if processingEnrichment}
 				<div
-					class="mt-4 flex items-center justify-center gap-3 rounded-xl border border-violet-500/20 bg-violet-500/5 py-6"
+					class="mt-4 flex items-center justify-center gap-3 rounded-xl border border-[rgb(var(--mv-accent))]/20 bg-[rgb(var(--mv-accent))]/5 py-6"
 				>
 					<div
-						class="h-4 w-4 animate-spin rounded-full border-2 border-violet-500 border-t-transparent"
+						class="h-4 w-4 animate-spin rounded-full border-2 border-[rgb(var(--mv-accent))] border-t-transparent"
 					></div>
-					<span class="text-xs text-violet-300">AI Assistant is enriching your capture...</span>
+					<span class="text-xs font-medium text-[rgb(var(--mv-accent-strong))]"
+						>AI Assistant is enriching your capture...</span
+					>
 				</div>
 			{:else}
 				{#if captureType === 'task'}
-					<p class="mt-2 text-[10px] text-slate-500">
+					<p class="mt-2 text-[10px] text-[rgb(var(--mv-muted))] ml-1">
 						Supports: p1-p5 priority, #tags, @assignee, time estimates (30m/1h), dates, recurrence
 					</p>
 				{:else if captureType === 'link'}
-					<p class="mt-2 text-[10px] text-slate-500">
+					<p class="mt-2 text-[10px] text-[rgb(var(--mv-muted))] ml-1">
 						Paste a URL to save it as a reference. Tagged as web-clip for easy triage.
 					</p>
 				{:else if captureType === 'voice'}
-					<p class="mt-2 text-[10px] text-slate-500">
+					<p class="mt-2 text-[10px] text-[rgb(var(--mv-muted))] ml-1">
 						Record audio, then optionally add a title. Audio is saved as a note.
 					</p>
 				{/if}
-				<p class="mt-1 text-[10px] text-slate-500">
+				<p class="mt-1 text-[10px] text-[rgb(var(--mv-muted))] opacity-70 ml-1">
 					Target routing: {captureTarget === 'default'
 						? 'save normally'
 						: captureTarget === 'inbox'
@@ -711,28 +715,33 @@
 									: 'task status defaults to review'}
 				</p>
 
-				<div class="mt-3 flex justify-end gap-2">
-					<button
-						class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
-						on:click={close}
-					>
-						Cancel
-					</button>
-					<button
-						class="rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
-						on:click={save}
-						disabled={saving || (captureType === 'voice' ? !audioBlob : !text.trim())}
-					>
-						{#if saving && uploadPhase === 'uploading'}
-							Uploading...
-						{:else if saving && uploadPhase === 'transcribing'}
-							Transcribing...
-						{:else if saving}
-							Saving...
-						{:else}
-							Capture
-						{/if}
-					</button>
+				<div
+					class="mt-4 flex items-center justify-between border-t border-[rgb(var(--mv-border))]/50 pt-3"
+				>
+					<span class="text-[10px] text-[rgb(var(--mv-muted))]">
+						<kbd
+							class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5 text-[9px] font-mono"
+							>Cmd+Enter</kbd
+						> to save
+					</span>
+					<div class="flex gap-2">
+						<button class="mv-btn mv-btn-ghost text-xs py-1.5" on:click={close}> Cancel </button>
+						<button
+							class="mv-btn mv-btn-primary text-xs py-1.5 shadow-lg shadow-[rgb(var(--mv-accent))]/20"
+							on:click={save}
+							disabled={saving || (captureType === 'voice' ? !audioBlob : !text.trim())}
+						>
+							{#if saving && uploadPhase === 'uploading'}
+								Uploading...
+							{:else if saving && uploadPhase === 'transcribing'}
+								Transcribing...
+							{:else if saving}
+								Saving...
+							{:else}
+								Capture
+							{/if}
+						</button>
+					</div>
 				</div>
 			{/if}
 		</div>

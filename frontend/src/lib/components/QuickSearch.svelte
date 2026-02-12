@@ -129,7 +129,7 @@
 		} else if (node.kind === 'bookmark' || node.kind === 'reference') {
 			goto(`/bookmarks?id=${node.id}`);
 		} else if (node.kind === 'event') {
-			goto(`/calendar`);
+			goto(`/tasks?view=calendar`);
 		} else {
 			recentItems.addNote(node.id, node.title);
 			goto(`/notes?note=${node.id}`);

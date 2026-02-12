@@ -241,7 +241,7 @@ export function registerBuiltInActions() {
 			subtitle: 'Open Template Studio',
 			keywords: ['template', 'preset'],
 			handler: async (ctx) => {
-				await ctx.navigate('/templates');
+				await ctx.navigate('/bookmarks?view=templates');
 			}
 		},
 		{
@@ -370,7 +370,7 @@ export function registerBuiltInActions() {
 			title: 'Open Flashcards',
 			subtitle: 'Spaced repetition review',
 			keywords: ['flashcards', 'cards', 'review', 'spaced repetition', 'sm2'],
-			handler: (ctx) => ctx.navigate('/flashcards')
+			handler: (ctx) => ctx.navigate('/bookmarks?view=flashcards')
 		},
 		{
 			id: 'open-graph',

@@ -260,6 +260,7 @@ fn extract_action(method: &str, path: &str) -> String {
         ("GET", ["api", "v1", "nodes", _id]) => "get_node".into(),
         ("PUT", ["api", "v1", "nodes", _id]) => "update_node".into(),
         ("DELETE", ["api", "v1", "nodes", _id]) => "delete_node".into(),
+        ("GET", ["api", "v1", "nodes", _id, "backlinks"]) => "get_node_backlinks".into(),
 
         // Recall & search
         ("POST", ["api", "v1", "recall"]) => "recall".into(),
@@ -350,6 +351,7 @@ fn extract_resource_id(path: &str) -> Option<String> {
     match segments.as_slice() {
         // Node operations with ID
         ["api", "v1", "nodes", id] => Some(id.to_string()),
+        ["api", "v1", "nodes", id, "backlinks"] => Some(id.to_string()),
         ["api", "v1", "tasks", id, ..] => Some(id.to_string()),
         ["api", "v1", "templates", id, ..] => Some(id.to_string()),
         ["api", "v1", "search", "saved", id, ..] => Some(id.to_string()),
@@ -544,6 +546,10 @@ mod tests {
             extract_action("POST", "/api/v1/files/node-1/att-1/reindex"),
             "reindex_attachment"
         );
+        assert_eq!(
+            extract_action("GET", "/api/v1/nodes/node-1/backlinks"),
+            "get_node_backlinks"
+        );
     }
 
     #[test]
@@ -555,6 +561,10 @@ mod tests {
         assert_eq!(
             extract_resource_id("/api/v1/tasks/task-1/complete"),
             Some("task-1".to_string())
+        );
+        assert_eq!(
+            extract_resource_id("/api/v1/nodes/abc-123/backlinks"),
+            Some("abc-123".to_string())
         );
         assert_eq!(extract_resource_id("/api/v1/nodes"), None);
         assert_eq!(extract_resource_id("/api/v1/health"), None);

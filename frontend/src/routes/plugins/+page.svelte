@@ -7,23 +7,40 @@
 		installPlugin,
 		uninstallPlugin,
 		reloadPlugins,
+		listRuntimePlugins,
+		reloadRuntimePlugin,
+		unloadRuntimePlugin,
 		type PluginSummary,
-		type HookPointInfo
+		type HookPointInfo,
+		type RuntimePlugin
 	} from '$lib/api/plugins';
 
 	let plugins: PluginSummary[] = [];
+	let runtimePlugins: RuntimePlugin[] = [];
 	let hookPoints: HookPointInfo[] = [];
 	let loading = true;
 	let installing = false;
 	let showInstallForm = false;
 	let manifestText = '';
 	let wasmFileInput: HTMLInputElement;
+	let actionPluginId = '';
+
+	$: runtimeMap = new Map(runtimePlugins.map((plugin) => [plugin.id, plugin]));
+	$: hookUsage = hookPoints.map((hook) => ({
+		...hook,
+		count: runtimePlugins.filter((plugin) => plugin.hooks.includes(hook.name)).length
+	}));
 
 	async function loadData() {
 		loading = true;
 		try {
-			const [pluginRes, hookRes] = await Promise.all([listPlugins(), listHookPoints()]);
+			const [pluginRes, runtimeRes, hookRes] = await Promise.all([
+				listPlugins(),
+				listRuntimePlugins(),
+				listHookPoints()
+			]);
 			plugins = pluginRes.plugins;
+			runtimePlugins = runtimeRes.plugins;
 			hookPoints = hookRes.hooks;
 		} catch {
 			pushToast('Failed to load plugin data', 'danger');
@@ -55,16 +72,19 @@
 	}
 
 	async function handleUninstall(name: string) {
+		actionPluginId = name;
 		try {
 			await uninstallPlugin(name);
 			pushToast(`Plugin "${name}" uninstalled`, 'success');
 			await loadData();
 		} catch (e: any) {
 			pushToast(e.message ?? 'Uninstall failed', 'danger');
+		} finally {
+			actionPluginId = '';
 		}
 	}
 
-	async function handleReload() {
+	async function handleReloadAll() {
 		try {
 			const result = await reloadPlugins();
 			pushToast(`Reloaded ${result.count} plugin(s)`, 'success');
@@ -73,60 +93,113 @@
 			pushToast(e.message ?? 'Reload failed', 'danger');
 		}
 	}
+
+	async function handleRuntimeReload(pluginId: string) {
+		actionPluginId = pluginId;
+		try {
+			await reloadRuntimePlugin(pluginId);
+			pushToast(`Runtime plugin "${pluginId}" reloaded`, 'success');
+			await loadData();
+		} catch (e: any) {
+			pushToast(e.message ?? 'Runtime reload failed', 'danger');
+		} finally {
+			actionPluginId = '';
+		}
+	}
+
+	async function handleRuntimeUnload(pluginId: string) {
+		actionPluginId = pluginId;
+		try {
+			await unloadRuntimePlugin(pluginId);
+			pushToast(`Runtime plugin "${pluginId}" unloaded`, 'success');
+			await loadData();
+		} catch (e: any) {
+			pushToast(e.message ?? 'Runtime unload failed', 'danger');
+		} finally {
+			actionPluginId = '';
+		}
+	}
+
+	function pluginStatus(plugin: PluginSummary): 'loaded' | 'installed' {
+		return runtimeMap.has(plugin.id) ? 'loaded' : 'installed';
+	}
+
+	function formatBytes(bytes: number): string {
+		if (!bytes) return '0 B';
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	}
 </script>
 
-<div class="mx-auto max-w-4xl space-y-6 p-6">
-	<div class="flex items-center justify-between">
+<div class="mx-auto max-w-6xl space-y-6 p-6">
+	<div class="flex flex-wrap items-start justify-between gap-3">
 		<div>
-			<h1 class="text-2xl font-bold text-[rgb(var(--mv-text))]">Plugins</h1>
-			<p class="text-sm text-[rgb(var(--mv-muted))]">
-				WASM-sandboxed extensions that hook into vault events.
-			</p>
+			<h1 class="text-2xl font-bold text-[rgb(var(--mv-text))]">Plugin Manager</h1>
+			<p class="text-sm text-[rgb(var(--mv-muted))]">Browse installed plugins, inspect runtime hooks, and control plugin lifecycle.</p>
 		</div>
 		<div class="flex gap-2">
 			<button
-				class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-1.5 text-sm text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-hover))]"
-				onclick={() => handleReload()}
+				class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-1.5 text-xs text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-hover))]"
+				on:click={loadData}
 			>
-				Reload
+				Refresh
 			</button>
 			<button
-				class="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700"
-				onclick={() => (showInstallForm = !showInstallForm)}
+				class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-1.5 text-xs text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-hover))]"
+				on:click={handleReloadAll}
+			>
+				Reload All
+			</button>
+			<button
+				class="rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-400"
+				on:click={() => (showInstallForm = !showInstallForm)}
 			>
 				{showInstallForm ? 'Cancel' : 'Install Plugin'}
 			</button>
 		</div>
 	</div>
 
-	<!-- Install form -->
+	<div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-3">
+			<p class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/70">Installed</p>
+			<p class="mt-1 text-xl font-semibold text-[rgb(var(--mv-text))]">{plugins.length}</p>
+		</div>
+		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-3">
+			<p class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/70">Loaded Runtime</p>
+			<p class="mt-1 text-xl font-semibold text-green-300">{runtimePlugins.length}</p>
+		</div>
+		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-3">
+			<p class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/70">Hook Points</p>
+			<p class="mt-1 text-xl font-semibold text-[rgb(var(--mv-text))]">{hookPoints.length}</p>
+		</div>
+		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-3">
+			<p class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/70">Active Hooks</p>
+			<p class="mt-1 text-xl font-semibold text-violet-300">{runtimePlugins.reduce((sum, plugin) => sum + plugin.hooks.length, 0)}</p>
+		</div>
+	</div>
+
 	{#if showInstallForm}
-		<div class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-4 space-y-3">
-			<h3 class="font-medium text-[rgb(var(--mv-text))]">Install Plugin</h3>
+		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-4 space-y-3">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Install Plugin</h3>
 			<div>
-				<label class="block text-xs text-[rgb(var(--mv-muted))] mb-1" for="manifest-input">Manifest JSON</label>
+				<label class="mb-1 block text-xs text-[rgb(var(--mv-muted))]" for="manifest-input">Manifest JSON</label>
 				<textarea
 					id="manifest-input"
 					bind:value={manifestText}
 					rows={6}
 					class="w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] p-2 font-mono text-xs text-[rgb(var(--mv-text))]"
-					placeholder={'{"id": "my-plugin", "name": "My Plugin", "version": "0.1.0", ...}'}
+						placeholder="Paste plugin manifest JSON"
 				></textarea>
 			</div>
 			<div>
-				<label class="block text-xs text-[rgb(var(--mv-muted))] mb-1" for="wasm-input">WASM Module</label>
-				<input
-					id="wasm-input"
-					type="file"
-					accept=".wasm"
-					bind:this={wasmFileInput}
-					class="text-sm text-[rgb(var(--mv-text))]"
-				/>
+				<label class="mb-1 block text-xs text-[rgb(var(--mv-muted))]" for="wasm-input">WASM Module</label>
+				<input id="wasm-input" type="file" accept=".wasm" bind:this={wasmFileInput} class="text-sm text-[rgb(var(--mv-text))]" />
 			</div>
 			<button
-				class="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+				class="rounded bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
 				disabled={installing}
-				onclick={() => handleInstall()}
+				on:click={handleInstall}
 			>
 				{installing ? 'Installing...' : 'Upload & Install'}
 			</button>
@@ -136,67 +209,91 @@
 	{#if loading}
 		<p class="text-[rgb(var(--mv-muted))]">Loading...</p>
 	{:else}
-		<!-- Installed plugins -->
-		<div class="space-y-3">
-			<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">Installed ({plugins.length})</h2>
-
-			{#if plugins.length === 0}
-				<div class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-6 text-center">
-					<p class="text-[rgb(var(--mv-muted))]">No plugins installed yet.</p>
-					<p class="mt-1 text-xs text-[rgb(var(--mv-muted))]">
-						Use the Install button above to upload a WASM plugin, or load via the CLI.
-					</p>
-				</div>
-			{:else}
-				{#each plugins as plugin (plugin.id)}
-					<div class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-4">
-						<div class="flex items-start justify-between">
-							<div>
-								<h3 class="font-medium text-[rgb(var(--mv-text))]">{plugin.name}</h3>
-								<div class="mt-0.5 text-xs text-[rgb(var(--mv-muted))]">
-									v{plugin.version}
-									{#if plugin.author} &middot; {plugin.author}{/if}
+		<div class="grid gap-4 lg:grid-cols-[2fr_1fr]">
+			<div class="space-y-3">
+				<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">Plugin Browser</h2>
+				{#if plugins.length === 0}
+					<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/30 p-5 text-sm text-[rgb(var(--mv-muted))]">
+						No plugins installed yet.
+					</div>
+				{:else}
+					{#each plugins as plugin (plugin.id)}
+						{@const runtime = runtimeMap.get(plugin.id)}
+						<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-4">
+							<div class="flex flex-wrap items-start justify-between gap-3">
+								<div class="min-w-0 flex-1">
+									<div class="flex items-center gap-2">
+										<div class="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-500/20 text-xs font-bold text-sky-200">
+											{plugin.name.slice(0, 2).toUpperCase()}
+										</div>
+										<div>
+											<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">{plugin.name}</h3>
+											<p class="text-xs text-[rgb(var(--mv-muted))]">v{plugin.version}{#if plugin.author} · {plugin.author}{/if}</p>
+										</div>
+										<span class="ml-auto rounded-full px-2 py-0.5 text-[10px] {pluginStatus(plugin) === 'loaded' ? 'bg-green-500/20 text-green-300' : 'bg-slate-500/20 text-slate-300'}">
+											{pluginStatus(plugin) === 'loaded' ? 'Loaded' : 'Installed'}
+										</span>
+									</div>
+									{#if plugin.description}
+										<p class="mt-2 text-xs text-[rgb(var(--mv-muted))]">{plugin.description}</p>
+									{/if}
+									<div class="mt-2 flex flex-wrap gap-1">
+										{#each plugin.hooks as hook}
+											<span class="rounded border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[10px] text-violet-200">{hook}</span>
+										{/each}
+									</div>
+									{#if runtime}
+										<div class="mt-2 text-[10px] text-[rgb(var(--mv-muted))]/70">
+											Runtime: {runtime.invocation_count} invocations · {formatBytes(runtime.wasm_size_bytes)}
+										</div>
+									{/if}
 								</div>
-								{#if plugin.description}
-									<p class="mt-1 text-sm text-[rgb(var(--mv-muted))]">{plugin.description}</p>
-								{/if}
-							</div>
-							<div class="flex items-center gap-2">
-								{#if (plugin.status ?? 'installed') === 'loaded'}
-									<span class="rounded bg-green-500/20 px-2 py-0.5 text-xs text-green-400">Active</span>
-								{:else}
-									<span class="rounded bg-slate-600/30 px-2 py-0.5 text-xs text-slate-300">Installed</span>
-								{/if}
-								<button
-									class="rounded border border-red-500/30 px-2 py-0.5 text-xs text-red-400 hover:bg-red-500/10"
-									onclick={() => handleUninstall(plugin.id)}
-								>
-									Uninstall
-								</button>
+								<div class="flex items-center gap-1.5">
+									{#if runtime}
+										<button
+											class="rounded border border-sky-500/30 px-2 py-1 text-[10px] text-sky-200 hover:bg-sky-500/10 disabled:opacity-60"
+											disabled={actionPluginId === plugin.id}
+											on:click={() => handleRuntimeReload(plugin.id)}
+										>
+											Reload
+										</button>
+										<button
+											class="rounded border border-amber-500/30 px-2 py-1 text-[10px] text-amber-200 hover:bg-amber-500/10 disabled:opacity-60"
+											disabled={actionPluginId === plugin.id}
+											on:click={() => handleRuntimeUnload(plugin.id)}
+										>
+											Unload
+										</button>
+									{/if}
+									<button
+										class="rounded border border-red-500/30 px-2 py-1 text-[10px] text-red-300 hover:bg-red-500/10 disabled:opacity-60"
+										disabled={actionPluginId === plugin.id}
+										on:click={() => handleUninstall(plugin.id)}
+									>
+										Uninstall
+									</button>
+								</div>
 							</div>
 						</div>
-						{#if plugin.hooks.length > 0}
-							<div class="mt-2 flex flex-wrap gap-1">
-								{#each plugin.hooks as hook}
-									<span class="rounded bg-[rgb(var(--mv-hover))] px-1.5 py-0.5 text-xs text-[rgb(var(--mv-muted))]">{hook}</span>
-								{/each}
-							</div>
-						{/if}
-					</div>
-				{/each}
-			{/if}
-		</div>
+					{/each}
+				{/if}
+			</div>
 
-		<!-- Hook points reference -->
-		<div class="space-y-3">
-			<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">Available Hook Points</h2>
-			<div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-				{#each hookPoints as hook (hook.name)}
-					<div class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-3">
-						<div class="font-mono text-sm text-[rgb(var(--mv-text))]">{hook.name}</div>
-						<div class="mt-0.5 text-xs text-[rgb(var(--mv-muted))]">{hook.description}</div>
-					</div>
-				{/each}
+			<div class="space-y-3">
+				<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">Hook Visualization</h2>
+				<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-4 space-y-2">
+					{#each hookUsage as hook (hook.name)}
+						<div class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/30 px-3 py-2">
+							<div class="flex items-center justify-between gap-2">
+								<div>
+									<p class="font-mono text-xs text-[rgb(var(--mv-text))]">{hook.name}</p>
+									<p class="text-[10px] text-[rgb(var(--mv-muted))]">{hook.description}</p>
+								</div>
+								<span class="rounded-full bg-sky-500/20 px-2 py-0.5 text-[10px] text-sky-300">{hook.count}</span>
+							</div>
+						</div>
+					{/each}
+				</div>
 			</div>
 		</div>
 	{/if}

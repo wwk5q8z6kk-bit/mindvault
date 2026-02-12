@@ -12,7 +12,9 @@
 	import { prioritizeTasks } from '$lib/api/ai';
 	import { listProposals, approveProposal, rejectProposal, undoProposal, batchProposals, type Proposal } from '$lib/api/exchange';
 	import { listConflicts, resolveConflict, type ConflictAlert } from '$lib/api/conflicts';
+	import { fetchIntents, fetchReflectionStats, intents, type ReflectionStats } from '$lib/api/agent';
 	import ProposalCard from '$lib/components/ProposalCard.svelte';
+	import IntentInbox from '$lib/components/IntentInbox.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import {
 		buildInboxTriagePatch,
@@ -64,6 +66,10 @@
 	let tagModalOpen = false;
 	let tagModalNoteId = '';
 	let tagModalValue = '';
+	let reflectionStats: ReflectionStats[] = [];
+	let reflectionLoading = false;
+	const reflectionIntentTypes = ['extract_task', 'suggest_tag', 'suggest_link', 'schedule_reminder'];
+	$: suggestedIntents = $intents.filter((intent) => intent.status === 'suggested');
 
 	$: {
 		const taskItems: InboxItem[] = $tasksStore
@@ -110,6 +116,7 @@
 		window.addEventListener('storage', handleStorageEvent);
 		void loadProposals();
 		void loadConflicts();
+		void loadIntentData();
 		void Promise.all([loadTasks(), loadNotes()]).finally(() => {
 			triageSettings = loadInboxTriageSettings();
 			loading = false;
@@ -147,6 +154,30 @@
 			// Silently fail — conflicts are supplementary
 		} finally {
 			conflictsLoading = false;
+		}
+	}
+
+	async function loadIntentData() {
+		try {
+			await fetchIntents(undefined, 'suggested');
+		} catch {
+			// Intent data is supplementary for inbox triage.
+		}
+
+		reflectionLoading = true;
+		try {
+			const stats = await Promise.all(
+				reflectionIntentTypes.map(async (intentType) => {
+					try {
+						return await fetchReflectionStats(intentType);
+					} catch {
+						return null;
+					}
+				})
+			);
+			reflectionStats = stats.filter((item): item is ReflectionStats => item !== null);
+		} finally {
+			reflectionLoading = false;
 		}
 	}
 
@@ -538,6 +569,47 @@
 			</button>
 		</div>
 	{/if}
+
+	<div class="mt-4 rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/30 p-4">
+		<div class="flex flex-wrap items-center justify-between gap-3">
+			<div>
+				<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Intent Dashboard</h3>
+				<p class="text-xs text-[rgb(var(--mv-muted))]">
+					{suggestedIntents.length} actionable intent{suggestedIntents.length === 1 ? '' : 's'} detected
+				</p>
+			</div>
+			<button
+				class="rounded-lg border border-[rgb(var(--mv-border))] px-2.5 py-1 text-[10px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
+				on:click={loadIntentData}
+			>
+				Refresh
+			</button>
+		</div>
+
+		{#if reflectionLoading}
+			<p class="mt-2 text-[11px] text-[rgb(var(--mv-muted))]/70">Loading reflection confidence stats...</p>
+		{:else if reflectionStats.length > 0}
+			<div class="mt-2 grid gap-2 sm:grid-cols-2">
+				{#each reflectionStats as stat (stat.intent_type)}
+					<div class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/30 px-3 py-2">
+						<div class="flex items-center justify-between gap-2">
+							<span class="text-[10px] font-semibold uppercase tracking-wide text-[rgb(var(--mv-muted))]">
+								{stat.intent_type.replace(/_/g, ' ')}
+							</span>
+							<span class="text-[10px] text-[rgb(var(--mv-muted))]/70">{stat.total_count} seen</span>
+						</div>
+						<div class="mt-1 text-xs text-[rgb(var(--mv-text))]">
+							Acceptance {(stat.acceptance_rate * 100).toFixed(0)}% • Avg confidence {(stat.avg_confidence * 100).toFixed(0)}%
+						</div>
+					</div>
+				{/each}
+			</div>
+		{/if}
+
+		<div class="mt-3">
+			<IntentInbox />
+		</div>
+	</div>
 
 	{#if proposals.length > 0}
 		<div class="mt-4">

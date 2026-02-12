@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use mv_core::traits::GraphStore;
 use mv_core::QueryFilters;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -71,10 +72,21 @@ pub async fn json(
 
     println!("Found {} nodes", nodes.len());
 
-    // Note: Edge export requires direct database access (not yet exposed via engine)
-    // For now, we export nodes only
-    let edges: Vec<ExportedEdge> = Vec::new();
-    println!("Edges: (edge export not yet available)");
+    // Collect outgoing edges for each node
+    let mut edges: Vec<ExportedEdge> = Vec::new();
+    for node in &nodes {
+        if let Ok(rels) = engine.graph.get_relationships_from(node.id).await {
+            for rel in rels {
+                edges.push(ExportedEdge {
+                    from: rel.from_node.to_string(),
+                    to: rel.to_node.to_string(),
+                    kind: rel.kind.to_string(),
+                    weight: rel.weight,
+                });
+            }
+        }
+    }
+    println!("Found {} edges", edges.len());
 
     // Collect namespaces
     let mut namespaces: Vec<String> = nodes
@@ -103,20 +115,18 @@ pub async fn json(
         })
         .collect();
 
-    let exported_edges = edges;
-
     let manifest = ExportManifest {
         version: "1.0".into(),
         exported_at: Utc::now().to_rfc3339(),
         node_count: exported_nodes.len(),
-        edge_count: exported_edges.len(),
+        edge_count: edges.len(),
         namespaces,
     };
 
     let export = JsonExport {
         manifest,
         nodes: exported_nodes,
-        edges: exported_edges,
+        edges,
     };
 
     // Generate output path

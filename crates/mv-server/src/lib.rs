@@ -11,6 +11,7 @@ pub mod state;
 pub mod validation;
 pub mod websocket;
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -55,6 +56,12 @@ pub async fn start_server(
         )
         .init();
     rest::init_observability();
+
+    let auth_enabled = auth_enabled_from_env();
+    let allow_insecure_bind = allow_insecure_bind_from_env();
+    if let Err(err) = validate_bind_safety(&config.bind_host, auth_enabled, allow_insecure_bind) {
+        return Err(err.into());
+    }
 
     tracing::info!("initializing MindVault engine...");
     let mut engine = MindVaultEngine::init(config.engine_config).await?;
@@ -144,17 +151,11 @@ pub async fn start_server(
         let keychain_service = grpc::KeychainGrpc::new(grpc_state);
         tonic::transport::Server::builder()
             .add_service(
-                grpc::proto::mind_vault_service_server::MindVaultServiceServer::with_interceptor(
-                    service,
-                    grpc::auth_interceptor,
-                ),
+                grpc::proto::mind_vault_service_server::MindVaultServiceServer::new(service),
             )
-            .add_service(
-                grpc::proto::keychain_service_server::KeychainServiceServer::with_interceptor(
-                    keychain_service,
-                    grpc::auth_interceptor,
-                ),
-            )
+            .add_service(grpc::proto::keychain_service_server::KeychainServiceServer::new(
+                keychain_service,
+            ))
             .serve(addr)
             .await
             .ok();
@@ -728,6 +729,52 @@ fn duration_until_next_utc_midnight(now: DateTime<Utc>) -> std::time::Duration {
     std::time::Duration::from_secs(seconds)
 }
 
+fn auth_enabled_from_env() -> bool {
+    auth_enabled_from_env_values(
+        std::env::var("MINDVAULT_JWT_SECRET").ok().as_deref(),
+        std::env::var("MINDVAULT_AUTH_TOKEN").ok().as_deref(),
+    )
+}
+
+fn allow_insecure_bind_from_env() -> bool {
+    allow_insecure_bind_value(std::env::var("MINDVAULT_ALLOW_INSECURE_BIND").ok().as_deref())
+}
+
+fn auth_enabled_from_env_values(jwt_secret: Option<&str>, auth_token: Option<&str>) -> bool {
+    jwt_secret.map(|value| !value.trim().is_empty()).unwrap_or(false)
+        || auth_token.map(|value| !value.trim().is_empty()).unwrap_or(false)
+}
+
+fn allow_insecure_bind_value(raw: Option<&str>) -> bool {
+    let value = raw.unwrap_or("").trim().to_ascii_lowercase();
+    matches!(value.as_str(), "1" | "true" | "yes" | "on")
+}
+
+fn is_local_bind_host(bind_host: &str) -> bool {
+    let host = bind_host.trim();
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => false,
+    }
+}
+
+fn validate_bind_safety(
+    bind_host: &str,
+    auth_enabled: bool,
+    allow_insecure_bind: bool,
+) -> Result<(), String> {
+    if is_local_bind_host(bind_host) || auth_enabled || allow_insecure_bind {
+        return Ok(());
+    }
+
+    Err(format!(
+        "refusing to bind to '{bind_host}' without auth; set MINDVAULT_AUTH_TOKEN or MINDVAULT_JWT_SECRET, or override with MINDVAULT_ALLOW_INSECURE_BIND=true"
+    ))
+}
+
 fn shellexpand(s: &str) -> String {
     if let Some(rest) = s.strip_prefix("~/") {
         if let Ok(home) = std::env::var("HOME") {
@@ -785,5 +832,51 @@ mod tests {
             .expect("valid datetime");
         let duration = duration_until_next_utc_midnight(now);
         assert!(duration.as_secs() >= 1);
+    }
+
+    #[test]
+    fn bind_safety_detects_local_hosts() {
+        assert!(is_local_bind_host("127.0.0.1"));
+        assert!(is_local_bind_host("127.12.34.56"));
+        assert!(is_local_bind_host("::1"));
+        assert!(is_local_bind_host("localhost"));
+        assert!(!is_local_bind_host("0.0.0.0"));
+        assert!(!is_local_bind_host("::"));
+        assert!(!is_local_bind_host("192.168.1.10"));
+    }
+
+    #[test]
+    fn bind_safety_rejects_public_without_auth_or_override() {
+        let err = validate_bind_safety("0.0.0.0", false, false).unwrap_err();
+        assert!(err.contains("auth"));
+    }
+
+    #[test]
+    fn bind_safety_allows_public_with_auth() {
+        assert!(validate_bind_safety("0.0.0.0", true, false).is_ok());
+    }
+
+    #[test]
+    fn bind_safety_allows_public_with_override() {
+        assert!(validate_bind_safety("0.0.0.0", false, true).is_ok());
+    }
+
+    #[test]
+    fn auth_enabled_from_env_values_detects_tokens() {
+        assert!(!auth_enabled_from_env_values(None, None));
+        assert!(auth_enabled_from_env_values(Some("jwt"), None));
+        assert!(auth_enabled_from_env_values(None, Some("token")));
+        assert!(!auth_enabled_from_env_values(Some(" "), Some("")));
+    }
+
+    #[test]
+    fn allow_insecure_bind_value_parses_truthy() {
+        assert!(allow_insecure_bind_value(Some("true")));
+        assert!(allow_insecure_bind_value(Some("1")));
+        assert!(allow_insecure_bind_value(Some("yes")));
+        assert!(allow_insecure_bind_value(Some("on")));
+        assert!(!allow_insecure_bind_value(Some("false")));
+        assert!(!allow_insecure_bind_value(Some("0")));
+        assert!(!allow_insecure_bind_value(None));
     }
 }

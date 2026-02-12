@@ -78,6 +78,7 @@ use utoipa_swagger_ui::SwaggerUi;
         search,
         // Graph
         add_relationship,
+        get_node_backlinks,
         get_neighbors,
         // Daily notes
         list_daily_notes,
@@ -519,6 +520,24 @@ async fn search() {}
     )
 )]
 async fn add_relationship() {}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/nodes/{id}/backlinks",
+    tag = "graph",
+    params(
+        ("id" = String, Path, description = "Node UUID"),
+        ("limit" = Option<usize>, Query, description = "Page size"),
+        ("offset" = Option<usize>, Query, description = "Pagination offset"),
+        ("include_auto" = Option<bool>, Query, description = "Include auto-managed backlinks"),
+        ("include_manual" = Option<bool>, Query, description = "Include manual backlinks"),
+        ("source" = Option<String>, Query, description = "Filter auto backlink source (e.g. wikilink, mention)")
+    ),
+    responses(
+        (status = 200, description = "Backlinks for the node")
+    )
+)]
+async fn get_node_backlinks() {}
 
 #[utoipa::path(
     get,

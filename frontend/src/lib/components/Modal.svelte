@@ -22,12 +22,6 @@
 		}
 	}
 
-	function handleBackdropClick(event: MouseEvent) {
-		if (event.target === event.currentTarget) {
-			dispatch('close');
-		}
-	}
-
 	$: if (open && dialog) {
 		const focusable = dialog.querySelector<HTMLElement>(
 			'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
@@ -41,16 +35,21 @@
 {#if open}
 	<div
 		class="fixed inset-0 z-50 flex items-center justify-center p-4"
-		role="dialog"
-		aria-modal="true"
-		aria-label={title}
-		on:click={handleBackdropClick}
 		transition:fade={{ duration: 150 }}
 	>
-		<div class="absolute inset-0 bg-black/60 backdrop-blur-sm" aria-hidden="true"></div>
+		<button
+			type="button"
+			class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+			aria-label="Close modal"
+			on:click={() => dispatch('close')}
+		></button>
 		<div
 			bind:this={dialog}
-			class="relative w-full {sizes[size]} rounded-2xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-6 shadow-2xl"
+			class="relative z-10 w-full {sizes[size]} rounded-2xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-6 shadow-2xl"
+			role="dialog"
+			aria-modal="true"
+			aria-label={title}
+			tabindex="-1"
 			in:fly={{ y: 16, duration: 200 }}
 			out:fade={{ duration: 100 }}
 		>

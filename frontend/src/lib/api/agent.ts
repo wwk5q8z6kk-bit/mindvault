@@ -97,6 +97,15 @@ export interface AgentContextResponse {
     related_nodes: RelatedNode[];
 }
 
+export interface ReflectionStats {
+	intent_type: string;
+	total_count: number;
+	applied_count: number;
+	dismissed_count: number;
+	acceptance_rate: number;
+	avg_confidence: number;
+}
+
 export async function fetchAgentContext(basisNodeId?: string) {
     const params = new URLSearchParams();
     if (basisNodeId) params.set('basis_node_id', basisNodeId);
@@ -151,4 +160,9 @@ export async function generateInsights() {
 
 export async function fetchAiModels() {
     return await fetchJson<ModelRegistry>('/api/v1/agent/models');
+}
+
+export async function fetchReflectionStats(intentType: string): Promise<ReflectionStats> {
+	const params = new URLSearchParams({ intent_type: intentType });
+	return await fetchJson<ReflectionStats>(`/api/v1/agent/reflection/stats?${params.toString()}`);
 }

@@ -9,6 +9,7 @@ import type {
 } from '$lib/api/tasks';
 
 export type TaskView = 'all' | 'inbox' | 'today' | 'upcoming';
+export type TaskPageView = 'list' | 'kanban' | 'calendar' | 'timeline';
 import {
 	createTask,
 	deleteTask,

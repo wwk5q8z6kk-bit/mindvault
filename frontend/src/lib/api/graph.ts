@@ -119,9 +119,37 @@ export async function getGraphClusters(params?: {
 	if (params?.namespace) searchParams.set('namespace', params.namespace);
 
 	const query = searchParams.toString();
-	return await fetchJson<GraphClustersResponse>(
-		`/api/v1/graph/clusters${query ? `?${query}` : ''}`
-	);
+	try {
+		return await fetchJson<GraphClustersResponse>(
+			`/api/v1/graph/clusters${query ? `?${query}` : ''}`
+		);
+	} catch {
+		// Fallback: map concept-map response into graph-cluster shape.
+		const fallbackParams = new URLSearchParams();
+		if (params?.namespace) fallbackParams.set('namespace', params.namespace);
+		if (params?.max_clusters !== undefined) {
+			fallbackParams.set('max_clusters', String(params.max_clusters));
+		}
+		const concept = await fetchJson<{
+			clusters: Array<{ topic: string; nodes: Array<{ id: string }> }>;
+			total_nodes: number;
+		}>(`/api/v1/insights/concept-map?${fallbackParams.toString()}`);
+		const clusters: GraphCluster[] = concept.clusters.map((cluster, idx) => {
+			const nodeIds = cluster.nodes.map((node) => node.id);
+			return {
+				id: `concept-${idx + 1}`,
+				name: cluster.topic,
+				node_ids: nodeIds,
+				center_node_id: nodeIds[0] ?? '',
+				density: nodeIds.length > 0 ? Math.min(1, nodeIds.length / 10) : 0
+			};
+		});
+		return {
+			clusters,
+			total_nodes: concept.total_nodes,
+			unclustered_count: Math.max(0, concept.total_nodes - clusters.reduce((sum, c) => sum + c.node_ids.length, 0))
+		};
+	}
 }
 
 export interface GraphPathResponse {

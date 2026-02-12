@@ -4,12 +4,15 @@
 		deleteSavedSearch,
 		listSavedSearches,
 		runSavedSearch,
-		searchFts,
-		searchHybrid,
+		searchByMode,
 		updateSavedSearch,
-		type SavedSearch
+		type SavedSearch,
+		type SearchMode
 	} from '$lib/api/search';
-	import type { SearchResultDto } from '$lib/api/types';
+	import type { SearchResultDto, ProactiveInsight } from '$lib/api/types';
+	import { assistAutocomplete } from '$lib/api/assist';
+	import { getEmbeddingClusters } from '$lib/api/insights';
+	import { getNeighbors, type GraphNeighbor } from '$lib/api/graph';
 	import { pushToast } from '$lib/stores/toast';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
@@ -18,11 +21,11 @@
 	import { recentItems } from '$lib/stores/recent';
 	import { createVirtualizer } from '@tanstack/svelte-virtual';
 
-	type SearchType = 'fulltext' | 'hybrid';
 	type SortOption = 'relevance' | 'date_desc' | 'date_asc' | 'title';
+	type ViewMode = 'results' | 'clusters';
 
 	let query = '';
-	let searchType: SearchType = 'fulltext';
+	let searchType: SearchMode = 'fulltext';
 	let selectedKinds: Set<string> = new Set();
 	let showKindDropdown = false;
 	let tagFilter: string = '';
@@ -41,6 +44,24 @@
 	let resultsContainer: HTMLDivElement | null = null;
 	let searchListParentRef: HTMLDivElement | null = null;
 
+	// Autocomplete state
+	let suggestions: string[] = [];
+	let showSuggestions = false;
+	let suggestionsLoading = false;
+	let suggestionIndex = -1;
+	let autocompleteTimer: ReturnType<typeof setTimeout> | null = null;
+	let inputFocused = false;
+
+	// Cluster view state
+	let viewMode: ViewMode = 'results';
+	let clusters: ProactiveInsight[] = [];
+	let clustersLoading = false;
+
+	// Related nodes state
+	let relatedNodes: GraphNeighbor[] = [];
+	let relatedLoading = false;
+	let neighborTimer: ReturnType<typeof setTimeout> | null = null;
+
 	const searchVirtualizer = createVirtualizer({
 		get count() {
 			return sortedResults.length;
@@ -49,11 +70,6 @@
 		estimateSize: () => 80,
 		overscan: 5
 	});
-
-	const kindOptions = [
-		{ value: 'all', label: 'All' },
-		...ALL_NODE_KINDS.map((k) => ({ value: k, label: kindLabel(k) + 's' }))
-	];
 
 	const sortOptions: { value: SortOption; label: string }[] = [
 		{ value: 'relevance', label: 'Relevance' },
@@ -91,18 +107,131 @@
 		}
 	}
 
+	// Fetch autocomplete suggestions (debounced)
+	async function fetchSuggestions(text: string) {
+		if (text.length < 2) {
+			suggestions = [];
+			showSuggestions = false;
+			return;
+		}
+		suggestionsLoading = true;
+		try {
+			const resp = await assistAutocomplete({ text, limit: 5 });
+			suggestions = resp.completions.slice(0, 5);
+			showSuggestions = suggestions.length > 0 && inputFocused;
+		} catch {
+			suggestions = [];
+			showSuggestions = false;
+		} finally {
+			suggestionsLoading = false;
+		}
+	}
+
+	function onAutocompleteInput() {
+		if (autocompleteTimer) clearTimeout(autocompleteTimer);
+		suggestionIndex = -1;
+		autocompleteTimer = setTimeout(() => {
+			void fetchSuggestions(query);
+		}, 200);
+	}
+
+	function selectSuggestion(suggestion: string) {
+		query = suggestion;
+		suggestions = [];
+		showSuggestions = false;
+		suggestionIndex = -1;
+		void doSearch();
+	}
+
+	function closeSuggestions() {
+		showSuggestions = false;
+		suggestionIndex = -1;
+	}
+
+	// Fetch related nodes when selected result changes (debounced)
+	$: {
+		if (selectedIndex >= 0 && selectedIndex < sortedResults.length && viewMode === 'results') {
+			const nodeId = sortedResults[selectedIndex].node.id;
+			if (neighborTimer) clearTimeout(neighborTimer);
+			neighborTimer = setTimeout(() => {
+				void fetchRelatedNodes(nodeId);
+			}, 500);
+		} else {
+			relatedNodes = [];
+			relatedLoading = false;
+		}
+	}
+
+	async function fetchRelatedNodes(nodeId: string) {
+		relatedLoading = true;
+		try {
+			const resp = await getNeighbors(nodeId);
+			relatedNodes = resp.neighbors;
+		} catch {
+			relatedNodes = [];
+		} finally {
+			relatedLoading = false;
+		}
+	}
+
+	// Fetch clusters when switching to cluster view
+	async function fetchClusters() {
+		clustersLoading = true;
+		try {
+			clusters = await getEmbeddingClusters();
+		} catch {
+			pushToast('Failed to load clusters', 'danger');
+			clusters = [];
+		} finally {
+			clustersLoading = false;
+		}
+	}
+
+	function switchViewMode(mode: ViewMode) {
+		viewMode = mode;
+		if (mode === 'clusters' && clusters.length === 0) {
+			void fetchClusters();
+		}
+	}
+
+	function navigateToNodeById(nodeId: string, title: string) {
+		recentItems.addNote(nodeId, title);
+		goto(`/notes?note=${nodeId}`);
+	}
+
 	function kindBadge(kind: string): { label: string; color: string } {
 		return { label: kindLabel(kind), color: kindBadgeClass(kind) };
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
+		if (showSuggestions && inputFocused) {
+			if (event.key === 'ArrowDown') {
+				event.preventDefault();
+				suggestionIndex = Math.min(suggestionIndex + 1, suggestions.length - 1);
+				return;
+			}
+			if (event.key === 'ArrowUp') {
+				event.preventDefault();
+				suggestionIndex = Math.max(suggestionIndex - 1, -1);
+				return;
+			}
+			if (event.key === 'Enter' && suggestionIndex >= 0 && suggestions[suggestionIndex]) {
+				event.preventDefault();
+				selectSuggestion(suggestions[suggestionIndex]);
+				return;
+			}
+			if (event.key === 'Escape') {
+				closeSuggestions();
+			}
+		}
+
 		// Close dropdown on Escape
 		if (event.key === 'Escape' && showKindDropdown) {
 			showKindDropdown = false;
 			return;
 		}
 
-		if (sortedResults.length === 0) return;
+		if (viewMode !== 'results' || sortedResults.length === 0) return;
 
 		if (event.key === 'ArrowDown') {
 			event.preventDefault();
@@ -162,6 +291,11 @@
 		}, 300);
 	}
 
+	function handleSearchInput() {
+		onQueryInput();
+		onAutocompleteInput();
+	}
+
 	function parseKindsFilter(): string[] {
 		return selectedKinds.size === 0 ? [] : [...selectedKinds];
 	}
@@ -190,7 +324,13 @@
 
 	function applySavedSearch(search: SavedSearch) {
 		query = search.query;
-		searchType = search.search_type === 'hybrid' ? 'hybrid' : 'fulltext';
+		if (search.search_type === 'hybrid') {
+			searchType = 'hybrid';
+		} else if (search.search_type === 'vector') {
+			searchType = 'semantic';
+		} else {
+			searchType = 'fulltext';
+		}
 		selectedKinds = new Set(search.kinds);
 		selectedSavedSearchId = search.id;
 		savedSearchName = search.name;
@@ -225,7 +365,7 @@
 		const payload = {
 			name: savedSearchName.trim() || autoSavedSearchName(),
 			query: trimmed,
-			search_type: searchType,
+			search_type: searchType === 'semantic' ? 'vector' : searchType,
 			limit: 50,
 			kinds: parseKindsFilter()
 		};
@@ -283,17 +423,13 @@
 		if (!q) {
 			results = [];
 			selectedIndex = -1;
+			relatedNodes = [];
 			return;
 		}
 		loading = true;
 		selectedIndex = -1;
 		try {
-			let raw: SearchResultDto[];
-			if (searchType === 'hybrid') {
-				raw = await searchHybrid(q, 50);
-			} else {
-				raw = await searchFts(q, 50);
-			}
+			let raw = await searchByMode(q, searchType, 50);
 			// Filter by selected kinds if any are selected
 			if (selectedKinds.size > 0) {
 				raw = raw.filter((r) => selectedKinds.has(r.node.kind));
@@ -340,14 +476,45 @@
 			</div>
 
 			<div class="flex gap-3">
-				<input
-					type="text"
-					class="flex-1 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-4 py-2 text-sm text-[rgb(var(--mv-text))] placeholder-[rgb(var(--mv-muted))]/60 outline-none focus:border-sky-500"
-					placeholder="Search..."
-					bind:value={query}
-					bind:this={searchInput}
-					on:input={onQueryInput}
-				/>
+				<div class="relative flex-1">
+					<input
+						type="text"
+						class="w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-4 py-2 text-sm text-[rgb(var(--mv-text))] placeholder-[rgb(var(--mv-muted))]/60 outline-none focus:border-sky-500"
+						placeholder="Search..."
+						bind:value={query}
+						bind:this={searchInput}
+						on:input={handleSearchInput}
+						on:focus={() => {
+							inputFocused = true;
+							showSuggestions = suggestions.length > 0;
+						}}
+						on:blur={() => {
+							inputFocused = false;
+							setTimeout(closeSuggestions, 120);
+						}}
+					/>
+					{#if showSuggestions}
+						<div class="absolute z-20 mt-1 w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] p-1 shadow-xl">
+							{#if suggestionsLoading}
+								<div class="px-2 py-1.5 text-xs text-[rgb(var(--mv-muted))]/70">Loading suggestions...</div>
+							{:else}
+								{#each suggestions as suggestion, idx (suggestion)}
+									<button
+										class={`block w-full rounded-lg px-2 py-1.5 text-left text-xs transition ${
+											suggestionIndex === idx
+												? 'bg-sky-500/20 text-sky-200'
+												: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel))]'
+										}`}
+										on:mousedown|preventDefault
+										on:click={() => selectSuggestion(suggestion)}
+									>
+										{suggestion}
+									</button>
+								{/each}
+							{/if}
+						</div>
+					{/if}
+				</div>
 				<button
 					class="rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
 					on:click={doSearch}
@@ -375,6 +542,30 @@
 						}}
 					>
 						Hybrid
+					</button>
+					<button
+						class={`px-3 py-1 transition ${searchType === 'semantic' ? 'bg-[rgb(var(--mv-panel-strong))]/80 text-[rgb(var(--mv-text))]' : 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]'}`}
+						on:click={() => {
+							searchType = 'semantic';
+							void doSearch();
+						}}
+					>
+						Semantic
+					</button>
+				</div>
+
+				<div class="flex rounded-lg border border-[rgb(var(--mv-border))] text-[10px]">
+					<button
+						class={`px-3 py-1 transition ${viewMode === 'results' ? 'bg-[rgb(var(--mv-panel-strong))]/80 text-[rgb(var(--mv-text))]' : 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]'}`}
+						on:click={() => switchViewMode('results')}
+					>
+						Results
+					</button>
+					<button
+						class={`px-3 py-1 transition ${viewMode === 'clusters' ? 'bg-[rgb(var(--mv-panel-strong))]/80 text-[rgb(var(--mv-text))]' : 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]'}`}
+						on:click={() => switchViewMode('clusters')}
+					>
+						Clusters
 					</button>
 				</div>
 
@@ -489,7 +680,52 @@
 			</div>
 		</div>
 
-		{#if sortedResults.length > 0}
+		{#if viewMode === 'clusters'}
+			<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/30 p-4">
+				<div class="mb-3 flex items-center justify-between">
+					<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Knowledge Clusters</h3>
+					<button
+						class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-[10px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
+						on:click={fetchClusters}
+					>
+						Refresh
+					</button>
+				</div>
+				{#if clustersLoading}
+					<p class="text-xs text-[rgb(var(--mv-muted))]/70">Analyzing cluster structure…</p>
+				{:else if clusters.length === 0}
+					<p class="text-xs text-[rgb(var(--mv-muted))]/70">No clusters found yet.</p>
+				{:else}
+					<div class="space-y-2">
+						{#each clusters as cluster (cluster.id)}
+							<div class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/30 p-3">
+								<div class="flex items-start gap-2">
+									<div class="rounded-full bg-sky-500/20 px-2 py-0.5 text-[10px] text-sky-300">
+										{Math.round(cluster.importance * 100)}%
+									</div>
+									<div class="min-w-0 flex-1">
+										<h4 class="text-sm font-medium text-[rgb(var(--mv-text))]">{cluster.title}</h4>
+										<p class="mt-1 text-xs text-[rgb(var(--mv-muted))]">{cluster.content}</p>
+									</div>
+								</div>
+								{#if cluster.related_node_ids.length > 0}
+									<div class="mt-2 flex flex-wrap gap-1">
+										{#each cluster.related_node_ids.slice(0, 6) as nodeId}
+											<button
+												class="rounded border border-[rgb(var(--mv-border))] px-1.5 py-0.5 text-[10px] text-[rgb(var(--mv-muted))] hover:border-sky-500/40 hover:text-sky-200"
+												on:click={() => navigateToNodeById(nodeId, `Node ${nodeId.slice(0, 8)}`)}
+											>
+												{nodeId.slice(0, 8)}
+											</button>
+										{/each}
+									</div>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{:else if sortedResults.length > 0}
 			<div bind:this={resultsContainer}>
 				<p class="mb-3 text-xs text-[rgb(var(--mv-muted))]">
 					{sortedResults.length} result{sortedResults.length !== 1 ? 's' : ''}{tagFilter.trim() ? ` (filtered by tag "${tagFilter}")` : ''}
@@ -638,6 +874,39 @@
 								</button>
 							</div>
 						</div>
+					{/each}
+				{/if}
+			</div>
+		</div>
+
+		<div class="mt-4 rounded-2xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Related Nodes</h3>
+			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">
+				Neighbors of the currently selected result.
+			</p>
+			<div class="mt-3 space-y-2">
+				{#if viewMode !== 'results'}
+					<p class="text-xs text-[rgb(var(--mv-muted))]/60">Available in results view.</p>
+				{:else if relatedLoading}
+					<p class="text-xs text-[rgb(var(--mv-muted))]/60">Loading related nodes…</p>
+				{:else if relatedNodes.length === 0}
+					<p class="text-xs text-[rgb(var(--mv-muted))]/60">Select a search result to explore neighbors.</p>
+				{:else}
+					{#each relatedNodes.slice(0, 10) as neighbor (neighbor.node.id + neighbor.relationship_kind)}
+						<a
+							href={`/notes?note=${neighbor.node.id}`}
+							class="block rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/30 px-3 py-2 text-xs transition hover:border-sky-500/30"
+						>
+							<div class="flex items-center gap-2">
+								<span class={`rounded-full px-1.5 py-0.5 text-[9px] ${kindBadgeClass(neighbor.node.kind)}`}>
+									{kindLabel(neighbor.node.kind)}
+								</span>
+								<span class="truncate text-[rgb(var(--mv-text))]">{neighbor.node.title || 'Untitled'}</span>
+							</div>
+							<div class="mt-1 text-[10px] text-[rgb(var(--mv-muted))]/70">
+								{neighbor.direction} via {neighbor.relationship_kind}
+							</div>
+						</a>
 					{/each}
 				{/if}
 			</div>

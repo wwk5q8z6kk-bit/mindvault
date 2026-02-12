@@ -195,10 +195,10 @@
 
 {#if $paletteOpen}
 	<div
-		class="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-6 backdrop-blur-sm"
+		class="fixed inset-0 z-50 flex items-start justify-center bg-black/60 pt-[15vh] backdrop-blur-sm transition-all duration-200"
 		role="button"
 		tabindex="0"
-		transition:fade={{ duration: 120 }}
+		transition:fade={{ duration: 150 }}
 		on:click|self={closePalette}
 		on:keydown={(event) => {
 			if (event.key === 'Enter' || event.key === ' ') {
@@ -208,17 +208,15 @@
 		}}
 	>
 		<div
-			class="w-full max-w-2xl rounded-2xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/95 p-4 shadow-2xl"
-			transition:scale={{ duration: 140, start: 0.97 }}
+			class="w-full max-w-2xl overflow-hidden rounded-2xl border border-[rgb(var(--mv-border))]/50 bg-[rgb(var(--mv-panel))]/80 p-0 shadow-2xl backdrop-blur-xl ring-1 ring-white/10"
+			transition:scale={{ duration: 200, start: 0.95 }}
 		>
-			<div
-				class="flex items-center gap-2 rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2"
-			>
-				<span class="text-xs text-[rgb(var(--mv-muted))]">⌘K</span>
+			<div class="flex items-center gap-3 border-b border-[rgb(var(--mv-border))]/50 px-4 py-3">
+				<span class="text-xs font-medium text-[rgb(var(--mv-muted))] opacity-70">⌘K</span>
 				<input
 					bind:this={inputRef}
-					class="w-full bg-transparent text-sm text-[rgb(var(--mv-text))] placeholder:text-[rgb(var(--mv-muted))] focus:outline-none"
-					placeholder="Search commands, tasks, notes…"
+					class="w-full bg-transparent text-lg text-[rgb(var(--mv-text))] placeholder:text-[rgb(var(--mv-muted))]/50 focus:outline-none"
+					placeholder="What do you need?"
 					role="combobox"
 					aria-expanded="true"
 					aria-controls="command-list"
@@ -227,55 +225,100 @@
 				/>
 			</div>
 
-			<div class="mt-3">
+			<div class="relative">
 				<div
 					id="command-list"
 					role="listbox"
-					class="max-h-[320px] overflow-auto"
-					style={`height: ${LIST_HEIGHT}px`}
+					class="max-h-[320px] overflow-auto scroll-smooth py-2"
+					style={`height: ${Math.min(LIST_HEIGHT, totalActions * ITEM_HEIGHT + 16)}px`}
 					on:scroll={handleScroll}
 					bind:this={listRef}
 				>
 					<div style={`padding-top: ${topPad}px; padding-bottom: ${bottomPad}px`}>
 						{#if totalActions === 0}
 							<div
-								class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] p-6 text-center text-sm text-[rgb(var(--mv-muted))]"
+								class="flex flex-col items-center justify-center p-8 text-center text-[rgb(var(--mv-muted))]"
 							>
-								{searchLoading ? 'Searching…' : 'No matching commands'}
+								{#if searchLoading}
+									<div
+										class="h-6 w-6 animate-spin rounded-full border-2 border-[rgb(var(--mv-border))] border-t-[rgb(var(--mv-accent))]"
+									></div>
+									<p class="mt-2 text-sm">Searching...</p>
+								{:else}
+									<p class="text-sm">No matching commands found.</p>
+								{/if}
 							</div>
 						{:else}
 							{#each visibleActions as item, index (item.action.id)}
 								{@const actualIndex = startIndex + index}
-								<button
-									class={`flex w-full items-start justify-between gap-3 rounded-xl px-3 py-2 text-left transition ${
-										actualIndex === selectedIndex
-											? 'bg-[rgb(var(--mv-accent))]/10 text-[rgb(var(--mv-text))]'
-											: 'text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-panel-strong))]/60'
-									}`}
-									role="option"
-									aria-selected={actualIndex === selectedIndex}
-									on:click={() => executeAction(item.action)}
-								>
-									<div>
-										<div class="text-sm font-medium">{item.action.title}</div>
-										{#if item.action.subtitle}
-											<div class="text-xs text-[rgb(var(--mv-muted))]">
-												{item.action.subtitle}
+								<div class="px-2">
+									<button
+										class={`group flex w-full items-center justify-between gap-3 rounded-lg px-3 py-3 text-left transition-all duration-150 ${
+											actualIndex === selectedIndex
+												? 'bg-[rgb(var(--mv-accent))]/10 text-[rgb(var(--mv-text))] ring-1 ring-[rgb(var(--mv-accent))]/20'
+												: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/40 hover:text-[rgb(var(--mv-text))]'
+										}`}
+										role="option"
+										aria-selected={actualIndex === selectedIndex}
+										on:click={() => executeAction(item.action)}
+									>
+										<div class="flex flex-col gap-0.5">
+											<div
+												class="text-sm font-medium ${actualIndex === selectedIndex
+													? 'text-[rgb(var(--mv-accent-strong))]'
+													: ''}"
+											>
+												{item.action.title}
 											</div>
+											{#if item.action.subtitle}
+												<div class="text-xs opacity-70 truncate max-w-[400px]">
+													{item.action.subtitle}
+												</div>
+											{/if}
+										</div>
+										{#if item.action.group}
+											<span
+												class={`rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wider ${
+													actualIndex === selectedIndex
+														? 'bg-[rgb(var(--mv-accent))]/20 text-[rgb(var(--mv-accent-strong))]'
+														: 'bg-[rgb(var(--mv-panel-strong))] text-[rgb(var(--mv-muted))]'
+												}`}
+											>
+												{item.action.group}
+											</span>
 										{/if}
-									</div>
-									{#if item.action.group}
-										<span
-											class="rounded-full bg-[rgb(var(--mv-panel-strong))] px-2 py-1 text-[10px] uppercase text-[rgb(var(--mv-muted))]"
-										>
-											{item.action.group}
-										</span>
-									{/if}
-								</button>
+									</button>
+								</div>
 							{/each}
 						{/if}
 					</div>
 				</div>
+			</div>
+
+			<div
+				class="border-t border-[rgb(var(--mv-border))]/50 bg-[rgb(var(--mv-panel-strong))]/30 px-4 py-2 text-[10px] text-[rgb(var(--mv-muted))] flex justify-between items-center"
+			>
+				<div class="flex gap-3">
+					<span
+						><kbd
+							class="font-mono bg-[rgb(var(--mv-panel-strong))] px-1 rounded border border-[rgb(var(--mv-border))]"
+							>↵</kbd
+						> to select</span
+					>
+					<span
+						><kbd
+							class="font-mono bg-[rgb(var(--mv-panel-strong))] px-1 rounded border border-[rgb(var(--mv-border))]"
+							>↓↑</kbd
+						> to navigate</span
+					>
+					<span
+						><kbd
+							class="font-mono bg-[rgb(var(--mv-panel-strong))] px-1 rounded border border-[rgb(var(--mv-border))]"
+							>esc</kbd
+						> to close</span
+					>
+				</div>
+				<div>MindVault Core</div>
 			</div>
 		</div>
 	</div>

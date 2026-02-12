@@ -57,12 +57,15 @@ struct FileConfig {
     search: Option<FileSearchConfig>,
     graph: Option<FileGraphConfig>,
     ai: Option<FileAiConfig>,
+    watcher: Option<FileWatcherConfig>,
+    ai_sidecar: Option<FileAiSidecarConfig>,
     linking: Option<FileLinkingConfig>,
     daily_notes: Option<FileDailyNotesConfig>,
     recurrence: Option<FileRecurrenceConfig>,
     encryption: Option<FileEncryptionConfig>,
     llm: Option<FileLlmConfig>,
     email: Option<FileEmailConfig>,
+    google_calendar: Option<FileGoogleCalendarConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -118,6 +121,22 @@ struct FileAiConfig {
     auto_tagging_max_total_tags: Option<usize>,
     auto_tagging_similarity_seed_limit: Option<usize>,
     auto_tagging_min_token_length: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct FileWatcherConfig {
+    enabled: Option<bool>,
+    interval_secs: Option<u64>,
+    lookback_hours: Option<u64>,
+    max_nodes_per_cycle: Option<usize>,
+    expiry_days: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct FileAiSidecarConfig {
+    enabled: Option<bool>,
+    base_url: Option<String>,
+    timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -180,6 +199,22 @@ struct FileEmailConfig {
     smtp_username: Option<String>,
     smtp_from: Option<String>,
     smtp_starttls: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct FileGoogleCalendarConfig {
+    enabled: Option<bool>,
+    namespace: Option<String>,
+    calendar_id: Option<String>,
+    sync_interval_secs: Option<u64>,
+    lookback_days: Option<i64>,
+    lookahead_days: Option<i64>,
+    max_results: Option<usize>,
+    import_events: Option<bool>,
+    export_events: Option<bool>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    refresh_token: Option<String>,
 }
 
 /// Load engine from config file path (expanding ~).
@@ -337,6 +372,57 @@ pub fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
             }
         }
 
+        if let Some(google_calendar) = file_config.google_calendar {
+            if let Some(enabled) = google_calendar.enabled {
+                engine.google_calendar.enabled = enabled;
+            }
+            if let Some(namespace) = google_calendar.namespace {
+                engine.google_calendar.namespace = namespace;
+            }
+            if let Some(calendar_id) = google_calendar.calendar_id {
+                engine.google_calendar.calendar_id = calendar_id;
+            }
+            if let Some(sync_interval_secs) = google_calendar.sync_interval_secs {
+                engine.google_calendar.sync_interval_secs = sync_interval_secs;
+            }
+            if let Some(lookback_days) = google_calendar.lookback_days {
+                engine.google_calendar.lookback_days = lookback_days;
+            }
+            if let Some(lookahead_days) = google_calendar.lookahead_days {
+                engine.google_calendar.lookahead_days = lookahead_days;
+            }
+            if let Some(max_results) = google_calendar.max_results {
+                engine.google_calendar.max_results = max_results;
+            }
+            if let Some(import_events) = google_calendar.import_events {
+                engine.google_calendar.import_events = import_events;
+            }
+            if let Some(export_events) = google_calendar.export_events {
+                engine.google_calendar.export_events = export_events;
+            }
+            if let Some(client_id) = google_calendar.client_id {
+                if client_id.trim().is_empty() {
+                    engine.google_calendar.client_id = None;
+                } else {
+                    engine.google_calendar.client_id = Some(client_id);
+                }
+            }
+            if let Some(client_secret) = google_calendar.client_secret {
+                if client_secret.trim().is_empty() {
+                    engine.google_calendar.client_secret = None;
+                } else {
+                    engine.google_calendar.client_secret = Some(client_secret);
+                }
+            }
+            if let Some(refresh_token) = google_calendar.refresh_token {
+                if refresh_token.trim().is_empty() {
+                    engine.google_calendar.refresh_token = None;
+                } else {
+                    engine.google_calendar.refresh_token = Some(refresh_token);
+                }
+            }
+        }
+
         if let Some(search) = file_config.search {
             if let Some(default_limit) = search.default_limit {
                 engine.search.default_limit = default_limit;
@@ -382,6 +468,36 @@ pub fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
             }
             if let Some(min_token_length) = ai.auto_tagging_min_token_length {
                 engine.ai.auto_tagging_min_token_length = min_token_length;
+            }
+        }
+
+        if let Some(watcher) = file_config.watcher {
+            if let Some(enabled) = watcher.enabled {
+                engine.watcher.enabled = enabled;
+            }
+            if let Some(interval_secs) = watcher.interval_secs {
+                engine.watcher.interval_secs = interval_secs;
+            }
+            if let Some(lookback_hours) = watcher.lookback_hours {
+                engine.watcher.lookback_hours = lookback_hours;
+            }
+            if let Some(max_nodes_per_cycle) = watcher.max_nodes_per_cycle {
+                engine.watcher.max_nodes_per_cycle = max_nodes_per_cycle;
+            }
+            if let Some(expiry_days) = watcher.expiry_days {
+                engine.watcher.expiry_days = expiry_days;
+            }
+        }
+
+        if let Some(ai_sidecar) = file_config.ai_sidecar {
+            if let Some(enabled) = ai_sidecar.enabled {
+                engine.ai_sidecar.enabled = enabled;
+            }
+            if let Some(base_url) = ai_sidecar.base_url {
+                engine.ai_sidecar.base_url = base_url;
+            }
+            if let Some(timeout_secs) = ai_sidecar.timeout_secs {
+                engine.ai_sidecar.timeout_secs = timeout_secs;
             }
         }
 
@@ -848,4 +964,66 @@ pub fn shellexpand(s: &str) -> String {
         }
     }
     s.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_runtime_config_applies_watcher_google_calendar_ai_sidecar() {
+        let config = r#"
+[watcher]
+enabled = false
+interval_secs = 120
+lookback_hours = 12
+max_nodes_per_cycle = 10
+expiry_days = 3
+
+[ai_sidecar]
+enabled = true
+base_url = "http://127.0.0.1:9999"
+timeout_secs = 42
+
+[google_calendar]
+enabled = true
+namespace = "cal"
+calendar_id = "work"
+sync_interval_secs = 600
+lookback_days = 7
+lookahead_days = 14
+max_results = 42
+import_events = false
+export_events = true
+"#;
+
+        let path = std::env::temp_dir()
+            .join(format!("mindvault-config-{}.toml", uuid::Uuid::now_v7()));
+        std::fs::write(&path, config).expect("write temp config");
+
+        let runtime = load_runtime_config(path.to_str().expect("path should be valid"))
+            .expect("load runtime config");
+
+        assert!(!runtime.engine.watcher.enabled);
+        assert_eq!(runtime.engine.watcher.interval_secs, 120);
+        assert_eq!(runtime.engine.watcher.lookback_hours, 12);
+        assert_eq!(runtime.engine.watcher.max_nodes_per_cycle, 10);
+        assert_eq!(runtime.engine.watcher.expiry_days, 3);
+
+        assert!(runtime.engine.ai_sidecar.enabled);
+        assert_eq!(runtime.engine.ai_sidecar.base_url, "http://127.0.0.1:9999");
+        assert_eq!(runtime.engine.ai_sidecar.timeout_secs, 42);
+
+        assert!(runtime.engine.google_calendar.enabled);
+        assert_eq!(runtime.engine.google_calendar.namespace, "cal");
+        assert_eq!(runtime.engine.google_calendar.calendar_id, "work");
+        assert_eq!(runtime.engine.google_calendar.sync_interval_secs, 600);
+        assert_eq!(runtime.engine.google_calendar.lookback_days, 7);
+        assert_eq!(runtime.engine.google_calendar.lookahead_days, 14);
+        assert_eq!(runtime.engine.google_calendar.max_results, 42);
+        assert!(!runtime.engine.google_calendar.import_events);
+        assert!(runtime.engine.google_calendar.export_events);
+
+        let _ = std::fs::remove_file(&path);
+    }
 }

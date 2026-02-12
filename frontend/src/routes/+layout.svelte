@@ -22,6 +22,12 @@
 	import { loadAvailableNamespaces } from '$lib/stores/namespace';
 	import { connectAgentStream, disconnectAgentStream } from '$lib/api/agent';
 	import { onMount } from 'svelte';
+	import { fly, slide } from 'svelte/transition';
+	import {
+		viewPreferences,
+		toggleSidebarGroup,
+		isSidebarGroupCollapsed
+	} from '$lib/stores/view-preferences';
 
 	let online = true;
 	let mobileMenuOpen = false;
@@ -30,76 +36,77 @@
 		mobileMenuOpen = false;
 	}
 
-	const navGroups = [
+	const navGroups: Array<{
+		label?: string;
+		collapsible: boolean;
+		items: Array<{ label: string; href: string }>;
+	}> = [
 		{
-			label: 'Capture',
+			collapsible: false,
 			items: [
+				{ label: 'Dashboard', href: '/' },
 				{ label: 'Inbox', href: '/inbox' },
-				{ label: 'Voice', href: '/voice' },
+				{ label: 'Daily', href: '/focus' },
+				{ label: 'Search', href: '/search' }
+			]
+		},
+		{
+			label: 'Knowledge Base',
+			collapsible: true,
+			items: [
+				{ label: 'Notes', href: '/notes' },
+				{ label: 'Resources', href: '/bookmarks' }
+			]
+		},
+		{
+			label: 'Productivity',
+			collapsible: true,
+			items: [
+				{ label: 'Tasks', href: '/tasks' },
+				{ label: 'Goals', href: '/goals' }
+			]
+		},
+		{
+			label: 'Connections',
+			collapsible: true,
+			items: [
 				{ label: 'Chat', href: '/chat' },
 				{ label: 'Relay', href: '/relay' }
 			]
 		},
 		{
-			label: 'Plan & Execute',
-			items: [
-				{ label: 'Plan', href: '/plan' },
-				{ label: 'Tasks', href: '/tasks' },
-				{ label: 'Focus', href: '/focus' },
-				{ label: 'Goals', href: '/goals' },
-				{ label: 'Daily', href: '/daily' }
-			]
-		},
-		{
-			label: 'Knowledge',
-			items: [
-				{ label: 'Notes', href: '/notes' },
-				{ label: 'Templates', href: '/templates' },
-				{ label: 'Bookmarks', href: '/bookmarks' },
-				{ label: 'Media', href: '/media' },
-				{ label: 'Flashcards', href: '/flashcards' },
-				{ label: 'PDF', href: '/pdf' }
-			]
-		},
-		{
-			label: 'Views',
-			items: [
-				{ label: 'Search', href: '/search' },
-				{ label: 'Kanban', href: '/kanban' },
-				{ label: 'Calendar', href: '/calendar' },
-				{ label: 'Timeline', href: '/timeline' },
-				{ label: 'Graph', href: '/graph' },
-				{ label: 'Canvas', href: '/canvas' }
-			]
-		},
-		{
-			label: 'Review',
+			label: 'System',
+			collapsible: true,
 			items: [
 				{ label: 'Review', href: '/review' },
-				{ label: 'Stats', href: '/stats' },
-				{ label: 'Tags', href: '/tags' }
-			]
-		},
-		{
-			label: 'System',
-			items: [
-				{ label: 'Autonomy', href: '/autonomy' },
-				{ label: 'Federation', href: '/federation' },
 				{ label: 'Sync', href: '/sync' },
 				{ label: 'Plugins', href: '/plugins' },
-				{ label: 'Adapters', href: '/adapters' },
-				{ label: 'Provenance', href: '/provenance' }
-			]
-		},
-		{
-			label: 'Account',
-			items: [
-				{ label: 'Trash', href: '/trash' },
-				{ label: 'Profiles', href: '/settings/profiles' },
+				{ label: 'Autonomy', href: '/autonomy' },
 				{ label: 'Settings', href: '/settings' }
 			]
 		}
 	];
+
+	/**
+	 * Build an href that includes the user's stored view preference as a ?view= param.
+	 * Returns the bare href if the preference is the default for that page.
+	 */
+	function viewAwareHref(href: string, prefs: typeof $viewPreferences): string {
+		switch (href) {
+			case '/tasks':
+				return prefs.tasks !== 'list' ? `/tasks?view=${prefs.tasks}` : href;
+			case '/notes':
+				return prefs.notes !== 'list' ? `/notes?view=${prefs.notes}` : href;
+			case '/review':
+				return prefs.review !== 'digest' ? `/review?view=${prefs.review}` : href;
+			case '/bookmarks':
+				return prefs.resources !== 'bookmarks'
+					? `/bookmarks?view=${prefs.resources}`
+					: href;
+			default:
+				return href;
+		}
+	}
 
 	const routeMeta: Array<{ href: string; title: string; subtitle: string }> = [
 		{
@@ -184,8 +191,13 @@
 		},
 		{
 			href: '/stats',
-			title: 'Productivity Stats',
-			subtitle: 'Track streaks, daily activity, hourly patterns, and tag usage.'
+			title: 'Stats',
+			subtitle: 'Productivity statistics and trends.'
+		},
+		{
+			href: '/insights',
+			title: 'Insights',
+			subtitle: 'AI-powered knowledge analysis.'
 		},
 		{
 			href: '/tags',
@@ -195,7 +207,7 @@
 		{
 			href: '/bookmarks',
 			title: 'Reading List',
-			subtitle: 'Save and organize web clips, references, and reading material.'
+			subtitle: 'Bookmarks, templates, and flashcards.'
 		},
 		{
 			href: '/media',
@@ -326,50 +338,111 @@
 	<title>MindVault</title>
 </svelte:head>
 
-<div class="flex min-h-screen bg-[rgb(var(--mv-bg))] text-[rgb(var(--mv-text))]">
+<div
+	class="flex min-h-screen bg-[rgb(var(--mv-bg))] text-[rgb(var(--mv-text))] font-sans antialiased selection:bg-[rgb(var(--mv-accent))]/20 selection:text-[rgb(var(--mv-accent-strong))]"
+>
 	<aside
-		class="hidden w-64 flex-col border-r border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-6 md:flex"
+		class="hidden w-[280px] flex-col border-r border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/60 backdrop-blur-xl p-4 md:flex transition-all duration-300 ease-spring"
 	>
-		<div class="flex items-center gap-3 text-lg font-semibold">
-			<div class="flex h-10 w-10 items-center justify-center rounded-xl bg-[rgb(var(--mv-accent))]/20 text-[rgb(var(--mv-accent))]">
-				MV
+		<div class="flex items-center gap-3 px-2 py-3 mb-6">
+			<div
+				class="relative flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-[rgb(var(--mv-accent))] to-[rgb(var(--mv-accent-strong))] text-white shadow-lg shadow-[rgb(var(--mv-accent))]/20"
+			>
+				<span class="font-bold text-lg tracking-tight">MV</span>
+				<div class="absolute inset-0 rounded-xl ring-1 ring-inset ring-white/20"></div>
 			</div>
-			<span>MindVault</span>
+			<div class="flex flex-col">
+				<span class="font-bold text-lg leading-tight tracking-tight">MindVault</span>
+				<span
+					class="text-[10px] uppercase tracking-wider font-semibold text-[rgb(var(--mv-muted))] opacity-80"
+					>Workspace</span
+				>
+			</div>
 		</div>
 
-		<nav class="mt-8 flex flex-1 flex-col gap-4 overflow-y-auto pr-1 text-sm">
+		<nav class="flex-1 overflow-y-auto pr-2 space-y-6">
 			{#each navGroups as group}
+				{@const collapsed = group.collapsible && group.label
+					? isSidebarGroupCollapsed($viewPreferences.sidebarCollapsed, group.label)
+					: false}
 				<div>
-					<div class="mb-1 px-3 text-[10px] font-semibold uppercase tracking-wider text-[rgb(var(--mv-muted))]/60">
-						{group.label}
-					</div>
-					{#each group.items as item (item.href)}
-						<a
-							href={item.href}
-							class={`block rounded-lg px-3 py-1.5 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--mv-ring))]/70 ${
-								$page.url.pathname === item.href || ($page.url.pathname.startsWith(item.href) && item.href !== '/')
-									? 'bg-[rgb(var(--mv-panel-strong))] text-[rgb(var(--mv-text))] shadow-sm'
-									: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80 hover:text-[rgb(var(--mv-text))]'
-							}`}
-							aria-current={$page.url.pathname === item.href || ($page.url.pathname.startsWith(item.href) && item.href !== '/') ? 'page' : undefined}
-						>
-							{item.label}
-						</a>
-					{/each}
+					{#if group.label}
+						{#if group.collapsible}
+							<button
+								class="flex w-full items-center justify-between mb-2 px-3 text-[11px] font-bold uppercase tracking-widest text-[rgb(var(--mv-muted))]/70 hover:text-[rgb(var(--mv-muted))] transition-colors duration-150"
+								on:click={() => group.label && toggleSidebarGroup(group.label)}
+								aria-expanded={!collapsed}
+							>
+								{group.label}
+								<svg
+									class="h-3 w-3 transition-transform duration-200"
+									style:transform={collapsed ? 'rotate(-90deg)' : 'rotate(0deg)'}
+									fill="none"
+									stroke="currentColor"
+									viewBox="0 0 24 24"
+								>
+									<path
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										stroke-width="2.5"
+										d="M19 9l-7 7-7-7"
+									/>
+								</svg>
+							</button>
+						{:else}
+							<div
+								class="mb-2 px-3 text-[11px] font-bold uppercase tracking-widest text-[rgb(var(--mv-muted))]/70"
+							>
+								{group.label}
+							</div>
+						{/if}
+					{/if}
+					{#if !collapsed}
+						<div class="space-y-0.5" transition:slide={{ duration: 200 }}>
+							{#each group.items as item (item.href)}
+								{@const isActive =
+									$page.url.pathname === item.href ||
+									($page.url.pathname.startsWith(item.href) && item.href !== '/')}
+								<a
+									href={viewAwareHref(item.href, $viewPreferences)}
+									class={`group relative flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 ${
+										isActive
+											? 'bg-[rgb(var(--mv-accent))]/10 text-[rgb(var(--mv-accent-strong))]'
+											: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/50 hover:text-[rgb(var(--mv-text))]'
+									}`}
+									aria-current={isActive ? 'page' : undefined}
+								>
+									{#if isActive}
+										<div
+											class="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-[rgb(var(--mv-accent-strong))]"
+										></div>
+									{/if}
+									{item.label}
+								</a>
+							{/each}
+						</div>
+					{/if}
 				</div>
 			{/each}
 		</nav>
 
-		<div class="text-xs text-[rgb(var(--mv-muted))]">Local-first · Private · Offline-ready</div>
+		<div class="mt-4 pt-4 border-t border-[rgb(var(--mv-border))]">
+			<div
+				class="flex items-center gap-2 px-3 py-2 text-xs font-medium text-[rgb(var(--mv-muted))] rounded-lg hover:bg-[rgb(var(--mv-panel-strong))]/50 transition-colors cursor-pointer"
+			>
+				<div class="h-2 w-2 rounded-full bg-emerald-500"></div>
+				<span>System Operational</span>
+			</div>
+		</div>
 	</aside>
 
-	<div class="flex flex-1 flex-col">
+	<div class="flex flex-1 flex-col min-w-0">
 		<header
-			class="flex items-center justify-between border-b border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 px-6 py-4"
+			class="sticky top-0 z-20 flex items-center justify-between border-b border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))]/80 backdrop-blur-md px-6 py-4 transition-colors duration-200"
 		>
-			<div class="flex items-center gap-3">
+			<div class="flex items-center gap-4">
 				<button
-					class="flex h-8 w-8 items-center justify-center rounded-lg text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))] hover:text-[rgb(var(--mv-text))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--mv-ring))]/70 md:hidden"
+					class="flex h-9 w-9 items-center justify-center rounded-lg text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))] hover:text-[rgb(var(--mv-text))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--mv-ring))]/70 md:hidden"
 					on:click={() => (mobileMenuOpen = !mobileMenuOpen)}
 					aria-label="Toggle menu"
 					aria-expanded={mobileMenuOpen}
@@ -393,84 +466,144 @@
 					</svg>
 				</button>
 				<div>
-					<h1 class="text-lg font-semibold text-[rgb(var(--mv-text))]">{currentRoute.title}</h1>
-					<p class="hidden text-sm text-[rgb(var(--mv-muted))] sm:block">{currentRoute.subtitle}</p>
+					<h1 class="text-xl font-bold tracking-tight text-[rgb(var(--mv-text))]">
+						{currentRoute.title}
+					</h1>
+					<p class="hidden text-sm font-medium text-[rgb(var(--mv-muted))] sm:block">
+						{currentRoute.subtitle}
+					</p>
 				</div>
 			</div>
-			<div class="flex items-center gap-2 text-sm text-[rgb(var(--mv-muted))]">
+			<div class="flex items-center gap-3 text-sm text-[rgb(var(--mv-muted))]">
 				<NamespaceSelector />
+				<div class="h-4 w-px bg-[rgb(var(--mv-border))] mx-1"></div>
 				<span
-					class={`rounded-full px-3 py-1 ${
+					class={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset ${
 						$wsStatus === 'connected'
-							? 'bg-[rgb(var(--mv-success))]/20 text-emerald-200'
+							? 'bg-emerald-500/10 text-emerald-400 ring-emerald-500/20'
 							: online
-								? 'bg-[rgb(var(--mv-accent))]/20 text-[rgb(var(--mv-accent))]'
-								: 'bg-[rgb(var(--mv-danger))]/20 text-red-200'
+								? 'bg-sky-500/10 text-sky-400 ring-sky-500/20'
+								: 'bg-rose-500/10 text-rose-400 ring-rose-500/20'
 					}`}
 				>
+					<span
+						class={`h-1.5 w-1.5 rounded-full ${
+							$wsStatus === 'connected' ? 'bg-emerald-400' : online ? 'bg-sky-400' : 'bg-rose-400'
+						}`}
+					></span>
 					{$wsStatus === 'connected' ? 'Live' : online ? 'Online' : 'Offline'}
 				</span>
 				{#if $pendingSyncCount > 0}
-					<span class="rounded-full bg-amber-500/20 px-2 py-1 text-xs font-medium text-amber-200">
+					<span
+						class="flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-0.5 text-xs font-semibold text-amber-400 ring-1 ring-inset ring-amber-500/20"
+					>
+						<span class="animate-pulse">●</span>
 						{$pendingSyncCount} pending
 					</span>
 				{/if}
 			</div>
 		</header>
+
 		<ApiHealthBanner {online} />
 		<FavoritesBar />
+
 		<!-- Mobile slide-out menu -->
 		{#if mobileMenuOpen}
 			<div class="fixed inset-0 z-30 md:hidden" role="presentation">
-				<button
-					type="button"
-					class="absolute inset-0 bg-black/50"
+				<div
+					class="absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity"
 					on:click={closeMobileMenu}
+					role="button"
+					tabindex="0"
 					aria-label="Close menu"
-				></button>
+					on:keydown={(e) => e.key === 'Escape' && closeMobileMenu()}
+				></div>
 				<nav
-					class="absolute left-0 top-0 flex h-full w-64 flex-col border-r border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-6"
+					class="absolute left-0 top-0 flex h-full w-[280px] flex-col border-r border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))] p-4 shadow-2xl transition-transform"
 				>
-					<div class="flex items-center gap-3 text-lg font-semibold">
+					<div class="flex items-center gap-3 px-2 py-3 mb-6">
 						<div
-							class="flex h-10 w-10 items-center justify-center rounded-xl bg-[rgb(var(--mv-accent))]/20 text-[rgb(var(--mv-accent))]"
+							class="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-[rgb(var(--mv-accent))] to-[rgb(var(--mv-accent-strong))] text-white shadow-lg"
 						>
-							MV
+							<span class="font-bold">MV</span>
 						</div>
-						<span>MindVault</span>
+						<span class="font-bold text-lg">MindVault</span>
 					</div>
-					<div class="mt-6 flex flex-1 flex-col gap-4 overflow-y-auto pr-1 text-sm">
+					<div class="flex-1 overflow-y-auto space-y-6 pr-2">
 						{#each navGroups as group}
+							{@const mobileCollapsed = group.collapsible && group.label
+								? isSidebarGroupCollapsed($viewPreferences.sidebarCollapsed, group.label)
+								: false}
 							<div>
-								<div class="mb-1 px-3 text-[10px] font-semibold uppercase tracking-wider text-[rgb(var(--mv-muted))]/60">
-									{group.label}
-								</div>
-								{#each group.items as item (item.href)}
-									<a
-										href={item.href}
-										class={`block rounded-lg px-3 py-1.5 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--mv-ring))]/70 ${
-											$page.url.pathname === item.href || ($page.url.pathname.startsWith(item.href) && item.href !== '/')
-												? 'bg-[rgb(var(--mv-panel-strong))] text-[rgb(var(--mv-text))] shadow-sm'
-												: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80 hover:text-[rgb(var(--mv-text))]'
-										}`}
-										aria-current={$page.url.pathname === item.href || ($page.url.pathname.startsWith(item.href) && item.href !== '/') ? 'page' : undefined}
-										on:click={closeMobileMenu}
-									>
-										{item.label}
-									</a>
-								{/each}
+								{#if group.label}
+									{#if group.collapsible}
+										<button
+											class="flex w-full items-center justify-between mb-2 px-3 text-[11px] font-bold uppercase tracking-widest text-[rgb(var(--mv-muted))]/70 hover:text-[rgb(var(--mv-muted))] transition-colors duration-150"
+											on:click={() => group.label && toggleSidebarGroup(group.label)}
+											aria-expanded={!mobileCollapsed}
+										>
+											{group.label}
+											<svg
+												class="h-3 w-3 transition-transform duration-200"
+												style:transform={mobileCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)'}
+												fill="none"
+												stroke="currentColor"
+												viewBox="0 0 24 24"
+											>
+												<path
+													stroke-linecap="round"
+													stroke-linejoin="round"
+													stroke-width="2.5"
+													d="M19 9l-7 7-7-7"
+												/>
+											</svg>
+										</button>
+									{:else}
+										<div
+											class="mb-2 px-3 text-[11px] font-bold uppercase tracking-widest text-[rgb(var(--mv-muted))]/70"
+										>
+											{group.label}
+										</div>
+									{/if}
+								{/if}
+								{#if !mobileCollapsed}
+									<div class="space-y-0.5" transition:slide={{ duration: 200 }}>
+										{#each group.items as item (item.href)}
+											{@const mobileActive =
+												$page.url.pathname === item.href ||
+												($page.url.pathname.startsWith(item.href) && item.href !== '/')}
+											<a
+												href={viewAwareHref(item.href, $viewPreferences)}
+												class={`block rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+													mobileActive
+														? 'bg-[rgb(var(--mv-accent))]/10 text-[rgb(var(--mv-accent-strong))]'
+														: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/50 hover:text-[rgb(var(--mv-text))]'
+												}`}
+												aria-current={mobileActive ? 'page' : undefined}
+												on:click={closeMobileMenu}
+											>
+												{item.label}
+											</a>
+										{/each}
+									</div>
+								{/if}
 							</div>
 						{/each}
-					</div>
-					<div class="text-xs text-[rgb(var(--mv-muted))]">
-						Local-first · Private · Offline-ready
 					</div>
 				</nav>
 			</div>
 		{/if}
 
-		<main class="flex-1 bg-[rgb(var(--mv-bg))]/70 p-6 pb-20 md:pb-6">
-			<slot />
+		<main class="flex-1 bg-[rgb(var(--mv-bg))] p-6 pb-20 md:pb-8 overflow-x-hidden">
+			{#key $page.url.pathname}
+				<div
+					class="mx-auto max-w-7xl"
+					in:fly={{ y: 10, duration: 300, delay: 100 }}
+					out:fly={{ y: -10, duration: 200 }}
+				>
+					<slot />
+				</div>
+			{/key}
 		</main>
 	</div>
 </div>

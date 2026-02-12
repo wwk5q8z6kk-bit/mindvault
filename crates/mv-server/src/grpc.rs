@@ -1,6 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use axum::http::{HeaderMap, HeaderValue};
 use futures::Stream;
 use serde_json::Value;
 use tonic::{Request, Response, Status};
@@ -8,7 +9,7 @@ use uuid::Uuid;
 
 use mv_core::*;
 
-use crate::auth::{auth_context_from_authorization_header, AuthContext};
+use crate::auth::AuthContext;
 use crate::limits::{enforce_namespace_quota, enforce_rate_limit, NamespaceQuotaError};
 use crate::state::AppState;
 use crate::validation::{
@@ -33,25 +34,6 @@ impl MindVaultGrpc {
     }
 }
 
-#[allow(clippy::result_large_err)]
-pub fn auth_interceptor(mut request: Request<()>) -> Result<Request<()>, Status> {
-    let auth_header = request
-        .metadata()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok());
-
-    let auth = auth_context_from_authorization_header(auth_header)
-        .map_err(|_| Status::unauthenticated("invalid auth token"))?;
-    if let Err(rate) = enforce_rate_limit(&auth) {
-        return Err(Status::resource_exhausted(format!(
-            "rate limit exceeded ({}/{}s); retry in {}s",
-            rate.max_requests, rate.window_secs, rate.retry_after_secs
-        )));
-    }
-    request.extensions_mut().insert(auth);
-
-    Ok(request)
-}
 fn node_to_proto(node: &KnowledgeNode) -> KnowledgeNodeProto {
     KnowledgeNodeProto {
         id: node.id.to_string(),
@@ -142,17 +124,36 @@ fn map_namespace_quota_status(err: NamespaceQuotaError) -> Status {
 }
 
 #[allow(clippy::result_large_err)]
-fn auth_context_from_request<T>(request: &Request<T>) -> Result<AuthContext, Status> {
+async fn auth_context_from_request_with_state<T>(
+    state: &AppState,
+    request: &Request<T>,
+) -> Result<AuthContext, Status> {
     if let Some(auth) = request.extensions().get::<AuthContext>() {
         return Ok(auth.clone());
     }
 
-    let auth_header = request
-        .metadata()
-        .get("authorization")
-        .and_then(|value| value.to_str().ok());
-    auth_context_from_authorization_header(auth_header)
-        .map_err(|_| Status::unauthenticated("invalid auth token"))
+    let mut headers = HeaderMap::new();
+    if let Some(value) = request.metadata().get("authorization") {
+        let value_str = value
+            .to_str()
+            .map_err(|_| Status::unauthenticated("invalid auth token"))?;
+        let header_value =
+            HeaderValue::from_str(value_str).map_err(|_| Status::unauthenticated("invalid auth token"))?;
+        headers.insert("authorization", header_value);
+    }
+
+    let auth = crate::auth::auth_context_from_headers_with_state(&headers, state)
+        .await
+        .map_err(|_| Status::unauthenticated("invalid auth token"))?;
+
+    if let Err(rate) = enforce_rate_limit(&auth) {
+        return Err(Status::resource_exhausted(format!(
+            "rate limit exceeded ({}/{}s); retry in {}s",
+            rate.max_requests, rate.window_secs, rate.retry_after_secs
+        )));
+    }
+
+    Ok(auth)
 }
 
 #[allow(clippy::result_large_err)]
@@ -208,13 +209,82 @@ fn scoped_namespace_grpc(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+    use mv_engine::config::EngineConfig;
+    use mv_engine::engine::MindVaultEngine;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn auth_context_from_request_with_state_resolves_access_key() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut config = EngineConfig::default();
+        config.data_dir = temp_dir.path().to_string_lossy().to_string();
+        config.embedding.provider = "noop".into();
+        let engine = MindVaultEngine::init(config).await.expect("engine init");
+        let state = AppState::new(Arc::new(engine));
+
+        let templates = state
+            .engine
+            .list_permission_templates(10, 0)
+            .await
+            .expect("templates");
+        let template_id = templates.first().expect("template exists").id;
+        let (_key, token) = state
+            .engine
+            .create_access_key(template_id, Some("grpc-test".into()), None)
+            .await
+            .expect("create access key");
+
+        let mut request = Request::new(());
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+
+        let auth = auth_context_from_request_with_state(&state, &request)
+            .await
+            .expect("auth ok");
+
+        assert!(auth.subject.unwrap_or_default().starts_with("access-key:"));
+    }
+
+    #[tokio::test]
+    async fn auth_context_from_request_with_state_resolves_consumer_token() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut config = EngineConfig::default();
+        config.data_dir = temp_dir.path().to_string_lossy().to_string();
+        config.embedding.provider = "noop".into();
+        let engine = MindVaultEngine::init(config).await.expect("engine init");
+        let state = AppState::new(Arc::new(engine));
+
+        let (_profile, token) = state
+            .engine
+            .create_consumer("grpc-consumer", None)
+            .await
+            .expect("create consumer");
+
+        let mut request = Request::new(());
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+
+        let auth = auth_context_from_request_with_state(&state, &request)
+            .await
+            .expect("auth ok");
+
+        assert_eq!(auth.consumer_name.as_deref(), Some("grpc-consumer"));
+    }
+}
+
 #[tonic::async_trait]
 impl MindVaultService for MindVaultGrpc {
     async fn store_node(
         &self,
         request: Request<StoreNodeRequest>,
     ) -> Result<Response<StoreNodeResponse>, Status> {
-        let auth = auth_context_from_request(&request)?;
+        let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_write(&auth)?;
 
         let req = request.into_inner();
@@ -289,7 +359,7 @@ impl MindVaultService for MindVaultGrpc {
         &self,
         request: Request<GetNodeRequest>,
     ) -> Result<Response<GetNodeResponse>, Status> {
-        let auth = auth_context_from_request(&request)?;
+        let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_read(&auth)?;
 
         let req = request.into_inner();
@@ -318,7 +388,7 @@ impl MindVaultService for MindVaultGrpc {
         &self,
         request: Request<UpdateNodeRequest>,
     ) -> Result<Response<UpdateNodeResponse>, Status> {
-        let auth = auth_context_from_request(&request)?;
+        let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_write(&auth)?;
 
         let req = request.into_inner();
@@ -402,7 +472,7 @@ impl MindVaultService for MindVaultGrpc {
         &self,
         request: Request<DeleteNodeRequest>,
     ) -> Result<Response<DeleteNodeResponse>, Status> {
-        let auth = auth_context_from_request(&request)?;
+        let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_write(&auth)?;
 
         let req = request.into_inner();
@@ -437,7 +507,7 @@ impl MindVaultService for MindVaultGrpc {
         &self,
         request: Request<RecallRequest>,
     ) -> Result<Response<RecallResponse>, Status> {
-        let auth = auth_context_from_request(&request)?;
+        let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_read(&auth)?;
 
         let req = request.into_inner();
@@ -504,7 +574,7 @@ impl MindVaultService for MindVaultGrpc {
         &self,
         request: Request<ListNodesRequest>,
     ) -> Result<Response<ListNodesResponse>, Status> {
-        let auth = auth_context_from_request(&request)?;
+        let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_read(&auth)?;
 
         let req = request.into_inner();
@@ -554,7 +624,7 @@ impl MindVaultService for MindVaultGrpc {
         &self,
         request: Request<AddRelationshipRequest>,
     ) -> Result<Response<AddRelationshipResponse>, Status> {
-        let auth = auth_context_from_request(&request)?;
+        let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_write(&auth)?;
 
         let req = request.into_inner();
@@ -604,7 +674,7 @@ impl MindVaultService for MindVaultGrpc {
         &self,
         request: Request<GetNeighborsRequest>,
     ) -> Result<Response<GetNeighborsResponse>, Status> {
-        let auth = auth_context_from_request(&request)?;
+        let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_read(&auth)?;
 
         let req = request.into_inner();
@@ -653,7 +723,7 @@ impl MindVaultService for MindVaultGrpc {
         &self,
         request: Request<HealthRequest>,
     ) -> Result<Response<HealthResponse>, Status> {
-        let auth = auth_context_from_request(&request)?;
+        let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_read(&auth)?;
 
         let count = self
@@ -676,7 +746,7 @@ impl MindVaultService for MindVaultGrpc {
         &self,
         request: Request<WatchChangesRequest>,
     ) -> Result<Response<Self::WatchChangesStream>, Status> {
-        let auth = auth_context_from_request(&request)?;
+        let auth = auth_context_from_request_with_state(&self.state, &request).await?;
         ensure_read(&auth)?;
 
         let requested_namespace = request.into_inner().namespace;
@@ -729,12 +799,11 @@ impl KeychainGrpc {
     }
 }
 
-fn ensure_admin(req: &Request<impl std::fmt::Debug>) -> Result<AuthContext, Status> {
-    let auth = req
-        .extensions()
-        .get::<AuthContext>()
-        .cloned()
-        .ok_or_else(|| Status::unauthenticated("no auth"))?;
+async fn ensure_admin(
+    state: &AppState,
+    req: &Request<impl std::fmt::Debug>,
+) -> Result<AuthContext, Status> {
+    let auth = auth_context_from_request_with_state(state, req).await?;
     if !auth.is_admin() {
         return Err(Status::permission_denied("admin only"));
     }
@@ -760,7 +829,7 @@ impl KeychainService for KeychainGrpc {
         &self,
         request: Request<proto::InitVaultRequest>,
     ) -> Result<Response<proto::InitVaultResponse>, Status> {
-        let _auth = ensure_admin(&request)?;
+        let _auth = ensure_admin(&self.state, &request).await?;
         let req = request.into_inner();
         let engine = &self.state.engine;
 
@@ -786,7 +855,7 @@ impl KeychainService for KeychainGrpc {
         &self,
         request: Request<proto::UnsealRequest>,
     ) -> Result<Response<proto::UnsealResponse>, Status> {
-        let _auth = ensure_admin(&request)?;
+        let _auth = ensure_admin(&self.state, &request).await?;
         let req = request.into_inner();
         let engine = &self.state.engine;
 
@@ -813,7 +882,7 @@ impl KeychainService for KeychainGrpc {
         &self,
         request: Request<proto::SealRequest>,
     ) -> Result<Response<proto::SealResponse>, Status> {
-        let _auth = ensure_admin(&request)?;
+        let _auth = ensure_admin(&self.state, &request).await?;
 
         self.state
             .engine
@@ -831,7 +900,7 @@ impl KeychainService for KeychainGrpc {
         &self,
         request: Request<proto::GetVaultStatusRequest>,
     ) -> Result<Response<proto::KeychainStatusResponse>, Status> {
-        let _auth = ensure_admin(&request)?;
+        let _auth = ensure_admin(&self.state, &request).await?;
 
         let (state, meta) = self
             .state
@@ -852,7 +921,7 @@ impl KeychainService for KeychainGrpc {
         &self,
         request: Request<proto::RotateKeyRequest>,
     ) -> Result<Response<proto::RotateKeyResponse>, Status> {
-        let _auth = ensure_admin(&request)?;
+        let _auth = ensure_admin(&self.state, &request).await?;
         let req = request.into_inner();
 
         self.state
@@ -880,7 +949,7 @@ impl KeychainService for KeychainGrpc {
         &self,
         request: Request<proto::StoreCredentialRequest>,
     ) -> Result<Response<proto::CredentialResponse>, Status> {
-        let _auth = ensure_admin(&request)?;
+        let _auth = ensure_admin(&self.state, &request).await?;
         let req = request.into_inner();
 
         let domain_id: Uuid = req
@@ -928,7 +997,7 @@ impl KeychainService for KeychainGrpc {
         &self,
         request: Request<proto::ReadCredentialRequest>,
     ) -> Result<Response<proto::ReadCredentialResponse>, Status> {
-        let _auth = ensure_admin(&request)?;
+        let _auth = ensure_admin(&self.state, &request).await?;
         let req = request.into_inner();
 
         let id: Uuid = req
@@ -960,7 +1029,7 @@ impl KeychainService for KeychainGrpc {
         &self,
         request: Request<proto::ListCredentialsRequest>,
     ) -> Result<Response<proto::ListCredentialsResponse>, Status> {
-        let _auth = ensure_admin(&request)?;
+        let _auth = ensure_admin(&self.state, &request).await?;
         let req = request.into_inner();
 
         let domain_id = req
@@ -1015,7 +1084,7 @@ impl KeychainService for KeychainGrpc {
         &self,
         request: Request<proto::DestroyCredentialRequest>,
     ) -> Result<Response<proto::DestroyCredentialResponse>, Status> {
-        let _auth = ensure_admin(&request)?;
+        let _auth = ensure_admin(&self.state, &request).await?;
         let req = request.into_inner();
 
         let id: Uuid = req
@@ -1039,7 +1108,7 @@ impl KeychainService for KeychainGrpc {
         &self,
         request: Request<proto::GenerateProofRequest>,
     ) -> Result<Response<proto::ZkProofResponse>, Status> {
-        let _auth = ensure_admin(&request)?;
+        let _auth = ensure_admin(&self.state, &request).await?;
         let req = request.into_inner();
 
         let credential_id: Uuid = req
@@ -1065,7 +1134,7 @@ impl KeychainService for KeychainGrpc {
         &self,
         request: Request<proto::VerifyProofRequest>,
     ) -> Result<Response<proto::VerifyProofResponse>, Status> {
-        let _auth = ensure_admin(&request)?;
+        let _auth = ensure_admin(&self.state, &request).await?;
         let req = request.into_inner();
 
         // Deserialize the proof from JSON

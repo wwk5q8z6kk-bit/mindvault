@@ -400,6 +400,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             "/api/v1/nodes/:id",
             get(get_node).put(update_node).delete(delete_node),
         )
+        .route("/api/v1/nodes/:id/backlinks", get(get_node_backlinks))
         .route(
             "/api/v1/nodes/:id/comments",
             post(comments::create_node_comment).get(comments::list_node_comments),
@@ -1750,6 +1751,26 @@ struct NodeRelationshipOverviewResponse {
     incoming: Vec<NodeRelationshipEdgeResponse>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct NodeBacklinksQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+    include_auto: Option<bool>,
+    include_manual: Option<bool>,
+    source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NodeBacklinksResponse {
+    node_id: String,
+    total_backlinks: usize,
+    returned_backlinks: usize,
+    has_more: bool,
+    offset: usize,
+    limit: usize,
+    backlinks: Vec<NodeRelationshipEdgeResponse>,
+}
+
 const EXPORT_FORMAT_VERSION_V1: &str = "mindvault.export.v1";
 const IMPORT_MAX_NODES: usize = 5000;
 const IMPORT_MAX_RELATIONSHIPS: usize = 20_000;
@@ -1764,6 +1785,8 @@ const DEFAULT_ATTACHMENT_CHUNK_PAGE_SIZE: usize = 8;
 const MAX_ATTACHMENT_CHUNK_PAGE_SIZE: usize = 64;
 const DEFAULT_ATTACHMENT_LIST_PAGE_SIZE: usize = 20;
 const MAX_ATTACHMENT_LIST_PAGE_SIZE: usize = 100;
+const DEFAULT_NODE_BACKLINKS_PAGE_SIZE: usize = 20;
+const MAX_NODE_BACKLINKS_PAGE_SIZE: usize = 200;
 const ATTACHMENT_TEXT_INDEX_METADATA_KEY: &str = "attachment_text_index";
 const ATTACHMENT_TEXT_CHUNK_INDEX_METADATA_KEY: &str = "attachment_text_chunks";
 const ATTACHMENT_SEARCH_BLOB_METADATA_KEY: &str = "attachment_search_text";
@@ -11206,6 +11229,96 @@ async fn get_node_relationships(
     }))
 }
 
+async fn get_node_backlinks(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(query): Query<NodeBacklinksQuery>,
+) -> Result<Json<NodeBacklinksResponse>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let node_id = parse_uuid_param(&id, "node id")?;
+
+    let node = state
+        .engine
+        .get_node(node_id)
+        .await
+        .map_err(map_mv_error)?
+        .ok_or((StatusCode::NOT_FOUND, "node not found".into()))?;
+    authorize_namespace(&auth, &node.namespace)?;
+
+    let include_auto = query.include_auto.unwrap_or(true);
+    let include_manual = query.include_manual.unwrap_or(true);
+    let source_filter = query
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    let offset = query.offset.unwrap_or(0);
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_NODE_BACKLINKS_PAGE_SIZE)
+        .clamp(1, MAX_NODE_BACKLINKS_PAGE_SIZE);
+
+    let incoming_rels = state
+        .engine
+        .graph
+        .get_relationships_to(node_id)
+        .await
+        .map_err(map_mv_error)?;
+
+    let mut backlinks = Vec::new();
+    for relationship in incoming_rels {
+        if relationship.kind != RelationKind::References {
+            continue;
+        }
+
+        let auto_managed = relationship_is_auto_managed(&relationship);
+        if auto_managed && !include_auto {
+            continue;
+        }
+        if !auto_managed && !include_manual {
+            continue;
+        }
+
+        if let Some(source) = source_filter.as_deref() {
+            let Some(auto_source) = relationship_auto_source(&relationship) else {
+                continue;
+            };
+            if !auto_source.eq_ignore_ascii_case(source) {
+                continue;
+            }
+        }
+
+        if let Some(edge) =
+            relationship_edge_from_direction(&state, &auth, relationship, "incoming").await?
+        {
+            backlinks.push(edge);
+        }
+    }
+
+    backlinks.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    let total_backlinks = backlinks.len();
+    let end = offset.saturating_add(limit).min(total_backlinks);
+    let page = if offset >= total_backlinks {
+        Vec::new()
+    } else {
+        backlinks[offset..end].to_vec()
+    };
+    let returned_backlinks = page.len();
+    let has_more = end < total_backlinks;
+
+    Ok(Json(NodeBacklinksResponse {
+        node_id: node_id.to_string(),
+        total_backlinks,
+        returned_backlinks,
+        has_more,
+        offset,
+        limit,
+        backlinks: page,
+    }))
+}
+
 async fn get_neighbors(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
@@ -13693,6 +13806,133 @@ mod tests {
         assert_eq!(incoming.relation_kind, "depends_on");
         assert!(!incoming.auto_managed);
         assert!(incoming.auto_source.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_node_backlinks_returns_filtered_paginated_references() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let center = state
+            .engine
+            .store_node(KnowledgeNode::new(NodeKind::Fact, "Center").with_namespace("ops"))
+            .await
+            .expect("center should store");
+        let auto_source = state
+            .engine
+            .store_node(KnowledgeNode::new(NodeKind::Task, "Auto Source").with_namespace("ops"))
+            .await
+            .expect("auto source should store");
+        let manual_source = state
+            .engine
+            .store_node(KnowledgeNode::new(NodeKind::Task, "Manual Source").with_namespace("ops"))
+            .await
+            .expect("manual source should store");
+        let non_reference_source = state
+            .engine
+            .store_node(KnowledgeNode::new(NodeKind::Event, "Other Source").with_namespace("ops"))
+            .await
+            .expect("other source should store");
+
+        let mut auto_ref = Relationship::new(auto_source.id, center.id, RelationKind::References);
+        auto_ref.metadata.insert(
+            AUTO_BACKLINK_METADATA_KEY.to_string(),
+            serde_json::Value::Bool(true),
+        );
+        auto_ref.metadata.insert(
+            AUTO_BACKLINK_SOURCE_METADATA_KEY.to_string(),
+            serde_json::Value::String("wikilink".to_string()),
+        );
+        state
+            .engine
+            .add_relationship(auto_ref)
+            .await
+            .expect("auto reference should store");
+
+        state
+            .engine
+            .add_relationship(Relationship::new(
+                manual_source.id,
+                center.id,
+                RelationKind::References,
+            ))
+            .await
+            .expect("manual reference should store");
+
+        state
+            .engine
+            .add_relationship(Relationship::new(
+                non_reference_source.id,
+                center.id,
+                RelationKind::DependsOn,
+            ))
+            .await
+            .expect("non-reference relationship should store");
+
+        let Json(defaults) = get_node_backlinks(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(center.id.to_string()),
+            Query(NodeBacklinksQuery::default()),
+        )
+        .await
+        .expect("backlinks should load");
+        assert_eq!(defaults.node_id, center.id.to_string());
+        assert_eq!(defaults.total_backlinks, 2);
+        assert_eq!(defaults.returned_backlinks, 2);
+        assert!(!defaults.has_more);
+        assert_eq!(defaults.backlinks.len(), 2);
+        assert!(defaults
+            .backlinks
+            .iter()
+            .all(|edge| edge.direction == "incoming" && edge.relation_kind == "references"));
+
+        let Json(auto_only) = get_node_backlinks(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(center.id.to_string()),
+            Query(NodeBacklinksQuery {
+                include_auto: Some(true),
+                include_manual: Some(false),
+                ..NodeBacklinksQuery::default()
+            }),
+        )
+        .await
+        .expect("auto backlinks should load");
+        assert_eq!(auto_only.total_backlinks, 1);
+        assert_eq!(auto_only.backlinks.len(), 1);
+        assert!(auto_only.backlinks[0].auto_managed);
+        assert_eq!(auto_only.backlinks[0].auto_source.as_deref(), Some("wikilink"));
+
+        let Json(by_source) = get_node_backlinks(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(center.id.to_string()),
+            Query(NodeBacklinksQuery {
+                source: Some("wikilink".to_string()),
+                ..NodeBacklinksQuery::default()
+            }),
+        )
+        .await
+        .expect("source-filtered backlinks should load");
+        assert_eq!(by_source.total_backlinks, 1);
+        assert_eq!(by_source.backlinks.len(), 1);
+        assert_eq!(by_source.backlinks[0].auto_source.as_deref(), Some("wikilink"));
+
+        let Json(paged) = get_node_backlinks(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Path(center.id.to_string()),
+            Query(NodeBacklinksQuery {
+                limit: Some(1),
+                offset: Some(1),
+                ..NodeBacklinksQuery::default()
+            }),
+        )
+        .await
+        .expect("paginated backlinks should load");
+        assert_eq!(paged.total_backlinks, 2);
+        assert_eq!(paged.returned_backlinks, 1);
+        assert!(!paged.has_more);
+        assert_eq!(paged.backlinks.len(), 1);
     }
 
     #[tokio::test]

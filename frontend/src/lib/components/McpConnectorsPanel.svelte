@@ -657,7 +657,7 @@
 		<textarea
 			class="mt-2 w-full rounded border border-slate-700 bg-slate-900 px-2 py-2 font-mono text-[11px] text-slate-200"
 			rows={5}
-			placeholder='[{"name":"Notion MCP","version":"1.0.0","publisher":"MindVault","capabilities":["read","write"]}]'
+			placeholder={'[{"name":"Notion MCP","version":"1.0.0","publisher":"MindVault","capabilities":["read","write"]}]'}
 			bind:value={bulkImportJson}
 		></textarea>
 		<div class="mt-2 flex flex-wrap items-center gap-2">
