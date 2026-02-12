@@ -1,12 +1,14 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[cfg(feature = "local-embeddings")]
 use std::sync::Mutex;
 
-use arrow_array::{Array, Float32Array, RecordBatch, RecordBatchIterator, StringArray};
+use arrow_array::{
+    Array, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator, StringArray,
+};
 use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
 use futures::TryStreamExt;
@@ -15,11 +17,142 @@ use tokio::sync::OnceCell;
 use tokio::sync::RwLock;
 use tracing::warn;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
+use crate::sealed_runtime::{runtime_root_key, sealed_mode_enabled};
+use crate::vault_crypto::VaultCrypto;
 use mv_core::*;
 
 #[cfg(feature = "local-embeddings")]
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
+
+const LANCEDB_SNAPSHOT_CONTEXT: &str = "sealed:lancedb:snapshot";
+const LANCEDB_SNAPSHOT_MAGIC: &[u8] = b"MVLDB1";
+const LANCEDB_SNAPSHOT_FILENAME: &str = "vectors.snapshot";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SealedVectorSnapshot {
+    version: u8,
+    rows: Vec<SealedVectorRow>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SealedVectorRow {
+    id: String,
+    content: String,
+    vector: Vec<f32>,
+    namespace: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SealedLanceSnapshotStore {
+    snapshot_path: PathBuf,
+}
+
+impl SealedLanceSnapshotStore {
+    fn open(root: &Path) -> MvResult<Self> {
+        std::fs::create_dir_all(root)
+            .map_err(|err| MvError::Storage(format!("create sealed lancedb dir failed: {err}")))?;
+
+        Ok(Self {
+            snapshot_path: root.join(LANCEDB_SNAPSHOT_FILENAME),
+        })
+    }
+
+    fn load_snapshot(&self) -> MvResult<Option<SealedVectorSnapshot>> {
+        let bytes = match std::fs::read(&self.snapshot_path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(MvError::Storage(format!(
+                    "read sealed vector snapshot failed: {err}"
+                )));
+            }
+        };
+
+        let kek = derive_lancedb_kek()?;
+        let snapshot = open_snapshot_envelope(&kek, &bytes)?;
+        Ok(Some(snapshot))
+    }
+
+    fn save_snapshot(&self, snapshot: &SealedVectorSnapshot) -> MvResult<()> {
+        let kek = derive_lancedb_kek()?;
+        let encoded = seal_snapshot(&kek, snapshot)?;
+        let tmp_path = self.snapshot_path.with_extension("tmp");
+        std::fs::write(&tmp_path, encoded).map_err(|err| {
+            MvError::Storage(format!("write sealed vector snapshot failed: {err}"))
+        })?;
+        std::fs::rename(tmp_path, &self.snapshot_path).map_err(|err| {
+            MvError::Storage(format!("commit sealed vector snapshot failed: {err}"))
+        })?;
+        Ok(())
+    }
+}
+
+fn derive_lancedb_kek() -> MvResult<[u8; 32]> {
+    let root = runtime_root_key().ok_or(MvError::VaultSealed)?;
+    let mut crypto = VaultCrypto::new();
+    crypto.set_master_key(Zeroizing::new(root));
+    let key = crypto
+        .derive_namespace_kek(LANCEDB_SNAPSHOT_CONTEXT)
+        .map_err(|err| MvError::Storage(format!("derive lancedb key failed: {err}")))?;
+    Ok(*key)
+}
+
+fn seal_snapshot(kek: &[u8; 32], snapshot: &SealedVectorSnapshot) -> MvResult<Vec<u8>> {
+    let payload = serde_json::to_vec(snapshot)
+        .map_err(|err| MvError::Storage(format!("serialize vector snapshot failed: {err}")))?;
+    let dek = VaultCrypto::generate_node_dek();
+    let wrapped_dek = VaultCrypto::wrap_node_dek(kek, &dek)
+        .map_err(|err| MvError::Storage(format!("wrap vector snapshot DEK failed: {err}")))?;
+    let ciphertext = VaultCrypto::aes_gcm_encrypt_pub(&dek, &payload)
+        .map_err(|err| MvError::Storage(format!("encrypt vector snapshot failed: {err}")))?;
+
+    let wrapped = wrapped_dek.as_bytes();
+    if wrapped.len() > u16::MAX as usize {
+        return Err(MvError::Storage("wrapped DEK too large".into()));
+    }
+
+    let mut out =
+        Vec::with_capacity(LANCEDB_SNAPSHOT_MAGIC.len() + 2 + wrapped.len() + ciphertext.len());
+    out.extend_from_slice(LANCEDB_SNAPSHOT_MAGIC);
+    out.extend_from_slice(&(wrapped.len() as u16).to_le_bytes());
+    out.extend_from_slice(wrapped);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+fn open_snapshot_envelope(kek: &[u8; 32], payload: &[u8]) -> MvResult<SealedVectorSnapshot> {
+    let min_header = LANCEDB_SNAPSHOT_MAGIC.len() + 2;
+    if payload.len() < min_header || !payload.starts_with(LANCEDB_SNAPSHOT_MAGIC) {
+        return Err(MvError::Storage(
+            "invalid sealed vector snapshot envelope".into(),
+        ));
+    }
+
+    let mut wrapped_len_bytes = [0u8; 2];
+    wrapped_len_bytes.copy_from_slice(&payload[LANCEDB_SNAPSHOT_MAGIC.len()..min_header]);
+    let wrapped_len = u16::from_le_bytes(wrapped_len_bytes) as usize;
+    let wrapped_start = min_header;
+    let wrapped_end = wrapped_start + wrapped_len;
+    if payload.len() < wrapped_end {
+        return Err(MvError::Storage(
+            "sealed vector snapshot missing wrapped key".into(),
+        ));
+    }
+
+    let wrapped = std::str::from_utf8(&payload[wrapped_start..wrapped_end])
+        .map_err(|err| MvError::Storage(format!("wrapped vector DEK utf8 decode failed: {err}")))?;
+    let ciphertext = &payload[wrapped_end..];
+
+    let dek = VaultCrypto::unwrap_node_dek(kek, wrapped)
+        .map_err(|err| MvError::Storage(format!("unwrap vector snapshot DEK failed: {err}")))?;
+    let plaintext = VaultCrypto::aes_gcm_decrypt_pub(&dek, ciphertext)
+        .map_err(|err| MvError::Storage(format!("decrypt vector snapshot failed: {err}")))?;
+    let snapshot = serde_json::from_slice::<SealedVectorSnapshot>(&plaintext)
+        .map_err(|err| MvError::Storage(format!("parse vector snapshot failed: {err}")))?;
+    Ok(snapshot)
+}
 
 pub struct LanceVectorStore {
     db: lancedb::Connection,
@@ -27,6 +160,7 @@ pub struct LanceVectorStore {
     dimensions: usize,
     table: OnceCell<lancedb::Table>,
     namespace_supported: AtomicBool,
+    sealed_snapshot: Option<SealedLanceSnapshotStore>,
 }
 
 pub struct InMemoryVectorStore {
@@ -65,14 +199,24 @@ impl InMemoryVectorStore {
 
 impl LanceVectorStore {
     pub async fn open(path: &Path, dimensions: usize) -> MvResult<Self> {
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| MvError::Storage("invalid lancedb path encoding".into()))?;
-
-        let db = lancedb::connect(path_str)
-            .execute()
-            .await
-            .map_err(|e| MvError::Storage(format!("lancedb connect failed: {e}")))?;
+        let (db, sealed_snapshot) = if sealed_mode_enabled() {
+            let sealed_snapshot = SealedLanceSnapshotStore::open(path)?;
+            let memory_uri = format!("memory://mindvault-{}", Uuid::now_v7());
+            let db = lancedb::connect(&memory_uri)
+                .execute()
+                .await
+                .map_err(|e| MvError::Storage(format!("lancedb in-memory connect failed: {e}")))?;
+            (db, Some(sealed_snapshot))
+        } else {
+            let path_str = path
+                .to_str()
+                .ok_or_else(|| MvError::Storage("invalid lancedb path encoding".into()))?;
+            let db = lancedb::connect(path_str)
+                .execute()
+                .await
+                .map_err(|e| MvError::Storage(format!("lancedb connect failed: {e}")))?;
+            (db, None)
+        };
 
         let store = Self {
             db,
@@ -80,9 +224,17 @@ impl LanceVectorStore {
             dimensions,
             table: OnceCell::new(),
             namespace_supported: AtomicBool::new(true),
+            sealed_snapshot,
         };
 
         store.ensure_table().await?;
+        if let Err(err) = store.restore_sealed_snapshot().await {
+            if matches!(err, MvError::VaultSealed) {
+                tracing::debug!("skipping sealed vector snapshot restore: vault not unsealed yet");
+            } else {
+                return Err(err);
+            }
+        }
         Ok(store)
     }
 
@@ -129,11 +281,13 @@ impl LanceVectorStore {
             let schema = self.schema_with_namespace();
             let batch = RecordBatch::new_empty(schema.clone());
             let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
-            self.db
+            let table = self
+                .db
                 .create_table(&self.table_name, Box::new(batches))
                 .execute()
                 .await
                 .map_err(|e| MvError::Storage(format!("lancedb create table: {e}")))?;
+            let _ = self.table.set(table);
         }
         Ok(())
     }
@@ -148,6 +302,117 @@ impl LanceVectorStore {
                     .map_err(|e| MvError::Storage(format!("failed to open table: {e}")))
             })
             .await
+    }
+
+    async fn restore_sealed_snapshot(&self) -> MvResult<()> {
+        let Some(snapshot_store) = &self.sealed_snapshot else {
+            return Ok(());
+        };
+        let Some(snapshot) = snapshot_store.load_snapshot()? else {
+            return Ok(());
+        };
+        if snapshot.rows.is_empty() {
+            return Ok(());
+        }
+
+        let mut items = Vec::with_capacity(snapshot.rows.len());
+        for row in snapshot.rows {
+            if row.vector.len() != self.dimensions {
+                warn!(
+                    id = %row.id,
+                    expected_dimensions = self.dimensions,
+                    actual_dimensions = row.vector.len(),
+                    "skipping sealed vector row due to dimension mismatch"
+                );
+                continue;
+            }
+            let id = match Uuid::parse_str(&row.id) {
+                Ok(id) => id,
+                Err(err) => {
+                    warn!(id = %row.id, error = %err, "skipping sealed vector row with invalid UUID");
+                    continue;
+                }
+            };
+            items.push((id, row.vector, row.content, row.namespace));
+        }
+
+        self.upsert_batch_internal(&items).await?;
+        Ok(())
+    }
+
+    async fn persist_sealed_snapshot_if_needed(&self) -> MvResult<()> {
+        let Some(snapshot_store) = &self.sealed_snapshot else {
+            return Ok(());
+        };
+        let snapshot = self.export_snapshot().await?;
+        snapshot_store.save_snapshot(&snapshot)?;
+        Ok(())
+    }
+
+    async fn export_snapshot(&self) -> MvResult<SealedVectorSnapshot> {
+        let table = self.get_table().await?;
+        let stream = table
+            .query()
+            .execute()
+            .await
+            .map_err(|err| MvError::Storage(format!("lancedb snapshot query failed: {err}")))?;
+        let batches: Vec<RecordBatch> = stream
+            .try_collect()
+            .await
+            .map_err(|err| MvError::Storage(format!("lancedb snapshot collect failed: {err}")))?;
+
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let id_col = batch
+                .column_by_name("id")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| MvError::Storage("vector snapshot missing id column".into()))?;
+            let content_col = batch
+                .column_by_name("content")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| MvError::Storage("vector snapshot missing content column".into()))?;
+            let vector_col = batch
+                .column_by_name("vector")
+                .and_then(|c| c.as_any().downcast_ref::<FixedSizeListArray>())
+                .ok_or_else(|| MvError::Storage("vector snapshot missing vector column".into()))?;
+            let namespace_col = batch
+                .column_by_name("namespace")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+
+            for row_idx in 0..batch.num_rows() {
+                let id = id_col.value(row_idx).to_string();
+                let content = content_col.value(row_idx).to_string();
+
+                let vector_values = vector_col.value(row_idx);
+                let vector_values = vector_values
+                    .as_any()
+                    .downcast_ref::<Float32Array>()
+                    .ok_or_else(|| {
+                        MvError::Storage("vector snapshot list contains non-float data".into())
+                    })?;
+                let mut vector = Vec::with_capacity(vector_values.len());
+                for dim_idx in 0..vector_values.len() {
+                    vector.push(vector_values.value(dim_idx));
+                }
+
+                let namespace = namespace_col.and_then(|col| {
+                    if col.is_null(row_idx) {
+                        None
+                    } else {
+                        Some(col.value(row_idx).to_string())
+                    }
+                });
+
+                rows.push(SealedVectorRow {
+                    id,
+                    content,
+                    vector,
+                    namespace,
+                });
+            }
+        }
+
+        Ok(SealedVectorSnapshot { version: 1, rows })
     }
 
     fn escape_filter_value(value: &str) -> String {
@@ -249,6 +514,15 @@ impl LanceVectorStore {
 
     /// Bulk upsert embeddings using merge-insert (much faster than individual upserts).
     pub async fn upsert_batch(
+        &self,
+        items: &[(Uuid, Vec<f32>, String, Option<String>)],
+    ) -> MvResult<()> {
+        self.upsert_batch_internal(items).await?;
+        self.persist_sealed_snapshot_if_needed().await?;
+        Ok(())
+    }
+
+    async fn upsert_batch_internal(
         &self,
         items: &[(Uuid, Vec<f32>, String, Option<String>)],
     ) -> MvResult<()> {
@@ -427,7 +701,9 @@ impl VectorStore for LanceVectorStore {
         }
 
         // Delete existing if present, then insert
-        let _ = VectorStore::delete(self, id).await;
+        if let Ok(table) = self.get_table().await {
+            let _ = table.delete(&format!("id = '{}'", id)).await;
+        }
 
         let table = self.get_table().await?;
 
@@ -464,6 +740,7 @@ impl VectorStore for LanceVectorStore {
             }
         }
 
+        self.persist_sealed_snapshot_if_needed().await?;
         Ok(())
     }
 
@@ -484,6 +761,7 @@ impl VectorStore for LanceVectorStore {
             .delete(&format!("id = '{}'", id))
             .await
             .map_err(|e| MvError::Storage(format!("lancedb delete: {e}")))?;
+        self.persist_sealed_snapshot_if_needed().await?;
         Ok(())
     }
 }
@@ -828,6 +1106,19 @@ fn fastembed_embedding_model_from_name(model_name: &str) -> Option<EmbeddingMode
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sealed_runtime::{
+        clear_runtime_root_key, set_runtime_root_key, set_sealed_mode_enabled,
+    };
+    use tempfile::tempdir;
+
+    struct SealedRuntimeReset;
+
+    impl Drop for SealedRuntimeReset {
+        fn drop(&mut self) {
+            clear_runtime_root_key();
+            set_sealed_mode_enabled(false);
+        }
+    }
 
     #[test]
     fn model_name_normalization_works() {
@@ -852,6 +1143,51 @@ mod tests {
             Some("all-minilm-l6-v2")
         );
         assert_eq!(fastembed_model_key_from_name("unsupported-model"), None);
+    }
+
+    #[tokio::test]
+    async fn sealed_lancedb_open_without_runtime_key_succeeds() {
+        let _reset = SealedRuntimeReset;
+        set_sealed_mode_enabled(true);
+        clear_runtime_root_key();
+
+        let dir = tempdir().expect("tempdir");
+        let opened = LanceVectorStore::open(dir.path(), 8).await;
+        let err = opened.err();
+        assert!(
+            err.is_none(),
+            "sealed LanceDB open should defer key usage: {}",
+            err.map(|e| e.to_string()).unwrap_or_default()
+        );
+    }
+
+    #[tokio::test]
+    async fn sealed_lancedb_snapshot_roundtrip() {
+        let _reset = SealedRuntimeReset;
+        set_sealed_mode_enabled(true);
+        set_runtime_root_key([13u8; 32], false);
+
+        let dir = tempdir().expect("tempdir");
+        let id = Uuid::now_v7();
+
+        let store = LanceVectorStore::open(dir.path(), 3).await.unwrap();
+        store
+            .upsert(
+                id,
+                vec![0.9, 0.1, 0.0],
+                "sealed vector content",
+                Some("default"),
+            )
+            .await
+            .unwrap();
+        drop(store);
+
+        let reopened = LanceVectorStore::open(dir.path(), 3).await.unwrap();
+        let hits = reopened
+            .search(vec![0.9, 0.1, 0.0], 10, 0.0, Some("default"))
+            .await
+            .unwrap();
+        assert!(hits.iter().any(|(hit_id, _)| *hit_id == id));
     }
 
     #[cfg(not(feature = "local-embeddings"))]

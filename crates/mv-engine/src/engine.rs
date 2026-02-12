@@ -224,13 +224,12 @@ impl MindVaultEngine {
 
         let store = Arc::new(store);
 
-        // In sealed mode, keep full-text index in-memory to avoid plaintext index files at rest.
-        let fts = if config.sealed_mode {
-            Arc::new(TantivyFullTextIndex::open_in_memory()?)
+        let tantivy_path = if config.sealed_mode {
+            data_dir.join("tantivy.sealed")
         } else {
-            let tantivy_path = data_dir.join("tantivy");
-            Arc::new(TantivyFullTextIndex::open(&tantivy_path)?)
+            data_dir.join("tantivy")
         };
+        let fts = Arc::new(TantivyFullTextIndex::open(&tantivy_path)?);
 
         // Initialize graph store (shares SQLite connection via separate connection)
         let graph_conn = rusqlite::Connection::open(data_dir.join("mindvault.sqlite"))

@@ -1,13 +1,288 @@
-use std::path::Path;
-use std::sync::RwLock;
+use std::fmt::Write as _;
+use std::io::{self, BufWriter, Cursor, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 use tantivy::collector::TopDocs;
+use tantivy::directory::error::{DeleteError, OpenReadError, OpenWriteError};
+use tantivy::directory::{
+    AntiCallToken, Directory, FileHandle, FileSlice, TerminatingWrite, WatchCallback,
+    WatchCallbackList, WatchHandle, WritePtr,
+};
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
-use tantivy::{Directory, Index, IndexReader, IndexWriter, ReloadPolicy};
+use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy};
 use uuid::Uuid;
 
 use mv_core::*;
+use mv_storage::sealed_runtime::{runtime_root_key, sealed_mode_enabled};
+use mv_storage::vault_crypto::VaultCrypto;
+use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
+
+const TANTIVY_SEALED_CONTEXT: &str = "sealed:tantivy:index";
+const TANTIVY_SEALED_MAGIC: &[u8] = b"MVTIDX1";
+const TANTIVY_ENCRYPTED_SUFFIX: &str = ".mvx";
+
+fn io_invalid_data(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+fn io_other(message: impl Into<String>) -> io::Error {
+    io::Error::other(message.into())
+}
+
+fn derive_tantivy_kek() -> MvResult<[u8; 32]> {
+    let root = runtime_root_key().ok_or(MvError::VaultSealed)?;
+    let mut crypto = VaultCrypto::new();
+    crypto.set_master_key(Zeroizing::new(root));
+    let key = crypto
+        .derive_namespace_kek(TANTIVY_SEALED_CONTEXT)
+        .map_err(|err| MvError::Storage(format!("derive tantivy key failed: {err}")))?;
+    Ok(*key)
+}
+
+fn hashed_logical_name(path: &Path) -> String {
+    let logical = path.to_string_lossy();
+    let digest = Sha256::digest(logical.as_bytes());
+    let mut out = String::with_capacity(digest.len() * 2 + TANTIVY_ENCRYPTED_SUFFIX.len());
+    for byte in digest {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out.push_str(TANTIVY_ENCRYPTED_SUFFIX);
+    out
+}
+
+fn seal_tantivy_bytes(kek: &[u8; 32], plaintext: &[u8]) -> io::Result<Vec<u8>> {
+    let dek = VaultCrypto::generate_node_dek();
+    let wrapped = VaultCrypto::wrap_node_dek(kek, &dek)
+        .map_err(|err| io_other(format!("wrap tantivy DEK failed: {err}")))?;
+    let ciphertext = VaultCrypto::aes_gcm_encrypt_pub(&dek, plaintext)
+        .map_err(|err| io_other(format!("encrypt tantivy bytes failed: {err}")))?;
+
+    let wrapped_bytes = wrapped.as_bytes();
+    if wrapped_bytes.len() > u16::MAX as usize {
+        return Err(io_invalid_data("wrapped DEK too large"));
+    }
+
+    let mut out =
+        Vec::with_capacity(TANTIVY_SEALED_MAGIC.len() + 2 + wrapped_bytes.len() + ciphertext.len());
+    out.extend_from_slice(TANTIVY_SEALED_MAGIC);
+    out.extend_from_slice(&(wrapped_bytes.len() as u16).to_le_bytes());
+    out.extend_from_slice(wrapped_bytes);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+fn open_tantivy_envelope(kek: &[u8; 32], sealed: &[u8]) -> io::Result<Vec<u8>> {
+    let min_header_len = TANTIVY_SEALED_MAGIC.len() + 2;
+    if sealed.len() < min_header_len {
+        return Err(io_invalid_data("sealed tantivy file is too short"));
+    }
+    if !sealed.starts_with(TANTIVY_SEALED_MAGIC) {
+        return Err(io_invalid_data("invalid tantivy sealed file magic"));
+    }
+
+    let mut len_bytes = [0u8; 2];
+    len_bytes.copy_from_slice(&sealed[TANTIVY_SEALED_MAGIC.len()..min_header_len]);
+    let wrapped_len = u16::from_le_bytes(len_bytes) as usize;
+    let wrapped_start = min_header_len;
+    let wrapped_end = wrapped_start + wrapped_len;
+    if sealed.len() < wrapped_end {
+        return Err(io_invalid_data(
+            "sealed tantivy file is missing wrapped DEK",
+        ));
+    }
+
+    let wrapped = std::str::from_utf8(&sealed[wrapped_start..wrapped_end])
+        .map_err(|err| io_invalid_data(format!("wrapped DEK utf8 decode failed: {err}")))?;
+    let ciphertext = &sealed[wrapped_end..];
+
+    let dek = VaultCrypto::unwrap_node_dek(kek, wrapped)
+        .map_err(|err| io_other(format!("unwrap tantivy DEK failed: {err}")))?;
+    VaultCrypto::aes_gcm_decrypt_pub(&dek, ciphertext)
+        .map_err(|err| io_other(format!("decrypt tantivy bytes failed: {err}")))
+}
+
+#[derive(Clone)]
+struct EncryptedTantivyDirectory {
+    root: PathBuf,
+    kek: [u8; 32],
+    watch_callbacks: Arc<WatchCallbackList>,
+}
+
+impl std::fmt::Debug for EncryptedTantivyDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EncryptedTantivyDirectory")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
+}
+
+impl EncryptedTantivyDirectory {
+    fn open(root: &Path) -> MvResult<Self> {
+        std::fs::create_dir_all(root)
+            .map_err(|err| MvError::Index(format!("create sealed tantivy dir: {err}")))?;
+
+        Ok(Self {
+            root: root.to_path_buf(),
+            kek: derive_tantivy_kek()?,
+            watch_callbacks: Arc::new(WatchCallbackList::default()),
+        })
+    }
+
+    fn storage_path_for(&self, logical_path: &Path) -> PathBuf {
+        self.root.join(hashed_logical_name(logical_path))
+    }
+
+    fn persist_plaintext(&self, logical_path: &Path, plaintext: &[u8]) -> io::Result<()> {
+        let storage_path = self.storage_path_for(logical_path);
+        let sealed = seal_tantivy_bytes(&self.kek, plaintext)?;
+
+        if let Some(parent) = storage_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let tmp_path = storage_path.with_extension("tmp");
+        std::fs::write(&tmp_path, sealed)?;
+        std::fs::rename(tmp_path, storage_path)?;
+        Ok(())
+    }
+
+    fn read_plaintext(&self, logical_path: &Path) -> Result<Vec<u8>, OpenReadError> {
+        let storage_path = self.storage_path_for(logical_path);
+        let bytes = std::fs::read(&storage_path).map_err(|err| {
+            if err.kind() == io::ErrorKind::NotFound {
+                OpenReadError::FileDoesNotExist(logical_path.to_path_buf())
+            } else {
+                OpenReadError::wrap_io_error(err, logical_path.to_path_buf())
+            }
+        })?;
+
+        open_tantivy_envelope(&self.kek, &bytes)
+            .map_err(|err| OpenReadError::wrap_io_error(err, logical_path.to_path_buf()))
+    }
+
+    fn broadcast_watchers(&self) {
+        drop(self.watch_callbacks.broadcast());
+    }
+}
+
+struct EncryptedTantivyWriter {
+    path: PathBuf,
+    directory: EncryptedTantivyDirectory,
+    data: Cursor<Vec<u8>>,
+    is_flushed: bool,
+}
+
+impl EncryptedTantivyWriter {
+    fn new(path: PathBuf, directory: EncryptedTantivyDirectory) -> Self {
+        Self {
+            path,
+            directory,
+            data: Cursor::new(Vec::new()),
+            is_flushed: true,
+        }
+    }
+}
+
+impl Drop for EncryptedTantivyWriter {
+    fn drop(&mut self) {
+        if !self.is_flushed {
+            tracing::warn!(
+                path = %self.path.display(),
+                "encrypted tantivy writer dropped without flush"
+            );
+        }
+    }
+}
+
+impl Write for EncryptedTantivyWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.is_flushed = false;
+        self.data.write_all(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.directory
+            .persist_plaintext(&self.path, self.data.get_ref())?;
+        self.is_flushed = true;
+        self.directory.broadcast_watchers();
+        Ok(())
+    }
+}
+
+impl TerminatingWrite for EncryptedTantivyWriter {
+    fn terminate_ref(&mut self, _: AntiCallToken) -> io::Result<()> {
+        self.flush()
+    }
+}
+
+impl Directory for EncryptedTantivyDirectory {
+    fn get_file_handle(&self, path: &Path) -> Result<Arc<dyn FileHandle>, OpenReadError> {
+        let file_slice = self.open_read(path)?;
+        Ok(Arc::new(file_slice))
+    }
+
+    fn open_read(&self, path: &Path) -> Result<FileSlice, OpenReadError> {
+        let plaintext = self.read_plaintext(path)?;
+        Ok(FileSlice::from(plaintext))
+    }
+
+    fn delete(&self, path: &Path) -> Result<(), DeleteError> {
+        let storage_path = self.storage_path_for(path);
+        match std::fs::remove_file(storage_path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                Err(DeleteError::FileDoesNotExist(path.to_path_buf()))
+            }
+            Err(err) => Err(DeleteError::IoError {
+                io_error: Arc::new(err),
+                filepath: path.to_path_buf(),
+            }),
+        }
+    }
+
+    fn exists(&self, path: &Path) -> Result<bool, OpenReadError> {
+        let storage_path = self.storage_path_for(path);
+        storage_path
+            .try_exists()
+            .map_err(|err| OpenReadError::wrap_io_error(err, path.to_path_buf()))
+    }
+
+    fn open_write(&self, path: &Path) -> Result<WritePtr, OpenWriteError> {
+        if self.exists(path).unwrap_or(false) {
+            return Err(OpenWriteError::FileAlreadyExists(path.to_path_buf()));
+        }
+
+        self.persist_plaintext(path, &[])
+            .map_err(|err| OpenWriteError::wrap_io_error(err, path.to_path_buf()))?;
+
+        Ok(BufWriter::new(Box::new(EncryptedTantivyWriter::new(
+            path.to_path_buf(),
+            self.clone(),
+        ))))
+    }
+
+    fn atomic_read(&self, path: &Path) -> Result<Vec<u8>, OpenReadError> {
+        self.read_plaintext(path)
+    }
+
+    fn atomic_write(&self, path: &Path, data: &[u8]) -> io::Result<()> {
+        self.persist_plaintext(path, data)?;
+        self.broadcast_watchers();
+        Ok(())
+    }
+
+    fn sync_directory(&self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn watch(&self, watch_callback: WatchCallback) -> tantivy::Result<WatchHandle> {
+        Ok(self.watch_callbacks.subscribe(watch_callback))
+    }
+}
 
 pub struct TantivyFullTextIndex {
     index: Index,
@@ -28,6 +303,16 @@ impl TantivyFullTextIndex {
     pub fn open(path: &Path) -> MvResult<Self> {
         std::fs::create_dir_all(path)
             .map_err(|e| MvError::Index(format!("create index dir: {e}")))?;
+
+        if sealed_mode_enabled() {
+            if runtime_root_key().is_none() {
+                // Startup in sealed mode occurs before an explicit unseal step, so
+                // an in-memory index is required until runtime key material exists.
+                return Self::open_in_memory();
+            }
+            let dir = EncryptedTantivyDirectory::open(path)?;
+            return Self::open_with_dir(dir);
+        }
 
         let dir = tantivy::directory::MmapDirectory::open(path)
             .map_err(|e| MvError::Index(format!("mmap dir: {e}")))?;
@@ -183,12 +468,9 @@ mod tests {
     fn test_index_and_search() {
         let idx = TantivyFullTextIndex::open_in_memory().unwrap();
 
-        let node = KnowledgeNode::new(
-            NodeKind::Fact,
-            "Rust is a systems programming language",
-        )
-        .with_title("About Rust")
-        .with_tags(vec!["rust".into(), "programming".into()]);
+        let node = KnowledgeNode::new(NodeKind::Fact, "Rust is a systems programming language")
+            .with_title("About Rust")
+            .with_tags(vec!["rust".into(), "programming".into()]);
 
         idx.index_node(&node).unwrap();
         idx.commit().unwrap();
@@ -235,5 +517,16 @@ mod tests {
         let results = idx.search("invoice 2026", 5).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].0, node.id);
+    }
+
+    #[test]
+    fn tantivy_sealed_envelope_roundtrip() {
+        let kek = [3u8; 32];
+        let plaintext = b"tantivy payload";
+        let sealed = seal_tantivy_bytes(&kek, plaintext).unwrap();
+        assert_ne!(sealed, plaintext);
+
+        let opened = open_tantivy_envelope(&kek, &sealed).unwrap();
+        assert_eq!(opened, plaintext);
     }
 }

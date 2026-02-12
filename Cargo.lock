@@ -5224,12 +5224,15 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "mv-core",
+ "mv-storage",
  "serde",
+ "sha2",
  "tantivy",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

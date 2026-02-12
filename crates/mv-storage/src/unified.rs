@@ -5,7 +5,7 @@ use mv_core::*;
 
 use crate::sealed_runtime::sealed_mode_enabled;
 use crate::sqlite::SqliteNodeStore;
-use crate::vector::{InMemoryVectorStore, LanceVectorStore, NoopEmbedder};
+use crate::vector::{LanceVectorStore, NoopEmbedder};
 
 /// Unified storage that wraps SQLite node store + LanceDB vector store + embedder.
 pub struct UnifiedStore {
@@ -20,14 +20,15 @@ impl UnifiedStore {
             .map_err(|e| MvError::Storage(format!("create data dir: {e}")))?;
 
         let sqlite_path = data_dir.join("mindvault.sqlite");
-        let lancedb_path = data_dir.join("lancedb");
+        let lancedb_path = if sealed_mode_enabled() {
+            data_dir.join("lancedb.sealed")
+        } else {
+            data_dir.join("lancedb")
+        };
 
         let nodes = Arc::new(SqliteNodeStore::open(&sqlite_path)?);
-        let vectors: Arc<dyn VectorStore> = if sealed_mode_enabled() {
-            Arc::new(InMemoryVectorStore::new(dimensions))
-        } else {
-            Arc::new(LanceVectorStore::open(&lancedb_path, dimensions).await?)
-        };
+        let vectors: Arc<dyn VectorStore> =
+            Arc::new(LanceVectorStore::open(&lancedb_path, dimensions).await?);
         let embedder: Arc<dyn Embedder> = Arc::new(NoopEmbedder::new(dimensions));
 
         Ok(Self {
