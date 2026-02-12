@@ -325,15 +325,15 @@
 
 <div class="grid gap-6 lg:grid-cols-12">
 	<section class="space-y-6 lg:col-span-8">
-		<div class="rounded-2xl border border-slate-900 bg-slate-900/40 p-6">
+		<div class="rounded-2xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-6">
 			<div class="mb-4 flex items-center justify-between">
 				<div>
-					<h2 class="text-lg font-semibold text-white">Search</h2>
-					<p class="text-xs text-slate-400">Use <kbd class="rounded border border-slate-700 bg-slate-800 px-1 text-[10px]">↑</kbd><kbd class="ml-0.5 rounded border border-slate-700 bg-slate-800 px-1 text-[10px]">↓</kbd> to navigate, <kbd class="ml-0.5 rounded border border-slate-700 bg-slate-800 px-1 text-[10px]">Enter</kbd> to open.</p>
+					<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">Search</h2>
+					<p class="text-xs text-[rgb(var(--mv-muted))]">Use <kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 text-[10px]">↑</kbd><kbd class="ml-0.5 rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 text-[10px]">↓</kbd> to navigate, <kbd class="ml-0.5 rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 text-[10px]">Enter</kbd> to open.</p>
 				</div>
 				<a
 					href="/search/saved"
-					class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 				>
 					Manage Saved Searches
 				</a>
@@ -342,14 +342,14 @@
 			<div class="flex gap-3">
 				<input
 					type="text"
-					class="flex-1 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm text-white placeholder-slate-500 outline-none focus:border-sky-500"
+					class="flex-1 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-4 py-2 text-sm text-[rgb(var(--mv-text))] placeholder-[rgb(var(--mv-muted))]/60 outline-none focus:border-sky-500"
 					placeholder="Search..."
 					bind:value={query}
 					bind:this={searchInput}
 					on:input={onQueryInput}
 				/>
 				<button
-					class="rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-400"
+					class="rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
 					on:click={doSearch}
 				>
 					Search
@@ -357,9 +357,9 @@
 			</div>
 
 			<div class="mt-3 flex flex-wrap items-center gap-3">
-				<div class="flex rounded-lg border border-slate-700 text-[10px]">
+				<div class="flex rounded-lg border border-[rgb(var(--mv-border))] text-[10px]">
 					<button
-						class={`px-3 py-1 transition ${searchType === 'fulltext' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+						class={`px-3 py-1 transition ${searchType === 'fulltext' ? 'bg-[rgb(var(--mv-panel-strong))]/80 text-[rgb(var(--mv-text))]' : 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]'}`}
 						on:click={() => {
 							searchType = 'fulltext';
 							void doSearch();
@@ -368,7 +368,7 @@
 						Fulltext
 					</button>
 					<button
-						class={`px-3 py-1 transition ${searchType === 'hybrid' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+						class={`px-3 py-1 transition ${searchType === 'hybrid' ? 'bg-[rgb(var(--mv-panel-strong))]/80 text-[rgb(var(--mv-text))]' : 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]'}`}
 						on:click={() => {
 							searchType = 'hybrid';
 							void doSearch();
@@ -379,9 +379,9 @@
 				</div>
 
 				<div class="relative" data-kind-dropdown>
-					<div class="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800 pr-1">
+					<div class="flex items-center gap-1 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] pr-1">
 						<button
-							class="flex items-center gap-1.5 px-2 py-1 text-xs text-white hover:bg-slate-700"
+							class="flex items-center gap-1.5 px-2 py-1 text-xs text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-panel-strong))]/80"
 							on:click={() => {
 								showKindDropdown = !showKindDropdown;
 							}}
@@ -389,13 +389,13 @@
 							aria-expanded={showKindDropdown}
 						>
 							<span>{kindFilterLabel}</span>
-							<svg class="h-3 w-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<svg class="h-3 w-3 text-[rgb(var(--mv-muted))]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
 							</svg>
 						</button>
 						{#if selectedKinds.size > 0}
 							<button
-								class="rounded-full bg-slate-600 px-1 text-[9px] text-slate-200 hover:bg-slate-500"
+								class="rounded-full bg-[rgb(var(--mv-panel-strong))]/60 px-1 text-[9px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/40"
 								on:click={clearKindFilter}
 								aria-label="Clear kind filter"
 							>
@@ -405,16 +405,16 @@
 					</div>
 					{#if showKindDropdown}
 						<div
-							class="absolute left-0 top-full z-20 mt-1 max-h-64 w-48 overflow-y-auto rounded-lg border border-slate-700 bg-slate-800 p-2 shadow-xl"
+							class="absolute left-0 top-full z-20 mt-1 max-h-64 w-48 overflow-y-auto rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] p-2 shadow-xl"
 							role="listbox"
 						>
 							{#each ALL_NODE_KINDS as kind}
 								<label
-									class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-slate-300 hover:bg-slate-700"
+									class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80"
 								>
 									<input
 										type="checkbox"
-										class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-700 text-sky-500 focus:ring-sky-500 focus:ring-offset-0"
+										class="h-3.5 w-3.5 rounded border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/80 text-sky-500 focus:ring-sky-500 focus:ring-offset-0"
 										checked={selectedKinds.has(kind)}
 										on:change={() => toggleKind(kind)}
 									/>
@@ -423,9 +423,9 @@
 									</span>
 								</label>
 							{/each}
-							<div class="mt-2 border-t border-slate-700 pt-2">
+							<div class="mt-2 border-t border-[rgb(var(--mv-border))] pt-2">
 								<button
-									class="w-full rounded-lg px-2 py-1 text-[10px] text-slate-400 hover:bg-slate-700 hover:text-white"
+									class="w-full rounded-lg px-2 py-1 text-[10px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80 hover:text-[rgb(var(--mv-text))]"
 									on:click={() => { showKindDropdown = false; }}
 								>
 									Done
@@ -436,7 +436,7 @@
 				</div>
 
 				<select
-					class="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-white"
+					class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-2 py-1 text-xs text-[rgb(var(--mv-text))]"
 					bind:value={sortBy}
 					aria-label="Sort by"
 				>
@@ -447,7 +447,7 @@
 
 				<input
 					type="text"
-					class="w-28 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-white placeholder-slate-500 outline-none focus:border-sky-500"
+					class="w-28 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-2 py-1 text-xs text-[rgb(var(--mv-text))] placeholder-[rgb(var(--mv-muted))]/60 outline-none focus:border-sky-500"
 					placeholder="Filter tag..."
 					bind:value={tagFilter}
 				/>
@@ -459,12 +459,12 @@
 
 			<div class="mt-4 grid gap-2 md:grid-cols-[1fr_auto_auto]">
 				<input
-					class="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white placeholder-slate-500 outline-none focus:border-sky-500"
+					class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))] placeholder-[rgb(var(--mv-muted))]/60 outline-none focus:border-sky-500"
 					placeholder="Saved search name"
 					bind:value={savedSearchName}
 				/>
 				<button
-					class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-60"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))] disabled:opacity-60"
 					disabled={savePending}
 					on:click={saveCurrentSearch}
 				>
@@ -477,7 +477,7 @@
 					{/if}
 				</button>
 				<button
-					class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-60"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))] disabled:opacity-60"
 					disabled={!selectedSavedSearchId}
 					on:click={() => {
 						selectedSavedSearchId = null;
@@ -491,7 +491,7 @@
 
 		{#if sortedResults.length > 0}
 			<div bind:this={resultsContainer}>
-				<p class="mb-3 text-xs text-slate-400">
+				<p class="mb-3 text-xs text-[rgb(var(--mv-muted))]">
 					{sortedResults.length} result{sortedResults.length !== 1 ? 's' : ''}{tagFilter.trim() ? ` (filtered by tag "${tagFilter}")` : ''}
 				</p>
 				<div bind:this={searchListParentRef} style="max-height: 70vh; overflow-y: auto;">
@@ -509,7 +509,7 @@
 									class={`w-full rounded-xl border p-4 mb-3 text-left transition ${
 										isSelected
 											? 'border-sky-500 bg-sky-500/10 ring-1 ring-sky-500/30'
-											: 'border-slate-800 bg-slate-900/60 hover:border-slate-700 hover:bg-slate-900/80'
+											: 'border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/60 hover:border-[rgb(var(--mv-border))] hover:bg-[rgb(var(--mv-panel))]/80'
 									}`}
 									on:click={() => navigateToResult(result)}
 									on:mouseenter={() => (selectedIndex = idx)}
@@ -518,15 +518,15 @@
 										<span class={`rounded-full px-2 py-0.5 text-[10px] font-medium ${badge.color}`}>
 											{badge.label}
 										</span>
-										<h3 class="text-sm font-medium text-white">{result.node.title}</h3>
+										<h3 class="text-sm font-medium text-[rgb(var(--mv-text))]">{result.node.title}</h3>
 										{#if result.score != null}
-											<span class="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">
+											<span class="ml-auto rounded-full bg-[rgb(var(--mv-panel-strong))] px-2 py-0.5 text-[10px] text-[rgb(var(--mv-muted))]">
 												{result.score.toFixed(2)}
 											</span>
 										{/if}
 									</div>
 									{#if result.node.content}
-										<p class="mt-1 line-clamp-2 text-xs text-slate-400">
+										<p class="mt-1 line-clamp-2 text-xs text-[rgb(var(--mv-muted))]">
 											{result.node.content.slice(0, 200)}
 										</p>
 									{/if}
@@ -534,7 +534,7 @@
 										<div class="mt-2 flex flex-wrap gap-1">
 											{#each result.node.tags.slice(0, 5) as tag}
 												<span
-													class="cursor-pointer rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-700 hover:text-slate-300"
+													class="cursor-pointer rounded bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-[10px] text-[rgb(var(--mv-muted))]/60 hover:bg-[rgb(var(--mv-panel-strong))]/80 hover:text-[rgb(var(--mv-muted))]"
 													role="button"
 													tabindex="0"
 													on:click|stopPropagation={() => (tagFilter = tag)}
@@ -552,32 +552,32 @@
 				</div>
 			</div>
 		{:else if query.trim() && !loading}
-			<div class="rounded-xl border border-dashed border-slate-800 bg-slate-900/20 p-8 text-center">
-				<div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-slate-800 text-sm text-slate-500">
+			<div class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-8 text-center">
+				<div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-[rgb(var(--mv-panel-strong))] text-sm text-[rgb(var(--mv-muted))]/60">
 					?
 				</div>
-				<p class="text-sm text-slate-400">No results found for "{query}"</p>
-				<p class="mt-2 text-xs text-slate-600">Try different keywords or use hybrid search for semantic matching</p>
+				<p class="text-sm text-[rgb(var(--mv-muted))]">No results found for "{query}"</p>
+				<p class="mt-2 text-xs text-[rgb(var(--mv-muted))]/40">Try different keywords or use hybrid search for semantic matching</p>
 			</div>
 		{:else if !query.trim() && !loading}
-			<div class="rounded-xl border border-dashed border-slate-800 bg-slate-900/20 p-8 text-center">
+			<div class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-8 text-center">
 				<div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-sky-500/20 text-sm text-sky-300">
 					<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
 					</svg>
 				</div>
-				<h3 class="text-sm font-medium text-white">Search your vault</h3>
-				<p class="mt-1 text-xs text-slate-500">Find notes, tasks, and more with instant search</p>
+				<h3 class="text-sm font-medium text-[rgb(var(--mv-text))]">Search your vault</h3>
+				<p class="mt-1 text-xs text-[rgb(var(--mv-muted))]/60">Find notes, tasks, and more with instant search</p>
 				<div class="mx-auto mt-4 max-w-xs space-y-1.5 text-left">
-					<p class="text-[10px] text-slate-600">Try searching for:</p>
+					<p class="text-[10px] text-[rgb(var(--mv-muted))]/40">Try searching for:</p>
 					<button
-						class="w-full rounded-lg border border-slate-800 bg-slate-800/40 px-3 py-2 text-left text-xs text-slate-400 hover:border-slate-700"
+						class="w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/40 px-3 py-2 text-left text-xs text-[rgb(var(--mv-muted))] hover:border-[rgb(var(--mv-border))]"
 						on:click={() => { query = 'project ideas'; void doSearch(); }}
 					>
 						"project ideas"
 					</button>
 					<button
-						class="w-full rounded-lg border border-slate-800 bg-slate-800/40 px-3 py-2 text-left text-xs text-slate-400 hover:border-slate-700"
+						class="w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/40 px-3 py-2 text-left text-xs text-[rgb(var(--mv-muted))] hover:border-[rgb(var(--mv-border))]"
 						on:click={() => { query = 'meeting notes'; void doSearch(); }}
 					>
 						"meeting notes"
@@ -588,44 +588,44 @@
 	</section>
 
 	<aside class="lg:col-span-4">
-		<div class="rounded-2xl border border-slate-900 bg-slate-900/40 p-5">
+		<div class="rounded-2xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5">
 			<div class="flex items-center justify-between">
-				<h3 class="text-sm font-semibold text-white">Saved Searches</h3>
+				<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Saved Searches</h3>
 				<button
-					class="rounded-lg border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800 disabled:opacity-60"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-[10px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))] disabled:opacity-60"
 					disabled={savedSearchLoading}
 					on:click={refreshSavedSearches}
 				>
 					Refresh
 				</button>
 			</div>
-			<p class="mt-1 text-[11px] text-slate-400">
+			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">
 				Save frequent queries and re-run them with one click.
 			</p>
 
 			<div class="mt-3 space-y-2">
 				{#if savedSearchLoading}
-					<p class="text-xs text-slate-500">Loading saved searches…</p>
+					<p class="text-xs text-[rgb(var(--mv-muted))]/60">Loading saved searches…</p>
 				{:else if savedSearches.length === 0}
-					<p class="text-xs text-slate-500">No saved searches yet.</p>
+					<p class="text-xs text-[rgb(var(--mv-muted))]/60">No saved searches yet.</p>
 				{:else}
 					{#each savedSearches as item (item.id)}
 						<div
 							class={`rounded-lg border p-3 ${
-								selectedSavedSearchId === item.id ? 'border-sky-500/50 bg-sky-500/10' : 'border-slate-800'
+								selectedSavedSearchId === item.id ? 'border-sky-500/50 bg-sky-500/10' : 'border-[rgb(var(--mv-border))]'
 							}`}
 						>
-							<div class="text-xs font-medium text-white">{item.name}</div>
-							<div class="mt-1 line-clamp-2 text-[10px] text-slate-500">{item.query}</div>
+							<div class="text-xs font-medium text-[rgb(var(--mv-text))]">{item.name}</div>
+							<div class="mt-1 line-clamp-2 text-[10px] text-[rgb(var(--mv-muted))]/60">{item.query}</div>
 							<div class="mt-2 flex gap-2">
 								<button
-									class="rounded-lg bg-slate-800 px-2 py-1 text-[10px] text-slate-200 hover:bg-slate-700"
+									class="rounded-lg bg-[rgb(var(--mv-panel-strong))] px-2 py-1 text-[10px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80"
 									on:click={() => void runSavedSearchById(item)}
 								>
 									Run
 								</button>
 								<button
-									class="rounded-lg border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800"
+									class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-[10px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 									on:click={() => applySavedSearch(item)}
 								>
 									Load

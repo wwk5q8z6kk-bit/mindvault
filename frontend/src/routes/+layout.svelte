@@ -30,40 +30,75 @@
 		mobileMenuOpen = false;
 	}
 
-	const navItems = [
-		{ label: 'Plan', href: '/plan' },
-		{ label: 'Tasks', href: '/tasks' },
-		{ label: 'Focus', href: '/focus' },
-		{ label: 'Goals', href: '/goals' },
-		{ label: 'Notes', href: '/notes' },
-		{ label: 'Voice', href: '/voice' },
-		{ label: 'Chat', href: '/chat' },
-		{ label: 'Relay', href: '/relay' },
-		{ label: 'Inbox', href: '/inbox' },
-		{ label: 'Templates', href: '/templates' },
-		{ label: 'Daily', href: '/daily' },
-		{ label: 'Search', href: '/search' },
-		{ label: 'Kanban', href: '/kanban' },
-		{ label: 'Calendar', href: '/calendar' },
-		{ label: 'Timeline', href: '/timeline' },
-		{ label: 'Review', href: '/review' },
-		{ label: 'Stats', href: '/stats' },
-		{ label: 'Tags', href: '/tags' },
-		{ label: 'Bookmarks', href: '/bookmarks' },
-		{ label: 'Media', href: '/media' },
-		{ label: 'Flashcards', href: '/flashcards' },
-		{ label: 'Graph', href: '/graph' },
-		{ label: 'Canvas', href: '/canvas' },
-		{ label: 'PDF', href: '/pdf' },
-		{ label: 'Trash', href: '/trash' },
-		{ label: 'Autonomy', href: '/autonomy' },
-		{ label: 'Federation', href: '/federation' },
-		{ label: 'Sync', href: '/sync' },
-		{ label: 'Plugins', href: '/plugins' },
-		{ label: 'Adapters', href: '/adapters' },
-		{ label: 'Provenance', href: '/provenance' },
-		{ label: 'Profiles', href: '/settings/profiles' },
-		{ label: 'Settings', href: '/settings' }
+	const navGroups = [
+		{
+			label: 'Capture',
+			items: [
+				{ label: 'Inbox', href: '/inbox' },
+				{ label: 'Voice', href: '/voice' },
+				{ label: 'Chat', href: '/chat' },
+				{ label: 'Relay', href: '/relay' }
+			]
+		},
+		{
+			label: 'Plan & Execute',
+			items: [
+				{ label: 'Plan', href: '/plan' },
+				{ label: 'Tasks', href: '/tasks' },
+				{ label: 'Focus', href: '/focus' },
+				{ label: 'Goals', href: '/goals' },
+				{ label: 'Daily', href: '/daily' }
+			]
+		},
+		{
+			label: 'Knowledge',
+			items: [
+				{ label: 'Notes', href: '/notes' },
+				{ label: 'Templates', href: '/templates' },
+				{ label: 'Bookmarks', href: '/bookmarks' },
+				{ label: 'Media', href: '/media' },
+				{ label: 'Flashcards', href: '/flashcards' },
+				{ label: 'PDF', href: '/pdf' }
+			]
+		},
+		{
+			label: 'Views',
+			items: [
+				{ label: 'Search', href: '/search' },
+				{ label: 'Kanban', href: '/kanban' },
+				{ label: 'Calendar', href: '/calendar' },
+				{ label: 'Timeline', href: '/timeline' },
+				{ label: 'Graph', href: '/graph' },
+				{ label: 'Canvas', href: '/canvas' }
+			]
+		},
+		{
+			label: 'Review',
+			items: [
+				{ label: 'Review', href: '/review' },
+				{ label: 'Stats', href: '/stats' },
+				{ label: 'Tags', href: '/tags' }
+			]
+		},
+		{
+			label: 'System',
+			items: [
+				{ label: 'Autonomy', href: '/autonomy' },
+				{ label: 'Federation', href: '/federation' },
+				{ label: 'Sync', href: '/sync' },
+				{ label: 'Plugins', href: '/plugins' },
+				{ label: 'Adapters', href: '/adapters' },
+				{ label: 'Provenance', href: '/provenance' }
+			]
+		},
+		{
+			label: 'Account',
+			items: [
+				{ label: 'Trash', href: '/trash' },
+				{ label: 'Profiles', href: '/settings/profiles' },
+				{ label: 'Settings', href: '/settings' }
+			]
+		}
 	];
 
 	const routeMeta: Array<{ href: string; title: string; subtitle: string }> = [
@@ -296,25 +331,32 @@
 		class="hidden w-64 flex-col border-r border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-6 md:flex"
 	>
 		<div class="flex items-center gap-3 text-lg font-semibold">
-			<div class="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/20 text-sky-200">
+			<div class="flex h-10 w-10 items-center justify-center rounded-xl bg-[rgb(var(--mv-accent))]/20 text-[rgb(var(--mv-accent))]">
 				MV
 			</div>
 			<span>MindVault</span>
 		</div>
 
-		<nav class="mt-10 flex flex-1 flex-col gap-2 overflow-y-auto pr-1 text-sm">
-			{#each navItems as item (item.href)}
-				<a
-					href={item.href}
-					class={`rounded-lg px-3 py-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 ${
-						$page.url.pathname.startsWith(item.href)
-							? 'bg-[rgb(var(--mv-panel-strong))] text-[rgb(var(--mv-text))] shadow-sm'
-							: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80 hover:text-[rgb(var(--mv-text))]'
-					}`}
-					aria-current={$page.url.pathname.startsWith(item.href) ? 'page' : undefined}
-				>
-					{item.label}
-				</a>
+		<nav class="mt-8 flex flex-1 flex-col gap-4 overflow-y-auto pr-1 text-sm">
+			{#each navGroups as group}
+				<div>
+					<div class="mb-1 px-3 text-[10px] font-semibold uppercase tracking-wider text-[rgb(var(--mv-muted))]/60">
+						{group.label}
+					</div>
+					{#each group.items as item (item.href)}
+						<a
+							href={item.href}
+							class={`block rounded-lg px-3 py-1.5 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--mv-ring))]/70 ${
+								$page.url.pathname === item.href || ($page.url.pathname.startsWith(item.href) && item.href !== '/')
+									? 'bg-[rgb(var(--mv-panel-strong))] text-[rgb(var(--mv-text))] shadow-sm'
+									: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80 hover:text-[rgb(var(--mv-text))]'
+							}`}
+							aria-current={$page.url.pathname === item.href || ($page.url.pathname.startsWith(item.href) && item.href !== '/') ? 'page' : undefined}
+						>
+							{item.label}
+						</a>
+					{/each}
+				</div>
 			{/each}
 		</nav>
 
@@ -327,7 +369,7 @@
 		>
 			<div class="flex items-center gap-3">
 				<button
-					class="flex h-8 w-8 items-center justify-center rounded-lg text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))] hover:text-[rgb(var(--mv-text))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 md:hidden"
+					class="flex h-8 w-8 items-center justify-center rounded-lg text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))] hover:text-[rgb(var(--mv-text))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--mv-ring))]/70 md:hidden"
 					on:click={() => (mobileMenuOpen = !mobileMenuOpen)}
 					aria-label="Toggle menu"
 					aria-expanded={mobileMenuOpen}
@@ -360,10 +402,10 @@
 				<span
 					class={`rounded-full px-3 py-1 ${
 						$wsStatus === 'connected'
-							? 'bg-emerald-500/20 text-emerald-200'
+							? 'bg-[rgb(var(--mv-success))]/20 text-emerald-200'
 							: online
-								? 'bg-sky-500/20 text-sky-200'
-								: 'bg-amber-500/20 text-amber-200'
+								? 'bg-[rgb(var(--mv-accent))]/20 text-[rgb(var(--mv-accent))]'
+								: 'bg-[rgb(var(--mv-danger))]/20 text-red-200'
 					}`}
 				>
 					{$wsStatus === 'connected' ? 'Live' : online ? 'Online' : 'Offline'}
@@ -391,26 +433,33 @@
 				>
 					<div class="flex items-center gap-3 text-lg font-semibold">
 						<div
-							class="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/20 text-sky-200"
+							class="flex h-10 w-10 items-center justify-center rounded-xl bg-[rgb(var(--mv-accent))]/20 text-[rgb(var(--mv-accent))]"
 						>
 							MV
 						</div>
 						<span>MindVault</span>
 					</div>
-					<div class="mt-8 flex flex-1 flex-col gap-2 overflow-y-auto pr-1 text-sm">
-						{#each navItems as item (item.href)}
-							<a
-								href={item.href}
-								class={`rounded-lg px-3 py-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 ${
-									$page.url.pathname.startsWith(item.href)
-										? 'bg-[rgb(var(--mv-panel-strong))] text-[rgb(var(--mv-text))] shadow-sm'
-										: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80 hover:text-[rgb(var(--mv-text))]'
-								}`}
-								aria-current={$page.url.pathname.startsWith(item.href) ? 'page' : undefined}
-								on:click={closeMobileMenu}
-							>
-								{item.label}
-							</a>
+					<div class="mt-6 flex flex-1 flex-col gap-4 overflow-y-auto pr-1 text-sm">
+						{#each navGroups as group}
+							<div>
+								<div class="mb-1 px-3 text-[10px] font-semibold uppercase tracking-wider text-[rgb(var(--mv-muted))]/60">
+									{group.label}
+								</div>
+								{#each group.items as item (item.href)}
+									<a
+										href={item.href}
+										class={`block rounded-lg px-3 py-1.5 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--mv-ring))]/70 ${
+											$page.url.pathname === item.href || ($page.url.pathname.startsWith(item.href) && item.href !== '/')
+												? 'bg-[rgb(var(--mv-panel-strong))] text-[rgb(var(--mv-text))] shadow-sm'
+												: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80 hover:text-[rgb(var(--mv-text))]'
+										}`}
+										aria-current={$page.url.pathname === item.href || ($page.url.pathname.startsWith(item.href) && item.href !== '/') ? 'page' : undefined}
+										on:click={closeMobileMenu}
+									>
+										{item.label}
+									</a>
+								{/each}
+							</div>
 						{/each}
 					</div>
 					<div class="text-xs text-[rgb(var(--mv-muted))]">

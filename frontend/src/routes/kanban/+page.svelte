@@ -159,13 +159,13 @@
 <div class="flex flex-col gap-4">
 	<div class="flex items-center justify-between">
 		<div>
-			<h2 class="text-lg font-semibold text-white">Kanban Board</h2>
-			<p class="text-xs text-slate-400">
+			<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">Kanban Board</h2>
+			<p class="text-xs text-[rgb(var(--mv-muted))]">
 				Drag tasks between columns to update status. {$tasksStore.length} total tasks.
 			</p>
 		</div>
 		<button
-			class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400"
+			class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
 			on:click={openCreate}
 		>
 			New task
@@ -177,22 +177,22 @@
 	</div>
 
 	{#if $tasksStore.length === 0}
-		<div class="rounded-2xl border border-dashed border-slate-800 bg-slate-900/20 p-12 text-center">
+		<div class="rounded-2xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-12 text-center">
 			<div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-violet-500/20 text-violet-300">
 				<svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
 				</svg>
 			</div>
-			<h3 class="text-sm font-medium text-white">No tasks yet</h3>
-			<p class="mt-1 text-xs text-slate-500">Create your first task to start organizing your work</p>
+			<h3 class="text-sm font-medium text-[rgb(var(--mv-text))]">No tasks yet</h3>
+			<p class="mt-1 text-xs text-[rgb(var(--mv-muted))]/60">Create your first task to start organizing your work</p>
 			<button
-				class="mt-4 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-400"
+				class="mt-4 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
 				on:click={openCreate}
 			>
 				Create your first task
 			</button>
 			<p class="mt-2 text-[10px] text-slate-600">
-				Press <kbd class="rounded border border-slate-700 bg-slate-800 px-1 py-0.5">N</kbd> anytime to add a task
+				Press <kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5">N</kbd> anytime to add a task
 			</p>
 		</div>
 	{:else}
@@ -211,11 +211,11 @@
 	{/if}
 
 	{#if showDetail && selectedTask}
-		<div class="mt-2 rounded-2xl border border-slate-800/60 bg-slate-900/40 p-4">
+		<div class="mt-2 rounded-2xl border border-[rgb(var(--mv-border))]/60 bg-[rgb(var(--mv-panel))]/40 p-4">
 			<div class="flex items-center justify-between">
-				<h3 class="text-sm font-semibold text-white">Task Detail</h3>
+				<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Task Detail</h3>
 				<button
-					class="rounded-lg px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
+					class="rounded-lg px-2 py-1 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))] hover:text-[rgb(var(--mv-text))]"
 					on:click={hideDetail}
 				>
 					Close

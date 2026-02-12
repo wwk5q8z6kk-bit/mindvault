@@ -749,18 +749,18 @@
 	<section class="lg:col-span-4">
 		<div class="flex items-center justify-between">
 			<div>
-				<h2 class="text-lg font-semibold text-white">Notes</h2>
-				<p class="text-xs text-slate-400">
+				<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">Notes</h2>
+				<p class="text-xs text-[rgb(var(--mv-muted))]/60">
 					{#if bulkMode && selectedCount > 0}
 						{selectedCount} selected
 					{:else}
 						{displayedNotes.length}{displayedNotes.length !== notes.length ? ` / ${notes.length}` : ''} notes
 					{/if}
 				</p>
-				<p class="mt-0.5 text-[10px] text-slate-600">
-					<kbd class="rounded border border-slate-700 bg-slate-800 px-1">j</kbd>/<kbd class="rounded border border-slate-700 bg-slate-800 px-1">k</kbd> navigate,
-					<kbd class="rounded border border-slate-700 bg-slate-800 px-1">Enter</kbd> open,
-					<kbd class="rounded border border-slate-700 bg-slate-800 px-1">x</kbd> select
+				<p class="mt-0.5 text-[10px] text-[rgb(var(--mv-muted))]/30">
+					<kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1">j</kbd>/<kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1">k</kbd> navigate,
+					<kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1">Enter</kbd> open,
+					<kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1">x</kbd> select
 				</p>
 			</div>
 			<div class="flex gap-2">
@@ -768,7 +768,7 @@
 					class={`rounded-lg border px-3 py-2 text-xs transition ${
 						bulkMode
 							? 'border-sky-500 bg-sky-500/20 text-sky-300'
-							: 'border-slate-700 text-slate-300 hover:bg-slate-800'
+							: 'border-[rgb(var(--mv-border))] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]'
 					}`}
 					on:click={toggleBulkMode}
 					title={bulkMode ? 'Exit bulk mode' : 'Select multiple notes'}
@@ -776,7 +776,7 @@
 					{bulkMode ? 'Done' : 'Select'}
 				</button>
 				<button
-					class="rounded-lg bg-slate-800 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700"
+					class="rounded-lg bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))]/90 hover:bg-[rgb(var(--mv-panel-strong))]/80"
 					on:click={newNote}
 				>
 					New note
@@ -786,13 +786,13 @@
 
 		<div class="mt-3 flex flex-wrap gap-2">
 			<input
-				class="min-w-0 flex-1 rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs text-white placeholder-slate-500"
+				class="min-w-0 flex-1 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-1.5 text-xs text-[rgb(var(--mv-text))] placeholder-[rgb(var(--mv-muted))]/40"
 				placeholder="Search notes..."
 				bind:value={searchQuery}
 				aria-label="Search notes"
 			/>
 			<select
-				class="rounded-lg border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs text-white"
+				class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1.5 text-xs text-[rgb(var(--mv-text))]"
 				bind:value={kindFilter}
 				aria-label="Filter by kind"
 			>
@@ -803,7 +803,7 @@
 			</select>
 			{#if allTags.length > 0}
 				<select
-					class="rounded-lg border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs text-white"
+					class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1.5 text-xs text-[rgb(var(--mv-text))]"
 					bind:value={tagFilter}
 					aria-label="Filter by tag"
 				>
@@ -816,17 +816,17 @@
 		</div>
 
 		{#if bulkMode && displayedNotes.length > 0}
-			<div class="mt-3 rounded-lg border border-slate-700 bg-slate-800/50 p-3">
+			<div class="mt-3 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/50 p-3">
 				<div class="flex flex-wrap items-center gap-2">
 					<button
-						class="rounded-lg border border-slate-600 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-700"
+						class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80"
 						on:click={toggleSelectAll}
 					>
 						{allDisplayedSelected ? 'Deselect all' : 'Select all'}
 					</button>
 
 					{#if selectedCount > 0}
-						<span class="text-[11px] text-slate-500">|</span>
+						<span class="text-[11px] text-[rgb(var(--mv-muted))]/40">|</span>
 
 						<button
 							class="rounded-lg border border-emerald-500/30 px-2 py-1 text-[11px] text-emerald-300 hover:bg-emerald-500/10"
@@ -846,13 +846,13 @@
 
 						<div class="flex items-center gap-1">
 							<input
-								class="w-24 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1 text-[11px] text-white placeholder-slate-500"
+								class="w-24 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-[11px] text-[rgb(var(--mv-text))] placeholder-[rgb(var(--mv-muted))]/40"
 								placeholder="Add tag..."
 								bind:value={bulkTagInput}
 								on:keydown={(e) => e.key === 'Enter' && bulkAddTag()}
 							/>
 							<button
-								class="rounded-lg border border-slate-600 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-700"
+								class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80"
 								on:click={bulkAddTag}
 								disabled={bulkProcessing || !bulkTagInput.trim()}
 							>
@@ -862,10 +862,10 @@
 
 						{#if selectedNoteTags.length > 0}
 							<div class="flex flex-wrap items-center gap-1">
-								<span class="text-[11px] text-slate-500">Remove:</span>
+								<span class="text-[11px] text-[rgb(var(--mv-muted))]/40">Remove:</span>
 								{#each selectedNoteTags.slice(0, 5) as tag}
 									<button
-										class="rounded bg-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-red-500/30 hover:text-red-200"
+										class="rounded bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-[10px] text-[rgb(var(--mv-muted))] hover:bg-red-500/30 hover:text-red-200"
 										on:click={() => bulkRemoveTag(tag)}
 										disabled={bulkProcessing}
 									>
@@ -881,30 +881,30 @@
 
 		<div class="mt-3" bind:this={listContainer}>
 			{#if loading}
-				<div class="rounded-lg border border-slate-800 p-4 text-xs text-slate-400">
+				<div class="rounded-lg border border-[rgb(var(--mv-border))] p-4 text-xs text-[rgb(var(--mv-muted))]/60">
 					Loading notes...
 				</div>
 			{:else if notes.length === 0}
-				<div class="rounded-xl border border-dashed border-slate-800 bg-slate-900/20 p-6 text-center">
+				<div class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-6 text-center">
 					<div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-sky-500/20 text-sm text-sky-300">
 						N
 					</div>
-					<h3 class="text-sm font-medium text-white">No notes yet</h3>
-					<p class="mt-1 text-[11px] text-slate-500">
+					<h3 class="text-sm font-medium text-[rgb(var(--mv-text))]">No notes yet</h3>
+					<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]/40">
 						Start building your knowledge base.
 					</p>
 					<button
-						class="mt-3 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-400"
+						class="mt-3 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
 						on:click={newNote}
 					>
 						Create your first note
 					</button>
-					<p class="mt-2 text-[10px] text-slate-600">
-						<kbd class="rounded border border-slate-700 bg-slate-800 px-1 py-0.5">Cmd+Shift+N</kbd> for quick capture
+					<p class="mt-2 text-[10px] text-[rgb(var(--mv-muted))]/30">
+						<kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5">Cmd+Shift+N</kbd> for quick capture
 					</p>
 				</div>
 			{:else if displayedNotes.length === 0}
-				<div class="rounded-lg border border-dashed border-slate-800 p-4 text-xs text-slate-400">
+				<div class="rounded-lg border border-dashed border-[rgb(var(--mv-border))] p-4 text-xs text-[rgb(var(--mv-muted))]/60">
 					No notes match your search.
 				</div>
 			{:else}
@@ -927,14 +927,14 @@
 											? 'border-sky-500 bg-sky-500/10'
 											: note.id === selectedNote?.id
 												? 'border-sky-500 bg-sky-500/10 text-sky-200'
-												: 'border-slate-800 bg-slate-900/40 text-slate-200 hover:border-slate-700'
+												: 'border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 text-[rgb(var(--mv-text))]/90 hover:border-[rgb(var(--mv-border))]/80'
 									}`}
 								>
 									{#if bulkMode}
 										<label class="flex h-5 cursor-pointer items-center">
 											<input
 												type="checkbox"
-												class="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 text-sky-500 focus:ring-sky-500 focus:ring-offset-0"
+												class="h-3.5 w-3.5 cursor-pointer rounded border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] text-sky-500 focus:ring-sky-500 focus:ring-offset-0"
 												checked={selectedNoteIds.has(note.id)}
 												on:change={() => toggleNoteSelection(note.id)}
 											/>
@@ -957,11 +957,11 @@
 										{#if note.tags && note.tags.length > 0}
 											<div class="mt-1 flex flex-wrap gap-1">
 												{#each note.tags.slice(0, 3) as tag}
-													<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-400">{tag}</span>
+													<span class="rounded bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-[9px] text-[rgb(var(--mv-muted))]/60">{tag}</span>
 												{/each}
 											</div>
 										{/if}
-										<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">
+										<p class="mt-1 line-clamp-2 text-[11px] text-[rgb(var(--mv-muted))]/60">
 											{note.markdown.slice(0, 120) || 'No content'}
 										</p>
 									</button>
@@ -977,10 +977,10 @@
 	<section class="lg:col-span-8">
 		<div class="flex items-center justify-between">
 			<div>
-				<h2 class="text-lg font-semibold text-white">
+				<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">
 					{selectedNote ? 'Edit note' : 'New note'}
 				</h2>
-				<p class="text-xs text-slate-400">Markdown remains canonical.</p>
+				<p class="text-xs text-[rgb(var(--mv-muted))]/60">Markdown remains canonical.</p>
 			</div>
 			<div class="flex items-center gap-2">
 				<TemplatePicker
@@ -990,7 +990,7 @@
 					on:apply={(event) => applyTemplateToNote(event.detail)}
 				/>
 				<button
-					class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400"
+					class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
 					on:click={saveNote}
 					disabled={saving}
 				>
@@ -1000,12 +1000,12 @@
 		</div>
 
 		<div class="mt-4">
-			<label class="text-xs uppercase tracking-wide text-slate-500" for="note-title">
+			<label class="text-xs uppercase tracking-wide text-[rgb(var(--mv-muted))]/40" for="note-title">
 				Title
 			</label>
 			<input
 				id="note-title"
-				class="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-white"
+				class="mt-2 w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-2 text-sm text-[rgb(var(--mv-text))]"
 				placeholder="Note title"
 				bind:value={title}
 			/>
@@ -1026,13 +1026,13 @@
 				<button
 					class="rounded-lg border px-3 py-2 text-xs transition {selectedNote.pinned
 						? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
-						: 'border-slate-700 text-slate-300 hover:bg-slate-800'}"
+						: 'border-[rgb(var(--mv-border))] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]'}"
 					on:click={togglePin}
 				>
 					{selectedNote.pinned ? 'Unpin' : 'Pin'}
 				</button>
 				<button
-					class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 					on:click={() => {
 						if (!selectedNote) return;
 						const content = `# ${selectedNote.title ?? 'Untitled'}\n\n${selectedNote.markdown ?? ''}`;
@@ -1052,7 +1052,7 @@
 					Export .md
 				</button>
 				<button
-					class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 					on:click={() => { showVersionHistory = true; }}
 				>
 					History
@@ -1081,7 +1081,7 @@
 
 			{#if suggestedTags.length > 0}
 				<div class="mt-3 flex items-center gap-2">
-					<span class="text-[10px] text-slate-500">Suggested:</span>
+					<span class="text-[10px] text-[rgb(var(--mv-muted))]/40">Suggested:</span>
 					{#each suggestedTags as tag}
 						<button
 							class="rounded-lg border border-purple-500/30 bg-purple-500/10 px-2 py-1 text-[10px] text-purple-300 transition hover:bg-purple-500/20"
@@ -1091,7 +1091,7 @@
 						</button>
 					{/each}
 					<button
-						class="text-[10px] text-slate-500 hover:text-white"
+						class="text-[10px] text-[rgb(var(--mv-muted))]/40 hover:text-[rgb(var(--mv-text))]"
 						on:click={() => { suggestedTags = []; }}
 					>
 						dismiss
@@ -1133,13 +1133,13 @@
 						{/if}
 						<h4 class="text-[10px] font-bold uppercase tracking-wider text-sky-400">Agent Context</h4>
 					</div>
-					<p class="text-xs text-slate-300 leading-relaxed">{$agentStore.summary}</p>
+					<p class="text-xs text-[rgb(var(--mv-muted))] leading-relaxed">{$agentStore.summary}</p>
 					{#if $agentStore.relatedNodes.length > 0}
 						<div class="mt-2 space-y-1">
 							{#each $agentStore.relatedNodes.slice(0, 5) as node (node.id)}
 								<a
 									href="/notes?note={node.id}"
-									class="block rounded-lg border border-slate-800/60 bg-slate-900/40 px-2 py-1.5 text-xs text-slate-300 transition hover:border-sky-500/30 hover:text-sky-200"
+									class="block rounded-lg border border-[rgb(var(--mv-border))]/60 bg-[rgb(var(--mv-panel))]/40 px-2 py-1.5 text-xs text-[rgb(var(--mv-muted))] transition hover:border-sky-500/30 hover:text-sky-200"
 								>
 									{node.title || 'Untitled'}
 								</a>
@@ -1193,14 +1193,14 @@
 <!-- Export Modal -->
 {#if showExportModal}
 	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-		<div class="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-xl">
-			<h3 class="text-sm font-semibold text-white">Export Notes</h3>
-			<p class="mt-1 text-[11px] text-slate-400">
+		<div class="w-full max-w-sm rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-5 shadow-xl">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Export Notes</h3>
+			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]/60">
 				Export {selectedCount} selected note{selectedCount === 1 ? '' : 's'}
 			</p>
 
 			<div class="mt-4">
-				<span class="text-[10px] uppercase tracking-wide text-slate-500">Format</span>
+				<span class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/40">Format</span>
 				<div class="mt-2 grid grid-cols-3 gap-2">
 					{#each [
 						{ value: 'markdown', label: 'Markdown', desc: '.md file' },
@@ -1210,13 +1210,13 @@
 						<button
 							class="rounded-lg border px-3 py-2 text-left transition {exportFormat === format.value
 								? 'border-sky-500 bg-sky-500/10'
-								: 'border-slate-700 bg-slate-800/50 hover:border-slate-600'}"
+								: 'border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/50 hover:border-[rgb(var(--mv-muted))]/40'}"
 							on:click={() => (exportFormat = format.value as ExportFormat)}
 						>
-							<div class="text-xs font-medium {exportFormat === format.value ? 'text-sky-300' : 'text-slate-200'}">
+							<div class="text-xs font-medium {exportFormat === format.value ? 'text-sky-300' : 'text-[rgb(var(--mv-text))]/90'}">
 								{format.label}
 							</div>
-							<div class="text-[9px] text-slate-500">{format.desc}</div>
+							<div class="text-[9px] text-[rgb(var(--mv-muted))]/40">{format.desc}</div>
 						</button>
 					{/each}
 				</div>
@@ -1224,26 +1224,26 @@
 
 			{#if exporting}
 				<div class="mt-4">
-					<div class="h-2 w-full rounded-full bg-slate-800">
+					<div class="h-2 w-full rounded-full bg-[rgb(var(--mv-panel-strong))]">
 						<div
 							class="h-full rounded-full bg-sky-500 transition-all"
 							style="width: {exportProgress}%"
 						></div>
 					</div>
-					<p class="mt-1 text-center text-[10px] text-slate-400">Preparing export...</p>
+					<p class="mt-1 text-center text-[10px] text-[rgb(var(--mv-muted))]/60">Preparing export...</p>
 				</div>
 			{/if}
 
 			<div class="mt-5 flex justify-end gap-2">
 				<button
-					class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 					on:click={() => (showExportModal = false)}
 					disabled={exporting}
 				>
 					Cancel
 				</button>
 				<button
-					class="rounded-lg bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+					class="rounded-lg bg-sky-500 px-4 py-1.5 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400 disabled:opacity-50"
 					on:click={bulkExportNotes}
 					disabled={exporting || selectedCount === 0}
 				>

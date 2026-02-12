@@ -108,12 +108,12 @@
 <div class="flex h-[calc(100vh-10rem)] flex-col">
 	<div class="flex items-center justify-between">
 		<div>
-			<h2 class="text-lg font-semibold text-white">AI Chat</h2>
-			<p class="text-xs text-slate-400">Ask questions about your knowledge base. Answers cite your notes and tasks.</p>
+			<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">AI Chat</h2>
+			<p class="text-xs text-[rgb(var(--mv-muted))]/60">Ask questions about your knowledge base. Answers cite your notes and tasks.</p>
 		</div>
 		{#if messages.length > 0}
 			<button
-				class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+				class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 				on:click={clearChat}
 			>
 				Clear chat
@@ -122,7 +122,7 @@
 	</div>
 
 	<div
-		class="mt-4 flex-1 overflow-y-auto rounded-2xl border border-slate-800/60 bg-slate-900/30 p-4"
+		class="mt-4 flex-1 overflow-y-auto rounded-2xl border border-[rgb(var(--mv-border))]/60 bg-[rgb(var(--mv-panel))]/30 p-4"
 		bind:this={messagesContainer}
 	>
 		{#if messages.length === 0}
@@ -133,8 +133,8 @@
 							d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
 					</svg>
 				</div>
-				<h3 class="mt-4 text-sm font-semibold text-white">Chat with your knowledge</h3>
-				<p class="mt-2 max-w-md text-xs text-slate-400">
+				<h3 class="mt-4 text-sm font-semibold text-[rgb(var(--mv-text))]">Chat with your knowledge</h3>
+				<p class="mt-2 max-w-md text-xs text-[rgb(var(--mv-muted))]/60">
 					Ask questions and get answers grounded in your notes, tasks, and documents.
 					Sources are cited so you can verify and explore further.
 				</p>
@@ -146,7 +146,7 @@
 						'Find connections between...'
 					] as suggestion}
 						<button
-							class="rounded-lg border border-slate-700/60 bg-slate-800/40 px-3 py-1.5 text-[11px] text-slate-300 transition hover:border-sky-500/40 hover:text-sky-200"
+							class="rounded-lg border border-[rgb(var(--mv-border))]/60 bg-[rgb(var(--mv-panel-strong))]/40 px-3 py-1.5 text-[11px] text-[rgb(var(--mv-muted))] transition hover:border-sky-500/40 hover:text-sky-200"
 							on:click={() => { input = suggestion; inputEl?.focus(); }}
 						>
 							{suggestion}
@@ -165,24 +165,24 @@
 						{/if}
 						<div class="max-w-[80%] {message.role === 'user'
 							? 'rounded-2xl rounded-tr-md bg-sky-500/20 px-4 py-3 text-sky-100'
-							: 'rounded-2xl rounded-tl-md bg-slate-800/60 px-4 py-3 text-slate-200'}">
+							: 'rounded-2xl rounded-tl-md bg-[rgb(var(--mv-panel-strong))]/60 px-4 py-3 text-[rgb(var(--mv-text))]/80'}">
 							<div class="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</div>
 
 							{#if message.sources && message.sources.length > 0}
-								<div class="mt-3 border-t border-slate-700/40 pt-2">
-									<p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Sources</p>
+								<div class="mt-3 border-t border-[rgb(var(--mv-border))]/40 pt-2">
+									<p class="text-[10px] font-medium uppercase tracking-wider text-[rgb(var(--mv-muted))]/60">Sources</p>
 									<div class="mt-1.5 flex flex-col gap-1.5">
 										{#each message.sources as source, i}
 											<a
 												href={sourceLink(source)}
-												class="flex items-center gap-2 rounded-lg border border-slate-700/40 bg-slate-900/40 px-2.5 py-1.5 text-[11px] transition hover:border-sky-500/30"
+												class="flex items-center gap-2 rounded-lg border border-[rgb(var(--mv-border))]/40 bg-[rgb(var(--mv-panel))]/40 px-2.5 py-1.5 text-[11px] transition hover:border-sky-500/30"
 											>
-												<span class="font-mono text-slate-500">[{i + 1}]</span>
+												<span class="font-mono text-[rgb(var(--mv-muted))]/60">[{i + 1}]</span>
 												<span class="rounded px-1.5 py-0.5 text-[9px] font-medium {kindBadgeClass(source.kind)}">
 													{kindLabel(source.kind)}
 												</span>
-												<span class="truncate text-slate-300">{source.title}</span>
-												<span class="ml-auto text-[9px] text-slate-600">{(source.score * 100).toFixed(0)}%</span>
+												<span class="truncate text-[rgb(var(--mv-muted))]">{source.title}</span>
+												<span class="ml-auto text-[9px] text-[rgb(var(--mv-muted))]/40">{(source.score * 100).toFixed(0)}%</span>
 											</a>
 										{/each}
 									</div>
@@ -190,7 +190,7 @@
 							{/if}
 						</div>
 						{#if message.role === 'user'}
-							<div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-700 text-[10px] font-bold text-slate-300">
+							<div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[rgb(var(--mv-panel-strong))] text-[10px] font-bold text-[rgb(var(--mv-muted))]">
 								You
 							</div>
 						{/if}
@@ -202,8 +202,8 @@
 						<div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-sky-500/20 text-[10px] font-bold text-sky-300">
 							MV
 						</div>
-						<div class="rounded-2xl rounded-tl-md bg-slate-800/60 px-4 py-3">
-							<div class="flex items-center gap-1.5">
+						<div class="rounded-2xl rounded-tl-md bg-[rgb(var(--mv-panel-strong))]/60 px-4 py-3">
+							<div class="flex items-center gap-1.5" role="status" aria-label="Searching your knowledge base">
 								<div class="h-2 w-2 animate-pulse rounded-full bg-sky-400"></div>
 								<div class="h-2 w-2 animate-pulse rounded-full bg-sky-400" style="animation-delay: 0.15s"></div>
 								<div class="h-2 w-2 animate-pulse rounded-full bg-sky-400" style="animation-delay: 0.3s"></div>
@@ -217,7 +217,7 @@
 
 	<div class="mt-3 flex gap-2">
 		<textarea
-			class="flex-1 resize-none rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none transition focus:border-sky-500"
+			class="flex-1 resize-none rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-4 py-3 text-sm text-[rgb(var(--mv-text))] placeholder-[rgb(var(--mv-muted))]/60 outline-none transition focus:border-sky-500"
 			placeholder="Ask a question about your knowledge..."
 			rows="2"
 			bind:value={input}
@@ -226,7 +226,7 @@
 			disabled={loading}
 		></textarea>
 		<button
-			class="self-end rounded-xl bg-sky-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-sky-400 disabled:opacity-50"
+			class="self-end rounded-xl bg-sky-500 px-4 py-3 text-sm font-semibold text-[rgb(var(--mv-text))] transition hover:bg-sky-400 disabled:opacity-50"
 			on:click={sendMessage}
 			disabled={loading || !input.trim()}
 		>

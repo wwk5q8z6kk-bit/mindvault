@@ -13,6 +13,7 @@
 	import { listProposals, approveProposal, rejectProposal, undoProposal, batchProposals, type Proposal } from '$lib/api/exchange';
 	import { listConflicts, resolveConflict, type ConflictAlert } from '$lib/api/conflicts';
 	import ProposalCard from '$lib/components/ProposalCard.svelte';
+	import Modal from '$lib/components/Modal.svelte';
 	import {
 		buildInboxTriagePatch,
 		buildInboxTriageSuggestions,
@@ -57,6 +58,12 @@
 	let triageLoading = false;
 	let triageSuggestions: Map<string, InboxTriageSuggestion> = new Map();
 	let triageSettings = loadInboxTriageSettings();
+	let snoozeModalOpen = false;
+	let snoozeModalTaskId = '';
+	let snoozeModalDate = '';
+	let tagModalOpen = false;
+	let tagModalNoteId = '';
+	let tagModalValue = '';
 
 	$: {
 		const taskItems: InboxItem[] = $tasksStore
@@ -280,12 +287,10 @@
 				await snoozeTaskOptimistic(taskId, nextWeek.toISOString());
 				pushToast('Snoozed until next week', 'success');
 			} else {
-				const input = prompt('Snooze until (YYYY-MM-DD):');
-				if (!input?.trim()) return;
-				const date = new Date(input.trim());
-				date.setHours(9, 0, 0, 0);
-				await snoozeTaskOptimistic(taskId, date.toISOString());
-				pushToast(`Snoozed until ${input.trim()}`, 'success');
+				snoozeModalTaskId = taskId;
+				snoozeModalDate = '';
+				snoozeModalOpen = true;
+				return;
 			}
 			processedCount++;
 		} catch {
@@ -293,19 +298,39 @@
 		}
 	}
 
-	async function tagNote(noteId: string) {
-		const tag = prompt('Enter a tag for this note:');
-		if (!tag?.trim()) return;
+	function tagNote(noteId: string) {
+		tagModalNoteId = noteId;
+		tagModalValue = '';
+		tagModalOpen = true;
+	}
+
+	async function confirmTagNote() {
+		if (!tagModalValue.trim()) return;
+		tagModalOpen = false;
 		try {
-			const note = $notesStore.find((n) => n.id === noteId);
+			const note = $notesStore.find((n) => n.id === tagModalNoteId);
 			if (!note) return;
 			const existingTags = note.tags ?? [];
-			await updateNote(noteId, { tags: [...existingTags, tag.trim()] });
+			await updateNote(tagModalNoteId, { tags: [...existingTags, tagModalValue.trim()] });
 			await loadNotes();
 			processedCount++;
-			pushToast(`Tagged with "${tag.trim()}"`, 'success');
+			pushToast(`Tagged with "${tagModalValue.trim()}"`, 'success');
 		} catch {
 			pushToast('Failed to tag note', 'danger');
+		}
+	}
+
+	async function confirmSnooze() {
+		if (!snoozeModalDate.trim()) return;
+		snoozeModalOpen = false;
+		try {
+			const date = new Date(snoozeModalDate.trim());
+			date.setHours(9, 0, 0, 0);
+			await snoozeTaskOptimistic(snoozeModalTaskId, date.toISOString());
+			processedCount++;
+			pushToast(`Snoozed until ${snoozeModalDate.trim()}`, 'success');
+		} catch {
+			pushToast('Failed to snooze task', 'danger');
 		}
 	}
 
@@ -469,8 +494,8 @@
 <div class="mx-auto max-w-3xl">
 	<div class="flex items-center justify-between">
 		<div>
-			<h2 class="text-lg font-semibold text-white">Smart Inbox</h2>
-			<p class="text-xs text-slate-400">
+			<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">Smart Inbox</h2>
+			<p class="text-xs text-[rgb(var(--mv-muted))]">
 				{items.length} items to triage
 				{#if processedCount > 0}
 					&middot; {processedCount} processed this session
@@ -493,7 +518,7 @@
 					Apply Top {triageSettings.default_apply_limit}
 				</button>
 				<button
-					class="rounded-lg border border-slate-700 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-1.5 text-[11px] text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))]"
 					on:click={clearAiInboxTriage}
 				>
 					Clear
@@ -506,7 +531,7 @@
 		<div class="mt-3 flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-900/20 px-4 py-2">
 			<span class="text-xs text-amber-200">Proposal approved</span>
 			<button
-				class="rounded-lg bg-amber-600 px-3 py-1 text-[11px] font-medium text-white transition hover:bg-amber-500"
+				class="rounded-lg bg-amber-600 px-3 py-1 text-[11px] font-medium text-[rgb(var(--mv-text))] transition hover:bg-amber-500"
 				on:click={handleUndo}
 			>
 				Undo
@@ -518,7 +543,7 @@
 		<div class="mt-4">
 			<div class="mb-2 flex items-center justify-between">
 				<div class="flex items-center gap-2">
-					<span class="text-xs font-semibold text-slate-300">Pending Proposals</span>
+					<span class="text-xs font-semibold text-[rgb(var(--mv-muted))]">Pending Proposals</span>
 					<span class="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-300">
 						{proposals.length}
 					</span>
@@ -541,7 +566,7 @@
 						</button>
 					{/if}
 					<button
-						class="rounded-lg border border-slate-700 px-2.5 py-1 text-[10px] text-slate-400 transition hover:bg-slate-800"
+						class="rounded-lg border border-[rgb(var(--mv-border))] px-2.5 py-1 text-[10px] text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))]"
 						on:click={selectAllProposals}
 					>
 						{selectedProposals.size === proposals.length ? 'Deselect All' : 'Select All'}
@@ -553,7 +578,7 @@
 					<div class="flex items-start gap-2">
 						<input
 							type="checkbox"
-							class="mt-3 h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500/30"
+							class="mt-3 h-3.5 w-3.5 rounded border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] text-indigo-500 focus:ring-indigo-500/30"
 							checked={selectedProposals.has(proposal.id)}
 							on:change={() => toggleProposalSelection(proposal.id)}
 						/>
@@ -573,31 +598,31 @@
 	{#if conflicts.length > 0}
 		<div class="mt-4">
 			<div class="mb-2 flex items-center gap-2">
-				<span class="text-xs font-semibold text-slate-300">Conflict Alerts</span>
+				<span class="text-xs font-semibold text-[rgb(var(--mv-muted))]">Conflict Alerts</span>
 				<span class="rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-medium text-red-300">
 					{conflicts.length}
 				</span>
 			</div>
 			<div class="space-y-2">
 				{#each conflicts as conflict (conflict.id)}
-					<div class="rounded-xl border border-red-900/40 bg-red-950/20 p-4">
+					<div class="rounded-xl border border-red-500/30 bg-[rgb(var(--mv-danger))]/10 p-4">
 						<div class="flex items-start justify-between gap-3">
 							<div class="min-w-0 flex-1">
 								<div class="flex items-center gap-2 mb-1">
 									<span class="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] font-medium text-red-300">
 										{conflict.conflict_type}
 									</span>
-									<span class="text-[10px] text-slate-500">
+									<span class="text-[10px] text-[rgb(var(--mv-muted))]/60">
 										score: {conflict.score.toFixed(2)}
 									</span>
 								</div>
-								<p class="text-xs text-slate-300">{conflict.explanation}</p>
-								<p class="mt-1 text-[10px] text-slate-500">
+								<p class="text-xs text-[rgb(var(--mv-muted))]">{conflict.explanation}</p>
+								<p class="mt-1 text-[10px] text-[rgb(var(--mv-muted))]/60">
 									Nodes: {conflict.node_a.slice(0, 8)}... vs {conflict.node_b.slice(0, 8)}...
 								</p>
 							</div>
 							<button
-								class="shrink-0 rounded-lg border border-slate-700 px-2.5 py-1 text-[11px] text-slate-300 transition hover:bg-slate-800"
+								class="shrink-0 rounded-lg border border-[rgb(var(--mv-border))] px-2.5 py-1 text-[11px] text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))]"
 								on:click={() => handleResolveConflict(conflict.id)}
 							>
 								Dismiss
@@ -611,11 +636,11 @@
 
 	<div class="mt-4">
 		{#if loading}
-			<div class="rounded-xl border border-slate-800 p-6 text-center text-xs text-slate-400">
+			<div class="rounded-xl border border-[rgb(var(--mv-border))] p-6 text-center text-xs text-[rgb(var(--mv-muted))]">
 				Loading inbox...
 			</div>
 		{:else if items.length === 0}
-			<div class="rounded-xl border border-dashed border-slate-800 p-8 text-center">
+			<div class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] p-8 text-center">
 				<div class="flex justify-center">
 					<div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-300">
 						<svg class="h-7 w-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -623,20 +648,20 @@
 						</svg>
 					</div>
 				</div>
-				<h3 class="mt-3 text-sm font-semibold text-white">Inbox zero</h3>
-				<p class="mt-1 text-xs text-slate-400">
+				<h3 class="mt-3 text-sm font-semibold text-[rgb(var(--mv-text))]">Inbox zero</h3>
+				<p class="mt-1 text-xs text-[rgb(var(--mv-muted))]">
 					All items have been triaged. New captures will appear here.
 				</p>
 			</div>
 		{:else}
-			<div bind:this={inboxListParentRef} style="max-height: 80vh; overflow-y: auto;">
+			<div bind:this={inboxListParentRef} style="max-height: calc(100vh - 200px); overflow-y: auto;">
 				<div style="height: {$inboxVirtualizer.getTotalSize()}px; width: 100%; position: relative;">
 					{#each $inboxVirtualizer.getVirtualItems() as row (row.key)}
 						{@const item = items[row.index]}
 						<div
 							style="position: absolute; top: 0; left: 0; width: 100%; transform: translateY({row.start}px);"
 						>
-							<div class="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4 mb-3 transition hover:border-slate-700">
+							<div class="rounded-xl border border-[rgb(var(--mv-border))]/60 bg-[rgb(var(--mv-panel))]/40 p-4 mb-3 transition hover:border-[rgb(var(--mv-border))]">
 								<div class="flex items-start justify-between gap-3">
 									<div class="min-w-0 flex-1">
 										<div class="flex items-center gap-2">
@@ -645,16 +670,16 @@
 												: 'bg-sky-500/20 text-sky-300'}">
 												{item.type}
 											</span>
-											<span class="text-[10px] text-slate-500">{relativeTime(item.created)}</span>
+											<span class="text-[10px] text-[rgb(var(--mv-muted))]/60">{relativeTime(item.created)}</span>
 										</div>
-										<h4 class="mt-1 text-sm font-medium text-white">
+										<h4 class="mt-1 text-sm font-medium text-[rgb(var(--mv-text))]">
 											{item.type === 'task' ? item.data.title : item.data.title ?? 'Untitled Note'}
 										</h4>
 										{#if item.type === 'task' && item.data.description}
-											<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">{item.data.description}</p>
+											<p class="mt-1 line-clamp-2 text-[11px] text-[rgb(var(--mv-muted))]">{item.data.description}</p>
 										{/if}
 										{#if item.type === 'note' && item.data.markdown}
-											<p class="mt-1 line-clamp-2 text-[11px] text-slate-400">{item.data.markdown.slice(0, 150)}</p>
+											<p class="mt-1 line-clamp-2 text-[11px] text-[rgb(var(--mv-muted))]">{item.data.markdown.slice(0, 150)}</p>
 										{/if}
 										{#if item.type === 'task' && triageSuggestions.has(item.data.id)}
 											{@const suggestion = triageSuggestions.get(item.data.id)}
@@ -693,21 +718,21 @@
 												Snooze
 											</button>
 											{#if snoozeOpenId === item.data.id}
-												<div class="absolute left-0 top-full z-20 mt-1 w-36 rounded-lg border border-slate-700 bg-slate-800 py-1 shadow-xl">
+												<div class="absolute left-0 top-full z-20 mt-1 w-36 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] py-1 shadow-xl">
 													<button
-														class="w-full px-3 py-1.5 text-left text-[10px] text-slate-300 hover:bg-slate-700"
+														class="w-full px-3 py-1.5 text-left text-[10px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80"
 														on:click={() => handleSnooze(item.data.id, 'tomorrow')}
 													>
 														Tomorrow
 													</button>
 													<button
-														class="w-full px-3 py-1.5 text-left text-[10px] text-slate-300 hover:bg-slate-700"
+														class="w-full px-3 py-1.5 text-left text-[10px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80"
 														on:click={() => handleSnooze(item.data.id, 'next_week')}
 													>
 														Next Week
 													</button>
 													<button
-														class="w-full px-3 py-1.5 text-left text-[10px] text-slate-300 hover:bg-slate-700"
+														class="w-full px-3 py-1.5 text-left text-[10px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80"
 														on:click={() => handleSnooze(item.data.id, 'custom')}
 													>
 														Custom...
@@ -738,7 +763,7 @@
 										{/if}
 										<a
 											href="/tasks?task={item.data.id}"
-											class="rounded-lg border border-slate-700 px-2.5 py-1 text-[10px] text-slate-300 transition hover:bg-slate-800"
+											class="rounded-lg border border-[rgb(var(--mv-border))] px-2.5 py-1 text-[10px] text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))]"
 										>
 											Open
 										</a>
@@ -757,14 +782,14 @@
 											{suggestingTagsFor === item.data.id ? 'Thinking...' : 'AI Tag'}
 										</button>
 										<button
-											class="rounded-lg border border-slate-600 px-2.5 py-1 text-[10px] text-slate-300 transition hover:bg-slate-800"
+											class="rounded-lg border border-[rgb(var(--mv-border))] px-2.5 py-1 text-[10px] text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))]"
 											on:click={() => archiveNote(item.data.id)}
 										>
 											Archive
 										</button>
 										<a
 											href="/notes?note={item.data.id}"
-											class="rounded-lg border border-slate-700 px-2.5 py-1 text-[10px] text-slate-300 transition hover:bg-slate-800"
+											class="rounded-lg border border-[rgb(var(--mv-border))] px-2.5 py-1 text-[10px] text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))]"
 										>
 											Open
 										</a>
@@ -773,7 +798,7 @@
 
 								{#if suggestedTags.has(item.data.id)}
 									<div class="mt-2 flex flex-wrap gap-1.5">
-										<span class="text-[10px] text-slate-500">Suggested:</span>
+										<span class="text-[10px] text-[rgb(var(--mv-muted))]/60">Suggested:</span>
 										{#each suggestedTags.get(item.data.id) ?? [] as tag}
 											<button
 												class="rounded-full border border-teal-500/30 bg-teal-500/10 px-2 py-0.5 text-[10px] text-teal-300 transition hover:bg-teal-500/20"
@@ -792,3 +817,55 @@
 		{/if}
 	</div>
 </div>
+
+<Modal open={snoozeModalOpen} title="Snooze until..." size="sm" on:close={() => (snoozeModalOpen = false)}>
+	<div class="space-y-3">
+		<input
+			type="date"
+			bind:value={snoozeModalDate}
+			class="w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-sm text-[rgb(var(--mv-text))] focus:outline-none focus:ring-2 focus:ring-[rgb(var(--mv-ring))]/70"
+		/>
+		<div class="flex justify-end gap-2">
+			<button
+				class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-1.5 text-sm text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))]"
+				on:click={() => (snoozeModalOpen = false)}
+			>
+				Cancel
+			</button>
+			<button
+				class="rounded-lg bg-[rgb(var(--mv-accent))] px-3 py-1.5 text-sm text-white transition hover:bg-[rgb(var(--mv-accent))]/80 disabled:opacity-50"
+				disabled={!snoozeModalDate}
+				on:click={confirmSnooze}
+			>
+				Snooze
+			</button>
+		</div>
+	</div>
+</Modal>
+
+<Modal open={tagModalOpen} title="Tag note" size="sm" on:close={() => (tagModalOpen = false)}>
+	<div class="space-y-3">
+		<input
+			type="text"
+			placeholder="Enter a tag..."
+			bind:value={tagModalValue}
+			class="w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-sm text-[rgb(var(--mv-text))] placeholder:text-[rgb(var(--mv-muted))]/40 focus:outline-none focus:ring-2 focus:ring-[rgb(var(--mv-ring))]/70"
+			on:keydown={(e) => { if (e.key === 'Enter') confirmTagNote(); }}
+		/>
+		<div class="flex justify-end gap-2">
+			<button
+				class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-1.5 text-sm text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))]"
+				on:click={() => (tagModalOpen = false)}
+			>
+				Cancel
+			</button>
+			<button
+				class="rounded-lg bg-[rgb(var(--mv-accent))] px-3 py-1.5 text-sm text-white transition hover:bg-[rgb(var(--mv-accent))]/80 disabled:opacity-50"
+				disabled={!tagModalValue.trim()}
+				on:click={confirmTagNote}
+			>
+				Add Tag
+			</button>
+		</div>
+	</div>
+</Modal>

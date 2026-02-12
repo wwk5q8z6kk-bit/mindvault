@@ -17,6 +17,7 @@
 	let loaded = false;
 	let briefing: BriefingResponse | null = null;
 	let briefingLoading = true;
+	let isMac = false;
 
 	$: allTasks = $tasksStore;
 	$: inboxCount = allTasks.filter((t) => t.status === 'inbox').length;
@@ -70,6 +71,8 @@
 	};
 
 	onMount(() => {
+		isMac = navigator.platform?.startsWith('Mac') ?? false;
+
 		// Check if onboarding should be shown
 		const unsubscribe = shouldShowOnboarding.subscribe((show) => {
 			if (show) {
@@ -108,34 +111,34 @@
 	/>
 
 	<!-- Stats row -->
-	<div class="grid grid-cols-2 gap-3 md:grid-cols-5">
+	<dl class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-5">
 		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-4">
-			<div class="text-2xl font-bold text-[rgb(var(--mv-text))]">{allTasks.length}</div>
-			<div class="text-xs text-[rgb(var(--mv-muted))]">Total Tasks</div>
+			<dd class="text-2xl font-bold text-[rgb(var(--mv-text))]">{allTasks.length}</dd>
+			<dt class="text-xs text-[rgb(var(--mv-muted))]">Total Tasks</dt>
 		</div>
 		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-4">
-			<div class="text-2xl font-bold text-sky-300">{inboxCount}</div>
-			<div class="text-xs text-[rgb(var(--mv-muted))]">Inbox</div>
+			<dd class="text-2xl font-bold text-sky-300">{inboxCount}</dd>
+			<dt class="text-xs text-[rgb(var(--mv-muted))]">Inbox</dt>
 		</div>
 		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-4">
-			<div class="text-2xl font-bold text-amber-300">{dueTodayCount}</div>
-			<div class="text-xs text-[rgb(var(--mv-muted))]">Due Today</div>
+			<dd class="text-2xl font-bold text-amber-300">{dueTodayCount}</dd>
+			<dt class="text-xs text-[rgb(var(--mv-muted))]">Due Today</dt>
 		</div>
 		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-4">
-			<div
+			<dd
 				class="text-2xl font-bold {overdueCount > 0
 					? 'text-red-400'
 					: 'text-[rgb(var(--mv-text))]'}"
 			>
 				{overdueCount}
-			</div>
-			<div class="text-xs text-[rgb(var(--mv-muted))]">Overdue</div>
+			</dd>
+			<dt class="text-xs text-[rgb(var(--mv-muted))]">Overdue</dt>
 		</div>
 		<div class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/80 p-4">
-			<div class="text-2xl font-bold text-emerald-300">{doneThisWeek}</div>
-			<div class="text-xs text-[rgb(var(--mv-muted))]">Done This Week</div>
+			<dd class="text-2xl font-bold text-emerald-300">{doneThisWeek}</dd>
+			<dt class="text-xs text-[rgb(var(--mv-muted))]">Done This Week</dt>
 		</div>
-	</div>
+	</dl>
 
 	<div class="grid gap-6 lg:grid-cols-3">
 		<!-- Due Today + Overdue + In Progress -->
@@ -231,7 +234,7 @@
 				<p class="text-xs text-[rgb(var(--mv-muted))]">
 					<kbd
 						class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5 text-xs text-[rgb(var(--mv-muted))]"
-						>Cmd+K</kbd
+						>{isMac ? 'Cmd' : 'Ctrl'}+K</kbd
 					>
 					to open command palette
 				</p>

@@ -489,7 +489,7 @@
 		</div>
 
 		<div class="mt-4">
-			<label class="text-xs uppercase tracking-wide text-slate-500" for="quick-add">
+			<label class="text-xs uppercase tracking-wide text-[rgb(var(--mv-muted))]/60" for="quick-add">
 				Quick add
 			</label>
 			<input
@@ -545,7 +545,7 @@
 						</span>
 					{/if}
 					{#each quickAddPreview.labels as label}
-						<span class="rounded bg-slate-700 px-1.5 py-0.5 text-slate-300">#{label}</span>
+						<span class="rounded bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-[rgb(var(--mv-muted))]">#{label}</span>
 					{/each}
 				</div>
 			{/if}
@@ -647,7 +647,7 @@
 						class="flex h-4 w-4 items-center justify-center rounded border {selectedIds.size ===
 							$filteredTasks.length && $filteredTasks.length > 0
 							? 'border-sky-500 bg-sky-500/20 text-sky-300'
-							: 'border-slate-700'}"
+							: 'border-[rgb(var(--mv-border))]'}"
 					>
 						{#if selectedIds.size === $filteredTasks.length && $filteredTasks.length > 0}
 							<svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -673,7 +673,7 @@
 		<div class="mt-3">
 			{#if $filteredTasks.length === 0}
 				<div
-					class="rounded-xl border border-dashed border-slate-800 bg-slate-900/20 p-8 text-center"
+					class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-8 text-center"
 				>
 					{#if $tasksStore.length === 0}
 						<div
@@ -681,8 +681,8 @@
 						>
 							+
 						</div>
-						<h3 class="text-sm font-medium text-white">No tasks yet</h3>
-						<p class="mt-1 text-xs text-slate-500">
+						<h3 class="text-sm font-medium text-[rgb(var(--mv-text))]">No tasks yet</h3>
+						<p class="mt-1 text-xs text-[rgb(var(--mv-muted))]/60">
 							Add your first task to start getting things done.
 						</p>
 						<div class="mt-4 flex justify-center gap-2">
@@ -694,12 +694,12 @@
 							</button>
 						</div>
 						<p class="mt-3 text-xs text-[rgb(var(--mv-muted))]">
-							Or use <kbd class="rounded border border-slate-700 bg-slate-800 px-1 py-0.5"
+							Or use <kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5"
 								>Cmd+Shift+N</kbd
 							> for quick capture
 						</p>
 					{:else}
-						<p class="text-sm text-slate-400">No tasks match your current filter.</p>
+						<p class="text-sm text-[rgb(var(--mv-muted))]">No tasks match your current filter.</p>
 						<button
 							class="mt-2 text-xs text-sky-400 hover:text-sky-300"
 							on:click={() => applyFilter({ status: 'all', view: 'all', query: '' })}
@@ -724,7 +724,7 @@
 											task.id
 										)
 											? 'border-sky-500 bg-sky-500/20 text-sky-300'
-											: 'border-slate-700 hover:border-slate-500'}"
+											: 'border-[rgb(var(--mv-border))] hover:border-[rgb(var(--mv-muted))]/40'}"
 										on:click|stopPropagation={() => toggleSelection(task.id)}
 										aria-label={selectedIds.has(task.id) ? 'Deselect task' : 'Select task'}
 									>
@@ -793,15 +793,15 @@
 <!-- Bulk action bar -->
 {#if selectionCount > 0}
 	<div
-		class="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/95 px-5 py-3 shadow-xl backdrop-blur"
+		class="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/95 px-5 py-3 shadow-xl backdrop-blur"
 	>
-		<span class="text-xs font-medium text-white">{selectionCount} selected</span>
+		<span class="text-xs font-medium text-[rgb(var(--mv-text))]">{selectionCount} selected</span>
 
 		<div class="flex items-center gap-1.5">
-			<label class="text-[10px] text-slate-400" for="bulk-move">Status</label>
+			<label class="text-[10px] text-[rgb(var(--mv-muted))]" for="bulk-move">Status</label>
 			<select
 				id="bulk-move"
-				class="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-white"
+				class="rounded-md border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-2 py-1 text-[11px] text-[rgb(var(--mv-text))]"
 				bind:value={bulkMoveStatus}
 			>
 				{#each bulkStatusOptions as opt (opt)}
@@ -816,13 +816,13 @@
 			</button>
 		</div>
 
-		<div class="h-4 w-px bg-slate-700"></div>
+		<div class="h-4 w-px bg-[rgb(var(--mv-panel-strong))]"></div>
 
 		<div class="flex items-center gap-1.5">
-			<label class="text-[10px] text-slate-400" for="bulk-priority">Priority</label>
+			<label class="text-[10px] text-[rgb(var(--mv-muted))]" for="bulk-priority">Priority</label>
 			<select
 				id="bulk-priority"
-				class="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-white"
+				class="rounded-md border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-2 py-1 text-[11px] text-[rgb(var(--mv-text))]"
 				bind:value={bulkPriority}
 			>
 				<option value={1}>P1</option>
@@ -839,14 +839,14 @@
 			</button>
 		</div>
 
-		<div class="h-4 w-px bg-slate-700"></div>
+		<div class="h-4 w-px bg-[rgb(var(--mv-panel-strong))]"></div>
 
 		<div class="flex items-center gap-1.5">
-			<label class="text-[10px] text-slate-400" for="bulk-labels">Labels</label>
+			<label class="text-[10px] text-[rgb(var(--mv-muted))]" for="bulk-labels">Labels</label>
 			<input
 				id="bulk-labels"
 				type="text"
-				class="w-24 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-white placeholder:text-slate-500"
+				class="w-24 rounded-md border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-2 py-1 text-[11px] text-[rgb(var(--mv-text))] placeholder:text-[rgb(var(--mv-muted))]/60"
 				placeholder="work, urgent"
 				bind:value={bulkLabelInput}
 				on:keydown={(e) => e.key === 'Enter' && bulkAddLabels()}
@@ -859,7 +859,7 @@
 			</button>
 		</div>
 
-		<div class="h-4 w-px bg-slate-700"></div>
+		<div class="h-4 w-px bg-[rgb(var(--mv-panel-strong))]"></div>
 
 		<button
 			class="rounded-md bg-red-500/20 px-2.5 py-1 text-[11px] text-red-200 hover:bg-red-500/30"
@@ -868,7 +868,7 @@
 			Trash
 		</button>
 
-		<button class="text-[11px] text-slate-400 hover:text-slate-200" on:click={clearSelection}>
+		<button class="text-[11px] text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]" on:click={clearSelection}>
 			Clear
 		</button>
 	</div>
@@ -877,16 +877,16 @@
 <!-- Delete confirmation dialog -->
 {#if showDeleteConfirm}
 	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-		<div class="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-6 shadow-xl">
-			<h3 class="text-sm font-semibold text-white">
+		<div role="alertdialog" class="w-full max-w-sm rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-6 shadow-xl">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">
 				Trash {selectionCount} task{selectionCount === 1 ? '' : 's'}?
 			</h3>
-			<p class="mt-2 text-xs text-slate-400">
+			<p class="mt-2 text-xs text-[rgb(var(--mv-muted))]">
 				Items will be moved to trash and can be restored later.
 			</p>
 			<div class="mt-4 flex justify-end gap-2">
 				<button
-					class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-500"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:border-[rgb(var(--mv-muted))]/40"
 					on:click={() => (showDeleteConfirm = false)}
 				>
 					Cancel

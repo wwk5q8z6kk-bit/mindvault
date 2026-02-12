@@ -51,6 +51,31 @@
 	import type { ModelRegistry } from '$lib/api/types';
 
 	let showServerExport = false;
+	let activeSection = 'appearance';
+	const settingSections = [
+		{ id: 'appearance', label: 'Appearance' },
+		{ id: 'connection', label: 'Connection' },
+		{ id: 'ai-provider', label: 'AI Provider' },
+		{ id: 'owner-profile', label: 'Owner Profile' },
+		{ id: 'credentials', label: 'Credentials' },
+		{ id: 'safeguards', label: 'Safeguards' },
+		{ id: 'shortcuts', label: 'Shortcuts' },
+		{ id: 'features', label: 'Feature Toggles' },
+		{ id: 'reminders', label: 'Reminders' },
+		{ id: 'triage', label: 'Inbox Triage' },
+		{ id: 'capture', label: 'Quick Capture' },
+		{ id: 'data', label: 'Data' },
+		{ id: 'about', label: 'About' }
+	];
+
+	function scrollToSection(id: string) {
+		const el = document.getElementById(id);
+		if (el) {
+			el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+			activeSection = id;
+		}
+	}
+
 
 	// Adapter status
 	let adapterStatuses: AdapterStatus[] = [];
@@ -723,43 +748,59 @@
 	}
 </script>
 
-<div class="mx-auto max-w-2xl">
-	<h2 class="text-lg font-semibold text-white">Settings</h2>
-	<p class="mt-1 text-xs text-slate-400">Configure MindVault preferences.</p>
+<div class="mx-auto max-w-4xl lg:flex lg:gap-6">
+	<!-- Section nav sidebar -->
+	<nav class="hidden lg:block lg:w-44 lg:shrink-0">
+		<div class="sticky top-6 space-y-0.5">
+			<h2 class="mb-3 text-sm font-semibold text-[rgb(var(--mv-text))]">Settings</h2>
+			{#each settingSections as section (section.id)}
+				<button
+					class="block w-full rounded-lg px-2.5 py-1.5 text-left text-xs transition {activeSection === section.id ? 'bg-[rgb(var(--mv-panel-strong))] text-[rgb(var(--mv-text))]' : 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]'}"
+					on:click={() => scrollToSection(section.id)}
+				>
+					{section.label}
+				</button>
+			{/each}
+		</div>
+	</nav>
 
-	<div class="mt-6 flex flex-col gap-6">
+	<div class="min-w-0 flex-1">
+		<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))] lg:hidden">Settings</h2>
+		<p class="mt-1 text-xs text-[rgb(var(--mv-muted))] lg:hidden">Configure MindVault preferences.</p>
+
+		<div class="mt-6 flex flex-col gap-6 lg:mt-0">
 		<!-- Theme -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-			<h3 class="text-sm font-semibold text-white">Appearance</h3>
-			<p class="mt-1 text-[11px] text-slate-400">Choose your preferred color scheme.</p>
+		<section id="appearance" class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5 scroll-mt-6">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Appearance</h3>
+			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">Choose your preferred color scheme.</p>
 			<div class="mt-3 flex gap-2">
 				{#each themeOptions as option (option.value)}
 					<button
 						class={`flex-1 rounded-lg border px-3 py-3 text-left transition ${
 							$themeMode === option.value
 								? 'border-sky-500/60 bg-sky-500/10'
-								: 'border-slate-800 hover:border-slate-600'
+								: 'border-[rgb(var(--mv-border))] hover:border-[rgb(var(--mv-border))]'
 						}`}
 						on:click={() => handleThemeChange(option.value)}
 					>
-						<div class="text-xs font-semibold text-white">{option.label}</div>
-						<div class="mt-0.5 text-[10px] text-slate-400">{option.description}</div>
+						<div class="text-xs font-semibold text-[rgb(var(--mv-text))]">{option.label}</div>
+						<div class="mt-0.5 text-xs text-[rgb(var(--mv-muted))]">{option.description}</div>
 					</button>
 				{/each}
 			</div>
 		</section>
 
 		<!-- Connection -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-			<h3 class="text-sm font-semibold text-white">Connection</h3>
-			<p class="mt-1 text-[11px] text-slate-400">Backend API endpoint for data sync.</p>
+		<section id="connection" class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5 scroll-mt-6">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Connection</h3>
+			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">Backend API endpoint for data sync.</p>
 			<div class="mt-3">
 				<input
-					class="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
+					class="w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))] outline-none focus:border-sky-500"
 					value={apiEndpoint}
 					readonly
 				/>
-				<p class="mt-1 text-[10px] text-slate-500">
+				<p class="mt-1 text-xs text-[rgb(var(--mv-muted))]/60">
 					Set via VITE_API_BASE_URL environment variable.
 				</p>
 			</div>
@@ -771,21 +812,21 @@
 				>
 					{isSyncing ? 'Syncing...' : 'Force Sync Now'}
 				</button>
-				<p class="mt-1 text-[10px] text-slate-500">
+				<p class="mt-1 text-xs text-[rgb(var(--mv-muted))]/60">
 					Flush offline queue and re-fetch all data from server.
 				</p>
 			</div>
 		</section>
 
 			<!-- Connected Adapters -->
-			<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+			<section class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5">
 			<div class="flex items-center justify-between">
 				<div>
-					<h3 class="text-sm font-semibold text-white">Connected Adapters</h3>
-					<p class="mt-1 text-[11px] text-slate-400">External integrations (Slack, email, webhooks, etc.)</p>
+					<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Connected Adapters</h3>
+					<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">External integrations (Slack, email, webhooks, etc.)</p>
 				</div>
 				<button
-					class="rounded-lg border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 					on:click={loadAdapterStatuses}
 					disabled={adapterStatusLoading}
 				>
@@ -793,30 +834,30 @@
 				</button>
 			</div>
 			{#if adapterStatusLoading && adapterStatuses.length === 0}
-				<div class="mt-3 text-xs text-slate-500">Checking adapter status...</div>
+				<div class="mt-3 text-xs text-[rgb(var(--mv-muted))]/60">Checking adapter status...</div>
 			{:else if adapterStatuses.length === 0}
-				<div class="mt-3 rounded-lg border border-dashed border-slate-800 p-3 text-center text-[11px] text-slate-500">
+				<div class="mt-3 rounded-lg border border-dashed border-[rgb(var(--mv-border))] p-3 text-center text-[11px] text-[rgb(var(--mv-muted))]/60">
 					No adapters configured. Adapters connect MindVault to external services.
 				</div>
 			{:else}
 				<div class="mt-3 space-y-2">
 					{#each adapterStatuses as adapter (adapter.name)}
-						<div class="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+						<div class="flex items-center gap-3 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/60 px-3 py-2">
 							<div class="h-2 w-2 rounded-full {adapter.connected ? 'bg-emerald-400' : 'bg-red-400'}"></div>
 							<div class="flex-1 min-w-0">
 								<div class="flex items-center gap-2">
-									<span class="text-xs font-medium text-white">{adapter.name}</span>
-									<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-400">{adapter.adapter_type}</span>
+									<span class="text-xs font-medium text-[rgb(var(--mv-text))]">{adapter.name}</span>
+									<span class="rounded bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-[9px] text-[rgb(var(--mv-muted))]">{adapter.adapter_type}</span>
 								</div>
 								{#if adapter.error}
-									<p class="mt-0.5 text-[10px] text-red-400 truncate">{adapter.error}</p>
+									<p class="mt-0.5 text-xs text-red-400 truncate">{adapter.error}</p>
 								{:else if adapter.last_receive}
-									<p class="mt-0.5 text-[10px] text-slate-500">
+									<p class="mt-0.5 text-xs text-[rgb(var(--mv-muted))]/60">
 										Last activity: {new Date(adapter.last_receive).toLocaleString()}
 									</p>
 								{/if}
 							</div>
-							<span class="text-[10px] {adapter.connected ? 'text-emerald-400' : 'text-red-400'}">
+							<span class="text-xs {adapter.connected ? 'text-emerald-400' : 'text-red-400'}">
 								{adapter.connected ? 'Connected' : 'Disconnected'}
 							</span>
 						</div>
@@ -829,20 +870,20 @@
 			<McpConnectorsPanel />
 
 		<!-- AI Provider (BYOK) -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-			<h3 class="text-sm font-semibold text-white">AI Provider</h3>
-			<p class="mt-1 text-[11px] text-slate-400">
+		<section id="ai-provider" class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5 scroll-mt-6">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">AI Provider</h3>
+			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">
 				Bring your own API key or use a local LLM. Leave as "Server Default" to use the backend's
 				configured provider.
 			</p>
 
 			{#if backendModels}
 				<div class="mt-3 rounded-lg border border-sky-500/20 bg-sky-500/5 px-3 py-2">
-					<div class="text-[10px] uppercase tracking-wider text-sky-400">Server Embedding Model</div>
-					<div class="mt-1 flex items-center gap-2 text-xs text-white">
+					<div class="text-xs uppercase tracking-wider text-sky-400">Server Embedding Model</div>
+					<div class="mt-1 flex items-center gap-2 text-xs text-[rgb(var(--mv-text))]">
 						<span class="font-medium">{backendModels.embedding.provider}</span>
-						<span class="text-slate-500">/</span>
-						<span class="font-mono text-slate-300">{backendModels.embedding.model}</span>
+						<span class="text-[rgb(var(--mv-muted))]/60">/</span>
+						<span class="font-mono text-[rgb(var(--mv-muted))]">{backendModels.embedding.model}</span>
 					</div>
 				</div>
 			{/if}
@@ -853,14 +894,14 @@
 						class={`rounded-lg border px-3 py-2.5 text-left transition ${
 							aiProvider === provider.value
 								? 'border-sky-500/60 bg-sky-500/10'
-								: 'border-slate-800 hover:border-slate-600'
+								: 'border-[rgb(var(--mv-border))] hover:border-[rgb(var(--mv-border))]'
 						}`}
 						on:click={() => {
 							aiProvider = provider.value;
 						}}
 					>
-						<div class="text-xs font-semibold text-white">{provider.label}</div>
-						<div class="mt-0.5 text-[10px] text-slate-400">{provider.description}</div>
+						<div class="text-xs font-semibold text-[rgb(var(--mv-text))]">{provider.label}</div>
+						<div class="mt-0.5 text-xs text-[rgb(var(--mv-muted))]">{provider.description}</div>
 					</button>
 				{/each}
 			</div>
@@ -868,12 +909,12 @@
 			{#if aiProvider !== 'default'}
 				<div class="mt-3 flex flex-col gap-3">
 					<div>
-						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="ai-model"
+						<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="ai-model"
 							>Model</label
 						>
 						<input
 							id="ai-model"
-							class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
+							class="mt-1 w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))] outline-none focus:border-sky-500"
 							placeholder={aiProvider === 'openai'
 								? 'gpt-4o'
 								: aiProvider === 'anthropic'
@@ -883,19 +924,19 @@
 						/>
 					</div>
 					<div>
-						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="ai-key"
+						<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="ai-key"
 							>API Key</label
 						>
 						<div class="relative mt-1">
 							<input
 								id="ai-key"
-								class="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 pr-16 text-xs text-white outline-none focus:border-sky-500"
+								class="w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 pr-16 text-xs text-[rgb(var(--mv-text))] outline-none focus:border-sky-500"
 								type={showApiKey ? 'text' : 'password'}
 								placeholder="sk-..."
 								bind:value={aiApiKey}
 							/>
 							<button
-								class="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 hover:text-white"
+								class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]"
 								on:click={() => {
 									showApiKey = !showApiKey;
 								}}
@@ -906,12 +947,12 @@
 					</div>
 					{#if aiProvider === 'ollama'}
 						<div>
-							<label class="text-[10px] uppercase tracking-wider text-slate-500" for="ai-url"
+							<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="ai-url"
 								>Base URL</label
 							>
 							<input
 								id="ai-url"
-								class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
+								class="mt-1 w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))] outline-none focus:border-sky-500"
 								placeholder="http://localhost:11434"
 								bind:value={aiBaseUrl}
 							/>
@@ -922,14 +963,14 @@
 
 			<div class="mt-3 flex gap-2">
 				<button
-					class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400"
+					class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
 					on:click={saveAiSettings}
 				>
 					Save AI settings
 				</button>
 				{#if aiProvider !== 'default'}
 					<button
-						class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
+						class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 						on:click={clearAiSettings}
 					>
 						Reset to default
@@ -939,9 +980,9 @@
 		</section>
 
 		<!-- Owner Profile -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-			<h3 class="text-sm font-semibold text-white">Owner Profile</h3>
-			<p class="mt-1 text-[11px] text-slate-400">
+		<section id="owner-profile" class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5 scroll-mt-6">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Owner Profile</h3>
+			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">
 				Your identity for signing nodes, email headers, and federation.
 			</p>
 			<a href="/settings/profile" class="mt-1 inline-block text-xs text-sky-400 hover:text-sky-300"
@@ -950,11 +991,11 @@
 		</section>
 
 		<!-- Server Credentials (Keychain) -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+		<section class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5">
 			<div class="flex items-center justify-between">
 				<div>
-					<h3 class="text-sm font-semibold text-white">Server Credentials</h3>
-					<p class="mt-1 text-[11px] text-slate-400">
+					<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Server Credentials</h3>
+					<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">
 						API keys and secrets stored securely via the server's credential backends (OS
 						Keychain, environment variables).
 					</p>
@@ -963,7 +1004,7 @@
 					>
 				</div>
 				<button
-					class="rounded-lg border border-slate-700 px-2.5 py-1.5 text-[10px] text-slate-300 hover:bg-slate-800"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-2.5 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 					on:click={loadCredentials}
 					disabled={credLoading}
 				>
@@ -983,13 +1024,13 @@
 			{#if credBackends.length > 0}
 				<div class="mt-3 space-y-2">
 					{#each credBackends as backend (backend.name)}
-						<div class="rounded-lg border border-slate-800/60 px-3 py-2.5">
+						<div class="rounded-lg border border-[rgb(var(--mv-border))]/60 px-3 py-2.5">
 							<div class="flex items-center gap-2">
 								<span
 									class={`h-2 w-2 rounded-full ${backend.available ? 'bg-emerald-400' : 'bg-slate-600'}`}
 								></span>
-								<span class="text-xs font-medium text-white">{backend.name}</span>
-								<span class="text-[10px] text-slate-500"
+								<span class="text-xs font-medium text-[rgb(var(--mv-text))]">{backend.name}</span>
+								<span class="text-xs text-[rgb(var(--mv-muted))]/60"
 									>{backend.available ? 'available' : 'unavailable'}</span
 								>
 							</div>
@@ -997,11 +1038,11 @@
 								<div class="mt-2 flex flex-wrap gap-1.5">
 									{#each backend.keys as key (key)}
 										<span
-											class="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-[10px] text-slate-300"
+											class="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-2 py-0.5 text-xs text-[rgb(var(--mv-muted))]"
 										>
 											{key}
 											<button
-												class="ml-0.5 text-slate-500 hover:text-red-400"
+												class="ml-0.5 text-[rgb(var(--mv-muted))]/60 hover:text-red-400"
 												title="Delete {key}"
 												disabled={deletingKey === key}
 												on:click={() => handleDeleteSecret(key)}
@@ -1019,16 +1060,16 @@
 
 			<!-- Known secrets quick-add -->
 			<div class="mt-4">
-				<h4 class="text-[10px] uppercase tracking-wider text-slate-500">Add Secret</h4>
+				<h4 class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60">Add Secret</h4>
 				<div class="mt-2 flex flex-wrap gap-1.5">
 					{#each KNOWN_SECRETS as secret (secret.key)}
 						<button
-							class={`rounded-md border px-2 py-1 text-[10px] transition ${
+							class={`rounded-md border px-2 py-1 text-xs transition ${
 								storedKeys.has(secret.key)
 									? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
 									: addSecretKey === secret.key
 										? 'border-sky-500/60 bg-sky-500/10 text-sky-300'
-										: 'border-slate-700 text-slate-400 hover:border-slate-500'
+										: 'border-[rgb(var(--mv-border))] text-[rgb(var(--mv-muted))] hover:border-slate-500'
 							}`}
 							title={secret.description}
 							disabled={storedKeys.has(secret.key)}
@@ -1049,19 +1090,19 @@
 
 				<div class="mt-3 flex gap-2">
 					<input
-						class="flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
+						class="flex-1 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))] outline-none focus:border-sky-500"
 						placeholder="Key name (e.g. OPENAI_API_KEY)"
 						bind:value={addSecretKey}
 					/>
 					<div class="relative flex-1">
 						<input
-							class="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 pr-14 text-xs text-white outline-none focus:border-sky-500"
+							class="w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 pr-14 text-xs text-[rgb(var(--mv-text))] outline-none focus:border-sky-500"
 							type={showSecretValue ? 'text' : 'password'}
 							placeholder="Secret value"
 							bind:value={addSecretValue}
 						/>
 						<button
-							class="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 hover:text-white"
+							class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]"
 							on:click={() => {
 								showSecretValue = !showSecretValue;
 							}}
@@ -1070,7 +1111,7 @@
 						</button>
 					</div>
 					<button
-						class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+						class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400 disabled:opacity-50"
 						disabled={!addSecretKey || !addSecretValue || addSecretBusy}
 						on:click={handleAddSecret}
 					>
@@ -1081,16 +1122,16 @@
 		</section>
 
 		<!-- Blocked Senders -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+		<section class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5">
 			<div class="flex items-center justify-between">
 				<div>
-					<h3 class="text-sm font-semibold text-white">Blocked Senders</h3>
-					<p class="mt-1 text-[11px] text-slate-400">
+					<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Blocked Senders</h3>
+					<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">
 						Block inbound relay messages or proposal senders by pattern (glob match).
 					</p>
 				</div>
 				<button
-					class="rounded-lg border border-slate-700 px-2.5 py-1.5 text-[10px] text-slate-300 hover:bg-slate-800"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-2.5 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 					on:click={loadBlockedSenders}
 					disabled={blockedLoading}
 				>
@@ -1108,19 +1149,19 @@
 
 			<div class="mt-3 space-y-2">
 				{#if blockedSenders.length === 0}
-					<p class="text-xs text-slate-500">No blocked senders configured.</p>
+					<p class="text-xs text-[rgb(var(--mv-muted))]/60">No blocked senders configured.</p>
 				{:else}
 					{#each blockedSenders as sender (sender.id)}
-						<div class="rounded-lg border border-slate-800/60 px-3 py-2.5">
+						<div class="rounded-lg border border-[rgb(var(--mv-border))]/60 px-3 py-2.5">
 							<div class="flex items-center justify-between gap-2">
 								<div class="min-w-0">
 									<div class="flex items-center gap-2">
-										<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300">
+										<span class="rounded bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-xs text-[rgb(var(--mv-muted))]">
 											{sender.sender_type}
 										</span>
-										<span class="truncate text-xs text-white">{sender.sender_pattern}</span>
+										<span class="truncate text-xs text-[rgb(var(--mv-text))]">{sender.sender_pattern}</span>
 									</div>
-									<div class="mt-1 text-[10px] text-slate-500">
+									<div class="mt-1 text-xs text-[rgb(var(--mv-muted))]/60">
 										{#if sender.reason}
 											Reason: {sender.reason}
 										{:else}
@@ -1132,7 +1173,7 @@
 									</div>
 								</div>
 								<button
-									class="rounded-md border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+									class="rounded-md border border-[rgb(var(--mv-border))] px-2 py-1 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))] disabled:opacity-50"
 									on:click={() => handleRemoveBlocked(sender.id)}
 									disabled={removingBlockedId === sender.id}
 								>
@@ -1144,16 +1185,16 @@
 				{/if}
 			</div>
 
-			<div class="mt-4 border-t border-slate-800/60 pt-4">
-				<h4 class="text-[10px] uppercase tracking-wider text-slate-500">Add Block</h4>
+			<div class="mt-4 border-t border-[rgb(var(--mv-border))]/60 pt-4">
+				<h4 class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60">Add Block</h4>
 				<div class="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
 					<div>
-						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="blocked-type"
+						<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="blocked-type"
 							>Sender Type</label
 						>
 						<select
 							id="blocked-type"
-							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-xs text-slate-200"
 							bind:value={newBlockedType}
 						>
 							<option value="relay">Relay</option>
@@ -1164,41 +1205,41 @@
 						</select>
 					</div>
 					<div>
-						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="blocked-pattern"
+						<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="blocked-pattern"
 							>Pattern</label
 						>
 						<input
 							id="blocked-pattern"
-							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-xs text-slate-200"
 							placeholder="e.g. alice@example.com or *spam*"
 							bind:value={newBlockedPattern}
 						/>
 					</div>
 					<div>
-						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="blocked-reason"
+						<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="blocked-reason"
 							>Reason (optional)</label
 						>
 						<input
 							id="blocked-reason"
-							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-xs text-slate-200"
 							placeholder="Why this sender is blocked"
 							bind:value={newBlockedReason}
 						/>
 					</div>
 					<div>
-						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="blocked-expires"
+						<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="blocked-expires"
 							>Expires (optional)</label
 						>
 						<input
 							id="blocked-expires"
 							type="datetime-local"
-							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-xs text-slate-200"
 							bind:value={newBlockedExpires}
 						/>
 					</div>
 				</div>
 				<button
-					class="mt-3 rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+					class="mt-3 rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400 disabled:opacity-50"
 					on:click={handleAddBlocked}
 					disabled={addingBlocked || !newBlockedPattern.trim()}
 				>
@@ -1208,16 +1249,16 @@
 		</section>
 
 		<!-- Auto-Approve Rules -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
+		<section class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5">
 			<div class="flex items-center justify-between">
 				<div>
-					<h3 class="text-sm font-semibold text-white">Auto-Approve Rules</h3>
-					<p class="mt-1 text-[11px] text-slate-400">
+					<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Auto-Approve Rules</h3>
+					<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">
 						Automatically approve matching proposals. Leave sender/actions empty to match any.
 					</p>
 				</div>
 				<button
-					class="rounded-lg border border-slate-700 px-2.5 py-1.5 text-[10px] text-slate-300 hover:bg-slate-800"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-2.5 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 					on:click={loadAutoApproveRules}
 					disabled={autoApproveLoading}
 				>
@@ -1235,43 +1276,43 @@
 
 			<div class="mt-3 space-y-2">
 				{#if autoApproveRules.length === 0}
-					<p class="text-xs text-slate-500">No auto-approve rules configured.</p>
+					<p class="text-xs text-[rgb(var(--mv-muted))]/60">No auto-approve rules configured.</p>
 				{:else}
 					{#each autoApproveRules as rule (rule.id)}
-						<div class="rounded-lg border border-slate-800/60 px-3 py-2.5">
+						<div class="rounded-lg border border-[rgb(var(--mv-border))]/60 px-3 py-2.5">
 							<div class="flex items-center justify-between gap-3">
 								<div class="min-w-0">
 									<div class="flex items-center gap-2">
-										<span class="truncate text-xs font-semibold text-white">{rule.name}</span>
+										<span class="truncate text-xs font-semibold text-[rgb(var(--mv-text))]">{rule.name}</span>
 										<span
-											class="rounded px-1.5 py-0.5 text-[10px] {rule.enabled
+											class="rounded px-1.5 py-0.5 text-xs {rule.enabled
 												? 'bg-emerald-500/15 text-emerald-300'
-												: 'bg-slate-700 text-slate-400'}"
+												: 'bg-slate-700 text-[rgb(var(--mv-muted))]'}"
 										>
 											{rule.enabled ? 'enabled' : 'disabled'}
 										</span>
 									</div>
-									<div class="mt-1 text-[10px] text-slate-500">
+									<div class="mt-1 text-xs text-[rgb(var(--mv-muted))]/60">
 										Sender: {formatSenderPattern(rule)} · Actions: {formatActionTypes(rule)} · Min
 										conf: {(rule.min_confidence * 100).toFixed(0)}%
 									</div>
 								</div>
 								<div class="flex items-center gap-2">
 									<button
-										class="rounded-md border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+										class="rounded-md border border-[rgb(var(--mv-border))] px-2 py-1 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))] disabled:opacity-50"
 										on:click={() => handleToggleAutoApprove(rule)}
 										disabled={savingAutoApproveId === rule.id}
 									>
 										{rule.enabled ? 'Disable' : 'Enable'}
 									</button>
 									<button
-										class="rounded-md border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800"
+										class="rounded-md border border-[rgb(var(--mv-border))] px-2 py-1 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 										on:click={() => startEditAutoApprove(rule)}
 									>
 										Edit
 									</button>
 									<button
-										class="rounded-md border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+										class="rounded-md border border-[rgb(var(--mv-border))] px-2 py-1 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))] disabled:opacity-50"
 										on:click={() => handleRemoveAutoApprove(rule.id)}
 										disabled={removingAutoApproveId === rule.id}
 									>
@@ -1283,42 +1324,42 @@
 							{#if editingAutoApproveId === rule.id}
 								<div class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
 									<div>
-										<label class="text-[10px] uppercase tracking-wider text-slate-500" for="auto-name"
+										<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="auto-name"
 											>Name</label
 										>
 										<input
 											id="auto-name"
-											class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+											class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-xs text-slate-200"
 											bind:value={editAutoApprove.name}
 										/>
 									</div>
 									<div>
-										<label class="text-[10px] uppercase tracking-wider text-slate-500" for="auto-sender"
+										<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="auto-sender"
 											>Sender Pattern</label
 										>
 										<input
 											id="auto-sender"
-											class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+											class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-xs text-slate-200"
 											placeholder="e.g. relay* or agent-*"
 											bind:value={editAutoApprove.sender_pattern}
 										/>
 									</div>
 									<div>
 										<label
-											class="text-[10px] uppercase tracking-wider text-slate-500"
+											class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60"
 											for="auto-actions"
 											>Action Types</label
 										>
 										<input
 											id="auto-actions"
-											class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+											class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-xs text-slate-200"
 											placeholder="relay.reply, create_node"
 											bind:value={editAutoApprove.action_types}
 										/>
 									</div>
 									<div>
 										<label
-											class="text-[10px] uppercase tracking-wider text-slate-500"
+											class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60"
 											for="auto-confidence"
 											>Min Confidence</label
 										>
@@ -1328,21 +1369,21 @@
 											min="0"
 											max="1"
 											step="0.05"
-											class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+											class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-xs text-slate-200"
 											bind:value={editAutoApprove.min_confidence}
 										/>
 									</div>
 								</div>
 								<div class="mt-3 flex gap-2">
 									<button
-										class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+										class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400 disabled:opacity-50"
 										on:click={() => handleSaveAutoApprove(rule)}
 										disabled={savingAutoApproveId === rule.id}
 									>
 										{savingAutoApproveId === rule.id ? 'Saving...' : 'Save'}
 									</button>
 									<button
-										class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
+										class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 										on:click={cancelEditAutoApprove}
 									>
 										Cancel
@@ -1354,44 +1395,44 @@
 				{/if}
 			</div>
 
-			<div class="mt-4 border-t border-slate-800/60 pt-4">
-				<h4 class="text-[10px] uppercase tracking-wider text-slate-500">Add Rule</h4>
+			<div class="mt-4 border-t border-[rgb(var(--mv-border))]/60 pt-4">
+				<h4 class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60">Add Rule</h4>
 				<div class="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
 					<div>
-						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="new-auto-name"
+						<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="new-auto-name"
 							>Name</label
 						>
 						<input
 							id="new-auto-name"
-							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-xs text-slate-200"
 							placeholder="Relay suggestions"
 							bind:value={newAutoApproveName}
 						/>
 					</div>
 					<div>
-						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="new-auto-sender"
+						<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="new-auto-sender"
 							>Sender Pattern</label
 						>
 						<input
 							id="new-auto-sender"
-							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-xs text-slate-200"
 							placeholder="relay* or agent-*"
 							bind:value={newAutoApproveSender}
 						/>
 					</div>
 					<div>
-						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="new-auto-actions"
+						<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="new-auto-actions"
 							>Action Types</label
 						>
 						<input
 							id="new-auto-actions"
-							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-xs text-slate-200"
 							placeholder="relay.reply, create_node"
 							bind:value={newAutoApproveActions}
 						/>
 					</div>
 					<div>
-						<label class="text-[10px] uppercase tracking-wider text-slate-500" for="new-auto-confidence"
+						<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="new-auto-confidence"
 							>Min Confidence</label
 						>
 						<input
@@ -1400,13 +1441,13 @@
 							min="0"
 							max="1"
 							step="0.05"
-							class="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+							class="mt-1 w-full rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-xs text-slate-200"
 							bind:value={newAutoApproveConfidence}
 						/>
 					</div>
 				</div>
 				<button
-					class="mt-3 rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+					class="mt-3 rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400 disabled:opacity-50"
 					on:click={handleAddAutoApprove}
 					disabled={addingAutoApprove || !newAutoApproveName.trim()}
 				>
@@ -1416,35 +1457,35 @@
 		</section>
 
 		<!-- Keyboard shortcuts -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-			<h3 class="text-sm font-semibold text-white">Keyboard Shortcuts</h3>
+		<section id="shortcuts" class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5 scroll-mt-6">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Keyboard Shortcuts</h3>
 			<div class="mt-3 grid grid-cols-2 gap-2 text-xs">
 				{#each [['Cmd/Ctrl + K', 'Command palette'], ['Cmd/Ctrl + Shift + N', 'Quick Capture task (global in desktop app)'], ['Cmd/Ctrl + Shift + M', 'Quick Capture note (global in desktop app)'], ['Cmd/Ctrl + Shift + L', 'Quick Capture link (global in desktop app)'], ['Cmd/Ctrl + Shift + V', 'Quick Capture voice (global in desktop app)'], ['Cmd/Ctrl + Shift + I', 'Quick Capture task to Inbox (global in desktop app)'], ['Cmd/Ctrl + Shift + D', 'Quick Capture note to Daily note (global in desktop app)'], ['Cmd/Ctrl + Shift + P', 'Quick Capture task to Planned (global in desktop app)'], ['Cmd/Ctrl + Shift + R', 'Quick Capture task to Review (global in desktop app)'], ['Cmd/Ctrl + Shift + 1..5', 'Custom quick capture preset (configurable below)'], ['N', 'New task (in tasks/kanban)'], ['Cmd/Ctrl + B', 'Bold (in editor)'], ['Cmd/Ctrl + I', 'Italic (in editor)'], ['Cmd/Ctrl + K', 'Insert link (in editor)'], ['Cmd/Ctrl + S', 'Save (in editor)'], ['Cmd/Ctrl + Z', 'Undo (in editor)'], ['Cmd/Ctrl + F', 'Search in editor'], ['Cmd/Ctrl + H', 'Search & Replace'], ['/', 'Slash commands (in editor)'], ['Escape', 'Close modals/menus']] as [shortcut, action]}
-					<div class="flex items-center gap-2 rounded-lg border border-slate-800/60 px-3 py-2">
+					<div class="flex items-center gap-2 rounded-lg border border-[rgb(var(--mv-border))]/60 px-3 py-2">
 						<kbd
-							class="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300"
+							class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-xs text-[rgb(var(--mv-muted))]"
 							>{shortcut}</kbd
 						>
-						<span class="text-slate-400">{action}</span>
+						<span class="text-[rgb(var(--mv-muted))]">{action}</span>
 					</div>
 				{/each}
 			</div>
 		</section>
 
 		<!-- Feature Toggles -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-			<h3 class="text-sm font-semibold text-white">Feature Toggles</h3>
-			<p class="mt-1 text-[11px] text-slate-400">
+		<section id="features" class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5 scroll-mt-6">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Feature Toggles</h3>
+			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">
 				Enable or disable optional features. Changes apply immediately.
 			</p>
 			<div class="mt-3 grid grid-cols-1 gap-2">
 				{#each featureStates as feature (feature.key)}
 					<div
-						class="flex items-center justify-between rounded-lg border border-slate-800/60 px-3 py-2.5"
+						class="flex items-center justify-between rounded-lg border border-[rgb(var(--mv-border))]/60 px-3 py-2.5"
 					>
 						<div>
-							<div class="text-xs font-medium text-white">{feature.label}</div>
-							<div class="text-[10px] text-slate-400">{feature.description}</div>
+							<div class="text-xs font-medium text-[rgb(var(--mv-text))]">{feature.label}</div>
+							<div class="text-xs text-[rgb(var(--mv-muted))]">{feature.description}</div>
 						</div>
 						<button
 							class="relative h-5 w-9 rounded-full transition {feature.enabled
@@ -1465,19 +1506,19 @@
 		</section>
 
 		<!-- Notification Settings -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-			<h3 class="text-sm font-semibold text-white">Task Reminders</h3>
-			<p class="mt-1 text-[11px] text-slate-400">
+		<section id="reminders" class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5 scroll-mt-6">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Task Reminders</h3>
+			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">
 				Configure when and how you get reminded about due tasks.
 			</p>
 			<div class="mt-3 flex flex-col gap-3">
 				<div>
-					<label class="text-[10px] uppercase tracking-wider text-slate-500" for="notif-lead"
+					<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="notif-lead"
 						>Remind me this many minutes before due</label
 					>
 					<select
 						id="notif-lead"
-						class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white"
+						class="mt-1 w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))]"
 						bind:value={notifLeadMinutes}
 					>
 						<option value="5">5 minutes</option>
@@ -1489,12 +1530,12 @@
 					</select>
 				</div>
 				<div>
-					<label class="text-[10px] uppercase tracking-wider text-slate-500" for="notif-interval"
+					<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="notif-interval"
 						>Check frequency</label
 					>
 					<select
 						id="notif-interval"
-						class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white"
+						class="mt-1 w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))]"
 						bind:value={notifCheckInterval}
 					>
 						<option value="30000">Every 30 seconds</option>
@@ -1504,12 +1545,12 @@
 					</select>
 				</div>
 				<div>
-					<label class="text-[10px] uppercase tracking-wider text-slate-500" for="notif-click-action"
+					<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="notif-click-action"
 						>When a reminder is clicked</label
 					>
 					<select
 						id="notif-click-action"
-						class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white"
+						class="mt-1 w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))]"
 						bind:value={notifClickAction}
 					>
 						<option value="inbox">Open task capture in Inbox</option>
@@ -1518,12 +1559,12 @@
 						<option value="review">Open task capture in Review</option>
 						<option value="none">Do nothing</option>
 					</select>
-					<p class="mt-1 text-[10px] text-slate-500">
+					<p class="mt-1 text-xs text-[rgb(var(--mv-muted))]/60">
 						Applies to due/overdue notifications. Capture opens with a follow-up prefill.
 					</p>
 				</div>
 				<button
-					class="self-start rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400"
+					class="self-start rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
 					on:click={saveNotificationSettings}
 				>
 					Save reminder settings
@@ -1532,13 +1573,13 @@
 		</section>
 
 		<!-- Inbox AI triage -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-			<h3 class="text-sm font-semibold text-white">Inbox AI Triage</h3>
-			<p class="mt-1 text-[11px] text-slate-400">
+		<section id="triage" class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5 scroll-mt-6">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Inbox AI Triage</h3>
+			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">
 				Control how Smart Inbox runs and applies AI triage suggestions.
 			</p>
 			<div class="mt-3 flex flex-col gap-3">
-				<label class="flex items-center gap-2 text-xs text-slate-300">
+				<label class="flex items-center gap-2 text-xs text-[rgb(var(--mv-muted))]">
 					<input
 						type="checkbox"
 						checked={inboxTriageAutoRunOnOpen}
@@ -1548,12 +1589,12 @@
 					Auto-run AI triage when opening Smart Inbox
 				</label>
 				<div>
-					<label class="text-[10px] uppercase tracking-wider text-slate-500" for="inbox-triage-limit"
+					<label class="text-xs uppercase tracking-wider text-[rgb(var(--mv-muted))]/60" for="inbox-triage-limit"
 						>Default "Apply Top" count</label
 					>
 					<select
 						id="inbox-triage-limit"
-						class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white"
+						class="mt-1 w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))]"
 						bind:value={inboxTriageDefaultApplyLimit}
 					>
 						{#each ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] as option}
@@ -1562,7 +1603,7 @@
 					</select>
 				</div>
 				<button
-					class="self-start rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400"
+					class="self-start rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
 					on:click={saveInboxTriagePreferences}
 				>
 					Save inbox triage settings
@@ -1571,22 +1612,22 @@
 		</section>
 
 		<!-- Quick Capture Presets -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-			<h3 class="text-sm font-semibold text-white">Quick Capture Presets</h3>
-			<p class="mt-1 text-[11px] text-slate-400">
+		<section id="capture" class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5 scroll-mt-6">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Quick Capture Presets</h3>
+			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">
 				Create reusable capture presets and optionally assign `Cmd/Ctrl + Shift + 1..5` shortcuts.
 			</p>
 			<div class="mt-3 space-y-3">
 				{#if capturePresets.length === 0}
-					<p class="rounded-lg border border-dashed border-slate-700 px-3 py-2 text-xs text-slate-500">
+					<p class="rounded-lg border border-dashed border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))]/60">
 						No custom presets yet.
 					</p>
 				{:else}
 					{#each capturePresets as preset (preset.id)}
-						<div class="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+						<div class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/60 p-3">
 							<div class="flex items-center gap-2">
 								<input
-									class="flex-1 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white"
+									class="flex-1 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-2 py-1.5 text-xs text-[rgb(var(--mv-text))]"
 									value={preset.name}
 									on:input={(event) =>
 										updateCapturePreset(preset.id, {
@@ -1594,7 +1635,7 @@
 										})}
 									placeholder="Preset name"
 								/>
-								<label class="flex items-center gap-1 text-[11px] text-slate-400">
+								<label class="flex items-center gap-1 text-[11px] text-[rgb(var(--mv-muted))]">
 									<input
 										type="checkbox"
 										checked={preset.enabled}
@@ -1614,7 +1655,7 @@
 							</div>
 							<div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
 								<select
-									class="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white"
+									class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-2 py-1.5 text-xs text-[rgb(var(--mv-text))]"
 									value={preset.mode}
 									on:change={(event) =>
 										updateCapturePreset(preset.id, {
@@ -1626,7 +1667,7 @@
 									{/each}
 								</select>
 								<select
-									class="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white"
+									class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-2 py-1.5 text-xs text-[rgb(var(--mv-text))]"
 									value={preset.target}
 									on:change={(event) =>
 										updateCapturePreset(preset.id, {
@@ -1638,7 +1679,7 @@
 									{/each}
 								</select>
 								<select
-									class="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white"
+									class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-2 py-1.5 text-xs text-[rgb(var(--mv-text))]"
 									value={preset.shortcut}
 									on:change={(event) =>
 										updateCapturePreset(preset.id, {
@@ -1655,7 +1696,7 @@
 								</select>
 							</div>
 							<input
-								class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white"
+								class="mt-2 w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-2 py-1.5 text-xs text-[rgb(var(--mv-text))]"
 								value={preset.prefill}
 								on:input={(event) =>
 									updateCapturePreset(preset.id, {
@@ -1669,13 +1710,13 @@
 			</div>
 			<div class="mt-3 flex items-center gap-2">
 				<button
-					class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800"
+					class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-slate-200 hover:bg-[rgb(var(--mv-panel-strong))]"
 					on:click={addCapturePreset}
 				>
 					Add preset
 				</button>
 				<button
-					class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-400"
+					class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
 					on:click={saveCapturePresetSettings}
 				>
 					Save presets
@@ -1684,16 +1725,16 @@
 		</section>
 
 		<!-- Data management -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-			<h3 class="text-sm font-semibold text-white">Data Management</h3>
-			<p class="mt-1 text-[11px] text-slate-400">Export, import, or clear local data.</p>
+		<section id="data" class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5 scroll-mt-6">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Data Management</h3>
+			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">Export, import, or clear local data.</p>
 			<div class="mt-3 mb-3 flex flex-wrap gap-2">
 				<a
 					href="/settings/views"
-					class="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-700"
+					class="inline-flex items-center gap-2 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-slate-200 transition hover:bg-[rgb(var(--mv-panel-strong))]/80"
 				>
 					<svg
-						class="h-3.5 w-3.5 text-slate-400"
+						class="h-3.5 w-3.5 text-[rgb(var(--mv-muted))]"
 						fill="none"
 						stroke="currentColor"
 						viewBox="0 0 24 24"
@@ -1709,10 +1750,10 @@
 				</a>
 				<a
 					href="/settings/audit"
-					class="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-700"
+					class="inline-flex items-center gap-2 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-slate-200 transition hover:bg-[rgb(var(--mv-panel-strong))]/80"
 				>
 					<svg
-						class="h-3.5 w-3.5 text-slate-400"
+						class="h-3.5 w-3.5 text-[rgb(var(--mv-muted))]"
 						fill="none"
 						stroke="currentColor"
 						viewBox="0 0 24 24"
@@ -1729,21 +1770,21 @@
 			</div>
 			<div class="mt-3 flex flex-wrap gap-2">
 				<button
-					class="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
+					class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-slate-200 transition hover:bg-[rgb(var(--mv-panel-strong))]/80 disabled:opacity-50"
 					on:click={exportData}
 					disabled={isExporting}
 				>
 					{isExporting ? 'Exporting...' : 'Export JSON'}
 				</button>
 				<button
-					class="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
+					class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-slate-200 transition hover:bg-[rgb(var(--mv-panel-strong))]/80 disabled:opacity-50"
 					on:click={exportMarkdown}
 					disabled={isExportingMd}
 				>
 					{isExportingMd ? 'Exporting...' : 'Export Markdown'}
 				</button>
 				<label
-					class="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-700 cursor-pointer"
+					class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-slate-200 transition hover:bg-[rgb(var(--mv-panel-strong))]/80 cursor-pointer"
 				>
 					Import JSON
 					<input
@@ -1769,7 +1810,7 @@
 					Clear Local Cache
 				</button>
 			</div>
-			<p class="mt-2 text-[10px] text-slate-500">
+			<p class="mt-2 text-xs text-[rgb(var(--mv-muted))]/60">
 				Export JSON saves all tasks and notes from local cache. Export Markdown downloads notes as a
 				.md file with YAML frontmatter. Import merges data into local cache (overwrites by ID).
 				Server Export/Import uses the backend API for full data portability. Clear removes IndexedDB
@@ -1778,14 +1819,15 @@
 		</section>
 
 		<!-- About -->
-		<section class="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-			<h3 class="text-sm font-semibold text-white">About</h3>
-			<div class="mt-2 text-xs text-slate-400">
-				<p><strong class="text-white">MindVault</strong> - Proprietary Second Brain Platform</p>
+		<section id="about" class="rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 p-5 scroll-mt-6">
+			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">About</h3>
+			<div class="mt-2 text-xs text-[rgb(var(--mv-muted))]">
+				<p><strong class="text-[rgb(var(--mv-text))]">MindVault</strong> - Proprietary Second Brain Platform</p>
 				<p class="mt-1">Version 0.1.0</p>
 				<p class="mt-1">Local-first, AI-native, desktop-optimized knowledge management.</p>
 			</div>
 		</section>
+		</div>
 	</div>
 </div>
 
