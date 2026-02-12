@@ -46,9 +46,11 @@ async fn setup() -> (axum::Router, TempDir) {
     }
     let tmp = TempDir::new().expect("tempdir");
     let config = test_config(&tmp.path().to_string_lossy());
-    let engine = MindVaultEngine::init(config)
-        .await
-        .expect("engine init");
+    setup_with_config(config, tmp).await
+}
+
+async fn setup_with_config(config: EngineConfig, tmp: TempDir) -> (axum::Router, TempDir) {
+    let engine = MindVaultEngine::init(config).await.expect("engine init");
     let state = Arc::new(AppState::new(Arc::new(engine)));
     let router = create_router(state);
     (router, tmp)
@@ -69,9 +71,8 @@ async fn body_json(resp: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-        Value::String(String::from_utf8_lossy(&bytes).to_string())
-    })
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +82,92 @@ async fn body_json(resp: axum::response::Response) -> Value {
 #[tokio::test]
 async fn health_endpoint_returns_ok() {
     let (router, _tmp) = setup().await;
+    let resp = router
+        .oneshot(json_request(Method::GET, "/api/v1/health", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn sealed_mode_blocks_routes_until_unsealed() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut config = test_config(&tmp.path().to_string_lossy());
+    config.sealed_mode = true;
+    let (router, _tmp) = setup_with_config(config, tmp).await;
+
+    // Non-allowlisted routes are blocked while sealed.
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/health", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value = body_json(resp).await;
+    assert_eq!(body["error"], "Vault sealed - please unseal");
+
+    // Keychain status remains reachable while sealed.
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/keychain/status", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Initializing the vault unseals runtime key state.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/init",
+            Some(json!({
+                "password": "integration-test-password",
+                "macos_bridge": false
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Route access is restored while unsealed.
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/health", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Seal again and verify gating returns.
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::POST, "/api/v1/keychain/seal", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/health", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // Explicit unseal should restore access.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/unseal",
+            Some(json!({
+                "password": "integration-test-password",
+                "from_macos_keychain": false,
+                "from_secure_enclave": false
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
     let resp = router
         .oneshot(json_request(Method::GET, "/api/v1/health", None))
         .await
@@ -105,7 +192,11 @@ async fn create_and_get_node() {
     });
     let resp = router
         .clone()
-        .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(create_body)))
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(create_body),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -118,11 +209,7 @@ async fn create_and_get_node() {
     // Get it back
     let get_uri = format!("/api/v1/nodes/{id}");
     let resp = router
-        .oneshot(json_request(
-            Method::GET,
-            &get_uri,
-            None,
-        ))
+        .oneshot(json_request(Method::GET, &get_uri, None))
         .await
         .unwrap();
     let status = resp.status();
@@ -147,7 +234,11 @@ async fn update_node() {
     });
     let resp = router
         .clone()
-        .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(create_body)))
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(create_body),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -188,7 +279,11 @@ async fn delete_node() {
     });
     let resp = router
         .clone()
-        .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(create_body)))
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(create_body),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -236,7 +331,11 @@ async fn public_share_lifecycle() {
     });
     let resp = router
         .clone()
-        .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(create_body)))
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(create_body),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -318,16 +417,16 @@ async fn list_nodes_with_kind_filter() {
             .oneshot(json_request(Method::POST, "/api/v1/nodes", Some(body)))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED, "creating {kind} should succeed");
+        assert_eq!(
+            resp.status(),
+            StatusCode::CREATED,
+            "creating {kind} should succeed"
+        );
     }
 
     // List only facts
     let resp = router
-        .oneshot(json_request(
-            Method::GET,
-            "/api/v1/nodes?kind=fact",
-            None,
-        ))
+        .oneshot(json_request(Method::GET, "/api/v1/nodes?kind=fact", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -523,7 +622,11 @@ async fn parameterized_routes_resolve() {
     // GET /api/v1/nodes/:id  — should resolve (not router-level 404)
     let resp = router
         .clone()
-        .oneshot(json_request(Method::GET, &format!("/api/v1/nodes/{id}"), None))
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/nodes/{id}"),
+            None,
+        ))
         .await
         .unwrap();
     assert_ne!(

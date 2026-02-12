@@ -324,12 +324,22 @@ impl KeychainEngine {
             ));
         }
 
-        if let Some(source) = self.try_unseal_from_secure_storage(subject).await? {
-            return Ok(source);
+        match self.try_unseal_from_secure_storage(subject).await {
+            Ok(Some(source)) => return Ok(source),
+            Ok(None) => {}
+            Err(err) => {
+                if passphrase.is_none() {
+                    return Err(err);
+                }
+                tracing::warn!(error = %err, "secure storage unseal failed; falling back to passphrase");
+            }
         }
 
         if let Some(passphrase) = passphrase {
-            self.unseal(passphrase, subject).await?;
+            // Secure-storage unseal may set a temporary backoff lock when stored
+            // credentials are stale. Allow one immediate passphrase attempt while
+            // still enforcing permanent lock limits and normal failure accounting.
+            self.unseal_internal(passphrase, subject, true).await?;
             return Ok(MasterKeySource::PassphraseArgon2id);
         }
 
@@ -419,6 +429,15 @@ impl KeychainEngine {
     }
 
     pub async fn unseal(&self, password: &str, subject: &str) -> MvResult<()> {
+        self.unseal_internal(password, subject, false).await
+    }
+
+    async fn unseal_internal(
+        &self,
+        password: &str,
+        subject: &str,
+        ignore_temporary_lock: bool,
+    ) -> MvResult<()> {
         if Self::require_hardware_mode() && !self.os_secure_storage_available() {
             return Err(MvError::Keychain(
                 "MINDVAULT_REQUIRE_HARDWARE=true but OS secure storage is unavailable".to_string(),
@@ -426,7 +445,7 @@ impl KeychainEngine {
         }
 
         // Check lockout
-        {
+        if !ignore_temporary_lock {
             let locked = self.locked_until.read().await;
             if let Some(until) = *locked {
                 if Instant::now() < until {
@@ -2457,12 +2476,71 @@ impl KeychainEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mv_core::credentials::{CredentialBackend, CredentialError, SecretSource};
     use mv_storage::keychain::SqliteKeychainStore;
 
     async fn test_engine() -> KeychainEngine {
         let store = Arc::new(SqliteKeychainStore::open_in_memory().unwrap());
         let cred_store = Arc::new(CredentialStore::env_only());
         KeychainEngine::new(store, cred_store, None, None)
+            .await
+            .unwrap()
+    }
+
+    #[derive(Debug)]
+    struct StaticOsKeyringBackend {
+        key: String,
+        value: String,
+    }
+
+    impl CredentialBackend for StaticOsKeyringBackend {
+        fn name(&self) -> &str {
+            "Static OS Keyring"
+        }
+
+        fn source(&self) -> SecretSource {
+            SecretSource::OsKeyring
+        }
+
+        fn is_available(&self) -> bool {
+            true
+        }
+
+        fn get(&self, key: &str) -> Result<Option<String>, CredentialError> {
+            if key == self.key {
+                return Ok(Some(self.value.clone()));
+            }
+            Ok(None)
+        }
+
+        fn set(&self, _key: &str, _value: &str) -> Result<(), CredentialError> {
+            Err(CredentialError::Other("read-only test backend".to_string()))
+        }
+
+        fn delete(&self, _key: &str) -> Result<(), CredentialError> {
+            Ok(())
+        }
+
+        fn list_keys(&self) -> Result<Vec<String>, CredentialError> {
+            Ok(vec![self.key.clone()])
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    async fn test_engine_with_os_keyring_password(password: &str) -> KeychainEngine {
+        let store = Arc::new(SqliteKeychainStore::open_in_memory().unwrap());
+        let mut cred_store = CredentialStore::env_only();
+        cred_store.insert_backend(
+            0,
+            Box::new(StaticOsKeyringBackend {
+                key: "MINDVAULT_VAULT_KEY".to_string(),
+                value: password.to_string(),
+            }),
+        );
+        KeychainEngine::new(store, Arc::new(cred_store), None, None)
             .await
             .unwrap()
     }
@@ -2590,6 +2668,55 @@ mod tests {
 
         let result = engine.unseal_with_preferred_master_key(None, "test").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn preferred_unseal_prefers_os_secure_storage_over_passphrase() {
+        let engine = test_engine_with_os_keyring_password("correct-pass").await;
+        engine
+            .initialize_vault("correct-pass", false, "test")
+            .await
+            .unwrap();
+        engine.seal("test").await.unwrap();
+
+        let source = engine
+            .unseal_with_preferred_master_key(Some("wrong-pass"), "test")
+            .await
+            .unwrap();
+        assert_eq!(source, MasterKeySource::OsSecureStorage);
+    }
+
+    #[tokio::test]
+    async fn preferred_unseal_falls_back_when_secure_storage_unseal_fails() {
+        let engine = test_engine_with_os_keyring_password("wrong-pass").await;
+        engine
+            .initialize_vault("correct-pass", false, "test")
+            .await
+            .unwrap();
+        engine.seal("test").await.unwrap();
+
+        let source = engine
+            .unseal_with_preferred_master_key(Some("correct-pass"), "test")
+            .await
+            .unwrap();
+        assert_eq!(source, MasterKeySource::PassphraseArgon2id);
+    }
+
+    #[tokio::test]
+    async fn namespace_dek_wrap_unwrap_roundtrip() {
+        let engine = test_engine().await;
+        engine
+            .initialize_vault("wrap-pass", false, "test")
+            .await
+            .unwrap();
+
+        let dek = mv_storage::vault_crypto::VaultCrypto::generate_node_dek();
+        let wrapped = engine.wrap_namespace_dek("default", &dek).await.unwrap();
+        let unwrapped = engine
+            .unwrap_namespace_dek("default", wrapped.as_str())
+            .await
+            .unwrap();
+        assert_eq!(dek, unwrapped);
     }
 
     #[tokio::test]

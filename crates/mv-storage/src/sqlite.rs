@@ -4940,6 +4940,18 @@ impl ConversationStore for SqliteNodeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sealed_runtime::{
+        clear_runtime_root_key, set_runtime_root_key, set_sealed_mode_enabled,
+    };
+
+    struct SealedRuntimeReset;
+
+    impl Drop for SealedRuntimeReset {
+        fn drop(&mut self) {
+            clear_runtime_root_key();
+            set_sealed_mode_enabled(false);
+        }
+    }
 
     #[tokio::test]
     async fn test_insert_and_get() {
@@ -4955,6 +4967,60 @@ mod tests {
         assert_eq!(retrieved.content, "Rust is fast");
         assert_eq!(retrieved.tags, vec!["performance", "rust"]); // sorted
         assert_eq!(retrieved.kind, NodeKind::Fact);
+    }
+
+    #[tokio::test]
+    async fn test_sealed_node_payload_persists_encrypted_columns() {
+        let _reset = SealedRuntimeReset;
+        set_sealed_mode_enabled(true);
+        set_runtime_root_key([7u8; 32], false);
+
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "sealed-content")
+            .with_title("sealed-title")
+            .with_namespace("default");
+        node.source = Some("sealed-source".to_string());
+        node.metadata.insert("k".into(), serde_json::json!("v"));
+        let id = node.id;
+
+        store.insert(&node).await.unwrap();
+
+        let raw = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT title, content, metadata_json, payload_ciphertext, payload_wrapped_dek FROM knowledge_nodes WHERE id = ?1",
+                    params![id.to_string()],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                        ))
+                    },
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))
+            })
+            .unwrap();
+
+        assert_eq!(raw.0, None);
+        assert_eq!(raw.1, "");
+        assert_eq!(raw.2, None);
+        assert!(raw.3.is_some());
+        assert!(raw.4.is_some());
+
+        let roundtrip = store.get(id).await.unwrap().unwrap();
+        assert_eq!(roundtrip.title.as_deref(), Some("sealed-title"));
+        assert_eq!(roundtrip.content, "sealed-content");
+        assert_eq!(roundtrip.source.as_deref(), Some("sealed-source"));
+        assert_eq!(
+            roundtrip
+                .metadata
+                .get("k")
+                .and_then(serde_json::Value::as_str),
+            Some("v")
+        );
     }
 
     #[tokio::test]
