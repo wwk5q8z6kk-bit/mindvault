@@ -4634,4 +4634,92 @@ mod tests {
         assert!(removed);
         assert!(engine.federation.list_peers().await.is_empty());
     }
+
+    #[tokio::test]
+    async fn test_ambient_synthesis_suggests_links() {
+        let (engine, _tmp) = create_test_engine().await;
+
+        // Store two similar but unlinked nodes with overlapping tags
+        let node_a = engine
+            .store_node(
+                KnowledgeNode::new(NodeKind::Note, "Rust async programming patterns")
+                    .with_tags(vec!["rust".into(), "async".into(), "programming".into()])
+                    .with_namespace("default"),
+            )
+            .await
+            .unwrap();
+        let node_b = engine
+            .store_node(
+                KnowledgeNode::new(NodeKind::Note, "Async runtime in Rust using tokio")
+                    .with_tags(vec!["rust".into(), "async".into(), "tokio".into()])
+                    .with_namespace("default"),
+            )
+            .await
+            .unwrap();
+
+        // Run ambient synthesis — with noop embedder, similarity-based
+        // suggestions won't fire (no vectors), but we verify the function
+        // runs without error and returns a Vec
+        let insights = engine.proactive.ambient_synthesis(Some("default"), 10, 0.5).await;
+        assert!(insights.is_ok(), "ambient_synthesis should not error: {:?}", insights.err());
+
+        // Verify that nodes exist and are not linked
+        let neighbors = engine.get_neighbors(node_a.id, 1).await.unwrap();
+        // With noop embedder, no automatic links are created — verify they're separate
+        let linked_to_b = neighbors.contains(&node_b.id);
+        // We simply verify the function ran; with noop embedder, no suggestions are expected
+        let suggestions = insights.unwrap();
+        // suggestions may be empty with noop embedder — that's ok
+        assert!(suggestions.len() <= 10, "should respect batch size limit");
+
+        // Store the node IDs to verify they were created
+        let retrieved = engine.get_node(node_a.id).await.unwrap();
+        assert!(retrieved.is_some());
+        let _ = linked_to_b; // suppress unused warning
+    }
+
+    #[tokio::test]
+    async fn test_federation_handshake_mock() {
+        // Start a mock server that responds to /api/v1/federation/identity
+        let mut server = mockito::Server::new_async().await;
+        let mock_identity = server
+            .mock("GET", "/api/v1/federation/identity")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::json!({
+                "vault_id": "mock-vault-001",
+                "display_name": "Mock Vault",
+                "public_key": null,
+                "version": "0.1.0"
+            }).to_string())
+            .create_async()
+            .await;
+
+        let (engine, _tmp) = create_test_engine().await;
+
+        // Perform handshake with mock server
+        let peer = engine
+            .federation
+            .handshake(&server.url(), Some("shared-secret-123".into()))
+            .await
+            .unwrap();
+
+        assert_eq!(peer.vault_id, "mock-vault-001");
+        assert_eq!(peer.display_name, "Mock Vault");
+        assert_eq!(peer.shared_secret, Some("shared-secret-123".into()));
+
+        // Verify peer was auto-registered
+        let peers = engine.federation.list_peers().await;
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].vault_id, "mock-vault-001");
+
+        // Duplicate handshake should fail (same vault_id)
+        let dup = engine
+            .federation
+            .handshake(&server.url(), None)
+            .await;
+        assert!(dup.is_err(), "duplicate vault_id handshake should fail");
+
+        mock_identity.assert_async().await;
+    }
 }

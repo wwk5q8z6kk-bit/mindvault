@@ -11,11 +11,14 @@ import { TaskItem } from '@tiptap/extension-task-item';
 import { Placeholder } from '@tiptap/extension-placeholder';
 import { Markdown } from '@tiptap/markdown';
 import Suggestion from '@tiptap/suggestion';
+import { PluginKey } from '@tiptap/pm/state';
 import { AttachmentTriage } from './attachments.js';
 import { settingsFeature } from './features/settings.js';
 
 const AI_TRANSFORM_SELECTION_CHAR_LIMIT = 5000;
 const AUTO_SUGGEST_PAUSE_KEY = 'mindvaultSettingAutoSuggestPausedUntil';
+const WIKI_LINK_SUGGESTION_PLUGIN_KEY = new PluginKey('wiki-link-suggestion');
+const MENTION_SUGGESTION_PLUGIN_KEY = new PluginKey('mention-suggestion');
 const FORM_STATE_FIELDS = [
     { id: 'node-kind-filter', key: 'mindvaultFormNodeKind', type: 'select' },
     { id: 'node-namespace-filter', key: 'mindvaultFormNodeNamespace', type: 'text' },
@@ -245,6 +248,7 @@ export class MindVaultAdmin {
             addProseMirrorPlugins() {
                 return [
                     Suggestion({
+                        pluginKey: WIKI_LINK_SUGGESTION_PLUGIN_KEY,
                         editor: this.editor,
                         char: '[',
                         allowSpaces: true,
@@ -297,6 +301,7 @@ export class MindVaultAdmin {
             addProseMirrorPlugins() {
                 return [
                     Suggestion({
+                        pluginKey: MENTION_SUGGESTION_PLUGIN_KEY,
                         editor: this.editor,
                         char: '@',
                         allowSpaces: true,

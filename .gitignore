@@ -23,6 +23,7 @@ node_modules/
 connectors/*/dist/
 web/dist/
 web/.vite/
+web/ux-audit-artifacts/
 connectors/*/*.js
 !connectors/*/*.config.js
 

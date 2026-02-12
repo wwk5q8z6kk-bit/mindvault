@@ -173,6 +173,8 @@ export const settingsFeature = {
     const autoSuggestToggle = document.getElementById('settings-auto-suggest');
     const autoCompleteToggle = document.getElementById('settings-auto-complete');
     const autoLinkToggle = document.getElementById('settings-auto-link');
+    const settingsConfirmReset = document.getElementById('settings-confirm-reset');
+    const settingsPowerControls = document.getElementById('settings-power-controls');
     const suggestCooldown = document.getElementById('settings-suggest-cooldown');
     const suggestCooldownLabel = document.getElementById('settings-suggest-cooldown-label');
 
