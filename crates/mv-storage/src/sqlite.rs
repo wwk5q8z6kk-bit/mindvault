@@ -295,6 +295,38 @@ impl SqliteNodeStore {
         Ok(payload)
     }
 
+    fn project_node_for_storage(
+        node: &KnowledgeNode,
+    ) -> MvResult<(
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> {
+        if sealed_mode_enabled() {
+            let (wrapped_dek, ciphertext) = Self::encrypt_node_payload(node)?;
+            Ok((
+                None,
+                String::new(),
+                None,
+                None,
+                Some(ciphertext),
+                Some(wrapped_dek),
+            ))
+        } else {
+            Ok((
+                node.title.clone(),
+                node.content.clone(),
+                node.source.clone(),
+                Some(serde_json::to_string(&node.metadata)?),
+                None,
+                None,
+            ))
+        }
+    }
+
     fn row_to_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeNode> {
         let id_str: String = row.get(0)?;
         let kind_str: String = row.get(1)?;
@@ -547,26 +579,7 @@ impl NodeStore for SqliteNodeStore {
     async fn insert(&self, node: &KnowledgeNode) -> MvResult<()> {
         self.with_conn(|conn| {
             let (title, content, source, metadata_json, payload_ciphertext, payload_wrapped_dek) =
-                if sealed_mode_enabled() {
-                    let (wrapped_dek, ciphertext) = Self::encrypt_node_payload(node)?;
-                    (
-                        None,
-                        String::new(),
-                        None,
-                        None,
-                        Some(ciphertext),
-                        Some(wrapped_dek),
-                    )
-                } else {
-                    (
-                        node.title.clone(),
-                        node.content.clone(),
-                        node.source.clone(),
-                        Some(serde_json::to_string(&node.metadata)?),
-                        None,
-                        None,
-                    )
-                };
+                Self::project_node_for_storage(node)?;
 
             conn.execute(
                 "INSERT INTO knowledge_nodes (id, kind, title, content, source, namespace, importance,
@@ -629,26 +642,7 @@ impl NodeStore for SqliteNodeStore {
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let (title, content, source, metadata_json, payload_ciphertext, payload_wrapped_dek) =
-            if sealed_mode_enabled() {
-                let (wrapped_dek, ciphertext) = Self::encrypt_node_payload(node)?;
-                (
-                    None,
-                    String::new(),
-                    None,
-                    None,
-                    Some(ciphertext),
-                    Some(wrapped_dek),
-                )
-            } else {
-                (
-                    node.title.clone(),
-                    node.content.clone(),
-                    node.source.clone(),
-                    Some(serde_json::to_string(&node.metadata)?),
-                    None,
-                    None,
-                )
-            };
+            Self::project_node_for_storage(node)?;
 
         let rows = conn
             .execute(
@@ -5020,6 +5014,66 @@ mod tests {
                 .get("k")
                 .and_then(serde_json::Value::as_str),
             Some("v")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sealed_node_update_refreshes_encrypted_payload() {
+        let _reset = SealedRuntimeReset;
+        set_sealed_mode_enabled(true);
+        set_runtime_root_key([9u8; 32], false);
+
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let mut node = KnowledgeNode::new(NodeKind::Fact, "v1-content")
+            .with_title("v1-title")
+            .with_namespace("default");
+        node.source = Some("v1-source".to_string());
+        node.metadata.insert("ver".into(), serde_json::json!("v1"));
+        let id = node.id;
+        store.insert(&node).await.unwrap();
+
+        node.content = "v2-content".to_string();
+        node.title = Some("v2-title".to_string());
+        node.source = Some("v2-source".to_string());
+        node.temporal.version += 1;
+        node.temporal.updated_at = Utc::now();
+        node.metadata.insert("ver".into(), serde_json::json!("v2"));
+        store.update(&node).await.unwrap();
+
+        let raw = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT title, content, metadata_json, payload_ciphertext, payload_wrapped_dek FROM knowledge_nodes WHERE id = ?1",
+                    params![id.to_string()],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                        ))
+                    },
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))
+            })
+            .unwrap();
+        assert_eq!(raw.0, None);
+        assert_eq!(raw.1, "");
+        assert_eq!(raw.2, None);
+        assert!(raw.3.is_some());
+        assert!(raw.4.is_some());
+
+        let roundtrip = store.get(id).await.unwrap().unwrap();
+        assert_eq!(roundtrip.title.as_deref(), Some("v2-title"));
+        assert_eq!(roundtrip.content, "v2-content");
+        assert_eq!(roundtrip.source.as_deref(), Some("v2-source"));
+        assert_eq!(
+            roundtrip
+                .metadata
+                .get("ver")
+                .and_then(serde_json::Value::as_str),
+            Some("v2")
         );
     }
 

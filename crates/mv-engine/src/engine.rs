@@ -463,6 +463,13 @@ impl MindVaultEngine {
         self.config.sealed_mode && !self.keychain.is_unsealed_sync()
     }
 
+    fn ensure_unsealed_for_node_io(&self) -> MvResult<()> {
+        if self.is_sealed() {
+            return Err(MvError::VaultSealed);
+        }
+        Ok(())
+    }
+
     /// Set up the enrichment pipeline. Returns the worker that should be spawned.
     /// Must be called after `init_arc()` and before using enrichment features.
     pub fn setup_enrichment(
@@ -1426,6 +1433,7 @@ impl MindVaultEngine {
 
     /// Store a knowledge node.
     pub async fn store_node(&self, node: KnowledgeNode) -> MvResult<KnowledgeNode> {
+        self.ensure_unsealed_for_node_io()?;
         let stored = self.ingest.ingest(node).await?;
         self.auto_link_node_to_daily_note_best_effort(&stored).await;
         self.auto_backlink_node_references_best_effort(&stored)
@@ -1439,11 +1447,13 @@ impl MindVaultEngine {
         node: KnowledgeNode,
         relations: Vec<Relationship>,
     ) -> MvResult<KnowledgeNode> {
+        self.ensure_unsealed_for_node_io()?;
         self.ingest.ingest_with_relations(node, relations).await
     }
 
     /// Recall knowledge matching a query.
     pub async fn recall(&self, query: &MemoryQuery) -> MvResult<Vec<SearchResult>> {
+        self.ensure_unsealed_for_node_io()?;
         self.recall.recall(query).await
     }
 
@@ -1721,11 +1731,13 @@ impl MindVaultEngine {
 
     /// Get a node by ID.
     pub async fn get_node(&self, id: uuid::Uuid) -> MvResult<Option<KnowledgeNode>> {
+        self.ensure_unsealed_for_node_io()?;
         self.store.nodes.get(id).await
     }
 
     /// Update an existing node.
     pub async fn update_node(&self, node: KnowledgeNode) -> MvResult<KnowledgeNode> {
+        self.ensure_unsealed_for_node_io()?;
         let updated = self.ingest.update(node).await?;
         self.auto_link_node_to_daily_note_best_effort(&updated)
             .await;
@@ -1736,6 +1748,7 @@ impl MindVaultEngine {
 
     /// Delete a node.
     pub async fn delete_node(&self, id: uuid::Uuid) -> MvResult<bool> {
+        self.ensure_unsealed_for_node_io()?;
         self.ingest.delete(id).await
     }
 
@@ -1746,6 +1759,7 @@ impl MindVaultEngine {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<KnowledgeNode>> {
+        self.ensure_unsealed_for_node_io()?;
         self.store.nodes.list(filters, limit, offset).await
     }
 
@@ -1755,6 +1769,7 @@ impl MindVaultEngine {
         date: NaiveDate,
         namespace: &str,
     ) -> MvResult<Option<KnowledgeNode>> {
+        self.ensure_unsealed_for_node_io()?;
         let filters = QueryFilters {
             namespace: Some(namespace.to_string()),
             tags: Some(vec![daily_note_day_tag(date)]),
