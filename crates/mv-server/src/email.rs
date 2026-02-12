@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::rest::attachments::{
-    extract_attachment_search_text, normalize_attachment_search_blob, split_attachment_search_chunks,
+    extract_attachment_search_text, normalize_attachment_search_blob,
+    split_attachment_search_chunks,
 };
 use crate::state::AppState;
 
@@ -63,7 +64,11 @@ impl RuntimeEmailConfig {
             .or_else(|| cfg.profile.primary_email.clone());
         let profile_signature = profile
             .as_ref()
-            .and_then(|p| p.signature_name.as_ref().map(|value| value.trim().to_string()))
+            .and_then(|p| {
+                p.signature_name
+                    .as_ref()
+                    .map(|value| value.trim().to_string())
+            })
             .filter(|value| !value.is_empty())
             .or_else(|| cfg.profile.signature.clone());
         Self {
@@ -152,8 +157,12 @@ fn save_state(path: &Path, state: &EmailAdapterState) -> MvResult<()> {
     }
     let payload = serde_json::to_string_pretty(state)
         .map_err(|err| MvError::Storage(format!("serialize email adapter state: {err}")))?;
-    fs::write(path, payload)
-        .map_err(|err| MvError::Storage(format!("write email adapter state {}: {err}", path.display())))
+    fs::write(path, payload).map_err(|err| {
+        MvError::Storage(format!(
+            "write email adapter state {}: {err}",
+            path.display()
+        ))
+    })
 }
 
 fn state_file_path(data_dir: &str) -> PathBuf {
@@ -173,7 +182,9 @@ fn select_smtp_identity(config: &RuntimeEmailConfig) -> MvResult<(String, String
         .smtp_username
         .clone()
         .or_else(|| config.profile_primary_email.clone())
-        .ok_or_else(|| MvError::Config("email.smtp_username or profile.primary_email required".into()))?;
+        .ok_or_else(|| {
+            MvError::Config("email.smtp_username or profile.primary_email required".into())
+        })?;
     let from = config
         .smtp_from
         .clone()
@@ -187,7 +198,9 @@ fn select_imap_username(config: &RuntimeEmailConfig) -> MvResult<String> {
         .imap_username
         .clone()
         .or_else(|| config.profile_primary_email.clone())
-        .ok_or_else(|| MvError::Config("email.imap_username or profile.primary_email required".into()))
+        .ok_or_else(|| {
+            MvError::Config("email.imap_username or profile.primary_email required".into())
+        })
 }
 
 fn resolve_message_subject(message: &RelayMessage) -> String {
@@ -316,7 +329,10 @@ fn extract_email_from_contact(contact: &RelayContact) -> Option<String> {
     }
 }
 
-pub fn spawn_email_adapter(state: Arc<AppState>, mut shutdown_rx: tokio::sync::broadcast::Receiver<()>) {
+pub fn spawn_email_adapter(
+    state: Arc<AppState>,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) {
     if !state.engine.config.email.enabled {
         tracing::info!("email adapter disabled by config");
         return;
@@ -327,8 +343,7 @@ pub fn spawn_email_adapter(state: Arc<AppState>, mut shutdown_rx: tokio::sync::b
     let poll_interval_secs = state.engine.config.email.poll_interval_secs.max(30);
 
     tokio::spawn(async move {
-        let mut ticker =
-            tokio::time::interval(std::time::Duration::from_secs(poll_interval_secs));
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(poll_interval_secs));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -356,6 +371,11 @@ async fn poll_and_ingest_emails(
     state: &Arc<AppState>,
     adapter_state: &mut EmailAdapterState,
 ) -> MvResult<()> {
+    if state.engine.config.sealed_mode && !state.engine.keychain.is_unsealed_sync() {
+        tracing::debug!("email adapter poll cycle skipped: vault is sealed");
+        return Ok(());
+    }
+
     let config = RuntimeEmailConfig::from_state(state).await;
     let imap_host = config
         .imap_host
@@ -445,7 +465,10 @@ async fn ingest_inbound_email(
     config: &RuntimeEmailConfig,
     email: InboundEmail,
 ) -> MvResult<bool> {
-    let message_id = email.message_id.clone().map(|value| normalize_message_id(&value));
+    let message_id = email
+        .message_id
+        .clone()
+        .map(|value| normalize_message_id(&value));
 
     if let Some(message_id) = message_id.as_deref() {
         if adapter_state.thread_by_message_id.contains_key(message_id) {
@@ -453,14 +476,18 @@ async fn ingest_inbound_email(
         }
     }
 
-    let contact = ensure_email_contact(state, &email.sender_email, email.sender_name.as_deref()).await?;
+    let contact =
+        ensure_email_contact(state, &email.sender_email, email.sender_name.as_deref()).await?;
     let channel = ensure_direct_channel_for_contact(state, contact.id).await?;
     let thread_id = resolve_thread_id(adapter_state, &email);
     let message_content = build_message_content(&email.subject, &email.body);
 
     let mut metadata = serde_json::Map::new();
     metadata.insert("adapter".into(), serde_json::Value::String("email".into()));
-    metadata.insert("email_uid".into(), serde_json::Value::Number(email.uid.into()));
+    metadata.insert(
+        "email_uid".into(),
+        serde_json::Value::Number(email.uid.into()),
+    );
     metadata.insert(
         "email_sender".into(),
         serde_json::Value::String(email.sender_email.clone()),
@@ -489,7 +516,8 @@ async fn ingest_inbound_email(
         metadata.insert(
             "email_references".into(),
             serde_json::Value::Array(
-                email.references
+                email
+                    .references
                     .iter()
                     .map(|value| serde_json::Value::String(value.clone()))
                     .collect(),
@@ -551,8 +579,13 @@ async fn ingest_inbound_email(
 
     if let Some(node_id) = stored.vault_node_id {
         if !email.attachments.is_empty() {
-            persist_inbound_attachments(state, node_id, &email.attachments, config.max_attachment_bytes)
-                .await?;
+            persist_inbound_attachments(
+                state,
+                node_id,
+                &email.attachments,
+                config.max_attachment_bytes,
+            )
+            .await?;
         }
     }
 
@@ -627,7 +660,10 @@ async fn ensure_email_contact(
     Ok(contact)
 }
 
-async fn ensure_direct_channel_for_contact(state: &Arc<AppState>, contact_id: Uuid) -> MvResult<RelayChannel> {
+async fn ensure_direct_channel_for_contact(
+    state: &Arc<AppState>,
+    contact_id: Uuid,
+) -> MvResult<RelayChannel> {
     let channels = state.engine.relay.list_channels().await?;
     for channel in channels {
         if channel.channel_type == ChannelType::Direct
@@ -647,8 +683,12 @@ fn fetch_inbound_emails(request: ImapFetchRequest) -> Result<ImapFetchOutcome, S
     let tls = native_tls::TlsConnector::builder()
         .build()
         .map_err(|err| format!("build TLS connector: {err}"))?;
-    let client = imap::connect((request.host.as_str(), request.port), request.host.as_str(), &tls)
-        .map_err(|err| format!("connect IMAP: {err}"))?;
+    let client = imap::connect(
+        (request.host.as_str(), request.port),
+        request.host.as_str(),
+        &tls,
+    )
+    .map_err(|err| format!("connect IMAP: {err}"))?;
     let mut session = client
         .login(request.username.clone(), request.password.clone())
         .map_err(|(err, _client)| format!("login IMAP: {err}"))?;
@@ -711,7 +751,11 @@ fn fetch_inbound_emails(request: ImapFetchRequest) -> Result<ImapFetchOutcome, S
     })
 }
 
-fn parse_inbound_email(uid: u32, raw: &[u8], max_attachment_bytes: usize) -> Result<InboundEmail, String> {
+fn parse_inbound_email(
+    uid: u32,
+    raw: &[u8],
+    max_attachment_bytes: usize,
+) -> Result<InboundEmail, String> {
     use mailparse::MailHeaderMap;
 
     let parsed = mailparse::parse_mail(raw).map_err(|err| format!("parse email: {err}"))?;
@@ -810,7 +854,8 @@ fn collect_parts(
         if is_attachment {
             if let Ok(bytes) = part.get_body_raw() {
                 if !bytes.is_empty() && bytes.len() <= max_attachment_bytes {
-                    let file_name = filename.unwrap_or_else(|| format!("attachment-{}.bin", attachments.len() + 1));
+                    let file_name = filename
+                        .unwrap_or_else(|| format!("attachment-{}.bin", attachments.len() + 1));
                     attachments.push(InboundAttachment {
                         file_name,
                         content_type: if mime.is_empty() { None } else { Some(mime) },
@@ -823,7 +868,8 @@ fn collect_parts(
 
         if mime == "text/plain" {
             if let Ok(body) = part.get_body() {
-                let normalized = normalize_attachment_search_blob(&body, MAX_ATTACHMENT_SEARCH_BLOB_CHARS);
+                let normalized =
+                    normalize_attachment_search_blob(&body, MAX_ATTACHMENT_SEARCH_BLOB_CHARS);
                 if !normalized.is_empty() {
                     plain_text_parts.push(normalized);
                 }
@@ -831,7 +877,8 @@ fn collect_parts(
         } else if mime == "text/html" {
             if let Ok(body) = part.get_body() {
                 let text = html_to_text(&body);
-                let normalized = normalize_attachment_search_blob(&text, MAX_ATTACHMENT_SEARCH_BLOB_CHARS);
+                let normalized =
+                    normalize_attachment_search_blob(&text, MAX_ATTACHMENT_SEARCH_BLOB_CHARS);
                 if !normalized.is_empty() {
                     html_parts.push(normalized);
                 }
@@ -1067,7 +1114,8 @@ fn upsert_attachment_text_chunk_index_entry(
     }
 
     if chunk_index.is_empty() {
-        node.metadata.remove(ATTACHMENT_TEXT_CHUNK_INDEX_METADATA_KEY);
+        node.metadata
+            .remove(ATTACHMENT_TEXT_CHUNK_INDEX_METADATA_KEY);
     } else {
         node.metadata.insert(
             ATTACHMENT_TEXT_CHUNK_INDEX_METADATA_KEY.to_string(),
@@ -1090,7 +1138,8 @@ fn sync_attachment_search_blob_metadata(node: &mut KnowledgeNode) {
         })
         .unwrap_or_default();
 
-    let normalized = normalize_attachment_search_blob(&combined_text, MAX_ATTACHMENT_SEARCH_BLOB_CHARS);
+    let normalized =
+        normalize_attachment_search_blob(&combined_text, MAX_ATTACHMENT_SEARCH_BLOB_CHARS);
     if normalized.is_empty() {
         node.metadata.remove(ATTACHMENT_SEARCH_BLOB_METADATA_KEY);
     } else {
@@ -1171,7 +1220,10 @@ mod tests {
 
     #[test]
     fn sanitize_file_name_strips_special_chars() {
-        assert_eq!(sanitize_file_name("hello world!@#.txt"), "hello_world___.txt");
+        assert_eq!(
+            sanitize_file_name("hello world!@#.txt"),
+            "hello_world___.txt"
+        );
     }
 
     #[test]

@@ -21,6 +21,7 @@
 	import NamespaceSelector from '$lib/components/NamespaceSelector.svelte';
 	import { loadAvailableNamespaces } from '$lib/stores/namespace';
 	import { connectAgentStream, disconnectAgentStream } from '$lib/api/agent';
+	import { keychainStore, pollVaultStatus } from '$lib/stores/keychain';
 	import { onMount } from 'svelte';
 	import { fly, slide } from 'svelte/transition';
 	import {
@@ -31,6 +32,7 @@
 
 	let online = true;
 	let mobileMenuOpen = false;
+	let keychainStatusPoll: ReturnType<typeof setInterval> | null = null;
 
 	function closeMobileMenu() {
 		mobileMenuOpen = false;
@@ -312,11 +314,19 @@
 		connectAgentStream();
 		loadAvailableNamespaces();
 		loadNotes();
+		void pollVaultStatus();
+		keychainStatusPoll = setInterval(() => {
+			void pollVaultStatus();
+		}, 30_000);
 		window.addEventListener('online', onOnline);
 		window.addEventListener('offline', onOffline);
 		return () => {
 			window.removeEventListener('online', onOnline);
 			window.removeEventListener('offline', onOffline);
+			if (keychainStatusPoll) {
+				clearInterval(keychainStatusPoll);
+				keychainStatusPoll = null;
+			}
 			stopWebSocket();
 			disconnectAgentStream();
 		};
@@ -505,6 +515,17 @@
 		</header>
 
 		<ApiHealthBanner {online} />
+		{#if $keychainStore.state === 'sealed'}
+			<div class="mx-4 mt-3 rounded-xl border border-rose-500/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+				Vault sealed. API operations are paused until you unseal from
+				<a href="/settings/keychain" class="font-semibold underline underline-offset-2">Settings -> Keychain</a>.
+			</div>
+		{:else if $keychainStore.degradedSecurity}
+			<div class="mx-4 mt-3 rounded-xl border border-amber-500/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+				Degraded security mode active: passphrase fallback is in use because hardware-backed key
+				storage is unavailable.
+			</div>
+		{/if}
 		<FavoritesBar />
 
 		<!-- Mobile slide-out menu -->

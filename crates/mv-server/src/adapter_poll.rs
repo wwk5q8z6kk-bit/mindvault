@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use mv_core::{AdapterPollStore, ContentType, MvResult, RelayChannel, RelayContact, RelayMessage, TrustLevel};
+use mv_core::{
+    AdapterPollStore, ContentType, MvResult, RelayChannel, RelayContact, RelayMessage, TrustLevel,
+};
 use mv_engine::adapters::{AdapterConfig, AdapterInboundMessage};
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -30,10 +32,7 @@ impl AdapterPollConfig {
     }
 }
 
-pub fn spawn_adapter_polling(
-    state: Arc<AppState>,
-    mut shutdown_rx: broadcast::Receiver<()>,
-) {
+pub fn spawn_adapter_polling(state: Arc<AppState>, mut shutdown_rx: broadcast::Receiver<()>) {
     let config = AdapterPollConfig::from_env();
     if !config.enabled {
         tracing::info!("adapter polling disabled");
@@ -41,7 +40,8 @@ pub fn spawn_adapter_polling(
     }
 
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(config.interval_secs));
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(config.interval_secs));
         interval.tick().await;
         loop {
             tokio::select! {
@@ -58,10 +58,18 @@ pub fn spawn_adapter_polling(
         }
     });
 
-    tracing::info!(interval_secs = config.interval_secs, "adapter poller spawned");
+    tracing::info!(
+        interval_secs = config.interval_secs,
+        "adapter poller spawned"
+    );
 }
 
 async fn poll_once(state: &Arc<AppState>) -> MvResult<()> {
+    if state.engine.config.sealed_mode && !state.engine.keychain.is_unsealed_sync() {
+        tracing::debug!("adapter poll cycle skipped: vault is sealed");
+        return Ok(());
+    }
+
     let configs = state.engine.adapters.list_configs().await;
     if configs.is_empty() {
         return Ok(());
@@ -140,11 +148,11 @@ async fn ingest_adapter_message(
         .unwrap_or_else(|| "default".to_string());
 
     let contact = ensure_adapter_contact(state, &adapter_label, &message.sender).await?;
-    let channel = ensure_adapter_channel(state, &adapter_label, &message.channel, contact.id).await?;
+    let channel =
+        ensure_adapter_channel(state, &adapter_label, &message.channel, contact.id).await?;
 
-    let mut relay_message =
-        RelayMessage::inbound(channel.id, contact.id, message.content.clone())
-            .with_content_type(ContentType::Text);
+    let mut relay_message = RelayMessage::inbound(channel.id, contact.id, message.content.clone())
+        .with_content_type(ContentType::Text);
 
     if let Some(thread_id) = message.thread_id.as_deref() {
         relay_message = relay_message.with_thread(thread_uuid(&adapter_label, thread_id));
