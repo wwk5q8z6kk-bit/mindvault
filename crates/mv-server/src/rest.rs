@@ -132,7 +132,7 @@ use crate::auth::{
 use crate::limits::{
     enforce_namespace_quota, enforce_rate_limit, NamespaceQuotaError, RateLimitStatus,
 };
-use crate::metrics::{init_metrics, metrics_handler, metrics_middleware};
+use crate::metrics::{get_metrics, init_metrics, metrics_handler, metrics_middleware};
 use crate::openapi::swagger_ui;
 use crate::state::AppState;
 use crate::validation::{
@@ -774,6 +774,7 @@ async fn sealed_mode_middleware(
     }
 
     let path = request.uri().path();
+    let method = request.method().to_string();
     let is_allowed = matches!(
         path,
         "/api/v1/keychain/status"
@@ -786,6 +787,20 @@ async fn sealed_mode_middleware(
 
     if is_allowed {
         return next.run(request).await;
+    }
+
+    let count = state
+        .sealed_blocked_requests
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        + 1;
+    get_metrics().incr_vault_sealed_http_blocked();
+    if count <= 5 || count % 100 == 0 {
+        tracing::warn!(
+            method,
+            path,
+            sealed_blocked_total = count,
+            "request blocked by sealed mode"
+        );
     }
 
     (
@@ -11716,9 +11731,9 @@ async fn diagnostics_health(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use axum::body::{to_bytes, Body};
     use axum::http::Request;
-    use super::*;
     use chrono::TimeZone;
     use mv_core::{KnowledgeNode, MatchSource, NodeKind, RelationKind, Relationship, SearchResult};
     use mv_engine::config::EngineConfig;

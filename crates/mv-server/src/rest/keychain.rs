@@ -18,6 +18,7 @@ use crate::limits::{
     enforce_keychain_read_rate_limit, enforce_keychain_unseal_failure_backoff,
     record_keychain_unseal_failure, RateLimitExceeded,
 };
+use crate::metrics::get_metrics;
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -88,6 +89,7 @@ async fn enforce_unseal_failure_backoff(
     method: &str,
 ) -> Result<(), (StatusCode, String)> {
     if let Err(exceeded) = enforce_keychain_unseal_failure_backoff(subject) {
+        get_metrics().incr_vault_unseal_rate_limited();
         let reason = format!(
             "rate_limited:max={} window={} retry_after={}",
             exceeded.max_requests, exceeded.window_secs, exceeded.retry_after_secs
@@ -104,8 +106,11 @@ async fn log_and_record_unseal_failure(
     method: &str,
     reason: &str,
 ) -> Result<(), (StatusCode, String)> {
+    get_metrics().incr_vault_unseal_failure();
+    tracing::warn!(subject, method, reason, "vault unseal failed");
     log_unseal_attempt(state, subject, method, "fail", Some(reason)).await;
     if let Err(exceeded) = record_keychain_unseal_failure(subject) {
+        get_metrics().incr_vault_unseal_rate_limited();
         let rate_reason = format!(
             "rate_limited:max={} window={} retry_after={}",
             exceeded.max_requests, exceeded.window_secs, exceeded.retry_after_secs
@@ -113,6 +118,40 @@ async fn log_and_record_unseal_failure(
         log_unseal_attempt(state, subject, method, "fail", Some(rate_reason.as_str())).await;
         return Err(map_unseal_rate_limit_error(exceeded));
     }
+    Ok(())
+}
+
+async fn run_post_unseal_maintenance(
+    state: &Arc<AppState>,
+    subject: &str,
+    method: &str,
+) -> Result<(), (StatusCode, String)> {
+    if let Err(err) = state.engine.migrate_sealed_storage().await {
+        get_metrics().incr_vault_migration_failure();
+        let reason = format!("post_unseal_migrate_failed:{err}");
+        if let Err(rate_limited) =
+            log_and_record_unseal_failure(state, subject, method, reason.as_str()).await
+        {
+            return Err(rate_limited);
+        }
+        let _ = state.engine.keychain.seal("system").await;
+        return Err(map_keychain_error(err));
+    }
+    get_metrics().incr_vault_migration_success();
+
+    if let Err(err) = state.engine.rebuild_runtime_indexes().await {
+        get_metrics().incr_vault_rebuild_failure();
+        let reason = format!("post_unseal_rebuild_failed:{err}");
+        if let Err(rate_limited) =
+            log_and_record_unseal_failure(state, subject, method, reason.as_str()).await
+        {
+            return Err(rate_limited);
+        }
+        let _ = state.engine.keychain.seal("system").await;
+        return Err(map_keychain_error(err));
+    }
+    get_metrics().incr_vault_rebuild_success();
+
     Ok(())
 }
 
@@ -148,6 +187,8 @@ pub struct VaultStatusResponse {
     pub shamir_enabled: bool,
     pub last_lifecycle_run: Option<String>,
     pub degraded_security: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sealed_blocked_requests: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -341,31 +382,19 @@ pub async fn unseal_vault(
         }
     }
 
-    if let Err(err) = state.engine.migrate_sealed_storage().await {
-        let reason = format!("post_unseal_migrate_failed:{err}");
-        if let Err(rate_limited) =
-            log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
-        {
-            return Err(rate_limited);
-        }
-        let _ = state.engine.keychain.seal("system").await;
-        return Err(map_keychain_error(err));
-    }
-    if let Err(err) = state.engine.rebuild_runtime_indexes().await {
-        let reason = format!("post_unseal_rebuild_failed:{err}");
-        if let Err(rate_limited) =
-            log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
-        {
-            return Err(rate_limited);
-        }
-        let _ = state.engine.keychain.seal("system").await;
-        return Err(map_keychain_error(err));
-    }
+    run_post_unseal_maintenance(&state, subject, method).await?;
 
     log_unseal_attempt(&state, subject, method, "success", None).await;
+    tracing::info!(subject, method, "vault unsealed successfully");
 
     // Start auto-seal timer after successful unseal
     state.engine.keychain.start_auto_seal().await;
+
+    // Reset blocked request counter now that vault is open.
+    state
+        .sealed_blocked_requests
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+
     Ok(Json(serde_json::json!({"status": "unsealed"})))
 }
 
@@ -381,6 +410,7 @@ pub async fn seal_vault(
         .seal(subject)
         .await
         .map_err(map_keychain_error)?;
+    tracing::info!(subject, "vault sealed");
     Ok(Json(serde_json::json!({"status": "sealed"})))
 }
 
@@ -424,6 +454,15 @@ pub async fn vault_status(
         .await
         .map(|dt| dt.to_rfc3339());
 
+    let blocked = state
+        .sealed_blocked_requests
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let sealed_blocked_requests = if state.engine.config.sealed_mode {
+        Some(blocked)
+    } else {
+        None
+    };
+
     Ok(Json(VaultStatusResponse {
         state: vault_state.to_string(),
         key_epoch: meta.as_ref().map(|m| m.key_epoch),
@@ -437,6 +476,7 @@ pub async fn vault_status(
         shamir_enabled,
         last_lifecycle_run: last_lifecycle,
         degraded_security: state.engine.keychain.degraded_security_mode(),
+        sealed_blocked_requests,
     }))
 }
 
@@ -965,12 +1005,7 @@ pub async fn shamir_unseal(
     let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let method = "shamir_shares";
     enforce_unseal_failure_backoff(&state, subject, method).await?;
-    if let Err(err) = state
-        .engine
-        .keychain
-        .unseal_from_shares(subject)
-        .await
-    {
+    if let Err(err) = state.engine.keychain.unseal_from_shares(subject).await {
         let reason = err.to_string();
         if let Err(rate_limited) =
             log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
@@ -979,29 +1014,13 @@ pub async fn shamir_unseal(
         }
         return Err(map_keychain_error(err));
     }
-    if let Err(err) = state.engine.migrate_sealed_storage().await {
-        let reason = format!("post_unseal_migrate_failed:{err}");
-        if let Err(rate_limited) =
-            log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
-        {
-            return Err(rate_limited);
-        }
-        let _ = state.engine.keychain.seal("system").await;
-        return Err(map_keychain_error(err));
-    }
-    if let Err(err) = state.engine.rebuild_runtime_indexes().await {
-        let reason = format!("post_unseal_rebuild_failed:{err}");
-        if let Err(rate_limited) =
-            log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
-        {
-            return Err(rate_limited);
-        }
-        let _ = state.engine.keychain.seal("system").await;
-        return Err(map_keychain_error(err));
-    }
+    run_post_unseal_maintenance(&state, subject, method).await?;
     log_unseal_attempt(&state, subject, method, "success", None).await;
     // Start auto-seal timer after successful unseal
     state.engine.keychain.start_auto_seal().await;
+    state
+        .sealed_blocked_requests
+        .store(0, std::sync::atomic::Ordering::Relaxed);
     Ok(Json(serde_json::json!({"status": "unsealed"})))
 }
 

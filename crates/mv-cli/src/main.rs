@@ -339,6 +339,15 @@ enum ServerAction {
     Status,
     /// Validate bind/auth safety before startup
     Preflight,
+    /// Migrate legacy plaintext artifacts for sealed mode
+    MigrateSealed {
+        /// Read vault password from MINDVAULT_VAULT_PASSWORD env var
+        #[arg(long)]
+        from_env: bool,
+        /// Vault passphrase (or use --from-env)
+        #[arg(long)]
+        passphrase: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -505,6 +514,25 @@ enum KeychainAction {
         /// Auto-seal timeout in seconds (default: 900)
         #[arg(long, default_value = "900")]
         timeout: u64,
+    },
+    /// Migrate legacy plaintext artifacts into sealed storage
+    #[command(name = "migrate-sealed")]
+    MigrateSealed {
+        /// Read password from MINDVAULT_VAULT_PASSWORD env var
+        #[arg(long)]
+        from_env: bool,
+        /// Passphrase for vault unseal
+        #[arg(long)]
+        passphrase: Option<String>,
+        /// Unseal using password stored in macOS Keychain
+        #[arg(long)]
+        from_macos_keychain: bool,
+        /// Unseal using macOS Secure Enclave
+        #[arg(long)]
+        from_secure_enclave: bool,
+        /// Keep vault unsealed after migration completes
+        #[arg(long)]
+        keep_unsealed: bool,
     },
     /// Seal (lock) the vault
     Seal,
@@ -733,6 +761,12 @@ async fn main() -> Result<()> {
             ServerAction::Stop => commands::server::stop(&cli.config).await,
             ServerAction::Status => commands::server::status(&cli.config).await,
             ServerAction::Preflight => commands::server::preflight(&cli.config).await,
+            ServerAction::MigrateSealed {
+                from_env,
+                passphrase,
+            } => {
+                commands::server::migrate_sealed(from_env, passphrase.as_deref(), &cli.config).await
+            }
         },
 
         Commands::Config { action } => match action {
@@ -802,23 +836,17 @@ async fn main() -> Result<()> {
             SecretAction::Delete { key } => commands::secret::delete(&key).await,
             SecretAction::Status => commands::secret::status().await,
             SecretAction::FileInit => commands::secret::file_init().await,
-            SecretAction::FileUnlock { action } => {
-                commands::secret::file_unlock(*action).await
-            }
+            SecretAction::FileUnlock { action } => commands::secret::file_unlock(*action).await,
             SecretAction::PolicySet {
                 key,
                 consumer,
                 allow,
                 ttl,
-            } => {
-                commands::secret::policy_set(&key, &consumer, allow, ttl).await
-            }
+            } => commands::secret::policy_set(&key, &consumer, allow, ttl).await,
             SecretAction::PolicyList { secret, consumer } => {
                 commands::secret::policy_list(secret.as_deref(), consumer.as_deref()).await
             }
-            SecretAction::PolicyDelete { id } => {
-                commands::secret::policy_delete(&id).await
-            }
+            SecretAction::PolicyDelete { id } => commands::secret::policy_delete(&id).await,
         },
 
         Commands::Profile { action } => match action {
@@ -854,6 +882,23 @@ async fn main() -> Result<()> {
                     from_macos_keychain,
                     from_secure_enclave,
                     timeout,
+                    &cli.config,
+                )
+                .await
+            }
+            KeychainAction::MigrateSealed {
+                from_env,
+                passphrase,
+                from_macos_keychain,
+                from_secure_enclave,
+                keep_unsealed,
+            } => {
+                commands::keychain::migrate_sealed(
+                    from_env,
+                    passphrase.as_deref(),
+                    from_macos_keychain,
+                    from_secure_enclave,
+                    keep_unsealed,
                     &cli.config,
                 )
                 .await
@@ -950,15 +995,9 @@ async fn main() -> Result<()> {
             KeychainAction::ShamirSubmit { share } => {
                 commands::keychain::shamir_submit(&share, &cli.config).await
             }
-            KeychainAction::ShamirUnseal => {
-                commands::keychain::shamir_unseal(&cli.config).await
-            }
-            KeychainAction::ShamirRotate => {
-                commands::keychain::shamir_rotate(&cli.config).await
-            }
-            KeychainAction::ShamirStatus => {
-                commands::keychain::shamir_status(&cli.config).await
-            }
+            KeychainAction::ShamirUnseal => commands::keychain::shamir_unseal(&cli.config).await,
+            KeychainAction::ShamirRotate => commands::keychain::shamir_rotate(&cli.config).await,
+            KeychainAction::ShamirStatus => commands::keychain::shamir_status(&cli.config).await,
         },
 
         Commands::Mcp {

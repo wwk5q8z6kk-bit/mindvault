@@ -20,6 +20,14 @@ pub struct MetricsCounters {
     rest_errors_total: AtomicU64,
     grpc_requests_total: AtomicU64,
     grpc_errors_total: AtomicU64,
+    vault_sealed_http_requests_blocked_total: AtomicU64,
+    vault_sealed_grpc_requests_blocked_total: AtomicU64,
+    vault_unseal_failures_total: AtomicU64,
+    vault_unseal_rate_limited_total: AtomicU64,
+    vault_sealed_migration_success_total: AtomicU64,
+    vault_sealed_migration_failures_total: AtomicU64,
+    vault_runtime_rebuild_success_total: AtomicU64,
+    vault_runtime_rebuild_failures_total: AtomicU64,
     /// Histogram bucket counters for REST request latency.
     /// One counter per bucket + one for +Inf.
     rest_latency_buckets: Vec<AtomicU64>,
@@ -37,6 +45,14 @@ impl Default for MetricsCounters {
             rest_errors_total: AtomicU64::new(0),
             grpc_requests_total: AtomicU64::new(0),
             grpc_errors_total: AtomicU64::new(0),
+            vault_sealed_http_requests_blocked_total: AtomicU64::new(0),
+            vault_sealed_grpc_requests_blocked_total: AtomicU64::new(0),
+            vault_unseal_failures_total: AtomicU64::new(0),
+            vault_unseal_rate_limited_total: AtomicU64::new(0),
+            vault_sealed_migration_success_total: AtomicU64::new(0),
+            vault_sealed_migration_failures_total: AtomicU64::new(0),
+            vault_runtime_rebuild_success_total: AtomicU64::new(0),
+            vault_runtime_rebuild_failures_total: AtomicU64::new(0),
             rest_latency_buckets: buckets,
             rest_latency_sum_us: AtomicU64::new(0),
             rest_latency_count: AtomicU64::new(0),
@@ -50,6 +66,14 @@ pub struct MetricsSnapshot {
     pub rest_errors_total: u64,
     pub grpc_requests_total: u64,
     pub grpc_errors_total: u64,
+    pub vault_sealed_http_requests_blocked_total: u64,
+    pub vault_sealed_grpc_requests_blocked_total: u64,
+    pub vault_unseal_failures_total: u64,
+    pub vault_unseal_rate_limited_total: u64,
+    pub vault_sealed_migration_success_total: u64,
+    pub vault_sealed_migration_failures_total: u64,
+    pub vault_runtime_rebuild_success_total: u64,
+    pub vault_runtime_rebuild_failures_total: u64,
 }
 
 static METRICS: OnceLock<MetricsCounters> = OnceLock::new();
@@ -79,6 +103,46 @@ impl MetricsCounters {
         self.grpc_errors_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn incr_vault_sealed_http_blocked(&self) {
+        self.vault_sealed_http_requests_blocked_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn incr_vault_sealed_grpc_blocked(&self) {
+        self.vault_sealed_grpc_requests_blocked_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn incr_vault_unseal_failure(&self) {
+        self.vault_unseal_failures_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn incr_vault_unseal_rate_limited(&self) {
+        self.vault_unseal_rate_limited_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn incr_vault_migration_success(&self) {
+        self.vault_sealed_migration_success_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn incr_vault_migration_failure(&self) {
+        self.vault_sealed_migration_failures_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn incr_vault_rebuild_success(&self) {
+        self.vault_runtime_rebuild_success_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn incr_vault_rebuild_failure(&self) {
+        self.vault_runtime_rebuild_failures_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn observe_rest_latency_us(&self, latency_us: u64) {
         let latency_ms = latency_us / 1000;
         // Increment all buckets where the latency fits (cumulative histogram)
@@ -92,7 +156,8 @@ impl MetricsCounters {
             .last()
             .unwrap()
             .fetch_add(1, Ordering::Relaxed);
-        self.rest_latency_sum_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.rest_latency_sum_us
+            .fetch_add(latency_us, Ordering::Relaxed);
         self.rest_latency_count.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -102,6 +167,28 @@ impl MetricsCounters {
             rest_errors_total: self.rest_errors_total.load(Ordering::Relaxed),
             grpc_requests_total: self.grpc_requests_total.load(Ordering::Relaxed),
             grpc_errors_total: self.grpc_errors_total.load(Ordering::Relaxed),
+            vault_sealed_http_requests_blocked_total: self
+                .vault_sealed_http_requests_blocked_total
+                .load(Ordering::Relaxed),
+            vault_sealed_grpc_requests_blocked_total: self
+                .vault_sealed_grpc_requests_blocked_total
+                .load(Ordering::Relaxed),
+            vault_unseal_failures_total: self.vault_unseal_failures_total.load(Ordering::Relaxed),
+            vault_unseal_rate_limited_total: self
+                .vault_unseal_rate_limited_total
+                .load(Ordering::Relaxed),
+            vault_sealed_migration_success_total: self
+                .vault_sealed_migration_success_total
+                .load(Ordering::Relaxed),
+            vault_sealed_migration_failures_total: self
+                .vault_sealed_migration_failures_total
+                .load(Ordering::Relaxed),
+            vault_runtime_rebuild_success_total: self
+                .vault_runtime_rebuild_success_total
+                .load(Ordering::Relaxed),
+            vault_runtime_rebuild_failures_total: self
+                .vault_runtime_rebuild_failures_total
+                .load(Ordering::Relaxed),
         }
     }
 }
@@ -141,6 +228,40 @@ mindvault_grpc_errors_total {}\n",
         snapshot.grpc_requests_total,
         snapshot.grpc_errors_total,
     );
+    body.push_str(&format!(
+        "# HELP mindvault_vault_sealed_http_requests_blocked_total Total HTTP requests blocked because vault is sealed\n\
+# TYPE mindvault_vault_sealed_http_requests_blocked_total counter\n\
+mindvault_vault_sealed_http_requests_blocked_total {}\n\
+# HELP mindvault_vault_sealed_grpc_requests_blocked_total Total gRPC requests blocked because vault is sealed\n\
+# TYPE mindvault_vault_sealed_grpc_requests_blocked_total counter\n\
+mindvault_vault_sealed_grpc_requests_blocked_total {}\n\
+# HELP mindvault_vault_unseal_failures_total Total failed vault unseal attempts\n\
+# TYPE mindvault_vault_unseal_failures_total counter\n\
+mindvault_vault_unseal_failures_total {}\n\
+# HELP mindvault_vault_unseal_rate_limited_total Total unseal attempts blocked by rate limiting\n\
+# TYPE mindvault_vault_unseal_rate_limited_total counter\n\
+mindvault_vault_unseal_rate_limited_total {}\n\
+# HELP mindvault_vault_sealed_migration_success_total Total successful post-unseal sealed migrations\n\
+# TYPE mindvault_vault_sealed_migration_success_total counter\n\
+mindvault_vault_sealed_migration_success_total {}\n\
+# HELP mindvault_vault_sealed_migration_failures_total Total failed post-unseal sealed migrations\n\
+# TYPE mindvault_vault_sealed_migration_failures_total counter\n\
+mindvault_vault_sealed_migration_failures_total {}\n\
+# HELP mindvault_vault_runtime_rebuild_success_total Total successful post-unseal runtime index rebuilds\n\
+# TYPE mindvault_vault_runtime_rebuild_success_total counter\n\
+mindvault_vault_runtime_rebuild_success_total {}\n\
+# HELP mindvault_vault_runtime_rebuild_failures_total Total failed post-unseal runtime index rebuilds\n\
+# TYPE mindvault_vault_runtime_rebuild_failures_total counter\n\
+mindvault_vault_runtime_rebuild_failures_total {}\n",
+        snapshot.vault_sealed_http_requests_blocked_total,
+        snapshot.vault_sealed_grpc_requests_blocked_total,
+        snapshot.vault_unseal_failures_total,
+        snapshot.vault_unseal_rate_limited_total,
+        snapshot.vault_sealed_migration_success_total,
+        snapshot.vault_sealed_migration_failures_total,
+        snapshot.vault_runtime_rebuild_success_total,
+        snapshot.vault_runtime_rebuild_failures_total,
+    ));
 
     // Latency histogram
     body.push_str(
@@ -154,7 +275,11 @@ mindvault_grpc_errors_total {}\n",
             "mindvault_rest_request_duration_seconds_bucket{{le=\"{bound_s}\"}} {count}\n"
         ));
     }
-    let inf_count = m.rest_latency_buckets.last().unwrap().load(Ordering::Relaxed);
+    let inf_count = m
+        .rest_latency_buckets
+        .last()
+        .unwrap()
+        .load(Ordering::Relaxed);
     body.push_str(&format!(
         "mindvault_rest_request_duration_seconds_bucket{{le=\"+Inf\"}} {inf_count}\n"
     ));
@@ -183,12 +308,28 @@ mod tests {
         counters.incr_rest_request();
         counters.incr_rest_error();
         counters.incr_grpc_request();
+        counters.incr_vault_sealed_http_blocked();
+        counters.incr_vault_sealed_grpc_blocked();
+        counters.incr_vault_unseal_failure();
+        counters.incr_vault_unseal_rate_limited();
+        counters.incr_vault_migration_success();
+        counters.incr_vault_migration_failure();
+        counters.incr_vault_rebuild_success();
+        counters.incr_vault_rebuild_failure();
 
         let snapshot = counters.snapshot();
         assert_eq!(snapshot.rest_requests_total, 1);
         assert_eq!(snapshot.rest_errors_total, 1);
         assert_eq!(snapshot.grpc_requests_total, 1);
         assert_eq!(snapshot.grpc_errors_total, 0);
+        assert_eq!(snapshot.vault_sealed_http_requests_blocked_total, 1);
+        assert_eq!(snapshot.vault_sealed_grpc_requests_blocked_total, 1);
+        assert_eq!(snapshot.vault_unseal_failures_total, 1);
+        assert_eq!(snapshot.vault_unseal_rate_limited_total, 1);
+        assert_eq!(snapshot.vault_sealed_migration_success_total, 1);
+        assert_eq!(snapshot.vault_sealed_migration_failures_total, 1);
+        assert_eq!(snapshot.vault_runtime_rebuild_success_total, 1);
+        assert_eq!(snapshot.vault_runtime_rebuild_failures_total, 1);
     }
 
     #[test]
@@ -202,12 +343,16 @@ mod tests {
         assert_eq!(counters.rest_latency_buckets[0].load(Ordering::Relaxed), 0); // 5ms
         assert_eq!(counters.rest_latency_buckets[1].load(Ordering::Relaxed), 0); // 10ms
         assert_eq!(counters.rest_latency_buckets[2].load(Ordering::Relaxed), 0); // 25ms
-        // 50ms should be in 50ms bucket and above
+                                                                                 // 50ms should be in 50ms bucket and above
         assert_eq!(counters.rest_latency_buckets[3].load(Ordering::Relaxed), 1); // 50ms
         assert_eq!(counters.rest_latency_buckets[4].load(Ordering::Relaxed), 1); // 100ms
-        // +Inf always gets it
+                                                                                 // +Inf always gets it
         assert_eq!(
-            counters.rest_latency_buckets.last().unwrap().load(Ordering::Relaxed),
+            counters
+                .rest_latency_buckets
+                .last()
+                .unwrap()
+                .load(Ordering::Relaxed),
             1
         );
         assert_eq!(counters.rest_latency_count.load(Ordering::Relaxed), 1);

@@ -14,6 +14,7 @@ use crate::limits::{
     enforce_keychain_unseal_failure_backoff, enforce_namespace_quota, enforce_rate_limit,
     record_keychain_unseal_failure, NamespaceQuotaError, RateLimitExceeded,
 };
+use crate::metrics::get_metrics;
 use crate::state::AppState;
 use crate::validation::{
     validate_depth, validate_list_limit, validate_node_payload, validate_query_text,
@@ -215,6 +216,7 @@ fn scoped_namespace_grpc(
 #[allow(clippy::result_large_err)]
 fn ensure_vault_unsealed(state: &AppState) -> Result<(), Status> {
     if state.engine.config.sealed_mode && !state.engine.keychain.is_unsealed_sync() {
+        get_metrics().incr_vault_sealed_grpc_blocked();
         return Err(Status::unavailable("Vault sealed - please unseal"));
     }
     Ok(())
@@ -924,6 +926,7 @@ async fn enforce_unseal_failure_backoff(
     method: &str,
 ) -> Result<(), Status> {
     if let Err(exceeded) = enforce_keychain_unseal_failure_backoff(subject) {
+        get_metrics().incr_vault_unseal_rate_limited();
         let reason = format!(
             "rate_limited:max={} window={} retry_after={}",
             exceeded.max_requests, exceeded.window_secs, exceeded.retry_after_secs
@@ -940,8 +943,11 @@ async fn log_and_record_unseal_failure(
     method: &str,
     reason: &str,
 ) -> Result<(), Status> {
+    get_metrics().incr_vault_unseal_failure();
+    tracing::warn!(subject, method, reason, "vault unseal failed");
     log_unseal_attempt(state, subject, method, "fail", Some(reason)).await;
     if let Err(exceeded) = record_keychain_unseal_failure(subject) {
+        get_metrics().incr_vault_unseal_rate_limited();
         let rate_reason = format!(
             "rate_limited:max={} window={} retry_after={}",
             exceeded.max_requests, exceeded.window_secs, exceeded.retry_after_secs
@@ -949,6 +955,32 @@ async fn log_and_record_unseal_failure(
         log_unseal_attempt(state, subject, method, "fail", Some(rate_reason.as_str())).await;
         return Err(map_unseal_rate_limit_status(exceeded));
     }
+    Ok(())
+}
+
+async fn run_post_unseal_maintenance(
+    state: &AppState,
+    subject: &str,
+    method: &str,
+) -> Result<(), Status> {
+    if let Err(err) = state.engine.migrate_sealed_storage().await {
+        get_metrics().incr_vault_migration_failure();
+        let reason = format!("post_unseal_migrate_failed:{err}");
+        log_and_record_unseal_failure(state, subject, method, reason.as_str()).await?;
+        let _ = state.engine.keychain.seal("system").await;
+        return Err(map_keychain_status(err));
+    }
+    get_metrics().incr_vault_migration_success();
+
+    if let Err(err) = state.engine.rebuild_runtime_indexes().await {
+        get_metrics().incr_vault_rebuild_failure();
+        let reason = format!("post_unseal_rebuild_failed:{err}");
+        log_and_record_unseal_failure(state, subject, method, reason.as_str()).await?;
+        let _ = state.engine.keychain.seal("system").await;
+        return Err(map_keychain_status(err));
+    }
+    get_metrics().incr_vault_rebuild_success();
+
     Ok(())
 }
 
@@ -1015,20 +1047,7 @@ impl KeychainService for KeychainGrpc {
                         "vault unsealed in degraded security mode (passphrase fallback)"
                     );
                 }
-                if let Err(err) = self.state.engine.migrate_sealed_storage().await {
-                    let reason = format!("post_unseal_migrate_failed:{err}");
-                    log_and_record_unseal_failure(&self.state, subject, method, reason.as_str())
-                        .await?;
-                    let _ = self.state.engine.keychain.seal("system").await;
-                    return Err(map_keychain_status(err));
-                }
-                if let Err(err) = self.state.engine.rebuild_runtime_indexes().await {
-                    let reason = format!("post_unseal_rebuild_failed:{err}");
-                    log_and_record_unseal_failure(&self.state, subject, method, reason.as_str())
-                        .await?;
-                    let _ = self.state.engine.keychain.seal("system").await;
-                    return Err(map_keychain_status(err));
-                }
+                run_post_unseal_maintenance(&self.state, subject, method).await?;
                 log_unseal_attempt(&self.state, subject, method, "success", None).await;
             }
             Err(err) => {

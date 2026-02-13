@@ -265,7 +265,10 @@ fn startup_sealed_storage_preflight(config: &EngineConfig) -> Result<(), std::io
     for legacy_index_dir in ["tantivy", "lancedb"] {
         let path = data_dir.join(legacy_index_dir);
         if path.exists() {
-            findings.push(format!("legacy index directory present: {}", path.display()));
+            findings.push(format!(
+                "legacy index directory present: {}",
+                path.display()
+            ));
         }
     }
 
@@ -285,7 +288,7 @@ fn startup_sealed_storage_preflight(config: &EngineConfig) -> Result<(), std::io
 
     let reason = findings.join("; ");
     Err(std::io::Error::other(format!(
-        "sealed mode startup preflight failed: {reason}"
+        "sealed mode startup preflight failed: {reason}; run `mv server migrate-sealed --passphrase <pw>` to encrypt legacy artifacts"
     )))
 }
 
@@ -1039,11 +1042,7 @@ mod tests {
             .initialize_vault("test-password", false, "test")
             .await
             .expect("vault initialized");
-        engine
-            .keychain
-            .seal("test")
-            .await
-            .expect("vault sealed");
+        engine.keychain.seal("test").await.expect("vault sealed");
 
         let err = ensure_startup_unsealed(&engine).expect_err("sealed startup must fail");
         assert!(err.to_string().contains("Vault sealed - please unseal"));
@@ -1118,8 +1117,11 @@ mod tests {
             .join("node-a")
             .join("attachment.bin");
         std::fs::create_dir_all(blob_file.parent().expect("blob parent")).expect("create dirs");
-        std::fs::write(&blob_file, [SEALED_BLOB_MAGIC.as_slice(), b"ciphertext"].concat())
-            .expect("write encrypted blob");
+        std::fs::write(
+            &blob_file,
+            [SEALED_BLOB_MAGIC.as_slice(), b"ciphertext"].concat(),
+        )
+        .expect("write encrypted blob");
 
         let mut config = EngineConfig::default();
         config.data_dir = temp_dir.path().to_string_lossy().to_string();

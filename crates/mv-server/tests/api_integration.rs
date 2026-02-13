@@ -712,9 +712,17 @@ async fn sealed_mode_blocks_data_routes_comprehensively() {
     // All data-access routes must return 503 while sealed.
     let blocked_routes: Vec<(Method, &str, Option<Value>)> = vec![
         (Method::GET, "/api/v1/health", None),
-        (Method::POST, "/api/v1/nodes", Some(json!({"kind":"fact","content":"x","tags":[]}))),
+        (
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({"kind":"fact","content":"x","tags":[]})),
+        ),
         (Method::GET, "/api/v1/nodes", None),
-        (Method::POST, "/api/v1/recall", Some(json!({"text":"q","limit":5,"strategy":"fulltext"}))),
+        (
+            Method::POST,
+            "/api/v1/recall",
+            Some(json!({"text":"q","limit":5,"strategy":"fulltext"})),
+        ),
         (Method::GET, "/api/v1/profile", None),
         (Method::GET, "/api/v1/files", None),
         (Method::GET, "/api/v1/exchange/proposals", None),
@@ -735,10 +743,7 @@ async fn sealed_mode_blocks_data_routes_comprehensively() {
     }
 
     // Allowlisted keychain routes must NOT be blocked.
-    let allowed_routes = [
-        "/api/v1/keychain/status",
-        "/api/v1/keychain/shamir/status",
-    ];
+    let allowed_routes = ["/api/v1/keychain/status", "/api/v1/keychain/shamir/status"];
     for uri in &allowed_routes {
         let resp = router
             .clone()
@@ -1188,9 +1193,7 @@ async fn sealed_blob_encrypted_on_disk() {
     let mut body_bytes = Vec::new();
     // node_id field
     body_bytes.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-    body_bytes.extend_from_slice(
-        b"Content-Disposition: form-data; name=\"node_id\"\r\n\r\n",
-    );
+    body_bytes.extend_from_slice(b"Content-Disposition: form-data; name=\"node_id\"\r\n\r\n");
     body_bytes.extend_from_slice(node_id.as_bytes());
     body_bytes.extend_from_slice(b"\r\n");
     // file field
@@ -1223,7 +1226,10 @@ async fn sealed_blob_encrypted_on_disk() {
 
     // Scan blobs/ directory on disk — every file must start with MVB1 magic.
     let blobs_dir = std::path::PathBuf::from(&data_dir).join("blobs");
-    assert!(blobs_dir.exists(), "blobs directory should exist after upload");
+    assert!(
+        blobs_dir.exists(),
+        "blobs directory should exist after upload"
+    );
 
     let mut found_blob = false;
     let mut stack = vec![blobs_dir];
@@ -1256,4 +1262,144 @@ async fn sealed_blob_encrypted_on_disk() {
         }
     }
     assert!(found_blob, "at least one blob file should exist on disk");
+}
+
+// ---------------------------------------------------------------------------
+// Sealed-mode: lifecycle survives engine restart (simulated)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sealed_mode_lifecycle_survives_restart() {
+    let tmp = TempDir::new().expect("tempdir");
+    let data_dir = tmp.path().to_string_lossy().to_string();
+
+    // --- Session 1: init vault, store data, seal ---
+    {
+        let mut config = test_config(&data_dir);
+        config.sealed_mode = true;
+        let engine = MindVaultEngine::init(config).await.expect("engine init");
+        let state = Arc::new(AppState::new(Arc::new(engine)));
+        let router = create_router(state.clone());
+
+        // Init vault.
+        let resp = router
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/keychain/init",
+                Some(json!({"password":"restart-pw","macos_bridge":false})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Store a node.
+        let resp = router
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/nodes",
+                Some(json!({"kind":"fact","content":"Mitochondria is the powerhouse of the cell","title":"Biology 101","tags":["bio"]})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Verify recall works.
+        let resp = router
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/recall",
+                Some(json!({"text":"mitochondria","limit":10,"strategy":"fulltext"})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let results: Value = body_json(resp).await;
+        assert!(!results.as_array().unwrap().is_empty());
+
+        // Seal.
+        let resp = router
+            .oneshot(json_request(Method::POST, "/api/v1/keychain/seal", None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Engine dropped here — simulates process shutdown.
+    }
+
+    // --- Session 2: new engine on same data dir, unseal, verify data ---
+    {
+        let mut config = test_config(&data_dir);
+        config.sealed_mode = true;
+        let engine = MindVaultEngine::init(config).await.expect("engine init");
+        let state = Arc::new(AppState::new(Arc::new(engine)));
+        let router = create_router(state.clone());
+
+        // Routes blocked while sealed.
+        let resp = router
+            .clone()
+            .oneshot(json_request(Method::GET, "/api/v1/health", None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // Unseal with same password.
+        let resp = router
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/keychain/unseal",
+                Some(json!({"password":"restart-pw","from_macos_keychain":false,"from_secure_enclave":false})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "unseal after restart should succeed"
+        );
+
+        // Health restored.
+        let resp = router
+            .clone()
+            .oneshot(json_request(Method::GET, "/api/v1/health", None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Node data survives restart.
+        let resp = router
+            .clone()
+            .oneshot(json_request(Method::GET, "/api/v1/nodes?kind=fact", None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let nodes: Value = body_json(resp).await;
+        let items = nodes.as_array().expect("should be array");
+        assert!(
+            items.iter().any(|n| n["content"]
+                .as_str()
+                .map(|c| c.contains("Mitochondria"))
+                .unwrap_or(false)),
+            "node content should survive restart"
+        );
+
+        // FTS recall works after post-unseal rebuild.
+        let resp = router
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/recall",
+                Some(json!({"text":"mitochondria","limit":10,"strategy":"fulltext"})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let results: Value = body_json(resp).await;
+        assert!(
+            !results.as_array().unwrap().is_empty(),
+            "recall should work after restart + unseal (indexes rebuilt)"
+        );
+    }
 }

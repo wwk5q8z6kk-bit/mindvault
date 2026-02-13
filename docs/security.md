@@ -35,16 +35,17 @@ Public share links provide read-only access to a single node:
 
 ### What is encrypted
 
-MindVault encrypts **keychain secrets** and **blob attachments** at rest when
-sealed mode is enabled. Knowledge node text content remains in plaintext to
-preserve full-text search and embedding functionality.
+MindVault encrypts all persisted vault artifacts at rest in sealed mode.
+Plaintext exists only transiently in process memory while the vault is unsealed.
 
 | Data | Encrypted at rest? | Notes |
 |------|--------------------|-------|
-| Keychain credentials | Yes | AES-256-GCM with domain-scoped keys |
-| Blob attachments | Yes | Per-file DEK wrapped with namespace KEK |
-| Node text content | No | Required for FTS and vector search |
-| FTS / vector indexes | Ephemeral | Rebuilt in-memory after each unseal |
+| SQLite node payloads + metadata | Yes | Per-node DEK (AES-256-GCM), DEK wrapped per namespace |
+| Tantivy index segments/files | Yes | Transparent encrypted directory wrapper |
+| LanceDB table files | Yes | Transparent encrypted storage wrapper |
+| Blob attachments + derived extraction text | Yes | Envelope format with wrapped DEK (`MVB1` prefix) |
+| Keychain credentials | Yes | Domain-scoped encryption + audit controls |
+| API responses | Runtime only | Decrypted only while process is unsealed |
 
 ### Sealed mode lifecycle
 
@@ -61,7 +62,7 @@ UNINITIALIZED ──> mv keychain init ──> UNSEALED
 ```
 
 While **sealed**, the server:
-- Returns HTTP 503 / gRPC `FAILED_PRECONDITION` on all data routes
+- Returns HTTP 503 / gRPC `UNAVAILABLE` on all data routes
 - Allows only keychain status, init, unseal, and Shamir endpoints
 - Blocks background jobs (reindex, enrichment, watchers)
 
@@ -71,6 +72,26 @@ After **unseal**, the server:
 3. Resumes normal operation
 
 If either post-unseal step fails, the vault is automatically re-sealed.
+
+### Legacy plaintext migration command
+
+Use the keychain migration command when enabling sealed mode for an existing vault:
+
+```bash
+mv keychain migrate-sealed [--passphrase <pw> | --from-env | --from-macos-keychain | --from-secure-enclave] [--keep-unsealed]
+```
+
+Behavior:
+- Unseals (or initializes + unseals) the vault
+- Migrates legacy plaintext artifacts into encrypted sealed storage
+- Rebuilds runtime indexes
+- Re-seals by default (or stays unsealed with `--keep-unsealed`)
+
+Compatibility alias:
+
+```bash
+mv server migrate-sealed --passphrase <pw>
+```
 
 ### Configuration
 
@@ -108,6 +129,125 @@ subject, method, outcome, and failure reason. Query via:
 ```
 GET /api/v1/agent/chronicle?limit=50
 ```
+
+### Sealed-mode telemetry counters
+
+Prometheus `/metrics` includes sealed lifecycle counters:
+- `mindvault_vault_sealed_http_requests_blocked_total`
+- `mindvault_vault_sealed_grpc_requests_blocked_total`
+- `mindvault_vault_unseal_failures_total`
+- `mindvault_vault_unseal_rate_limited_total`
+- `mindvault_vault_sealed_migration_success_total`
+- `mindvault_vault_sealed_migration_failures_total`
+- `mindvault_vault_runtime_rebuild_success_total`
+- `mindvault_vault_runtime_rebuild_failures_total`
+
+## Operator Runbook — Sealed Mode
+
+### Enabling sealed mode on an existing vault
+
+1. **Back up your data directory** before proceeding.
+2. Run preflight to verify the current state:
+   ```bash
+   mv server preflight
+   ```
+3. Run the migration command to encrypt all legacy plaintext artifacts:
+   ```bash
+   mv keychain migrate-sealed --passphrase <pw>
+   # or use OS-backed key sources:
+   mv keychain migrate-sealed --from-macos-keychain
+   mv keychain migrate-sealed --from-secure-enclave
+   ```
+   This unseals the vault (or initializes it if needed), encrypts all legacy
+   blobs, removes legacy index directories, rebuilds runtime indexes, and
+   re-seals. Use `--keep-unsealed` to leave the vault open after migration.
+4. Enable sealed mode in your config:
+   ```toml
+   sealed_mode = true
+   ```
+5. Restart the server. It will start in sealed state; unseal via CLI or API.
+
+### Upgrading a sealed vault
+
+When upgrading MindVault with sealed mode enabled:
+
+1. Seal the vault before stopping the server (`POST /api/v1/keychain/seal`).
+2. Back up the data directory.
+3. Upgrade the binary.
+4. Start the server — it will start sealed and run preflight automatically.
+5. Unseal. Post-unseal maintenance (migration + index rebuild) runs automatically.
+6. Verify via `GET /api/v1/keychain/status` that the vault reports `"sealed": false`.
+
+### Recovery from failed migration
+
+If `migrate_sealed_storage` or `rebuild_runtime_indexes` fails after unseal,
+the vault automatically re-seals to protect data. To recover:
+
+1. Check logs for the failure reason (search for `post-unseal maintenance`).
+2. If the failure is transient (e.g. disk full), free resources and unseal again.
+   The migration is idempotent — it skips already-encrypted blobs.
+3. If the failure persists, restore from backup and retry with verbose logging:
+   ```bash
+   RUST_LOG=mv_engine=debug mv keychain migrate-sealed --passphrase <pw>
+   ```
+4. Monitor the telemetry counters:
+   - `mindvault_vault_sealed_migration_failures_total` — migration failures
+   - `mindvault_vault_runtime_rebuild_failures_total` — index rebuild failures
+5. Check the chronicle audit log for detailed failure context:
+   ```
+   GET /api/v1/agent/chronicle?limit=50
+   ```
+
+### Strict hardware mode
+
+Set `MINDVAULT_REQUIRE_HARDWARE=true` to require OS-backed secure storage
+(macOS Keychain or Secure Enclave) for the master key. When enabled:
+
+- The server **refuses to start** if OS secure storage is unavailable.
+- Passphrase-only unseal is rejected at the keychain layer.
+- Suitable for production deployments on macOS where the master key must never
+  exist as a passphrase-derived value in process memory.
+
+### Auto-seal timeout
+
+After unseal, the vault starts an auto-seal timer (default: 900 seconds / 15 minutes).
+If no activity occurs within that window, the vault re-seals automatically.
+Configure via the CLI `--auto-seal-timeout` flag or the `auto_seal_timeout_secs`
+config key.
+
+### Shamir secret sharing
+
+For multi-party unseal, enable Shamir splitting of the vault encryption key:
+
+1. Enable: `POST /api/v1/keychain/shamir/enable` with `threshold` and `total`.
+2. Distribute shares to key holders.
+3. To unseal, each holder submits their share via `POST /api/v1/keychain/shamir/submit`.
+4. When the threshold is met, the vault unseals automatically.
+5. Rotate shares: `POST /api/v1/keychain/shamir/rotate`.
+6. Check status: `GET /api/v1/keychain/shamir/status`.
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Server returns 503 on all routes | Vault is sealed | Unseal via `mv keychain unseal` or API |
+| Preflight fails: "legacy plaintext artifacts" | Sealed mode enabled before migration | Run `mv keychain migrate-sealed` |
+| Unseal returns 429 | Rate limit hit (5 failures / 300s) | Wait for the window to expire, or check passphrase |
+| Post-unseal migration fails repeatedly | Corrupt blob or disk issue | Check logs, restore from backup, retry |
+| `MINDVAULT_REQUIRE_HARDWARE` fails at startup | No OS secure storage | Deploy on macOS with Keychain access, or disable the flag |
+| Metrics show high `sealed_http_requests_blocked` | Clients hitting sealed vault | Automate unseal in your deployment scripts |
+| Auto-seal fires unexpectedly | Idle timeout too short | Increase `auto_seal_timeout_secs` |
+
+### Environment variable reference (sealed mode)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MINDVAULT_REQUIRE_HARDWARE` | `false` | Require OS secure storage for master key |
+| `MINDVAULT_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT` | `5` | Max failed unseal attempts per window |
+| `MINDVAULT_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT_WINDOW` | `300` | Rate limit window in seconds |
+| `MINDVAULT_ENCRYPTION_ARGON2_MEMORY_KIB` | `65536` | Argon2 memory parameter (KiB) |
+| `MINDVAULT_ENCRYPTION_ARGON2_ITERATIONS` | `3` | Argon2 time cost |
+| `MINDVAULT_ENCRYPTION_ARGON2_PARALLELISM` | `4` | Argon2 lane count |
 
 ## Keychain
 

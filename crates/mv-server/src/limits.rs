@@ -185,10 +185,7 @@ const DEFAULT_PROXY_RATE_LIMIT_WINDOW_SECS: u64 = 3600;
 ///
 /// Key format: `proxy:{consumer}:{secret_ref}` — so each consumer gets its own
 /// rate limit bucket for each secret they access via the proxy.
-pub fn enforce_proxy_rate_limit(
-    consumer: &str,
-    secret_ref: &str,
-) -> Result<(), RateLimitExceeded> {
+pub fn enforce_proxy_rate_limit(consumer: &str, secret_ref: &str) -> Result<(), RateLimitExceeded> {
     let key = format!("proxy:{consumer}:{secret_ref}");
     PROXY_RATE_LIMITER
         .get_or_init(|| {

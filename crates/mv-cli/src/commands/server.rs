@@ -69,10 +69,82 @@ pub async fn preflight(config_path: &str) -> Result<()> {
             println!("  {err}");
             println!("next steps:");
             println!("  1) Set MINDVAULT_AUTH_TOKEN or MINDVAULT_JWT_SECRET");
-            println!("  2) Or set MINDVAULT_ALLOW_INSECURE_BIND=true only for trusted local networks");
+            println!(
+                "  2) Or set MINDVAULT_ALLOW_INSECURE_BIND=true only for trusted local networks"
+            );
             Err(anyhow::anyhow!("bind safety preflight failed"))
         }
     }
+}
+
+pub async fn migrate_sealed(
+    from_env: bool,
+    passphrase: Option<&str>,
+    config_path: &str,
+) -> Result<()> {
+    let config = super::load_config(config_path)?;
+    if !config.sealed_mode {
+        return Err(anyhow::anyhow!(
+            "sealed_mode is not enabled in config; migration is only needed for sealed mode"
+        ));
+    }
+
+    println!("sealed migration: initializing engine (skipping preflight)...");
+    let engine = mv_engine::engine::MindVaultEngine::init(config).await?;
+
+    let (state, _meta) = engine.keychain.vault_status().await?;
+    let needs_init = matches!(state, mv_core::model::keychain::VaultState::Uninitialized);
+
+    let password = if let Some(pw) = passphrase {
+        pw.to_string()
+    } else if from_env {
+        std::env::var("MINDVAULT_VAULT_PASSWORD")
+            .map_err(|_| anyhow::anyhow!("MINDVAULT_VAULT_PASSWORD not set"))?
+    } else {
+        return Err(anyhow::anyhow!(
+            "provide --passphrase or --from-env to supply the vault password"
+        ));
+    };
+
+    if needs_init {
+        println!("sealed migration: vault not initialized, initializing...");
+        engine
+            .keychain
+            .initialize_vault(&password, false, "migrate-sealed")
+            .await
+            .map_err(|e| anyhow::anyhow!("vault init failed: {e}"))?;
+        println!("sealed migration: vault initialized and unsealed");
+    } else {
+        println!("sealed migration: unsealing vault...");
+        engine
+            .keychain
+            .unseal(&password, "migrate-sealed")
+            .await
+            .map_err(|e| anyhow::anyhow!("unseal failed: {e}"))?;
+        println!("sealed migration: vault unsealed");
+    }
+
+    println!("sealed migration: migrating storage (encrypting plaintext blobs, removing legacy indexes)...");
+    engine
+        .migrate_sealed_storage()
+        .await
+        .map_err(|e| anyhow::anyhow!("storage migration failed: {e}"))?;
+
+    println!("sealed migration: rebuilding runtime indexes...");
+    engine
+        .rebuild_runtime_indexes()
+        .await
+        .map_err(|e| anyhow::anyhow!("index rebuild failed: {e}"))?;
+
+    engine
+        .keychain
+        .seal("migrate-sealed")
+        .await
+        .map_err(|e| anyhow::anyhow!("seal failed: {e}"))?;
+
+    println!("sealed migration: complete — vault re-sealed");
+    println!("you can now start the server normally with `mv server start`");
+    Ok(())
 }
 
 pub async fn stop(config_path: &str) -> Result<()> {

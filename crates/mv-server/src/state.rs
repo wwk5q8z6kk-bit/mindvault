@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -22,6 +23,8 @@ pub struct AppState {
     pub plugin_runtime: Arc<RwLock<PluginRuntime>>,
     /// Shared HTTP client for AI sidecar proxy and other outbound requests.
     pub http_client: reqwest::Client,
+    /// Counter: requests rejected by sealed-mode middleware.
+    pub sealed_blocked_requests: AtomicU64,
 }
 
 /// Notification for task reminders.
@@ -148,6 +151,7 @@ impl AppState {
             plugin_manager: Arc::new(RwLock::new(plugin_manager)),
             plugin_runtime: Arc::new(RwLock::new(plugin_runtime)),
             http_client,
+            sealed_blocked_requests: AtomicU64::new(0),
         }
     }
 

@@ -4,6 +4,8 @@ use anyhow::{bail, Context, Result};
 use std::io::{self, Write};
 use std::sync::Arc;
 
+use mv_core::model::keychain::VaultState;
+use mv_engine::engine::MindVaultEngine;
 use mv_engine::keychain::{KeychainEngine, MasterKeySource};
 use mv_storage::keychain::SqliteKeychainStore;
 
@@ -166,8 +168,8 @@ pub async fn unseal(
         }
     } else {
         let source = if from_env {
-            let password =
-                std::env::var("MINDVAULT_VAULT_PASSWORD").context("MINDVAULT_VAULT_PASSWORD not set")?;
+            let password = std::env::var("MINDVAULT_VAULT_PASSWORD")
+                .context("MINDVAULT_VAULT_PASSWORD not set")?;
             engine
                 .unseal_with_preferred_master_key(Some(&password), "cli")
                 .await
@@ -198,6 +200,143 @@ pub async fn unseal(
     if engine.degraded_security_mode() {
         eprintln!("warning: degraded security mode active (passphrase fallback in use)");
     }
+    Ok(())
+}
+
+pub async fn migrate_sealed(
+    from_env: bool,
+    passphrase: Option<&str>,
+    from_macos_keychain: bool,
+    from_secure_enclave: bool,
+    keep_unsealed: bool,
+    config_path: &str,
+) -> Result<()> {
+    let config = load_config(config_path)?;
+    if !config.sealed_mode {
+        bail!("sealed_mode is not enabled in config");
+    }
+
+    println!("sealed migration: initializing engine...");
+    let engine = MindVaultEngine::init(config)
+        .await
+        .map_err(|e| anyhow::anyhow!("engine init failed: {e}"))?;
+
+    let (vault_state, _meta) = engine
+        .keychain
+        .vault_status()
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let supplied_password = if let Some(value) = passphrase {
+        Some(value.to_string())
+    } else if from_env {
+        Some(
+            std::env::var("MINDVAULT_VAULT_PASSWORD")
+                .context("MINDVAULT_VAULT_PASSWORD not set")?,
+        )
+    } else {
+        None
+    };
+
+    if matches!(vault_state, VaultState::Uninitialized) {
+        let password = if let Some(password) = supplied_password {
+            password
+        } else {
+            prompt_password("Enter vault password to initialize sealed vault: ")?
+        };
+        if password.len() < 8 {
+            bail!("password must be at least 8 characters");
+        }
+
+        engine
+            .keychain
+            .initialize_vault(&password, false, "cli-migrate-sealed")
+            .await
+            .map_err(|e| anyhow::anyhow!("vault init failed: {e}"))?;
+        println!("sealed migration: vault initialized and unsealed");
+    } else if from_secure_enclave {
+        #[cfg(target_os = "macos")]
+        {
+            engine
+                .keychain
+                .unseal_from_secure_enclave()
+                .await
+                .map_err(|e| anyhow::anyhow!("unseal failed: {e}"))?;
+            println!("sealed migration: vault unsealed (from Secure Enclave)");
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            bail!("Secure Enclave is only available on macOS");
+        }
+    } else if from_macos_keychain {
+        engine
+            .keychain
+            .unseal_from_macos_keychain("cli-migrate-sealed")
+            .await
+            .map_err(|e| anyhow::anyhow!("unseal failed: {e}"))?;
+        println!("sealed migration: vault unsealed (from macOS Keychain)");
+    } else {
+        let source = if let Some(password) = supplied_password.as_deref() {
+            engine
+                .keychain
+                .unseal_with_preferred_master_key(Some(password), "cli-migrate-sealed")
+                .await
+                .map_err(|e| anyhow::anyhow!("unseal failed: {e}"))?
+        } else {
+            match engine
+                .keychain
+                .unseal_with_preferred_master_key(None, "cli-migrate-sealed")
+                .await
+            {
+                Ok(source) => source,
+                Err(_) => {
+                    let password = prompt_password("Enter vault password: ")?;
+                    engine
+                        .keychain
+                        .unseal_with_preferred_master_key(Some(&password), "cli-migrate-sealed")
+                        .await
+                        .map_err(|e| anyhow::anyhow!("unseal failed: {e}"))?
+                }
+            }
+        };
+
+        match source {
+            MasterKeySource::SecureEnclave => {
+                println!("sealed migration: vault unsealed (from Secure Enclave)")
+            }
+            MasterKeySource::OsSecureStorage => {
+                println!("sealed migration: vault unsealed (from OS secure storage)")
+            }
+            MasterKeySource::PassphraseArgon2id => println!("sealed migration: vault unsealed"),
+        }
+    }
+
+    if engine.keychain.degraded_security_mode() {
+        eprintln!("warning: degraded security mode active (passphrase fallback in use)");
+    }
+
+    println!("sealed migration: encrypting legacy plaintext artifacts...");
+    engine
+        .migrate_sealed_storage()
+        .await
+        .map_err(|e| anyhow::anyhow!("storage migration failed: {e}"))?;
+
+    println!("sealed migration: rebuilding runtime indexes...");
+    engine
+        .rebuild_runtime_indexes()
+        .await
+        .map_err(|e| anyhow::anyhow!("index rebuild failed: {e}"))?;
+
+    if keep_unsealed {
+        println!("sealed migration: complete (vault left unsealed)");
+    } else {
+        engine
+            .keychain
+            .seal("cli-migrate-sealed")
+            .await
+            .map_err(|e| anyhow::anyhow!("seal failed: {e}"))?;
+        println!("sealed migration: complete (vault re-sealed)");
+    }
+
     Ok(())
 }
 
