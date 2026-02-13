@@ -538,6 +538,8 @@ enum KeychainAction {
     Seal,
     /// Show vault status
     Status,
+    /// Scan sealed storage for legacy plaintext artifacts
+    Doctor,
     /// Rotate the master key
     Rotate {
         /// Grace period in hours for old key
@@ -905,6 +907,7 @@ async fn main() -> Result<()> {
             }
             KeychainAction::Seal => commands::keychain::seal(&cli.config).await,
             KeychainAction::Status => commands::keychain::status(&cli.config).await,
+            KeychainAction::Doctor => commands::keychain::doctor(&cli.config).await,
             KeychainAction::Rotate { grace_hours } => {
                 commands::keychain::rotate_key(grace_hours, &cli.config).await
             }

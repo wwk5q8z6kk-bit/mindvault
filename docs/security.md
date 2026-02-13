@@ -114,6 +114,7 @@ initialization and **fails fast** if it finds:
 - Plaintext blob files without the `MVB1` encryption prefix
 
 Run `mv server preflight` to check without starting the server.
+Run `mv keychain doctor` for an explicit sealed-storage plaintext scan.
 
 ### Unseal rate limiting
 
@@ -150,6 +151,7 @@ Prometheus `/metrics` includes sealed lifecycle counters:
 2. Run preflight to verify the current state:
    ```bash
    mv server preflight
+   mv keychain doctor
    ```
 3. Run the migration command to encrypt all legacy plaintext artifacts:
    ```bash
@@ -197,6 +199,14 @@ the vault automatically re-seals to protect data. To recover:
    ```
    GET /api/v1/agent/chronicle?limit=50
    ```
+
+### CI release gates
+
+The CI pipeline includes sealed-mode regression gates that must pass before merge:
+- `test_sealed_restart_cycle_recovers_data_after_unseal_and_rebuild` (`mv-engine`)
+- `sealed_mode_lifecycle_survives_restart` (`mv-server` API integration)
+- `sealed_mode_unseal_failure_injected_at_migrate_reseals_vault` (`mv-server` API integration)
+- `sealed_mode_unseal_failure_injected_at_rebuild_reseals_vault` (`mv-server` API integration)
 
 ### Strict hardware mode
 

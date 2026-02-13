@@ -3621,8 +3621,8 @@ mod tests {
     use mv_core::{
         ConflictAlert, ConflictType, ContactIdentity, GraphStore, IdentityType, InsightType,
         KnowledgeNode, MessageStatus, NodeKind, ProactiveInsight, ProposalAction, ProposalState,
-        RelationKind, Relationship, RelayChannel, RelayContact, RelayMessage, TrustLevel,
-        TrustModel,
+        RelationKind, Relationship, RelayChannel, RelayContact, RelayMessage, SearchStrategy,
+        TrustLevel, TrustModel,
     };
     use tempfile::TempDir;
 
@@ -3821,6 +3821,89 @@ mod tests {
             .expect("load node")
             .expect("node exists");
         assert_eq!(loaded.content, "sealed migration validation");
+    }
+
+    #[tokio::test]
+    async fn test_sealed_restart_cycle_recovers_data_after_unseal_and_rebuild() {
+        let temp_dir = TempDir::new().unwrap();
+        let data_dir = temp_dir.path().to_string_lossy().to_string();
+
+        let mut config = EngineConfig {
+            data_dir: data_dir.clone(),
+            ..Default::default()
+        };
+        config.embedding.provider = "noop".into();
+        config.sealed_mode = true;
+
+        let engine = MindVaultEngine::init(config.clone()).await.unwrap();
+        engine
+            .keychain
+            .initialize_vault("restart-password", false, "test-suite")
+            .await
+            .unwrap();
+
+        let stored = engine
+            .store_node(KnowledgeNode::new(
+                NodeKind::Fact,
+                "restart lifecycle keeps encrypted knowledge".to_string(),
+            ))
+            .await
+            .unwrap();
+
+        engine.keychain.seal("test-suite").await.unwrap();
+        drop(engine);
+
+        let restarted = MindVaultEngine::init(config).await.unwrap();
+        assert!(
+            restarted.is_sealed(),
+            "engine should start sealed after restart"
+        );
+
+        let sealed_err = restarted
+            .get_node(stored.id)
+            .await
+            .expect_err("sealed restart should block node reads");
+        assert!(matches!(sealed_err, MvError::VaultSealed));
+
+        restarted
+            .keychain
+            .unseal("restart-password", "test-suite")
+            .await
+            .unwrap();
+        restarted
+            .migrate_sealed_storage()
+            .await
+            .expect("migrate after restart");
+        restarted
+            .rebuild_runtime_indexes()
+            .await
+            .expect("rebuild after restart");
+
+        let loaded = restarted
+            .get_node(stored.id)
+            .await
+            .expect("load node")
+            .expect("node exists");
+        assert_eq!(
+            loaded.content,
+            "restart lifecycle keeps encrypted knowledge"
+        );
+
+        let recall_results = restarted
+            .recall(
+                &MemoryQuery::new("restart lifecycle")
+                    .with_strategy(SearchStrategy::FullText)
+                    .with_limit(10)
+                    .with_min_score(0.0),
+            )
+            .await
+            .expect("recall should work after restart rebuild");
+        assert!(
+            recall_results
+                .iter()
+                .any(|result| result.node.id == stored.id),
+            "recalled results should include the stored node"
+        );
     }
 
     #[tokio::test]

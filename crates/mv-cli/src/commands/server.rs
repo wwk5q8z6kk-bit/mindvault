@@ -59,22 +59,51 @@ pub async fn preflight(config_path: &str) -> Result<()> {
     println!("  MINDVAULT_JWT_SECRET set: {jwt_secret}");
     println!("  MINDVAULT_ALLOW_INSECURE_BIND: {allow_insecure}");
 
-    match mv_server::check_bind_safety(&bind_host) {
-        Ok(()) => {
-            println!("result: PASS");
-            Ok(())
-        }
+    let bind_result = mv_server::check_bind_safety(&bind_host);
+    let sealed_result = evaluate_sealed_storage_preflight(&runtime.engine);
+
+    match &bind_result {
+        Ok(()) => println!("  bind safety: PASS"),
         Err(err) => {
-            println!("result: FAIL");
-            println!("  {err}");
-            println!("next steps:");
-            println!("  1) Set MINDVAULT_AUTH_TOKEN or MINDVAULT_JWT_SECRET");
-            println!(
-                "  2) Or set MINDVAULT_ALLOW_INSECURE_BIND=true only for trusted local networks"
-            );
-            Err(anyhow::anyhow!("bind safety preflight failed"))
+            println!("  bind safety: FAIL");
+            println!("    {err}");
         }
     }
+
+    match &sealed_result {
+        Ok(()) => println!("  sealed storage: PASS"),
+        Err(reason) => {
+            println!("  sealed storage: FAIL");
+            println!("    {reason}");
+        }
+    }
+
+    if bind_result.is_ok() && sealed_result.is_ok() {
+        println!("result: PASS");
+        return Ok(());
+    }
+
+    println!("result: FAIL");
+    println!("next steps:");
+    if bind_result.is_err() {
+        println!("  1) Set MINDVAULT_AUTH_TOKEN or MINDVAULT_JWT_SECRET");
+        println!("  2) Or set MINDVAULT_ALLOW_INSECURE_BIND=true only for trusted local networks");
+    }
+    if sealed_result.is_err() {
+        println!("  3) Run `mv keychain doctor` to inspect plaintext artifacts");
+        println!(
+            "  4) Run `mv keychain migrate-sealed --passphrase <pw>` to encrypt legacy data"
+        );
+    }
+    Err(anyhow::anyhow!("preflight failed"))
+}
+
+fn evaluate_sealed_storage_preflight(config: &mv_engine::config::EngineConfig) -> Result<(), String> {
+    let report = mv_server::scan_sealed_storage(config).map_err(|err| err.to_string())?;
+    if report.is_clean() {
+        return Ok(());
+    }
+    Err(report.summary())
 }
 
 pub async fn migrate_sealed(
@@ -293,6 +322,20 @@ fn truthy_env(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mv_engine::config::EngineConfig;
+
+    fn unique_test_dir(prefix: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mindvault-{prefix}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        dir
+    }
 
     #[test]
     fn truthy_env_parses_common_truthy_values() {
@@ -308,5 +351,26 @@ mod tests {
             std::env::remove_var("MV_TEST_BOOL");
         }
         assert!(!truthy_env("MV_TEST_BOOL"));
+    }
+
+    #[test]
+    fn sealed_storage_preflight_detects_legacy_artifacts() {
+        let temp_dir = unique_test_dir("sealed-preflight-fail");
+        std::fs::create_dir_all(temp_dir.join("tantivy")).expect("create legacy dir");
+
+        let mut config = EngineConfig::default();
+        config.data_dir = temp_dir.to_string_lossy().to_string();
+        let err = evaluate_sealed_storage_preflight(&config).expect_err("must fail");
+        assert!(err.contains("legacy index directory present"));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn sealed_storage_preflight_passes_clean_data_dir() {
+        let temp_dir = unique_test_dir("sealed-preflight-pass");
+        let mut config = EngineConfig::default();
+        config.data_dir = temp_dir.to_string_lossy().to_string();
+        evaluate_sealed_storage_preflight(&config).expect("clean scan should pass");
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

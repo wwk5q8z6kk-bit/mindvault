@@ -121,11 +121,47 @@ async fn log_and_record_unseal_failure(
     Ok(())
 }
 
+fn failpoint_matches_data_dir(raw: &str, data_dir: &str) -> bool {
+    let value = raw.trim();
+    if value.is_empty() {
+        return false;
+    }
+    let normalized = value.to_ascii_lowercase();
+    match normalized.as_str() {
+        "0" | "false" | "no" | "off" => false,
+        "1" | "true" | "yes" | "on" => true,
+        _ => value == data_dir,
+    }
+}
+
+fn post_unseal_failpoint_enabled(state: &AppState, key: &str) -> bool {
+    if !cfg!(debug_assertions) {
+        return false;
+    }
+    let Ok(raw) = std::env::var(key) else {
+        return false;
+    };
+    failpoint_matches_data_dir(&raw, &state.engine.config.data_dir)
+}
+
 async fn run_post_unseal_maintenance(
     state: &Arc<AppState>,
     subject: &str,
     method: &str,
 ) -> Result<(), (StatusCode, String)> {
+    if post_unseal_failpoint_enabled(state.as_ref(), "MINDVAULT_TEST_FAIL_POST_UNSEAL_MIGRATE") {
+        let err = MvError::Storage("post-unseal migrate failpoint triggered".into());
+        get_metrics().incr_vault_migration_failure();
+        let reason = format!("post_unseal_migrate_failed:{err}");
+        if let Err(rate_limited) =
+            log_and_record_unseal_failure(state, subject, method, reason.as_str()).await
+        {
+            return Err(rate_limited);
+        }
+        let _ = state.engine.keychain.seal("system").await;
+        return Err(map_keychain_error(err));
+    }
+
     if let Err(err) = state.engine.migrate_sealed_storage().await {
         get_metrics().incr_vault_migration_failure();
         let reason = format!("post_unseal_migrate_failed:{err}");
@@ -138,6 +174,19 @@ async fn run_post_unseal_maintenance(
         return Err(map_keychain_error(err));
     }
     get_metrics().incr_vault_migration_success();
+
+    if post_unseal_failpoint_enabled(state.as_ref(), "MINDVAULT_TEST_FAIL_POST_UNSEAL_REBUILD") {
+        let err = MvError::Storage("post-unseal rebuild failpoint triggered".into());
+        get_metrics().incr_vault_rebuild_failure();
+        let reason = format!("post_unseal_rebuild_failed:{err}");
+        if let Err(rate_limited) =
+            log_and_record_unseal_failure(state, subject, method, reason.as_str()).await
+        {
+            return Err(rate_limited);
+        }
+        let _ = state.engine.keychain.seal("system").await;
+        return Err(map_keychain_error(err));
+    }
 
     if let Err(err) = state.engine.rebuild_runtime_indexes().await {
         get_metrics().incr_vault_rebuild_failure();

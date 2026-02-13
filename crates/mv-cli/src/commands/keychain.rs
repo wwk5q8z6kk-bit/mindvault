@@ -340,6 +340,29 @@ pub async fn migrate_sealed(
     Ok(())
 }
 
+pub async fn doctor(config_path: &str) -> Result<()> {
+    let config = load_config(config_path)?;
+
+    println!("sealed storage doctor");
+    println!("  data_dir: {}", config.data_dir);
+    if !config.sealed_mode {
+        println!("  sealed_mode: disabled (scan still checks for legacy plaintext artifacts)");
+    }
+
+    let report = mv_server::scan_sealed_storage(&config)
+        .map_err(|err| anyhow::anyhow!("sealed storage scan failed: {err}"))?;
+    if report.is_clean() {
+        println!("result: PASS");
+        return Ok(());
+    }
+
+    println!("result: FAIL");
+    for finding in report.findings {
+        println!("  - {finding}");
+    }
+    bail!("sealed storage doctor found legacy/plaintext artifacts")
+}
+
 pub async fn seal(config_path: &str) -> Result<()> {
     let engine = build_engine(config_path).await?;
     engine

@@ -7,7 +7,7 @@
 //! NOTE: Tests must run sequentially (`--test-threads=1`) because the fastembed
 //! ort runtime uses a global mutex that poisons if any test panics.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
@@ -73,6 +73,40 @@ async fn body_json(resp: axum::response::Response) -> Value {
         .unwrap();
     serde_json::from_slice(&bytes)
         .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).to_string()))
+}
+
+fn test_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct ScopedEnvVar {
+    key: &'static str,
+    original: Option<String>,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl ScopedEnvVar {
+    fn set(key: &'static str, value: impl Into<String>) -> Self {
+        let guard = test_env_lock().lock().expect("env lock");
+        let original = std::env::var(key).ok();
+        std::env::set_var(key, value.into());
+        Self {
+            key,
+            original,
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        if let Some(original) = self.original.as_deref() {
+            std::env::set_var(self.key, original);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1147,6 +1181,116 @@ async fn sealed_mode_wrong_password_fails_and_logged() {
         has_failure,
         "chronicle should contain a failed unseal entry"
     );
+}
+
+#[tokio::test]
+async fn sealed_mode_unseal_failure_injected_at_migrate_reseals_vault() {
+    let tmp = TempDir::new().expect("tempdir");
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = test_config(&data_dir);
+    config.sealed_mode = true;
+    let (router, _tmp) = setup_with_config(config, tmp).await;
+
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/init",
+            Some(json!({"password":"failpoint-pw","macos_bridge":false})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::POST, "/api/v1/keychain/seal", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let _failpoint = ScopedEnvVar::set("MINDVAULT_TEST_FAIL_POST_UNSEAL_MIGRATE", &data_dir);
+
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/unseal",
+            Some(json!({"password":"failpoint-pw","from_macos_keychain":false,"from_secure_enclave":false})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/health", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let resp = router
+        .oneshot(json_request(Method::GET, "/api/v1/keychain/status", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let status: Value = body_json(resp).await;
+    assert_eq!(status["state"], "sealed");
+}
+
+#[tokio::test]
+async fn sealed_mode_unseal_failure_injected_at_rebuild_reseals_vault() {
+    let tmp = TempDir::new().expect("tempdir");
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = test_config(&data_dir);
+    config.sealed_mode = true;
+    let (router, _tmp) = setup_with_config(config, tmp).await;
+
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/init",
+            Some(json!({"password":"failpoint-pw","macos_bridge":false})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::POST, "/api/v1/keychain/seal", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let _failpoint = ScopedEnvVar::set("MINDVAULT_TEST_FAIL_POST_UNSEAL_REBUILD", &data_dir);
+
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/unseal",
+            Some(json!({"password":"failpoint-pw","from_macos_keychain":false,"from_secure_enclave":false})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/health", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let resp = router
+        .oneshot(json_request(Method::GET, "/api/v1/keychain/status", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let status: Value = body_json(resp).await;
+    assert_eq!(status["state"], "sealed");
 }
 
 // ---------------------------------------------------------------------------

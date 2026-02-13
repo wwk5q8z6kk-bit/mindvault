@@ -41,6 +41,53 @@ fn require_hardware_from_env() -> bool {
         .unwrap_or(false)
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SealedStorageScanReport {
+    pub findings: Vec<String>,
+}
+
+impl SealedStorageScanReport {
+    pub fn is_clean(&self) -> bool {
+        self.findings.is_empty()
+    }
+
+    pub fn summary(&self) -> String {
+        self.findings.join("; ")
+    }
+}
+
+pub fn scan_sealed_storage(
+    config: &EngineConfig,
+) -> Result<SealedStorageScanReport, std::io::Error> {
+    let data_dir = PathBuf::from(&config.data_dir);
+    if !data_dir.exists() {
+        return Ok(SealedStorageScanReport::default());
+    }
+
+    let mut report = SealedStorageScanReport::default();
+    for legacy_index_dir in ["tantivy", "lancedb"] {
+        let path = data_dir.join(legacy_index_dir);
+        if path.exists() {
+            report.findings.push(format!(
+                "legacy index directory present: {}",
+                path.display()
+            ));
+        }
+    }
+
+    let blobs_root = data_dir.join("blobs");
+    if blobs_root.exists() {
+        if let Some(path) = find_first_plaintext_blob(&blobs_root)? {
+            report.findings.push(format!(
+                "plaintext blob payload detected: {}",
+                path.display()
+            ));
+        }
+    }
+
+    Ok(report)
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -256,37 +303,11 @@ fn startup_sealed_storage_preflight(config: &EngineConfig) -> Result<(), std::io
         return Ok(());
     }
 
-    let data_dir = PathBuf::from(&config.data_dir);
-    if !data_dir.exists() {
+    let report = scan_sealed_storage(config)?;
+    if report.is_clean() {
         return Ok(());
     }
-
-    let mut findings = Vec::new();
-    for legacy_index_dir in ["tantivy", "lancedb"] {
-        let path = data_dir.join(legacy_index_dir);
-        if path.exists() {
-            findings.push(format!(
-                "legacy index directory present: {}",
-                path.display()
-            ));
-        }
-    }
-
-    let blobs_root = data_dir.join("blobs");
-    if blobs_root.exists() {
-        if let Some(path) = find_first_plaintext_blob(&blobs_root)? {
-            findings.push(format!(
-                "plaintext blob payload detected: {}",
-                path.display()
-            ));
-        }
-    }
-
-    if findings.is_empty() {
-        return Ok(());
-    }
-
-    let reason = findings.join("; ");
+    let reason = report.summary();
     Err(std::io::Error::other(format!(
         "sealed mode startup preflight failed: {reason}; run `mv server migrate-sealed --passphrase <pw>` to encrypt legacy artifacts"
     )))
@@ -1128,5 +1149,25 @@ mod tests {
         config.sealed_mode = true;
 
         startup_sealed_storage_preflight(&config).expect("encrypted blob should pass scan");
+    }
+
+    #[test]
+    fn sealed_storage_scan_reports_findings_with_sealed_mode_disabled() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        std::fs::create_dir_all(temp_dir.path().join("tantivy")).expect("create tantivy");
+
+        let mut config = EngineConfig::default();
+        config.data_dir = temp_dir.path().to_string_lossy().to_string();
+        config.sealed_mode = false;
+
+        let report = scan_sealed_storage(&config).expect("scan");
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.contains("legacy index directory present")),
+            "expected legacy directory finding, got {:?}",
+            report.findings
+        );
     }
 }

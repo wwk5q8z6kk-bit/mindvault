@@ -25,6 +25,28 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  sealed-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Sealed Engine Restart Regression
+        run: cargo test -p mv-engine test_sealed_restart_cycle_recovers_data_after_unseal_and_rebuild -- --nocapture
+
+      - name: Sealed REST Restart Regression
+        run: cargo test -p mv-server --test api_integration sealed_mode_lifecycle_survives_restart -- --nocapture --test-threads=1
+
+      - name: Sealed Failpoint Auto-Reseal Regression
+        run: |
+          cargo test -p mv-server --test api_integration sealed_mode_unseal_failure_injected_at_migrate_reseals_vault -- --nocapture --test-threads=1
+          cargo test -p mv-server --test api_integration sealed_mode_unseal_failure_injected_at_rebuild_reseals_vault -- --nocapture --test-threads=1
+
   connectors:
     runs-on: ubuntu-latest
     steps:
