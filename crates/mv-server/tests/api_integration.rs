@@ -697,3 +697,563 @@ async fn create_node_with_empty_content_returns_400() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+// ---------------------------------------------------------------------------
+// Sealed-mode: comprehensive route gating
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sealed_mode_blocks_data_routes_comprehensively() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut config = test_config(&tmp.path().to_string_lossy());
+    config.sealed_mode = true;
+    let (router, _tmp) = setup_with_config(config, tmp).await;
+
+    // All data-access routes must return 503 while sealed.
+    let blocked_routes: Vec<(Method, &str, Option<Value>)> = vec![
+        (Method::GET, "/api/v1/health", None),
+        (Method::POST, "/api/v1/nodes", Some(json!({"kind":"fact","content":"x","tags":[]}))),
+        (Method::GET, "/api/v1/nodes", None),
+        (Method::POST, "/api/v1/recall", Some(json!({"text":"q","limit":5,"strategy":"fulltext"}))),
+        (Method::GET, "/api/v1/profile", None),
+        (Method::GET, "/api/v1/files", None),
+        (Method::GET, "/api/v1/exchange/proposals", None),
+    ];
+
+    for (method, uri, body) in &blocked_routes {
+        let resp = router
+            .clone()
+            .oneshot(json_request(method.clone(), uri, body.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{method} {uri} should be blocked while sealed, got {}",
+            resp.status()
+        );
+    }
+
+    // Allowlisted keychain routes must NOT be blocked.
+    let allowed_routes = [
+        "/api/v1/keychain/status",
+        "/api/v1/keychain/shamir/status",
+    ];
+    for uri in &allowed_routes {
+        let resp = router
+            .clone()
+            .oneshot(json_request(Method::GET, uri, None))
+            .await
+            .unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "GET {uri} should not be blocked while sealed"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sealed-mode: unseal/seal transitions produce audit chronicle entries
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sealed_unseal_transitions_produce_audit_entries() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut config = test_config(&tmp.path().to_string_lossy());
+    config.sealed_mode = true;
+    let (router, _tmp) = setup_with_config(config, tmp).await;
+
+    // Init vault (implicitly unseals).
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/init",
+            Some(json!({"password":"audit-test-pw","macos_bridge":false})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "vault init should succeed");
+
+    // Seal.
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::POST, "/api/v1/keychain/seal", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "seal should succeed");
+
+    // Unseal.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/unseal",
+            Some(json!({"password":"audit-test-pw","from_macos_keychain":false,"from_secure_enclave":false})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "unseal should succeed");
+
+    // Query chronicle for unseal_attempt entries.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            "/api/v1/agent/chronicle?limit=50",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let entries: Value = body_json(resp).await;
+    let entries_arr = entries.as_array().expect("chronicle should be array");
+
+    let unseal_entries: Vec<&Value> = entries_arr
+        .iter()
+        .filter(|e| e["step_name"].as_str() == Some("unseal_attempt"))
+        .collect();
+    assert!(
+        !unseal_entries.is_empty(),
+        "chronicle should contain unseal_attempt entries; got: {entries:?}"
+    );
+
+    // At least one entry should record outcome=success.
+    let has_success = unseal_entries.iter().any(|e| {
+        e["logic"]
+            .as_str()
+            .map(|l| l.contains("outcome=success"))
+            .unwrap_or(false)
+    });
+    assert!(
+        has_success,
+        "chronicle should contain a successful unseal; entries: {unseal_entries:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Sealed-mode: full CRUD + recall lifecycle after unseal
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sealed_mode_crud_and_recall_after_unseal() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut config = test_config(&tmp.path().to_string_lossy());
+    config.sealed_mode = true;
+    let (router, _tmp) = setup_with_config(config, tmp).await;
+
+    // Everything blocked while sealed.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({"kind":"fact","content":"blocked","tags":[]})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // Init vault.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/init",
+            Some(json!({"password":"lifecycle-pw","macos_bridge":false})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // CREATE node.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({"kind":"fact","content":"Sealed lifecycle test node","title":"Lifecycle","tags":["sealed"]})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created: Value = body_json(resp).await;
+    let node_id = created["id"].as_str().expect("created node must have id");
+
+    // GET node.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/nodes/{node_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let fetched: Value = body_json(resp).await;
+    assert_eq!(fetched["content"], "Sealed lifecycle test node");
+
+    // UPDATE node.
+    let mut updated_node = created.clone();
+    updated_node["content"] = json!("Updated sealed content");
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::PUT,
+            &format!("/api/v1/nodes/{node_id}"),
+            Some(updated_node),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let updated: Value = body_json(resp).await;
+    assert_eq!(updated["content"], "Updated sealed content");
+
+    // RECALL (fulltext search).
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/recall",
+            Some(json!({"text":"sealed","limit":10,"strategy":"fulltext"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let results: Value = body_json(resp).await;
+    let items = results.as_array().expect("recall results should be array");
+    assert!(
+        !items.is_empty(),
+        "recall should find the sealed lifecycle node"
+    );
+
+    // DELETE node.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::DELETE,
+            &format!("/api/v1/nodes/{node_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Confirm deletion.
+    let resp = router
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/nodes/{node_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// Sealed-mode: seal → unseal → recall verifies index rebuild
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sealed_mode_recall_survives_seal_unseal_cycle() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut config = test_config(&tmp.path().to_string_lossy());
+    config.sealed_mode = true;
+    let (router, _tmp) = setup_with_config(config, tmp).await;
+
+    // Init + store data.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/init",
+            Some(json!({"password":"rebuild-pw","macos_bridge":false})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({"kind":"fact","content":"Photosynthesis converts sunlight to energy","title":"Biology","tags":["science"]})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Verify recall works before seal.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/recall",
+            Some(json!({"text":"photosynthesis","limit":10,"strategy":"fulltext"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let pre_seal: Value = body_json(resp).await;
+    assert!(
+        !pre_seal.as_array().unwrap().is_empty(),
+        "recall before seal should find the node"
+    );
+
+    // Seal.
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::POST, "/api/v1/keychain/seal", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Recall should be blocked while sealed.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/recall",
+            Some(json!({"text":"photosynthesis","limit":10,"strategy":"fulltext"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // Unseal — triggers rebuild_runtime_indexes.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/unseal",
+            Some(json!({"password":"rebuild-pw","from_macos_keychain":false,"from_secure_enclave":false})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Recall should work again with rebuilt indexes.
+    let resp = router
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/recall",
+            Some(json!({"text":"photosynthesis","limit":10,"strategy":"fulltext"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let post_unseal: Value = body_json(resp).await;
+    assert!(
+        !post_unseal.as_array().unwrap().is_empty(),
+        "recall after unseal should find the node (indexes rebuilt)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Sealed-mode: wrong password fails unseal and is logged
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sealed_mode_wrong_password_fails_and_logged() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut config = test_config(&tmp.path().to_string_lossy());
+    config.sealed_mode = true;
+    let (router, _tmp) = setup_with_config(config, tmp).await;
+
+    // Init vault.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/init",
+            Some(json!({"password":"correct-pw","macos_bridge":false})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Seal.
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::POST, "/api/v1/keychain/seal", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Attempt unseal with wrong password — should fail.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/unseal",
+            Some(json!({"password":"wrong-pw","from_macos_keychain":false,"from_secure_enclave":false})),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::OK,
+        "wrong password should not unseal"
+    );
+
+    // Still sealed — routes blocked.
+    let resp = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/health", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // Unseal with correct password to read chronicle.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/unseal",
+            Some(json!({"password":"correct-pw","from_macos_keychain":false,"from_secure_enclave":false})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Chronicle should have a failed unseal entry.
+    let resp = router
+        .oneshot(json_request(
+            Method::GET,
+            "/api/v1/agent/chronicle?limit=50",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let entries: Value = body_json(resp).await;
+    let has_failure = entries.as_array().unwrap().iter().any(|e| {
+        e["step_name"].as_str() == Some("unseal_attempt")
+            && e["logic"]
+                .as_str()
+                .map(|l| l.contains("outcome=fail"))
+                .unwrap_or(false)
+    });
+    assert!(
+        has_failure,
+        "chronicle should contain a failed unseal entry"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Sealed-mode: uploaded blob is encrypted on disk
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sealed_blob_encrypted_on_disk() {
+    let tmp = TempDir::new().expect("tempdir");
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = test_config(&data_dir);
+    config.sealed_mode = true;
+    let (router, _tmp) = setup_with_config(config, tmp).await;
+
+    // Init vault.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/init",
+            Some(json!({"password":"blob-test-pw","macos_bridge":false})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Create a node to attach to.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({"kind":"fact","content":"Blob test node","tags":[]})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created: Value = body_json(resp).await;
+    let node_id = created["id"].as_str().unwrap();
+
+    // Upload a file via multipart.
+    let plaintext_content = b"TOP SECRET PLAINTEXT PAYLOAD FOR AT-REST AUDIT";
+    let boundary = "----TestBoundary12345";
+    let mut body_bytes = Vec::new();
+    // node_id field
+    body_bytes.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body_bytes.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"node_id\"\r\n\r\n",
+    );
+    body_bytes.extend_from_slice(node_id.as_bytes());
+    body_bytes.extend_from_slice(b"\r\n");
+    // file field
+    body_bytes.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body_bytes.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file\"; filename=\"secret.txt\"\r\n",
+    );
+    body_bytes.extend_from_slice(b"Content-Type: text/plain\r\n\r\n");
+    body_bytes.extend_from_slice(plaintext_content);
+    body_bytes.extend_from_slice(b"\r\n");
+    body_bytes.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/files/upload")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body_bytes))
+        .unwrap();
+
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let upload_status = resp.status();
+    let upload_body: Value = body_json(resp).await;
+    assert!(
+        upload_status == StatusCode::OK || upload_status == StatusCode::CREATED,
+        "upload should succeed, got {upload_status}; body: {upload_body}"
+    );
+
+    // Scan blobs/ directory on disk — every file must start with MVB1 magic.
+    let blobs_dir = std::path::PathBuf::from(&data_dir).join("blobs");
+    assert!(blobs_dir.exists(), "blobs directory should exist after upload");
+
+    let mut found_blob = false;
+    let mut stack = vec![blobs_dir];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read blobs dir") {
+            let entry = entry.expect("dir entry");
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !path.is_file() {
+                continue;
+            }
+            let bytes = std::fs::read(&path).expect("read blob file");
+            assert!(
+                bytes.starts_with(b"MVB1"),
+                "blob at {} must start with MVB1 magic prefix; first 4 bytes: {:?}",
+                path.display(),
+                &bytes[..bytes.len().min(4)]
+            );
+            // Ensure the plaintext is NOT present in the raw encrypted bytes.
+            let blob_str = String::from_utf8_lossy(&bytes);
+            assert!(
+                !blob_str.contains("TOP SECRET PLAINTEXT"),
+                "blob at {} must not contain plaintext content",
+                path.display()
+            );
+            found_blob = true;
+        }
+    }
+    assert!(found_blob, "at least one blob file should exist on disk");
+}

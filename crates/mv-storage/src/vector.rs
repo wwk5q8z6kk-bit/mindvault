@@ -1111,6 +1111,13 @@ mod tests {
     };
     use tempfile::tempdir;
 
+    fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
+        if needle.is_empty() || haystack.len() < needle.len() {
+            return false;
+        }
+        haystack.windows(needle.len()).any(|window| window == needle)
+    }
+
     struct SealedRuntimeReset;
 
     impl Drop for SealedRuntimeReset {
@@ -1169,17 +1176,29 @@ mod tests {
 
         let dir = tempdir().expect("tempdir");
         let id = Uuid::now_v7();
+        let marker = format!("sealed-vector-content-{}", Uuid::now_v7());
 
         let store = LanceVectorStore::open(dir.path(), 3).await.unwrap();
         store
             .upsert(
                 id,
                 vec![0.9, 0.1, 0.0],
-                "sealed vector content",
+                &marker,
                 Some("default"),
             )
             .await
             .unwrap();
+
+        let snapshot_path = dir.path().join(LANCEDB_SNAPSHOT_FILENAME);
+        let snapshot_bytes = std::fs::read(&snapshot_path).expect("snapshot should exist");
+        assert!(
+            snapshot_bytes.starts_with(LANCEDB_SNAPSHOT_MAGIC),
+            "snapshot must use sealed envelope magic"
+        );
+        assert!(
+            !bytes_contains(&snapshot_bytes, marker.as_bytes()),
+            "snapshot must not persist plaintext content"
+        );
         drop(store);
 
         let reopened = LanceVectorStore::open(dir.path(), 3).await.unwrap();

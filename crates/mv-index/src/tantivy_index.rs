@@ -463,6 +463,27 @@ impl FullTextIndex for TantivyFullTextIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mv_storage::sealed_runtime::{
+        clear_runtime_root_key, set_runtime_root_key, set_sealed_mode_enabled,
+    };
+    use tempfile::tempdir;
+    use uuid::Uuid;
+
+    struct SealedRuntimeReset;
+
+    impl Drop for SealedRuntimeReset {
+        fn drop(&mut self) {
+            clear_runtime_root_key();
+            set_sealed_mode_enabled(false);
+        }
+    }
+
+    fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
+        if needle.is_empty() || haystack.len() < needle.len() {
+            return false;
+        }
+        haystack.windows(needle.len()).any(|window| window == needle)
+    }
 
     #[test]
     fn test_index_and_search() {
@@ -528,5 +549,47 @@ mod tests {
 
         let opened = open_tantivy_envelope(&kek, &sealed).unwrap();
         assert_eq!(opened, plaintext);
+    }
+
+    #[test]
+    fn sealed_tantivy_files_do_not_store_plaintext_payload() {
+        let _reset = SealedRuntimeReset;
+        set_sealed_mode_enabled(true);
+        set_runtime_root_key([19u8; 32], false);
+
+        let dir = tempdir().expect("tempdir");
+        let idx = TantivyFullTextIndex::open(dir.path()).expect("sealed index open");
+        let marker = format!("sealed-tantivy-marker-{}", Uuid::now_v7());
+        let node = KnowledgeNode::new(NodeKind::Fact, marker.clone())
+            .with_title(marker.clone())
+            .with_tags(vec!["sealed".into()]);
+
+        idx.index_node(&node).expect("index node");
+        idx.commit().expect("commit");
+
+        let mut scanned_files = 0usize;
+        let mut stack = vec![dir.path().to_path_buf()];
+        while let Some(path) = stack.pop() {
+            for entry in std::fs::read_dir(&path).expect("read dir") {
+                let entry = entry.expect("entry");
+                let entry_path = entry.path();
+                if entry_path.is_dir() {
+                    stack.push(entry_path);
+                    continue;
+                }
+                if !entry_path.is_file() {
+                    continue;
+                }
+                scanned_files += 1;
+                let bytes = std::fs::read(&entry_path).expect("read file");
+                assert!(
+                    !bytes_contains(&bytes, marker.as_bytes()),
+                    "found plaintext marker in {}",
+                    entry_path.display()
+                );
+            }
+        }
+
+        assert!(scanned_files > 0, "expected sealed index files to be created");
     }
 }

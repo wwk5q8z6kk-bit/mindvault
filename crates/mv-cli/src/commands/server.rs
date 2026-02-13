@@ -12,6 +12,13 @@ pub async fn start(
     let rest_port = port.unwrap_or(runtime.server.rest_port);
     let grpc_port = grpc_port.unwrap_or(runtime.server.grpc_port);
 
+    if let Err(err) = mv_server::check_bind_safety(&bind_host) {
+        eprintln!("startup safety check failed:");
+        eprintln!("  {err}");
+        eprintln!("hint: run `mv server preflight --config {config_path}`");
+        return Err(anyhow::anyhow!("refusing to start unsafe public bind"));
+    }
+
     let server_config = mv_server::ServerConfig {
         bind_host: bind_host.clone(),
         rest_port,
@@ -36,6 +43,36 @@ pub async fn start(
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     Ok(())
+}
+
+pub async fn preflight(config_path: &str) -> Result<()> {
+    let runtime = super::load_runtime_config(config_path)?;
+    let bind_host = runtime.server.bind_host.clone();
+
+    let shared_token = has_non_empty_env("MINDVAULT_AUTH_TOKEN");
+    let jwt_secret = has_non_empty_env("MINDVAULT_JWT_SECRET");
+    let allow_insecure = truthy_env("MINDVAULT_ALLOW_INSECURE_BIND");
+
+    println!("server preflight");
+    println!("  bind_host: {bind_host}");
+    println!("  MINDVAULT_AUTH_TOKEN set: {shared_token}");
+    println!("  MINDVAULT_JWT_SECRET set: {jwt_secret}");
+    println!("  MINDVAULT_ALLOW_INSECURE_BIND: {allow_insecure}");
+
+    match mv_server::check_bind_safety(&bind_host) {
+        Ok(()) => {
+            println!("result: PASS");
+            Ok(())
+        }
+        Err(err) => {
+            println!("result: FAIL");
+            println!("  {err}");
+            println!("next steps:");
+            println!("  1) Set MINDVAULT_AUTH_TOKEN or MINDVAULT_JWT_SECRET");
+            println!("  2) Or set MINDVAULT_ALLOW_INSECURE_BIND=true only for trusted local networks");
+            Err(anyhow::anyhow!("bind safety preflight failed"))
+        }
+    }
 }
 
 pub async fn stop(config_path: &str) -> Result<()> {
@@ -164,5 +201,40 @@ fn local_rest_host(bind_host: &str) -> &str {
         "127.0.0.1"
     } else {
         bind_host
+    }
+}
+
+fn has_non_empty_env(key: &str) -> bool {
+    std::env::var(key)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn truthy_env(key: &str) -> bool {
+    let value = std::env::var(key).unwrap_or_default();
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truthy_env_parses_common_truthy_values() {
+        unsafe {
+            std::env::set_var("MV_TEST_BOOL", "yes");
+        }
+        assert!(truthy_env("MV_TEST_BOOL"));
+        unsafe {
+            std::env::set_var("MV_TEST_BOOL", "0");
+        }
+        assert!(!truthy_env("MV_TEST_BOOL"));
+        unsafe {
+            std::env::remove_var("MV_TEST_BOOL");
+        }
+        assert!(!truthy_env("MV_TEST_BOOL"));
     }
 }

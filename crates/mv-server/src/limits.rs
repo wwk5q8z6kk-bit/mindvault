@@ -81,6 +81,27 @@ impl RequestRateLimiter {
     }
 
     fn check_at(&self, key: &str, now: Instant) -> Result<RateLimitStatus, RateLimitExceeded> {
+        self.check_internal(key, now, true)
+    }
+
+    fn check_without_record(&self, key: &str) -> Result<RateLimitStatus, RateLimitExceeded> {
+        self.check_at_without_record(key, Instant::now())
+    }
+
+    fn check_at_without_record(
+        &self,
+        key: &str,
+        now: Instant,
+    ) -> Result<RateLimitStatus, RateLimitExceeded> {
+        self.check_internal(key, now, false)
+    }
+
+    fn check_internal(
+        &self,
+        key: &str,
+        now: Instant,
+        record: bool,
+    ) -> Result<RateLimitStatus, RateLimitExceeded> {
         if !self.config.enabled {
             return Ok(RateLimitStatus {
                 limit: 0,
@@ -132,7 +153,9 @@ impl RequestRateLimiter {
             })
             .unwrap_or(self.config.window.as_secs());
 
-        queue.push_back(now);
+        if record {
+            queue.push_back(now);
+        }
         Ok(RateLimitStatus {
             limit: self.config.max_requests,
             remaining: self.config.max_requests.saturating_sub(queue.len()),
@@ -212,6 +235,55 @@ pub fn enforce_keychain_read_rate_limit(
             let window_secs = read_env_u64(ENV_KEYCHAIN_READ_RATE_LIMIT_WINDOW)
                 .filter(|v| *v > 0)
                 .unwrap_or(DEFAULT_KEYCHAIN_READ_RATE_LIMIT_WINDOW);
+            RequestRateLimiter::new(RateLimitConfig {
+                enabled: max_requests > 0,
+                max_requests,
+                window: Duration::from_secs(window_secs),
+            })
+        })
+        .check(&key)
+        .map(|_| ())
+}
+
+const ENV_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT: &str = "MINDVAULT_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT";
+const ENV_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT_WINDOW: &str =
+    "MINDVAULT_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT_WINDOW";
+
+const DEFAULT_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT: usize = 5;
+const DEFAULT_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT_WINDOW: u64 = 300;
+
+static KEYCHAIN_UNSEAL_FAILURE_RATE_LIMITER: OnceLock<RequestRateLimiter> = OnceLock::new();
+
+/// Check if a subject is currently blocked from unseal attempts due to too many recent failures.
+pub fn enforce_keychain_unseal_failure_backoff(subject: &str) -> Result<(), RateLimitExceeded> {
+    let key = format!("kc-unseal:{subject}");
+    KEYCHAIN_UNSEAL_FAILURE_RATE_LIMITER
+        .get_or_init(|| {
+            let max_requests = read_env_usize(ENV_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT)
+                .unwrap_or(DEFAULT_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT);
+            let window_secs = read_env_u64(ENV_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT_WINDOW)
+                .filter(|v| *v > 0)
+                .unwrap_or(DEFAULT_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT_WINDOW);
+            RequestRateLimiter::new(RateLimitConfig {
+                enabled: max_requests > 0,
+                max_requests,
+                window: Duration::from_secs(window_secs),
+            })
+        })
+        .check_without_record(&key)
+        .map(|_| ())
+}
+
+/// Record a failed unseal attempt for a subject.
+pub fn record_keychain_unseal_failure(subject: &str) -> Result<(), RateLimitExceeded> {
+    let key = format!("kc-unseal:{subject}");
+    KEYCHAIN_UNSEAL_FAILURE_RATE_LIMITER
+        .get_or_init(|| {
+            let max_requests = read_env_usize(ENV_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT)
+                .unwrap_or(DEFAULT_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT);
+            let window_secs = read_env_u64(ENV_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT_WINDOW)
+                .filter(|v| *v > 0)
+                .unwrap_or(DEFAULT_KEYCHAIN_UNSEAL_FAILURE_RATE_LIMIT_WINDOW);
             RequestRateLimiter::new(RateLimitConfig {
                 enabled: max_requests > 0,
                 max_requests,

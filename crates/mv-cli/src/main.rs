@@ -337,6 +337,8 @@ enum ServerAction {
     Stop,
     /// Check server status
     Status,
+    /// Validate bind/auth safety before startup
+    Preflight,
 }
 
 #[derive(Subcommand)]
@@ -491,6 +493,9 @@ enum KeychainAction {
         /// Read password from MINDVAULT_VAULT_PASSWORD env var
         #[arg(long)]
         from_env: bool,
+        /// Passphrase for vault unseal
+        #[arg(long)]
+        passphrase: Option<String>,
         /// Unseal using password stored in macOS Keychain
         #[arg(long)]
         from_macos_keychain: bool,
@@ -727,6 +732,7 @@ async fn main() -> Result<()> {
             } => commands::server::start(port, grpc_port, foreground, &cli.config).await,
             ServerAction::Stop => commands::server::stop(&cli.config).await,
             ServerAction::Status => commands::server::status(&cli.config).await,
+            ServerAction::Preflight => commands::server::preflight(&cli.config).await,
         },
 
         Commands::Config { action } => match action {
@@ -837,12 +843,14 @@ async fn main() -> Result<()> {
             } => commands::keychain::init_vault(from_env, macos_bridge, &cli.config).await,
             KeychainAction::Unseal {
                 from_env,
+                passphrase,
                 from_macos_keychain,
                 from_secure_enclave,
                 timeout,
             } => {
                 commands::keychain::unseal(
                     from_env,
+                    passphrase.as_deref(),
                     from_macos_keychain,
                     from_secure_enclave,
                     timeout,

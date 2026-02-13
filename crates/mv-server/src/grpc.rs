@@ -10,7 +10,10 @@ use uuid::Uuid;
 use mv_core::*;
 
 use crate::auth::AuthContext;
-use crate::limits::{enforce_namespace_quota, enforce_rate_limit, NamespaceQuotaError};
+use crate::limits::{
+    enforce_keychain_unseal_failure_backoff, enforce_namespace_quota, enforce_rate_limit,
+    record_keychain_unseal_failure, NamespaceQuotaError, RateLimitExceeded,
+};
 use crate::state::AppState;
 use crate::validation::{
     validate_depth, validate_list_limit, validate_node_payload, validate_query_text,
@@ -212,7 +215,7 @@ fn scoped_namespace_grpc(
 #[allow(clippy::result_large_err)]
 fn ensure_vault_unsealed(state: &AppState) -> Result<(), Status> {
     if state.engine.config.sealed_mode && !state.engine.keychain.is_unsealed_sync() {
-        return Err(Status::failed_precondition("Vault sealed - please unseal"));
+        return Err(Status::unavailable("Vault sealed - please unseal"));
     }
     Ok(())
 }
@@ -283,6 +286,54 @@ mod tests {
             .expect("auth ok");
 
         assert_eq!(auth.consumer_name.as_deref(), Some("grpc-consumer"));
+    }
+
+    #[tokio::test]
+    async fn ensure_vault_unsealed_returns_unavailable_when_sealed() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut config = EngineConfig::default();
+        config.data_dir = temp_dir.path().to_string_lossy().to_string();
+        config.embedding.provider = "noop".into();
+        config.sealed_mode = true;
+        let engine = MindVaultEngine::init(config).await.expect("engine init");
+        engine
+            .keychain
+            .initialize_vault("test-password", false, "grpc-test")
+            .await
+            .expect("vault initialized");
+        engine
+            .keychain
+            .seal("grpc-test")
+            .await
+            .expect("vault sealed");
+        let state = AppState::new(Arc::new(engine));
+
+        let err = ensure_vault_unsealed(&state).expect_err("sealed vault must fail");
+        assert_eq!(err.code(), tonic::Code::Unavailable);
+        assert_eq!(err.message(), "Vault sealed - please unseal");
+    }
+
+    #[tokio::test]
+    async fn ensure_vault_unsealed_allows_unsealed_state() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut config = EngineConfig::default();
+        config.data_dir = temp_dir.path().to_string_lossy().to_string();
+        config.embedding.provider = "noop".into();
+        config.sealed_mode = true;
+        let engine = MindVaultEngine::init(config).await.expect("engine init");
+        engine
+            .keychain
+            .initialize_vault("test-password", false, "grpc-test")
+            .await
+            .expect("vault initialized");
+        engine
+            .keychain
+            .unseal("test-password", "grpc-test")
+            .await
+            .expect("vault unsealed");
+        let state = AppState::new(Arc::new(engine));
+
+        ensure_vault_unsealed(&state).expect("unsealed vault should pass");
     }
 }
 
@@ -860,6 +911,47 @@ async fn log_unseal_attempt(
     }
 }
 
+fn map_unseal_rate_limit_status(exceeded: RateLimitExceeded) -> Status {
+    Status::resource_exhausted(format!(
+        "unseal rate limit exceeded: {} failures per {}s (retry in {}s)",
+        exceeded.max_requests, exceeded.window_secs, exceeded.retry_after_secs
+    ))
+}
+
+async fn enforce_unseal_failure_backoff(
+    state: &AppState,
+    subject: &str,
+    method: &str,
+) -> Result<(), Status> {
+    if let Err(exceeded) = enforce_keychain_unseal_failure_backoff(subject) {
+        let reason = format!(
+            "rate_limited:max={} window={} retry_after={}",
+            exceeded.max_requests, exceeded.window_secs, exceeded.retry_after_secs
+        );
+        log_unseal_attempt(state, subject, method, "fail", Some(reason.as_str())).await;
+        return Err(map_unseal_rate_limit_status(exceeded));
+    }
+    Ok(())
+}
+
+async fn log_and_record_unseal_failure(
+    state: &AppState,
+    subject: &str,
+    method: &str,
+    reason: &str,
+) -> Result<(), Status> {
+    log_unseal_attempt(state, subject, method, "fail", Some(reason)).await;
+    if let Err(exceeded) = record_keychain_unseal_failure(subject) {
+        let rate_reason = format!(
+            "rate_limited:max={} window={} retry_after={}",
+            exceeded.max_requests, exceeded.window_secs, exceeded.retry_after_secs
+        );
+        log_unseal_attempt(state, subject, method, "fail", Some(rate_reason.as_str())).await;
+        return Err(map_unseal_rate_limit_status(exceeded));
+    }
+    Ok(())
+}
+
 #[tonic::async_trait]
 impl KeychainService for KeychainGrpc {
     async fn init_vault(
@@ -901,6 +993,7 @@ impl KeychainService for KeychainGrpc {
         } else {
             "preferred"
         };
+        enforce_unseal_failure_backoff(&self.state, subject, method).await?;
 
         let unseal_result = if req.from_macos_keychain {
             engine.keychain.unseal_from_macos_keychain(subject).await
@@ -924,13 +1017,15 @@ impl KeychainService for KeychainGrpc {
                 }
                 if let Err(err) = self.state.engine.migrate_sealed_storage().await {
                     let reason = format!("post_unseal_migrate_failed:{err}");
-                    log_unseal_attempt(&self.state, subject, method, "fail", Some(&reason)).await;
+                    log_and_record_unseal_failure(&self.state, subject, method, reason.as_str())
+                        .await?;
                     let _ = self.state.engine.keychain.seal("system").await;
                     return Err(map_keychain_status(err));
                 }
                 if let Err(err) = self.state.engine.rebuild_runtime_indexes().await {
                     let reason = format!("post_unseal_rebuild_failed:{err}");
-                    log_unseal_attempt(&self.state, subject, method, "fail", Some(&reason)).await;
+                    log_and_record_unseal_failure(&self.state, subject, method, reason.as_str())
+                        .await?;
                     let _ = self.state.engine.keychain.seal("system").await;
                     return Err(map_keychain_status(err));
                 }
@@ -938,8 +1033,8 @@ impl KeychainService for KeychainGrpc {
             }
             Err(err) => {
                 let reason = err.to_string();
-                log_unseal_attempt(&self.state, subject, method, "fail", Some(reason.as_str()))
-                    .await;
+                log_and_record_unseal_failure(&self.state, subject, method, reason.as_str())
+                    .await?;
                 return Err(map_keychain_status(err));
             }
         }

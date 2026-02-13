@@ -14,7 +14,10 @@ use base64::Engine;
 use mv_core::{model::keychain::*, ChronicleEntry, MvError};
 
 use crate::auth::{authorize_write, AuthContext};
-use crate::limits::enforce_keychain_read_rate_limit;
+use crate::limits::{
+    enforce_keychain_read_rate_limit, enforce_keychain_unseal_failure_backoff,
+    record_keychain_unseal_failure, RateLimitExceeded,
+};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -67,6 +70,50 @@ async fn log_unseal_attempt(
     if let Err(err) = state.engine.log_chronicle(&entry).await {
         tracing::warn!(error = %err, "failed to log unseal_attempt chronicle entry");
     }
+}
+
+fn map_unseal_rate_limit_error(exceeded: RateLimitExceeded) -> (StatusCode, String) {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        format!(
+            "unseal rate limit exceeded: {} failures per {}s (retry after {}s)",
+            exceeded.max_requests, exceeded.window_secs, exceeded.retry_after_secs
+        ),
+    )
+}
+
+async fn enforce_unseal_failure_backoff(
+    state: &Arc<AppState>,
+    subject: &str,
+    method: &str,
+) -> Result<(), (StatusCode, String)> {
+    if let Err(exceeded) = enforce_keychain_unseal_failure_backoff(subject) {
+        let reason = format!(
+            "rate_limited:max={} window={} retry_after={}",
+            exceeded.max_requests, exceeded.window_secs, exceeded.retry_after_secs
+        );
+        log_unseal_attempt(state, subject, method, "fail", Some(reason.as_str())).await;
+        return Err(map_unseal_rate_limit_error(exceeded));
+    }
+    Ok(())
+}
+
+async fn log_and_record_unseal_failure(
+    state: &Arc<AppState>,
+    subject: &str,
+    method: &str,
+    reason: &str,
+) -> Result<(), (StatusCode, String)> {
+    log_unseal_attempt(state, subject, method, "fail", Some(reason)).await;
+    if let Err(exceeded) = record_keychain_unseal_failure(subject) {
+        let rate_reason = format!(
+            "rate_limited:max={} window={} retry_after={}",
+            exceeded.max_requests, exceeded.window_secs, exceeded.retry_after_secs
+        );
+        log_unseal_attempt(state, subject, method, "fail", Some(rate_reason.as_str())).await;
+        return Err(map_unseal_rate_limit_error(exceeded));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +282,7 @@ pub async fn unseal_vault(
     } else {
         "preferred"
     };
+    enforce_unseal_failure_backoff(&state, subject, method).await?;
 
     let unseal_result: Result<(), MvError> = if body.from_secure_enclave {
         #[cfg(target_os = "macos")]
@@ -243,14 +291,16 @@ pub async fn unseal_vault(
         }
         #[cfg(not(target_os = "macos"))]
         {
-            log_unseal_attempt(
+            if let Err(rate_limited) = log_and_record_unseal_failure(
                 &state,
                 subject,
                 method,
-                "fail",
-                Some("secure_enclave_requires_macos"),
+                "secure_enclave_requires_macos",
             )
-            .await;
+            .await
+            {
+                return Err(rate_limited);
+            }
             return Err((
                 StatusCode::BAD_REQUEST,
                 "Secure Enclave only available on macOS".into(),
@@ -282,20 +332,32 @@ pub async fn unseal_vault(
         }
         Err(err) => {
             let reason = err.to_string();
-            log_unseal_attempt(&state, subject, method, "fail", Some(reason.as_str())).await;
+            if let Err(rate_limited) =
+                log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
+            {
+                return Err(rate_limited);
+            }
             return Err(map_keychain_error(err));
         }
     }
 
     if let Err(err) = state.engine.migrate_sealed_storage().await {
         let reason = format!("post_unseal_migrate_failed:{err}");
-        log_unseal_attempt(&state, subject, method, "fail", Some(reason.as_str())).await;
+        if let Err(rate_limited) =
+            log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
+        {
+            return Err(rate_limited);
+        }
         let _ = state.engine.keychain.seal("system").await;
         return Err(map_keychain_error(err));
     }
     if let Err(err) = state.engine.rebuild_runtime_indexes().await {
         let reason = format!("post_unseal_rebuild_failed:{err}");
-        log_unseal_attempt(&state, subject, method, "fail", Some(reason.as_str())).await;
+        if let Err(rate_limited) =
+            log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
+        {
+            return Err(rate_limited);
+        }
         let _ = state.engine.keychain.seal("system").await;
         return Err(map_keychain_error(err));
     }
@@ -902,6 +964,7 @@ pub async fn shamir_unseal(
     require_admin(&auth)?;
     let subject = auth.subject.as_deref().unwrap_or("anonymous");
     let method = "shamir_shares";
+    enforce_unseal_failure_backoff(&state, subject, method).await?;
     if let Err(err) = state
         .engine
         .keychain
@@ -909,18 +972,30 @@ pub async fn shamir_unseal(
         .await
     {
         let reason = err.to_string();
-        log_unseal_attempt(&state, subject, method, "fail", Some(reason.as_str())).await;
+        if let Err(rate_limited) =
+            log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
+        {
+            return Err(rate_limited);
+        }
         return Err(map_keychain_error(err));
     }
     if let Err(err) = state.engine.migrate_sealed_storage().await {
         let reason = format!("post_unseal_migrate_failed:{err}");
-        log_unseal_attempt(&state, subject, method, "fail", Some(reason.as_str())).await;
+        if let Err(rate_limited) =
+            log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
+        {
+            return Err(rate_limited);
+        }
         let _ = state.engine.keychain.seal("system").await;
         return Err(map_keychain_error(err));
     }
     if let Err(err) = state.engine.rebuild_runtime_indexes().await {
         let reason = format!("post_unseal_rebuild_failed:{err}");
-        log_unseal_attempt(&state, subject, method, "fail", Some(reason.as_str())).await;
+        if let Err(rate_limited) =
+            log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
+        {
+            return Err(rate_limited);
+        }
         let _ = state.engine.keychain.seal("system").await;
         return Err(map_keychain_error(err));
     }

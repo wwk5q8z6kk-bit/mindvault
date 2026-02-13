@@ -4937,6 +4937,8 @@ mod tests {
     use crate::sealed_runtime::{
         clear_runtime_root_key, set_runtime_root_key, set_sealed_mode_enabled,
     };
+    use tempfile::tempdir;
+    use uuid::Uuid;
 
     struct SealedRuntimeReset;
 
@@ -4945,6 +4947,13 @@ mod tests {
             clear_runtime_root_key();
             set_sealed_mode_enabled(false);
         }
+    }
+
+    fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
+        if needle.is_empty() || haystack.len() < needle.len() {
+            return false;
+        }
+        haystack.windows(needle.len()).any(|window| window == needle)
     }
 
     #[tokio::test]
@@ -5074,6 +5083,33 @@ mod tests {
                 .get("ver")
                 .and_then(serde_json::Value::as_str),
             Some("v2")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sealed_sqlite_file_does_not_contain_plaintext_marker() {
+        let _reset = SealedRuntimeReset;
+        set_sealed_mode_enabled(true);
+        set_runtime_root_key([11u8; 32], false);
+
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("mindvault.sqlite");
+        let store = SqliteNodeStore::open(&db_path).expect("open sqlite store");
+        let marker = format!("sealed-sqlite-marker-{}", Uuid::now_v7());
+
+        let mut node = KnowledgeNode::new(NodeKind::Fact, marker.clone())
+            .with_title(marker.clone())
+            .with_namespace("default");
+        node.source = Some(marker.clone());
+        node.metadata
+            .insert("marker".into(), serde_json::Value::String(marker.clone()));
+
+        store.insert(&node).await.expect("insert sealed node");
+
+        let bytes = std::fs::read(&db_path).expect("read sqlite file");
+        assert!(
+            !bytes_contains(&bytes, marker.as_bytes()),
+            "sqlite file must not contain plaintext marker"
         );
     }
 

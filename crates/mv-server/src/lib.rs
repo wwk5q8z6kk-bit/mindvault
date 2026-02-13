@@ -12,6 +12,7 @@ pub mod validation;
 pub mod websocket;
 
 use std::net::IpAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -31,6 +32,8 @@ pub struct ServerConfig {
     pub cors_allowed_origins: Vec<String>,
     pub engine_config: EngineConfig,
 }
+
+const SEALED_BLOB_MAGIC: &[u8; 4] = b"MVB1";
 
 fn require_hardware_from_env() -> bool {
     std::env::var("MINDVAULT_REQUIRE_HARDWARE")
@@ -63,11 +66,10 @@ pub async fn start_server(
         .init();
     rest::init_observability();
 
-    let auth_enabled = auth_enabled_from_env();
-    let allow_insecure_bind = allow_insecure_bind_from_env();
-    if let Err(err) = validate_bind_safety(&config.bind_host, auth_enabled, allow_insecure_bind) {
+    if let Err(err) = check_bind_safety(&config.bind_host) {
         return Err(err.into());
     }
+    startup_sealed_storage_preflight(&config.engine_config)?;
 
     tracing::info!("initializing MindVault engine...");
     let mut engine = MindVaultEngine::init(config.engine_config).await?;
@@ -77,6 +79,7 @@ pub async fn start_server(
         )
         .into());
     }
+    ensure_startup_unsealed(&engine)?;
 
     // Create broadcast channel early so enrichment can use it
     let (change_tx, _) = tokio::sync::broadcast::channel::<state::ChangeNotification>(256);
@@ -239,6 +242,86 @@ pub async fn start_server(
     }
 
     Ok(())
+}
+
+fn ensure_startup_unsealed(engine: &MindVaultEngine) -> Result<(), std::io::Error> {
+    if engine.config.sealed_mode && !engine.keychain.is_unsealed_sync() {
+        return Err(std::io::Error::other("Vault sealed - please unseal"));
+    }
+    Ok(())
+}
+
+fn startup_sealed_storage_preflight(config: &EngineConfig) -> Result<(), std::io::Error> {
+    if !config.sealed_mode {
+        return Ok(());
+    }
+
+    let data_dir = PathBuf::from(&config.data_dir);
+    if !data_dir.exists() {
+        return Ok(());
+    }
+
+    let mut findings = Vec::new();
+    for legacy_index_dir in ["tantivy", "lancedb"] {
+        let path = data_dir.join(legacy_index_dir);
+        if path.exists() {
+            findings.push(format!("legacy index directory present: {}", path.display()));
+        }
+    }
+
+    let blobs_root = data_dir.join("blobs");
+    if blobs_root.exists() {
+        if let Some(path) = find_first_plaintext_blob(&blobs_root)? {
+            findings.push(format!(
+                "plaintext blob payload detected: {}",
+                path.display()
+            ));
+        }
+    }
+
+    if findings.is_empty() {
+        return Ok(());
+    }
+
+    let reason = findings.join("; ");
+    Err(std::io::Error::other(format!(
+        "sealed mode startup preflight failed: {reason}"
+    )))
+}
+
+fn find_first_plaintext_blob(root: &Path) -> Result<Option<PathBuf>, std::io::Error> {
+    if !root.exists() {
+        return Ok(None);
+    }
+    if root.is_file() {
+        let bytes = std::fs::read(root)?;
+        if bytes.starts_with(SEALED_BLOB_MAGIC) {
+            return Ok(None);
+        }
+        return Ok(Some(root.to_path_buf()));
+    }
+
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !path.is_file() {
+                continue;
+            }
+            let bytes = std::fs::read(&path)?;
+            if bytes.starts_with(SEALED_BLOB_MAGIC) {
+                continue;
+            }
+            return Ok(Some(path));
+        }
+    }
+
+    Ok(None)
 }
 
 fn spawn_watcher_agent(
@@ -784,6 +867,12 @@ fn allow_insecure_bind_from_env() -> bool {
     )
 }
 
+pub fn check_bind_safety(bind_host: &str) -> Result<(), String> {
+    let auth_enabled = auth_enabled_from_env();
+    let allow_insecure_bind = allow_insecure_bind_from_env();
+    validate_bind_safety(bind_host, auth_enabled, allow_insecure_bind)
+}
+
 fn auth_enabled_from_env_values(jwt_secret: Option<&str>, auth_token: Option<&str>) -> bool {
     jwt_secret
         .map(|value| !value.trim().is_empty())
@@ -819,7 +908,7 @@ fn validate_bind_safety(
     }
 
     Err(format!(
-        "refusing to bind to '{bind_host}' without auth; set MINDVAULT_AUTH_TOKEN or MINDVAULT_JWT_SECRET, or override with MINDVAULT_ALLOW_INSECURE_BIND=true"
+        "refusing to bind to '{bind_host}' without auth; set MINDVAULT_AUTH_TOKEN or MINDVAULT_JWT_SECRET, or override with MINDVAULT_ALLOW_INSECURE_BIND=true (run 'mv server preflight' to verify your config)"
     ))
 }
 
@@ -836,6 +925,8 @@ fn shellexpand(s: &str) -> String {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use mv_engine::engine::MindVaultEngine;
+    use tempfile::TempDir;
 
     #[test]
     fn daily_note_scheduler_respects_enabled_flags() {
@@ -900,6 +991,12 @@ mod tests {
     }
 
     #[test]
+    fn bind_safety_error_mentions_preflight_command() {
+        let err = validate_bind_safety("0.0.0.0", false, false).unwrap_err();
+        assert!(err.contains("mv server preflight"));
+    }
+
+    #[test]
     fn bind_safety_allows_public_with_auth() {
         assert!(validate_bind_safety("0.0.0.0", true, false).is_ok());
     }
@@ -926,5 +1023,108 @@ mod tests {
         assert!(!allow_insecure_bind_value(Some("false")));
         assert!(!allow_insecure_bind_value(Some("0")));
         assert!(!allow_insecure_bind_value(None));
+    }
+
+    #[tokio::test]
+    async fn startup_rejects_sealed_vault_state() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut config = EngineConfig::default();
+        config.data_dir = temp_dir.path().to_string_lossy().to_string();
+        config.embedding.provider = "noop".into();
+        config.sealed_mode = true;
+
+        let engine = MindVaultEngine::init(config).await.expect("engine init");
+        engine
+            .keychain
+            .initialize_vault("test-password", false, "test")
+            .await
+            .expect("vault initialized");
+        engine
+            .keychain
+            .seal("test")
+            .await
+            .expect("vault sealed");
+
+        let err = ensure_startup_unsealed(&engine).expect_err("sealed startup must fail");
+        assert!(err.to_string().contains("Vault sealed - please unseal"));
+    }
+
+    #[tokio::test]
+    async fn startup_allows_unsealed_vault_state() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut config = EngineConfig::default();
+        config.data_dir = temp_dir.path().to_string_lossy().to_string();
+        config.embedding.provider = "noop".into();
+        config.sealed_mode = true;
+
+        let engine = MindVaultEngine::init(config).await.expect("engine init");
+        engine
+            .keychain
+            .initialize_vault("test-password", false, "test")
+            .await
+            .expect("vault initialized");
+        engine
+            .keychain
+            .unseal("test-password", "test")
+            .await
+            .expect("vault unsealed");
+
+        ensure_startup_unsealed(&engine).expect("unsealed startup should pass");
+    }
+
+    #[test]
+    fn startup_preflight_rejects_legacy_index_directories() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let data_dir = temp_dir.path();
+        std::fs::create_dir_all(data_dir.join("tantivy")).expect("create tantivy");
+
+        let mut config = EngineConfig::default();
+        config.data_dir = data_dir.to_string_lossy().to_string();
+        config.sealed_mode = true;
+
+        let err =
+            startup_sealed_storage_preflight(&config).expect_err("legacy plaintext dirs rejected");
+        assert!(err.to_string().contains("legacy index directory present"));
+    }
+
+    #[test]
+    fn startup_preflight_rejects_plaintext_blob_payloads() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let blob_file = temp_dir
+            .path()
+            .join("blobs")
+            .join("default")
+            .join("node-a")
+            .join("attachment.bin");
+        std::fs::create_dir_all(blob_file.parent().expect("blob parent")).expect("create dirs");
+        std::fs::write(&blob_file, b"plaintext payload").expect("write plaintext blob");
+
+        let mut config = EngineConfig::default();
+        config.data_dir = temp_dir.path().to_string_lossy().to_string();
+        config.sealed_mode = true;
+
+        let err =
+            startup_sealed_storage_preflight(&config).expect_err("plaintext blob must fail scan");
+        assert!(err.to_string().contains("plaintext blob payload detected"));
+    }
+
+    #[test]
+    fn startup_preflight_accepts_encrypted_blob_payloads() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let blob_file = temp_dir
+            .path()
+            .join("blobs")
+            .join("default")
+            .join("node-a")
+            .join("attachment.bin");
+        std::fs::create_dir_all(blob_file.parent().expect("blob parent")).expect("create dirs");
+        std::fs::write(&blob_file, [SEALED_BLOB_MAGIC.as_slice(), b"ciphertext"].concat())
+            .expect("write encrypted blob");
+
+        let mut config = EngineConfig::default();
+        config.data_dir = temp_dir.path().to_string_lossy().to_string();
+        config.sealed_mode = true;
+
+        startup_sealed_storage_preflight(&config).expect("encrypted blob should pass scan");
     }
 }

@@ -122,6 +122,7 @@ pub async fn init_vault(from_env: bool, macos_bridge: bool, config_path: &str) -
 
 pub async fn unseal(
     from_env: bool,
+    passphrase: Option<&str>,
     from_macos_keychain: bool,
     from_secure_enclave: bool,
     timeout: u64,
@@ -153,6 +154,16 @@ pub async fn unseal(
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         println!("vault unsealed (from macOS Keychain)");
+    } else if let Some(passphrase) = passphrase {
+        let source = engine
+            .unseal_with_preferred_master_key(Some(passphrase), "cli")
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        match source {
+            MasterKeySource::SecureEnclave => println!("vault unsealed (from Secure Enclave)"),
+            MasterKeySource::OsSecureStorage => println!("vault unsealed (from OS secure storage)"),
+            MasterKeySource::PassphraseArgon2id => println!("vault unsealed"),
+        }
     } else {
         let source = if from_env {
             let password =

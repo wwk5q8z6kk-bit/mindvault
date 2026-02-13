@@ -5242,6 +5242,12 @@ async fn decrypt_attachment_bytes_from_storage(
     if payload.len() < SEALED_BLOB_MAGIC.len()
         || &payload[..SEALED_BLOB_MAGIC.len()] != SEALED_BLOB_MAGIC
     {
+        if state.engine.config.sealed_mode {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "unencrypted blob payload detected in sealed mode".to_string(),
+            ));
+        }
         return Ok(payload.to_vec());
     }
 
@@ -11317,6 +11323,43 @@ fn relationship_auto_source(rel: &Relationship) -> Option<String> {
         .map(str::to_string)
 }
 
+fn backlink_relationship_matches(
+    relationship: &Relationship,
+    include_auto: bool,
+    include_manual: bool,
+    source_filter: Option<&str>,
+) -> bool {
+    if relationship.kind != RelationKind::References {
+        return false;
+    }
+
+    let auto_managed = relationship_is_auto_managed(relationship);
+    if auto_managed && !include_auto {
+        return false;
+    }
+    if !auto_managed && !include_manual {
+        return false;
+    }
+
+    if let Some(source) = source_filter {
+        let Some(auto_source) = relationship_auto_source(relationship) else {
+            return false;
+        };
+        if !auto_source.eq_ignore_ascii_case(source) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn backlink_page_window(total: usize, offset: usize, limit: usize) -> (usize, usize, bool) {
+    let start = offset.min(total);
+    let end = start.saturating_add(limit).min(total);
+    let has_more = end < total;
+    (start, end, has_more)
+}
+
 async fn relationship_edge_from_direction(
     state: &Arc<AppState>,
     auth: &AuthContext,
@@ -11437,61 +11480,67 @@ async fn get_node_backlinks(
         .source
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase);
+        .filter(|value| !value.is_empty());
     let offset = query.offset.unwrap_or(0);
     let limit = query
         .limit
         .unwrap_or(DEFAULT_NODE_BACKLINKS_PAGE_SIZE)
         .clamp(1, MAX_NODE_BACKLINKS_PAGE_SIZE);
 
-    let incoming_rels = state
+    let mut incoming_rels = state
         .engine
         .graph
         .get_relationships_to(node_id)
         .await
         .map_err(map_mv_error)?;
+    incoming_rels.retain(|relationship| {
+        backlink_relationship_matches(relationship, include_auto, include_manual, source_filter)
+    });
+    incoming_rels.sort_by(|left, right| right.created_at.cmp(&left.created_at));
 
-    let mut backlinks = Vec::new();
-    for relationship in incoming_rels {
-        if relationship.kind != RelationKind::References {
-            continue;
-        }
+    if auth.is_admin() {
+        let total_backlinks = incoming_rels.len();
+        let (start, end, has_more) = backlink_page_window(total_backlinks, offset, limit);
 
-        let auto_managed = relationship_is_auto_managed(&relationship);
-        if auto_managed && !include_auto {
-            continue;
-        }
-        if !auto_managed && !include_manual {
-            continue;
-        }
-
-        if let Some(source) = source_filter.as_deref() {
-            let Some(auto_source) = relationship_auto_source(&relationship) else {
-                continue;
-            };
-            if !auto_source.eq_ignore_ascii_case(source) {
-                continue;
+        let mut backlinks = Vec::with_capacity(end.saturating_sub(start));
+        for relationship in incoming_rels.into_iter().skip(start).take(end - start) {
+            if let Some(edge) =
+                relationship_edge_from_direction(&state, &auth, relationship, "incoming").await?
+            {
+                backlinks.push(edge);
             }
         }
 
-        if let Some(edge) =
-            relationship_edge_from_direction(&state, &auth, relationship, "incoming").await?
-        {
-            backlinks.push(edge);
-        }
+        let returned_backlinks = backlinks.len();
+        return Ok(Json(NodeBacklinksResponse {
+            node_id: node_id.to_string(),
+            total_backlinks,
+            returned_backlinks,
+            has_more,
+            offset,
+            limit,
+            backlinks,
+        }));
     }
 
-    backlinks.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-    let total_backlinks = backlinks.len();
-    let end = offset.saturating_add(limit).min(total_backlinks);
-    let page = if offset >= total_backlinks {
-        Vec::new()
-    } else {
-        backlinks[offset..end].to_vec()
-    };
-    let returned_backlinks = page.len();
-    let has_more = end < total_backlinks;
+    let mut total_backlinks = 0usize;
+    let mut backlinks = Vec::with_capacity(limit);
+    for relationship in incoming_rels {
+        let Some(edge) =
+            relationship_edge_from_direction(&state, &auth, relationship, "incoming").await?
+        else {
+            continue;
+        };
+
+        if total_backlinks >= offset && backlinks.len() < limit {
+            backlinks.push(edge);
+        }
+
+        total_backlinks = total_backlinks.saturating_add(1);
+    }
+
+    let returned_backlinks = backlinks.len();
+    let (_, _, has_more) = backlink_page_window(total_backlinks, offset, limit);
 
     Ok(Json(NodeBacklinksResponse {
         node_id: node_id.to_string(),
@@ -11500,7 +11549,7 @@ async fn get_node_backlinks(
         has_more,
         offset,
         limit,
-        backlinks: page,
+        backlinks,
     }))
 }
 
@@ -11667,6 +11716,8 @@ async fn diagnostics_health(
 
 #[cfg(test)]
 mod tests {
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
     use super::*;
     use chrono::TimeZone;
     use mv_core::{KnowledgeNode, MatchSource, NodeKind, RelationKind, Relationship, SearchResult};
@@ -11676,8 +11727,14 @@ mod tests {
         TASK_COMPLETED_AT_METADATA_KEY, TASK_COMPLETED_METADATA_KEY, TASK_DUE_AT_METADATA_KEY,
     };
     use tempfile::TempDir;
+    use tower::ServiceExt;
 
-    async fn create_state_with_embedding(provider: &str, model: &str) -> (Arc<AppState>, TempDir) {
+    async fn create_state_with_embedding_and_mode_and_unseal(
+        provider: &str,
+        model: &str,
+        sealed_mode: bool,
+        unseal_vault: bool,
+    ) -> (Arc<AppState>, TempDir) {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let mut config = EngineConfig {
             data_dir: temp_dir.path().to_string_lossy().to_string(),
@@ -11685,10 +11742,47 @@ mod tests {
         };
         config.embedding.provider = provider.to_string();
         config.embedding.model = model.to_string();
+        config.sealed_mode = sealed_mode;
+
         let engine = MindVaultEngine::init(config)
             .await
             .expect("test engine should initialize");
+
+        if sealed_mode {
+            engine
+                .keychain
+                .initialize_vault("test-password", false, "test-suite")
+                .await
+                .expect("sealed vault should initialize");
+            if unseal_vault {
+                engine
+                    .keychain
+                    .unseal("test-password", "test-suite")
+                    .await
+                    .expect("sealed vault should unseal");
+            } else {
+                engine
+                    .keychain
+                    .seal("test-suite")
+                    .await
+                    .expect("sealed vault should seal");
+            }
+        }
+
         (Arc::new(AppState::new(Arc::new(engine))), temp_dir)
+    }
+
+    async fn create_state_with_embedding_and_mode(
+        provider: &str,
+        model: &str,
+        sealed_mode: bool,
+    ) -> (Arc<AppState>, TempDir) {
+        create_state_with_embedding_and_mode_and_unseal(provider, model, sealed_mode, sealed_mode)
+            .await
+    }
+
+    async fn create_state_with_embedding(provider: &str, model: &str) -> (Arc<AppState>, TempDir) {
+        create_state_with_embedding_and_mode(provider, model, false).await
     }
 
     #[tokio::test]
@@ -11708,6 +11802,83 @@ mod tests {
             .reason
             .as_deref()
             .is_some_and(|value| value.contains("unknown embedding provider")));
+    }
+
+    #[tokio::test]
+    async fn sealed_attachment_blob_roundtrip_encrypts_at_rest() {
+        let (state, _temp_dir) =
+            create_state_with_embedding_and_mode("unknown-provider", "any", true).await;
+        let plaintext = b"sealed attachment payload";
+        let encrypted = encrypt_attachment_bytes_for_storage(&state, "default", plaintext)
+            .await
+            .expect("sealed blob encryption should succeed");
+
+        assert!(encrypted.starts_with(SEALED_BLOB_MAGIC));
+        assert_ne!(encrypted, plaintext);
+
+        let decrypted = decrypt_attachment_bytes_from_storage(&state, "default", &encrypted)
+            .await
+            .expect("sealed blob decryption should succeed");
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[tokio::test]
+    async fn sealed_attachment_blob_rejects_plaintext_payload() {
+        let (state, _temp_dir) =
+            create_state_with_embedding_and_mode("unknown-provider", "any", true).await;
+
+        let err = decrypt_attachment_bytes_from_storage(&state, "default", b"plaintext")
+            .await
+            .expect_err("plaintext blobs must be rejected in sealed mode");
+        assert_eq!(err.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(err.1.contains("unencrypted blob payload"));
+    }
+
+    #[tokio::test]
+    async fn sealed_mode_router_returns_503_for_regular_routes() {
+        let (state, _temp_dir) =
+            create_state_with_embedding_and_mode_and_unseal("unknown-provider", "any", true, false)
+                .await;
+        let app = create_router(Arc::clone(&state));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/health")
+                    .method("GET")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let body_text = String::from_utf8_lossy(&body);
+        assert!(body_text.contains("Vault sealed - please unseal"));
+    }
+
+    #[tokio::test]
+    async fn sealed_mode_router_allows_keychain_status_path_through_middleware() {
+        let (state, _temp_dir) =
+            create_state_with_embedding_and_mode_and_unseal("unknown-provider", "any", true, false)
+                .await;
+        let app = create_router(Arc::clone(&state));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/keychain/status")
+                    .method("GET")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_ne!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]
@@ -14118,6 +14289,15 @@ mod tests {
         assert_eq!(paged.returned_backlinks, 1);
         assert!(!paged.has_more);
         assert_eq!(paged.backlinks.len(), 1);
+    }
+
+    #[test]
+    fn backlink_page_window_computes_bounds_and_has_more() {
+        let (start, end, has_more) = backlink_page_window(10, 3, 4);
+        assert_eq!((start, end, has_more), (3, 7, true));
+
+        let (start, end, has_more) = backlink_page_window(3, 10, 5);
+        assert_eq!((start, end, has_more), (3, 3, false));
     }
 
     #[tokio::test]

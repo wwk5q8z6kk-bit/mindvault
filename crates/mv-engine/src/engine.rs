@@ -3679,6 +3679,32 @@ mod tests {
         (engine, temp_dir)
     }
 
+    async fn create_test_sealed_engine(unseal_vault: bool) -> (MindVaultEngine, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        config.embedding.provider = "noop".into();
+        config.sealed_mode = true;
+        let engine = MindVaultEngine::init(config).await.unwrap();
+        engine
+            .keychain
+            .initialize_vault("test-password", false, "test-suite")
+            .await
+            .unwrap();
+        if unseal_vault {
+            engine
+                .keychain
+                .unseal("test-password", "test-suite")
+                .await
+                .unwrap();
+        } else {
+            engine.keychain.seal("test-suite").await.unwrap();
+        }
+        (engine, temp_dir)
+    }
+
     #[tokio::test]
     async fn test_store_and_retrieve_node() {
         let (engine, _tmp_dir) = create_test_engine().await;
@@ -3738,6 +3764,63 @@ mod tests {
 
         let count = engine.node_count().await.unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_sealed_engine_blocks_node_io_while_sealed() {
+        let (engine, _tmp_dir) = create_test_sealed_engine(false).await;
+        let err = engine
+            .store_node(KnowledgeNode::new(NodeKind::Fact, "blocked".to_string()))
+            .await
+            .expect_err("sealed store_node must fail");
+        assert!(matches!(err, MvError::VaultSealed));
+    }
+
+    #[tokio::test]
+    async fn test_sealed_migrate_and_rebuild_require_unseal_then_succeed() {
+        let (engine, _tmp_dir) = create_test_sealed_engine(false).await;
+
+        let rebuild_err = engine
+            .rebuild_runtime_indexes()
+            .await
+            .expect_err("sealed rebuild should fail");
+        assert!(matches!(rebuild_err, MvError::VaultSealed));
+
+        let migrate_err = engine
+            .migrate_sealed_storage()
+            .await
+            .expect_err("sealed migrate should fail");
+        assert!(matches!(migrate_err, MvError::VaultSealed));
+
+        engine
+            .keychain
+            .unseal("test-password", "test-suite")
+            .await
+            .unwrap();
+
+        let node = engine
+            .store_node(KnowledgeNode::new(
+                NodeKind::Fact,
+                "sealed migration validation".to_string(),
+            ))
+            .await
+            .unwrap();
+
+        engine
+            .rebuild_runtime_indexes()
+            .await
+            .expect("rebuild after unseal");
+        engine
+            .migrate_sealed_storage()
+            .await
+            .expect("migrate after unseal");
+
+        let loaded = engine
+            .get_node(node.id)
+            .await
+            .expect("load node")
+            .expect("node exists");
+        assert_eq!(loaded.content, "sealed migration validation");
     }
 
     #[tokio::test]
