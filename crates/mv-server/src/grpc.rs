@@ -917,20 +917,24 @@ impl KeychainService for KeychainGrpc {
 
         match unseal_result {
             Ok(()) => {
-                log_unseal_attempt(&self.state, subject, method, "success", None).await;
                 if self.state.engine.keychain.degraded_security_mode() {
                     tracing::warn!(
                         "vault unsealed in degraded security mode (passphrase fallback)"
                     );
                 }
                 if let Err(err) = self.state.engine.migrate_sealed_storage().await {
+                    let reason = format!("post_unseal_migrate_failed:{err}");
+                    log_unseal_attempt(&self.state, subject, method, "fail", Some(&reason)).await;
                     let _ = self.state.engine.keychain.seal("system").await;
                     return Err(map_keychain_status(err));
                 }
                 if let Err(err) = self.state.engine.rebuild_runtime_indexes().await {
+                    let reason = format!("post_unseal_rebuild_failed:{err}");
+                    log_unseal_attempt(&self.state, subject, method, "fail", Some(&reason)).await;
                     let _ = self.state.engine.keychain.seal("system").await;
                     return Err(map_keychain_status(err));
                 }
+                log_unseal_attempt(&self.state, subject, method, "success", None).await;
             }
             Err(err) => {
                 let reason = err.to_string();

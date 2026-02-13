@@ -114,6 +114,32 @@ async fn sealed_mode_blocks_routes_until_unsealed() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
+    // Shamir endpoints required for share-based unseal remain reachable while sealed.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            "/api/v1/keychain/shamir/status",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_ne!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/keychain/shamir/submit",
+            Some(json!({
+                "share": "test-share",
+                "passphrase": null
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
     // Initializing the vault unseals runtime key state.
     let resp = router
         .clone()

@@ -776,7 +776,12 @@ async fn sealed_mode_middleware(
     let path = request.uri().path();
     let is_allowed = matches!(
         path,
-        "/api/v1/keychain/status" | "/api/v1/keychain/unseal" | "/api/v1/keychain/init"
+        "/api/v1/keychain/status"
+            | "/api/v1/keychain/unseal"
+            | "/api/v1/keychain/init"
+            | "/api/v1/keychain/shamir/status"
+            | "/api/v1/keychain/shamir/submit"
+            | "/api/v1/keychain/shamir/unseal"
     );
 
     if is_allowed {

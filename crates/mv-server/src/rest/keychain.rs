@@ -276,7 +276,6 @@ pub async fn unseal_vault(
 
     match unseal_result {
         Ok(()) => {
-            log_unseal_attempt(&state, subject, method, "success", None).await;
             if state.engine.keychain.degraded_security_mode() {
                 tracing::warn!("vault unsealed in degraded security mode (passphrase fallback)");
             }
@@ -289,13 +288,19 @@ pub async fn unseal_vault(
     }
 
     if let Err(err) = state.engine.migrate_sealed_storage().await {
+        let reason = format!("post_unseal_migrate_failed:{err}");
+        log_unseal_attempt(&state, subject, method, "fail", Some(reason.as_str())).await;
         let _ = state.engine.keychain.seal("system").await;
         return Err(map_keychain_error(err));
     }
     if let Err(err) = state.engine.rebuild_runtime_indexes().await {
+        let reason = format!("post_unseal_rebuild_failed:{err}");
+        log_unseal_attempt(&state, subject, method, "fail", Some(reason.as_str())).await;
         let _ = state.engine.keychain.seal("system").await;
         return Err(map_keychain_error(err));
     }
+
+    log_unseal_attempt(&state, subject, method, "success", None).await;
 
     // Start auto-seal timer after successful unseal
     state.engine.keychain.start_auto_seal().await;
@@ -896,12 +901,30 @@ pub async fn shamir_unseal(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     require_admin(&auth)?;
     let subject = auth.subject.as_deref().unwrap_or("anonymous");
-    state
+    let method = "shamir_shares";
+    if let Err(err) = state
         .engine
         .keychain
         .unseal_from_shares(subject)
         .await
-        .map_err(map_keychain_error)?;
+    {
+        let reason = err.to_string();
+        log_unseal_attempt(&state, subject, method, "fail", Some(reason.as_str())).await;
+        return Err(map_keychain_error(err));
+    }
+    if let Err(err) = state.engine.migrate_sealed_storage().await {
+        let reason = format!("post_unseal_migrate_failed:{err}");
+        log_unseal_attempt(&state, subject, method, "fail", Some(reason.as_str())).await;
+        let _ = state.engine.keychain.seal("system").await;
+        return Err(map_keychain_error(err));
+    }
+    if let Err(err) = state.engine.rebuild_runtime_indexes().await {
+        let reason = format!("post_unseal_rebuild_failed:{err}");
+        log_unseal_attempt(&state, subject, method, "fail", Some(reason.as_str())).await;
+        let _ = state.engine.keychain.seal("system").await;
+        return Err(map_keychain_error(err));
+    }
+    log_unseal_attempt(&state, subject, method, "success", None).await;
     // Start auto-seal timer after successful unseal
     state.engine.keychain.start_auto_seal().await;
     Ok(Json(serde_json::json!({"status": "unsealed"})))
