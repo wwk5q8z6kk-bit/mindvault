@@ -161,6 +161,7 @@ pub fn init_observability() {
 pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[String]) -> Router {
     let router = Router::new()
         .route("/api/v1/health", get(health))
+        .route("/api/v1/config/sections", get(list_config_sections))
         .route("/api/v1/diagnostics/embedding", get(embedding_diagnostics))
         .route("/api/v1/assist/completion", post(assist_completion))
         .route("/api/v1/assist/autocomplete", post(assist_autocomplete))
@@ -5436,6 +5437,20 @@ impl AssistTransformMode {
 }
 
 // --- Handlers ---
+
+/// List all registered config sections and their known keys (for agent discoverability).
+async fn list_config_sections(
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<ConfigSectionsResponse>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let sections = mv_core::ConfigRegistry::builtin_section_catalog();
+    Ok(Json(ConfigSectionsResponse { sections }))
+}
+
+#[derive(Serialize)]
+struct ConfigSectionsResponse {
+    sections: Vec<mv_core::SectionInfo>,
+}
 
 async fn health(
     Extension(auth): Extension<AuthContext>,

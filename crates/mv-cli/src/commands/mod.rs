@@ -19,6 +19,7 @@ pub mod stats;
 pub mod store;
 
 use anyhow::Context;
+use mv_core::ConfigSection;
 use mv_engine::config::EngineConfig;
 use mv_engine::engine::MindVaultEngine;
 use serde::Deserialize;
@@ -50,7 +51,7 @@ pub struct RuntimeConfig {
     pub server: ServerRuntimeConfig,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileConfig {
     server: Option<FileServerConfig>,
     storage: Option<FileStorageConfig>,
@@ -70,7 +71,7 @@ struct FileConfig {
     google_calendar: Option<FileGoogleCalendarConfig>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileServerConfig {
     bind_host: Option<String>,
     rest_port: Option<u16>,
@@ -79,12 +80,12 @@ struct FileServerConfig {
     cors_allowed_origins: Option<Vec<String>>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileStorageConfig {
     data_dir: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileProfileConfig {
     display_name: Option<String>,
     primary_email: Option<String>,
@@ -92,7 +93,7 @@ struct FileProfileConfig {
     signature: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileEmbeddingConfig {
     provider: Option<String>,
     model: Option<String>,
@@ -100,7 +101,7 @@ struct FileEmbeddingConfig {
     base_url: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileSearchConfig {
     default_limit: Option<usize>,
     default_strategy: Option<String>,
@@ -110,13 +111,13 @@ struct FileSearchConfig {
     rrf_k: Option<f64>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileGraphConfig {
     default_traversal_depth: Option<usize>,
     graph_boost_factor: Option<f64>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileAiConfig {
     auto_tagging_enabled: Option<bool>,
     auto_tagging_max_generated_tags: Option<usize>,
@@ -125,7 +126,7 @@ struct FileAiConfig {
     auto_tagging_min_token_length: Option<usize>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileWatcherConfig {
     enabled: Option<bool>,
     interval_secs: Option<u64>,
@@ -134,21 +135,21 @@ struct FileWatcherConfig {
     expiry_days: Option<u64>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileAiSidecarConfig {
     enabled: Option<bool>,
     base_url: Option<String>,
     timeout_secs: Option<u64>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileLinkingConfig {
     auto_backlinks_enabled: Option<bool>,
     auto_backlinks_scan_limit: Option<usize>,
     auto_backlinks_max_targets: Option<usize>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileDailyNotesConfig {
     enabled: Option<bool>,
     midnight_scheduler_enabled: Option<bool>,
@@ -158,14 +159,14 @@ struct FileDailyNotesConfig {
     default_importance: Option<f64>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileRecurrenceConfig {
     enabled: Option<bool>,
     scheduler_interval_secs: Option<u64>,
     max_instances_per_template: Option<usize>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileEncryptionConfig {
     sealed_mode: Option<bool>,
     enabled: Option<bool>,
@@ -174,7 +175,7 @@ struct FileEncryptionConfig {
     argon2_parallelism: Option<u32>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileLlmConfig {
     enabled: Option<bool>,
     base_url: Option<String>,
@@ -184,7 +185,7 @@ struct FileLlmConfig {
     timeout_secs: Option<u64>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileEmailConfig {
     enabled: Option<bool>,
     namespace: Option<String>,
@@ -204,7 +205,7 @@ struct FileEmailConfig {
     smtp_starttls: Option<bool>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FileGoogleCalendarConfig {
     enabled: Option<bool>,
     namespace: Option<String>,
@@ -218,6 +219,176 @@ struct FileGoogleCalendarConfig {
     client_id: Option<String>,
     client_secret: Option<String>,
     refresh_token: Option<String>,
+}
+
+// --- ConfigSection implementations ---
+
+impl ConfigSection for FileServerConfig {
+    fn section_name(&self) -> &'static str { "server" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &["bind_host", "rest_port", "grpc_port", "socket_path", "cors_allowed_origins"]
+    }
+}
+
+impl ConfigSection for FileStorageConfig {
+    fn section_name(&self) -> &'static str { "storage" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &["data_dir"]
+    }
+}
+
+impl ConfigSection for FileProfileConfig {
+    fn section_name(&self) -> &'static str { "profile" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &["display_name", "primary_email", "timezone", "signature"]
+    }
+}
+
+impl ConfigSection for FileEmbeddingConfig {
+    fn section_name(&self) -> &'static str { "embedding" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &["provider", "model", "dimensions", "base_url"]
+    }
+}
+
+impl ConfigSection for FileSearchConfig {
+    fn section_name(&self) -> &'static str { "search" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &["default_limit", "default_strategy", "min_score", "vector_weight", "fulltext_weight", "rrf_k"]
+    }
+}
+
+impl ConfigSection for FileGraphConfig {
+    fn section_name(&self) -> &'static str { "graph" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &["default_traversal_depth", "graph_boost_factor"]
+    }
+}
+
+impl ConfigSection for FileAiConfig {
+    fn section_name(&self) -> &'static str { "ai" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &[
+            "auto_tagging_enabled", "auto_tagging_max_generated_tags",
+            "auto_tagging_max_total_tags", "auto_tagging_similarity_seed_limit",
+            "auto_tagging_min_token_length",
+        ]
+    }
+}
+
+impl ConfigSection for FileWatcherConfig {
+    fn section_name(&self) -> &'static str { "watcher" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &["enabled", "interval_secs", "lookback_hours", "max_nodes_per_cycle", "expiry_days"]
+    }
+}
+
+impl ConfigSection for FileAiSidecarConfig {
+    fn section_name(&self) -> &'static str { "ai_sidecar" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &["enabled", "base_url", "timeout_secs"]
+    }
+}
+
+impl ConfigSection for FileLinkingConfig {
+    fn section_name(&self) -> &'static str { "linking" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &["auto_backlinks_enabled", "auto_backlinks_scan_limit", "auto_backlinks_max_targets"]
+    }
+}
+
+impl ConfigSection for FileDailyNotesConfig {
+    fn section_name(&self) -> &'static str { "daily_notes" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &[
+            "enabled", "midnight_scheduler_enabled", "namespace",
+            "title_template", "content_template", "default_importance",
+        ]
+    }
+}
+
+impl ConfigSection for FileRecurrenceConfig {
+    fn section_name(&self) -> &'static str { "recurrence" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &["enabled", "scheduler_interval_secs", "max_instances_per_template"]
+    }
+}
+
+impl ConfigSection for FileEncryptionConfig {
+    fn section_name(&self) -> &'static str { "encryption" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &["sealed_mode", "enabled", "argon2_memory_kib", "argon2_iterations", "argon2_parallelism"]
+    }
+}
+
+impl ConfigSection for FileLlmConfig {
+    fn section_name(&self) -> &'static str { "llm" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &["enabled", "base_url", "model", "max_tokens", "temperature", "timeout_secs"]
+    }
+}
+
+impl ConfigSection for FileEmailConfig {
+    fn section_name(&self) -> &'static str { "email" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &[
+            "enabled", "namespace", "poll_interval_secs", "max_fetch",
+            "max_attachment_bytes", "mark_seen",
+            "imap_host", "imap_port", "imap_username", "imap_folder", "imap_starttls",
+            "smtp_host", "smtp_port", "smtp_username", "smtp_from", "smtp_starttls",
+        ]
+    }
+}
+
+impl ConfigSection for FileGoogleCalendarConfig {
+    fn section_name(&self) -> &'static str { "google_calendar" }
+    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn known_keys(&self) -> &'static [&'static str] {
+        &[
+            "enabled", "namespace", "calendar_id", "sync_interval_secs",
+            "lookback_days", "lookahead_days", "max_results",
+            "import_events", "export_events",
+            "client_id", "client_secret", "refresh_token",
+        ]
+    }
+}
+
+/// Build a ConfigRegistry from a parsed FileConfig.
+fn build_config_registry(file_config: &FileConfig) -> mv_core::ConfigRegistry {
+    let mut registry = mv_core::ConfigRegistry::new();
+    // Register all sections using their defaults if not present in the TOML
+    registry.register(file_config.server.clone().unwrap_or_default());
+    registry.register(file_config.storage.clone().unwrap_or_default());
+    registry.register(file_config.profile.clone().unwrap_or_default());
+    registry.register(file_config.embedding.clone().unwrap_or_default());
+    registry.register(file_config.search.clone().unwrap_or_default());
+    registry.register(file_config.graph.clone().unwrap_or_default());
+    registry.register(file_config.ai.clone().unwrap_or_default());
+    registry.register(file_config.watcher.clone().unwrap_or_default());
+    registry.register(file_config.ai_sidecar.clone().unwrap_or_default());
+    registry.register(file_config.linking.clone().unwrap_or_default());
+    registry.register(file_config.daily_notes.clone().unwrap_or_default());
+    registry.register(file_config.recurrence.clone().unwrap_or_default());
+    registry.register(file_config.encryption.clone().unwrap_or_default());
+    registry.register(file_config.llm.clone().unwrap_or_default());
+    registry.register(file_config.email.clone().unwrap_or_default());
+    registry.register(file_config.google_calendar.clone().unwrap_or_default());
+    registry
 }
 
 /// Load engine from config file path (expanding ~).
@@ -238,6 +409,34 @@ pub fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
             .with_context(|| format!("failed to read config file {path}"))?;
         let file_config: FileConfig = toml::from_str(&content)
             .with_context(|| format!("failed to parse TOML config {path}"))?;
+
+        // Build config registry for validation and discoverability
+        let registry = build_config_registry(&file_config);
+        if let Err(errors) = registry.validate_all() {
+            for (section, msg) in &errors {
+                tracing::warn!(section = section, error = msg.as_str(), "config validation error");
+            }
+        }
+        // Detect unhandled TOML keys
+        if let Ok(raw_table) = content.parse::<toml::Table>() {
+            let toml_keys: Vec<String> = raw_table
+                .iter()
+                .flat_map(|(section, value)| {
+                    if let Some(table) = value.as_table() {
+                        table
+                            .keys()
+                            .map(|key| format!("{section}.{key}"))
+                            .collect::<Vec<_>>()
+                    } else {
+                        vec![section.clone()]
+                    }
+                })
+                .collect();
+            let unhandled = registry.find_unhandled_keys(&toml_keys);
+            for key in &unhandled {
+                tracing::warn!(key = key.as_str(), "unhandled config key (no section claims it)");
+            }
+        }
 
         if let Some(storage) = file_config.storage {
             if let Some(data_dir) = storage.data_dir {
