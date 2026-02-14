@@ -16,7 +16,7 @@ from mindvault_ai.models.loader import (
     get_memory_estimate,
 )
 from mindvault_ai.models.ollama_proxy import OllamaProxy
-from mindvault_ai.api import chat, embeddings, models, health
+from mindvault_ai.api import chat, embeddings, finetune, models, health
 
 structlog.configure(
     processors=[
@@ -91,6 +91,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router)
     app.include_router(embeddings.router)
     app.include_router(chat.router)
+    app.include_router(finetune.router)
 
     return app
 

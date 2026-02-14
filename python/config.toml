@@ -33,3 +33,12 @@ spacy_model = "en_core_web_sm"
 [summarization]
 extractive_method = "textrank"
 extractive_sentences = 5
+
+[finetune]
+output_dir = "~/.mindvault/finetune"
+min_eval_samples = 20
+default_epochs = 3
+default_lr = 1e-4
+default_lora_r = 8
+default_lora_alpha = 16
+default_batch_size = 4
