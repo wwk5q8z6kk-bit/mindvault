@@ -11,18 +11,16 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use mv_core::{
-    ChronicleEntry, ContentType, KnowledgeNode, MessageStatus, NodeKind, Proposal, ProposalAction,
-    ProposalSender, ProposalState, RelayMessage, SafeguardStore, UndoSnapshot,
+    ChronicleEntry, ContentType, MessageStatus, Proposal, ProposalAction,
+    ProposalSender, ProposalState, RelayMessage, SafeguardStore,
 };
-
-use chrono::{Duration, Utc};
+use mv_engine::engine::ProposalActionResult;
 
 use crate::auth::{
     authorize_namespace, authorize_read, authorize_write, namespace_for_create, AuthContext,
 };
 use crate::limits::{enforce_namespace_quota, NamespaceQuotaError};
 use crate::state::AppState;
-use crate::validation::validate_node_payload;
 
 // --- DTOs ---
 
@@ -43,17 +41,7 @@ pub struct SubmitProposalRequest {
     pub payload: Option<HashMap<String, serde_json::Value>>,
 }
 
-#[derive(Deserialize)]
-struct ProposalNodePayload {
-    kind: Option<String>,
-    content: Option<String>,
-    title: Option<String>,
-    source: Option<String>,
-    namespace: Option<String>,
-    tags: Option<Vec<String>>,
-    importance: Option<f64>,
-    metadata: Option<HashMap<String, serde_json::Value>>,
-}
+// ProposalNodePayload moved to mv_engine::engine
 
 #[derive(Deserialize)]
 struct RelayReplyPayload {
@@ -96,12 +84,7 @@ fn map_namespace_quota_error(err: NamespaceQuotaError) -> (StatusCode, String) {
 }
 
 // --- Helpers ---
-
-struct ProposalActionResult {
-    created_node_id: Option<String>,
-    updated_node_id: Option<String>,
-    deleted_node_id: Option<String>,
-}
+// ProposalActionResult moved to mv_engine::engine
 
 fn resolve_sender_context(
     auth: &AuthContext,
@@ -143,242 +126,75 @@ fn resolve_sender_context(
     Ok((ProposalSender::UserSelf, subject, false))
 }
 
-async fn build_undo_snapshot_data(
-    state: &AppState,
-    auth: &AuthContext,
-    proposal: &Proposal,
-) -> Result<Option<serde_json::Value>, (StatusCode, String)> {
-    match proposal.action {
-        ProposalAction::CreateNode => Ok(Some(serde_json::json!({ "action": "create_node" }))),
-        ProposalAction::UpdateNode | ProposalAction::SuggestTag => {
-            let target_id = proposal.target_node_id.ok_or((
-                StatusCode::BAD_REQUEST,
-                "missing target node id".to_string(),
-            ))?;
-            let existing = state
-                .engine
-                .get_node(target_id)
-                .await
-                .map_err(map_mv_error)?
-                .ok_or((StatusCode::NOT_FOUND, "target node not found".to_string()))?;
-            authorize_namespace(auth, &existing.namespace)?;
-            Ok(Some(serde_json::json!({
-                "action": "update_node",
-                "previous": existing
-            })))
-        }
-        ProposalAction::DeleteNode => {
-            let target_id = proposal.target_node_id.ok_or((
-                StatusCode::BAD_REQUEST,
-                "missing target node id".to_string(),
-            ))?;
-            let existing = state
-                .engine
-                .get_node(target_id)
-                .await
-                .map_err(map_mv_error)?
-                .ok_or((StatusCode::NOT_FOUND, "target node not found".to_string()))?;
-            authorize_namespace(auth, &existing.namespace)?;
-            Ok(Some(serde_json::json!({
-                "action": "delete_node",
-                "node": existing
-            })))
-        }
-        _ => Ok(None),
-    }
-}
+// build_undo_snapshot_data moved to engine.build_undo_snapshot()
 
-/// Simple glob matching: supports `*` as wildcard prefix/suffix/full.
-fn glob_match_simple(pattern: &str, value: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    if let Some(suffix) = pattern.strip_prefix('*') {
-        return value.ends_with(suffix);
-    }
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        return value.starts_with(prefix);
-    }
-    pattern == value
-}
+// glob_match_simple moved to mv_engine::engine
 
 /// Execute the action described by a proposal (create/update/delete node).
 /// Shared by both manual approve and auto-approve paths.
+///
+/// Standard CRUD actions delegate to `engine.execute_proposal_action()`.
+/// The relay.reply custom action stays here because it depends on server-
+/// specific email delivery logic.
 async fn execute_proposal_action(
     state: &Arc<AppState>,
     auth: &AuthContext,
     proposal: &Proposal,
 ) -> Result<ProposalActionResult, (StatusCode, String)> {
-    let mut result = ProposalActionResult {
-        created_node_id: None,
-        updated_node_id: None,
-        deleted_node_id: None,
-    };
-
     match &proposal.action {
-        ProposalAction::CreateNode => {
-            let payload_value = serde_json::to_value(&proposal.payload)
-                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
-            let payload: ProposalNodePayload = serde_json::from_value(payload_value)
-                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
-
-            let content = payload.content.ok_or((
-                StatusCode::BAD_REQUEST,
-                "proposal payload missing content".to_string(),
-            ))?;
-            let kind_raw = payload.kind.unwrap_or_else(|| "fact".to_string());
-            let kind: NodeKind = kind_raw
-                .parse()
-                .map_err(|e: String| (StatusCode::BAD_REQUEST, e))?;
-            let tags = payload.tags.unwrap_or_default();
-
-            validate_node_payload(
-                kind,
-                payload.title.as_deref(),
-                &content,
-                payload.source.as_deref(),
-                payload.namespace.as_deref(),
-                &tags,
-                payload.importance,
-                payload.metadata.as_ref(),
-            )
-            .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
-
-            let namespace = namespace_for_create(auth, payload.namespace, "default")?;
-            enforce_namespace_quota(&state.engine, &namespace)
-                .await
-                .map_err(map_namespace_quota_error)?;
-
-            let mut node = KnowledgeNode::new(kind, content).with_namespace(namespace);
-            if let Some(title) = payload.title {
-                node = node.with_title(title);
-            }
-            if let Some(source) = payload.source {
-                node = node.with_source(source);
-            }
-            if !tags.is_empty() {
-                node = node.with_tags(tags);
-            }
-            if let Some(importance) = payload.importance {
-                node = node.with_importance(importance);
-            }
-            if let Some(metadata) = payload.metadata {
-                node.metadata = metadata;
-            }
-
-            let stored = state.engine.store_node(node).await.map_err(map_mv_error)?;
-            state.notify_change(&stored.id.to_string(), "create", Some(&stored.namespace));
-            result.created_node_id = Some(stored.id.to_string());
-        }
-        ProposalAction::UpdateNode | ProposalAction::SuggestTag => {
-            let target_id = proposal.target_node_id.ok_or((
-                StatusCode::BAD_REQUEST,
-                "proposal missing target_node_id".to_string(),
-            ))?;
-            let existing = state
-                .engine
-                .get_node(target_id)
-                .await
-                .map_err(map_mv_error)?
-                .ok_or((StatusCode::NOT_FOUND, "target node not found".to_string()))?;
-
-            authorize_namespace(auth, &existing.namespace)?;
-
-            let payload_value = serde_json::to_value(&proposal.payload)
-                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
-            let payload: ProposalNodePayload = serde_json::from_value(payload_value)
-                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
-
-            let mut updated = existing.clone();
-            if let Some(kind) = payload.kind {
-                updated.kind = kind
-                    .parse()
-                    .map_err(|e: String| (StatusCode::BAD_REQUEST, e))?;
-            }
-            if let Some(content) = payload.content {
-                updated.content = content;
-            }
-            if let Some(title) = payload.title {
-                updated.title = Some(title);
-            }
-            if let Some(source) = payload.source {
-                updated.source = Some(source);
-            }
-
-            let mut tags = updated.tags.clone();
-            if matches!(&proposal.action, ProposalAction::SuggestTag) {
-                if let Some(tag_val) = proposal.payload.get("tag").and_then(|v| v.as_str()) {
-                    let tag = tag_val.trim();
-                    if !tag.is_empty() && !tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
-                        tags.push(tag.to_string());
-                    }
-                } else {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        "proposal payload missing tag".to_string(),
-                    ));
-                }
-            } else if let Some(new_tags) = payload.tags {
-                tags = new_tags;
-            }
-
-            if let Some(importance) = payload.importance {
-                updated.importance = importance;
-            }
-            if let Some(metadata) = payload.metadata {
-                updated.metadata = metadata;
-            }
-
-            if let Some(namespace) = payload.namespace {
-                let ns = namespace_for_create(auth, Some(namespace), &existing.namespace)?;
-                updated.namespace = ns;
-            }
-
-            validate_node_payload(
-                updated.kind,
-                updated.title.as_deref(),
-                &updated.content,
-                updated.source.as_deref(),
-                Some(&updated.namespace),
-                &tags,
-                Some(updated.importance),
-                Some(&updated.metadata),
-            )
-            .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
-
-            updated.tags = tags;
-            let saved = state
-                .engine
-                .update_node(updated)
-                .await
-                .map_err(map_mv_error)?;
-            state.notify_change(&saved.id.to_string(), "update", Some(&saved.namespace));
-            result.updated_node_id = Some(saved.id.to_string());
-        }
-        ProposalAction::DeleteNode => {
-            let target_id = proposal.target_node_id.ok_or((
-                StatusCode::BAD_REQUEST,
-                "proposal missing target_node_id".to_string(),
-            ))?;
-            let existing = state
-                .engine
-                .get_node(target_id)
-                .await
-                .map_err(map_mv_error)?
-                .ok_or((StatusCode::NOT_FOUND, "target node not found".to_string()))?;
-            authorize_namespace(auth, &existing.namespace)?;
-
-            let deleted = state
-                .engine
-                .delete_node(target_id)
-                .await
-                .map_err(map_mv_error)?;
-            if deleted {
-                state.notify_change(&target_id.to_string(), "delete", Some(&existing.namespace));
-                result.deleted_node_id = Some(target_id.to_string());
+        ProposalAction::CreateNode
+        | ProposalAction::UpdateNode
+        | ProposalAction::SuggestTag
+        | ProposalAction::DeleteNode => {
+            // Resolve namespace for creates; for updates/deletes the engine
+            // uses the existing node's namespace.
+            let namespace = if matches!(&proposal.action, ProposalAction::CreateNode) {
+                let payload_ns = proposal
+                    .payload
+                    .get("namespace")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                namespace_for_create(auth, payload_ns, "default")?
             } else {
-                return Err((StatusCode::NOT_FOUND, "target node not found".to_string()));
+                // For update/delete, authorize the existing node's namespace
+                if let Some(target_id) = proposal.target_node_id {
+                    let existing = state
+                        .engine
+                        .get_node(target_id)
+                        .await
+                        .map_err(map_mv_error)?
+                        .ok_or((StatusCode::NOT_FOUND, "target node not found".to_string()))?;
+                    authorize_namespace(auth, &existing.namespace)?;
+                    existing.namespace.clone()
+                } else {
+                    "default".to_string()
+                }
+            };
+
+            if matches!(&proposal.action, ProposalAction::CreateNode) {
+                enforce_namespace_quota(&state.engine, &namespace)
+                    .await
+                    .map_err(map_namespace_quota_error)?;
             }
+
+            let result = state
+                .engine
+                .execute_proposal_action(proposal, &namespace)
+                .await
+                .map_err(map_mv_error)?;
+
+            // Send WebSocket notifications
+            if let Some(id) = result.created_node_id {
+                state.notify_change(&id.to_string(), "create", result.affected_namespace.as_deref());
+            }
+            if let Some(id) = result.updated_node_id {
+                state.notify_change(&id.to_string(), "update", result.affected_namespace.as_deref());
+            }
+            if let Some(id) = result.deleted_node_id {
+                state.notify_change(&id.to_string(), "delete", result.affected_namespace.as_deref());
+            }
+
+            Ok(result)
         }
         ProposalAction::Custom(action) if action == "relay.reply" => {
             let payload_value = serde_json::to_value(&proposal.payload)
@@ -450,19 +266,17 @@ async fn execute_proposal_action(
                 }
             }
 
+            let mut result = ProposalActionResult::default();
             if let Some(node_id) = stored.vault_node_id {
-                result.created_node_id = Some(node_id.to_string());
+                result.created_node_id = Some(node_id);
             }
+            Ok(result)
         }
-        _ => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "proposal action not supported for approval".to_string(),
-            ))
-        }
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            "proposal action not supported for approval".to_string(),
+        )),
     }
-
-    Ok(result)
 }
 
 // --- Handlers ---
@@ -576,40 +390,13 @@ pub async fn submit_proposal(
         proposal = proposal.with_payload(payload);
     }
 
-    // Check auto-approve rules before submitting
-    let rules = state
-        .engine
-        .store
-        .nodes
-        .list_auto_approve_rules()
-        .await
-        .map_err(map_mv_error)?;
-
-    let mut auto_approved = false;
-    for rule in &rules {
-        if !rule.enabled {
-            continue;
-        }
-        // Check sender pattern match
-        if let Some(ref pattern) = rule.sender_pattern {
-            if !glob_match_simple(pattern, &sender_name) {
-                continue;
-            }
-        }
-        // Check action type match
-        if !rule.action_types.is_empty()
-            && !rule.action_types.iter().any(|a| a == action.as_str())
-        {
-            continue;
-        }
-        // Check confidence threshold
-        if proposal.confidence < rule.min_confidence {
-            continue;
-        }
-        // Rule matches — auto-approve
-        auto_approved = allow_auto_approve;
-        break;
-    }
+    // Check auto-approve rules via engine
+    let rules_match = allow_auto_approve
+        && state
+            .engine
+            .check_auto_approve_rules(&sender_name, &action, proposal.confidence)
+            .await
+            .map_err(map_mv_error)?;
 
     state
         .engine
@@ -617,36 +404,18 @@ pub async fn submit_proposal(
         .await
         .map_err(map_mv_error)?;
 
-    if auto_approved {
-        let mut snapshot_data = build_undo_snapshot_data(&state, &auth, &proposal).await?;
+    if rules_match {
+        let snapshot_data = state
+            .engine
+            .build_undo_snapshot(&proposal)
+            .await
+            .map_err(map_mv_error)?;
         let result = execute_proposal_action(&state, &auth, &proposal).await?;
 
-        if let Some(ref mut data) = snapshot_data {
-            if let Some(created_id) = result.created_node_id.as_ref() {
-                data["node_id"] = serde_json::json!(created_id);
-            }
-        } else if let Some(created_id) = result.created_node_id.as_ref() {
-            snapshot_data = Some(serde_json::json!({
-                "action": "create_node",
-                "node_id": created_id
-            }));
-        }
-
         if let Some(snapshot_data) = snapshot_data {
-            let now = Utc::now();
-            let snapshot = UndoSnapshot {
-                id: Uuid::now_v7(),
-                proposal_id: proposal.id,
-                snapshot_data,
-                created_at: now,
-                expires_at: now + Duration::days(7),
-                used: false,
-            };
             state
                 .engine
-                .store
-                .nodes
-                .save_undo_snapshot(&snapshot)
+                .save_proposal_undo(proposal.id, snapshot_data, result.created_node_id)
                 .await
                 .map_err(map_mv_error)?;
         }
@@ -694,35 +463,17 @@ pub async fn approve_proposal(
         .map_err(map_mv_error)?
         .ok_or((StatusCode::NOT_FOUND, "proposal not found".to_string()))?;
 
-    let mut snapshot_data = build_undo_snapshot_data(&state, &auth, &proposal).await?;
+    let snapshot_data = state
+        .engine
+        .build_undo_snapshot(&proposal)
+        .await
+        .map_err(map_mv_error)?;
     let result = execute_proposal_action(&state, &auth, &proposal).await?;
 
-    if let Some(ref mut data) = snapshot_data {
-        if let Some(created_id) = result.created_node_id.as_ref() {
-            data["node_id"] = serde_json::json!(created_id);
-        }
-    } else if let Some(created_id) = result.created_node_id.as_ref() {
-        snapshot_data = Some(serde_json::json!({
-            "action": "create_node",
-            "node_id": created_id
-        }));
-    }
-
     if let Some(snapshot_data) = snapshot_data {
-        let now = Utc::now();
-        let snapshot = UndoSnapshot {
-            id: Uuid::now_v7(),
-            proposal_id: proposal.id,
-            snapshot_data,
-            created_at: now,
-            expires_at: now + Duration::days(7),
-            used: false,
-        };
         state
             .engine
-            .store
-            .nodes
-            .save_undo_snapshot(&snapshot)
+            .save_proposal_undo(proposal.id, snapshot_data, result.created_node_id)
             .await
             .map_err(map_mv_error)?;
     }
@@ -793,107 +544,23 @@ pub async fn undo_proposal(
     let uuid =
         Uuid::parse_str(&id).map_err(|_| (StatusCode::BAD_REQUEST, "invalid uuid".to_string()))?;
 
-    // Retrieve the undo snapshot
-    let snapshot = state
+    // Delegate undo execution to engine
+    let undo_result = state
         .engine
-        .store
-        .nodes
-        .get_undo_snapshot(uuid)
-        .await
-        .map_err(map_mv_error)?
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            "no undo snapshot for this proposal".to_string(),
-        ))?;
-
-    if snapshot.used {
-        return Err((
-            StatusCode::CONFLICT,
-            "undo already applied for this proposal".to_string(),
-        ));
-    }
-
-    if Utc::now() > snapshot.expires_at {
-        return Err((StatusCode::GONE, "undo window has expired".to_string()));
-    }
-
-    // Execute the undo based on snapshot data
-    let action = snapshot
-        .snapshot_data
-        .get("action")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-
-    match action {
-        "create_node" => {
-            // Undo a create by deleting the created node
-            if let Some(node_id_str) = snapshot.snapshot_data.get("node_id").and_then(|v| v.as_str())
-            {
-                if let Ok(node_id) = Uuid::parse_str(node_id_str) {
-                    state
-                        .engine
-                        .delete_node(node_id)
-                        .await
-                        .map_err(map_mv_error)?;
-                    state.notify_change(node_id_str, "undo_delete", None);
-                }
-            }
-        }
-        "update_node" => {
-            // Undo an update by restoring the previous version
-            if let Some(previous) = snapshot.snapshot_data.get("previous") {
-                let node: KnowledgeNode = serde_json::from_value(previous.clone()).map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("failed to deserialize previous node: {e}"),
-                    )
-                })?;
-                authorize_namespace(&auth, &node.namespace)?;
-                let saved = state.engine.update_node(node).await.map_err(map_mv_error)?;
-                state.notify_change(&saved.id.to_string(), "undo_restore", Some(&saved.namespace));
-            }
-        }
-        "delete_node" => {
-            // Undo a delete by re-inserting the node
-            if let Some(node_data) = snapshot.snapshot_data.get("node") {
-                let node: KnowledgeNode =
-                    serde_json::from_value(node_data.clone()).map_err(|e| {
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("failed to deserialize deleted node: {e}"),
-                        )
-                    })?;
-                authorize_namespace(&auth, &node.namespace)?;
-                state.engine.store_node(node).await.map_err(map_mv_error)?;
-            }
-        }
-        _ => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("cannot undo action type: {action}"),
-            ));
-        }
-    }
-
-    // Mark snapshot as used
-    state
-        .engine
-        .store
-        .nodes
-        .mark_undo_used(snapshot.id)
+        .apply_undo_snapshot(uuid)
         .await
         .map_err(map_mv_error)?;
 
     // Log chronicle
     let chronicle = ChronicleEntry::new(
         "exchange.undo",
-        format!("User undid proposal {uuid} (action: {action})"),
+        format!("User undid proposal {uuid} (action: {})", undo_result.action),
     );
     let _ = state.engine.log_chronicle(&chronicle).await;
 
     Ok(Json(serde_json::json!({
         "id": uuid.to_string(),
-        "action": action,
+        "action": undo_result.action,
         "undone": true,
     })))
 }
@@ -1021,14 +688,14 @@ pub async fn batch_proposals(
                 }
             };
 
-            let mut snapshot_data = match build_undo_snapshot_data(&state, &auth, &proposal).await {
+            let snapshot_data = match state.engine.build_undo_snapshot(&proposal).await {
                 Ok(data) => data,
-                Err((_, err)) => {
+                Err(err) => {
                     results.push(BatchProposalResultItem {
                         id: id_str.clone(),
                         success: false,
                         state: None,
-                        error: Some(err),
+                        error: Some(err.to_string()),
                         created_node_id: None,
                         updated_node_id: None,
                         deleted_node_id: None,
@@ -1053,32 +720,10 @@ pub async fn batch_proposals(
                 }
             };
 
-            if let Some(ref mut data) = snapshot_data {
-                if let Some(created_id) = exec_result.created_node_id.as_ref() {
-                    data["node_id"] = serde_json::json!(created_id);
-                }
-            } else if let Some(created_id) = exec_result.created_node_id.as_ref() {
-                snapshot_data = Some(serde_json::json!({
-                    "action": "create_node",
-                    "node_id": created_id
-                }));
-            }
-
             if let Some(snapshot_data) = snapshot_data {
-                let now = Utc::now();
-                let snapshot = UndoSnapshot {
-                    id: Uuid::now_v7(),
-                    proposal_id: uuid,
-                    snapshot_data,
-                    created_at: now,
-                    expires_at: now + Duration::days(7),
-                    used: false,
-                };
                 if let Err(err) = state
                     .engine
-                    .store
-                    .nodes
-                    .save_undo_snapshot(&snapshot)
+                    .save_proposal_undo(uuid, snapshot_data, exec_result.created_node_id)
                     .await
                 {
                     results.push(BatchProposalResultItem {
@@ -1101,9 +746,9 @@ pub async fn batch_proposals(
             Ok(true) => {
                 let (created_node_id, updated_node_id, deleted_node_id) = match action_result {
                     Some(result) => (
-                        result.created_node_id,
-                        result.updated_node_id,
-                        result.deleted_node_id,
+                        result.created_node_id.map(|id| id.to_string()),
+                        result.updated_node_id.map(|id| id.to_string()),
+                        result.deleted_node_id.map(|id| id.to_string()),
                     ),
                     None => (None, None, None),
                 };
@@ -1169,37 +814,7 @@ mod tests {
     use super::*;
     use crate::auth::AuthContext;
 
-    // --- glob_match_simple tests ---
-
-    #[test]
-    fn glob_wildcard_matches_everything() {
-        assert!(glob_match_simple("*", "anything"));
-        assert!(glob_match_simple("*", ""));
-    }
-
-    #[test]
-    fn glob_prefix_wildcard_matches_suffix() {
-        assert!(glob_match_simple("*@example.com", "user@example.com"));
-        assert!(!glob_match_simple("*@example.com", "user@other.com"));
-    }
-
-    #[test]
-    fn glob_suffix_wildcard_matches_prefix() {
-        assert!(glob_match_simple("mcp-*", "mcp-agent"));
-        assert!(!glob_match_simple("mcp-*", "other-agent"));
-    }
-
-    #[test]
-    fn glob_exact_match() {
-        assert!(glob_match_simple("exact", "exact"));
-        assert!(!glob_match_simple("exact", "different"));
-    }
-
-    #[test]
-    fn glob_empty_pattern_only_matches_empty() {
-        assert!(glob_match_simple("", ""));
-        assert!(!glob_match_simple("", "notempty"));
-    }
+    // glob_match_simple tests moved to mv-engine crate
 
     // --- resolve_sender_context tests ---
 
