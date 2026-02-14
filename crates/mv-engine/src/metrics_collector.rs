@@ -65,6 +65,12 @@ pub struct MetricsCollector {
     histograms: Arc<RwLock<HashMap<String, Vec<f64>>>>,
 }
 
+impl Default for MetricsCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetricsCollector {
     pub fn new() -> Self {
         Self {

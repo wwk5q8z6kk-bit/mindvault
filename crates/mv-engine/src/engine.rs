@@ -9,7 +9,6 @@ use mv_core::credentials::CredentialStore;
 use mv_core::*;
 use mv_graph::store::SqliteGraphStore;
 use mv_index::tantivy_index::TantivyFullTextIndex;
-use mv_storage::sealed_runtime::{clear_runtime_root_key, set_sealed_mode_enabled};
 use mv_storage::unified::UnifiedStore;
 use mv_storage::vault_crypto::VaultCrypto;
 use mv_storage::vector::{KnowledgeVaultIndexNoteEmbeddingFastembedLocalEmbedder, OpenAiEmbedder};
@@ -148,17 +147,17 @@ struct EmbeddingProviderSelection {
 
 /// The MindVault engine — orchestrates storage, indexing, and search.
 pub struct MindVaultEngine {
-    pub ingest: IngestPipeline,
+    pub(crate) ingest: IngestPipeline,
     pub recall: RecallPipeline,
     pub store: Arc<UnifiedStore>,
-    pub fts: Arc<TantivyFullTextIndex>,
+    pub(crate) fts: Arc<TantivyFullTextIndex>,
     pub graph: Arc<SqliteGraphStore>,
     pub config: EngineConfig,
     pub credential_store: Arc<CredentialStore>,
     pub keychain: Arc<crate::keychain::KeychainEngine>,
     pub llm: Option<Arc<dyn LlmProvider>>,
     pub proactive: Arc<crate::proactive::ProactiveEngine>,
-    pub enrichment: Option<crate::enrichment::EnrichmentPipeline>,
+    pub(crate) enrichment: Option<crate::enrichment::EnrichmentPipeline>,
     pub reflection: crate::reflection::ReflectionEngine,
     pub autonomy: crate::autonomy::AutonomyGate,
     pub relay: crate::relay::RelayEngine,
@@ -174,9 +173,6 @@ pub struct MindVaultEngine {
 impl MindVaultEngine {
     /// Initialize the engine from configuration.
     pub async fn init(config: EngineConfig) -> MvResult<Self> {
-        set_sealed_mode_enabled(config.sealed_mode);
-        clear_runtime_root_key();
-
         let data_dir = PathBuf::from(&config.data_dir);
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| MvError::Storage(format!("create data dir: {e}")))?;
@@ -217,7 +213,9 @@ impl MindVaultEngine {
         let selection = select_embedding_provider(&config, &credential_store);
 
         // Initialize unified store
-        let mut store = UnifiedStore::open(&data_dir, selection.vector_dimensions).await?;
+        let mut store =
+            UnifiedStore::open_with_mode(&data_dir, selection.vector_dimensions, config.sealed_mode)
+                .await?;
         if let Some(embedder) = selection.embedder {
             store = store.with_embedder(embedder);
         }
@@ -229,7 +227,10 @@ impl MindVaultEngine {
         } else {
             data_dir.join("tantivy")
         };
-        let fts = Arc::new(TantivyFullTextIndex::open(&tantivy_path)?);
+        let fts = Arc::new(TantivyFullTextIndex::open_with_mode(
+            &tantivy_path,
+            config.sealed_mode,
+        )?);
 
         // Initialize graph store (shares SQLite connection via separate connection)
         let graph_conn = rusqlite::Connection::open(data_dir.join("mindvault.sqlite"))
@@ -316,6 +317,8 @@ impl MindVaultEngine {
         Ok(engine)
     }
 
+    // ── Initialization & Sealed-Mode Lifecycle ─────────────────────
+
     pub async fn rebuild_runtime_indexes(&self) -> MvResult<()> {
         if !self.config.sealed_mode {
             return Ok(());
@@ -323,6 +326,7 @@ impl MindVaultEngine {
         if !self.keychain.is_unsealed_sync() {
             return Err(MvError::VaultSealed);
         }
+        self.keychain.sync_runtime_storage_key().await?;
 
         let nodes = self
             .store
@@ -429,6 +433,7 @@ impl MindVaultEngine {
         if !self.keychain.is_unsealed_sync() {
             return Err(MvError::VaultSealed);
         }
+        self.keychain.sync_runtime_storage_key().await?;
 
         let nodes = self
             .store
@@ -463,9 +468,12 @@ impl MindVaultEngine {
         self.config.sealed_mode && !self.keychain.is_unsealed_sync()
     }
 
-    fn ensure_unsealed_for_node_io(&self) -> MvResult<()> {
+    async fn ensure_unsealed_for_node_io(&self) -> MvResult<()> {
         if self.is_sealed() {
             return Err(MvError::VaultSealed);
+        }
+        if self.config.sealed_mode {
+            self.keychain.sync_runtime_storage_key().await?;
         }
         Ok(())
     }
@@ -546,6 +554,8 @@ impl MindVaultEngine {
         Ok(())
     }
 
+    // ── Permission Templates & Access Keys ─────────────────────────
+
     pub async fn list_permission_templates(
         &self,
         limit: usize,
@@ -557,6 +567,7 @@ impl MindVaultEngine {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_permission_template(
         &self,
         name: String,
@@ -587,6 +598,7 @@ impl MindVaultEngine {
         Ok(template)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_permission_template(
         &self,
         template_id: Uuid,
@@ -664,6 +676,8 @@ impl MindVaultEngine {
         Ok((access_key, token))
     }
 
+    // ── Public Shares ────────────────────────────────────────────────
+
     pub async fn create_public_share(
         &self,
         node_id: Uuid,
@@ -740,6 +754,8 @@ impl MindVaultEngine {
         Ok(Some((share, node)))
     }
 
+    // ── Node Comments ────────────────────────────────────────────────
+
     pub async fn create_node_comment(
         &self,
         node_id: Uuid,
@@ -794,6 +810,9 @@ impl MindVaultEngine {
         self.store.nodes.delete_comment(comment_id).await
     }
 
+    // ── MCP Connectors ───────────────────────────────────────────────
+
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_mcp_connector(
         &self,
         name: String,
@@ -894,6 +913,8 @@ impl MindVaultEngine {
 
         Ok(Some((key, template)))
     }
+
+    // ── Google Calendar Sync ──────────────────────────────────────────
 
     pub async fn sync_google_calendar(&self) -> MvResult<GoogleCalendarSyncReport> {
         let config = &self.config.google_calendar;
@@ -1206,7 +1227,7 @@ impl MindVaultEngine {
     ///
     /// Returns `PolicyDecision::Allow` with TTL/scopes or `PolicyDecision::Deny` with reason.
     /// Default deny: no matching policy means deny.
-    pub async fn check_policy(&self, secret_key: &str, consumer: &str) -> MvResult<PolicyDecision> {
+    pub(crate) async fn check_policy(&self, secret_key: &str, consumer: &str) -> MvResult<PolicyDecision> {
         let policy = self
             .store
             .nodes
@@ -1222,13 +1243,13 @@ impl MindVaultEngine {
             Some(p) => {
                 if !p.allowed {
                     return Ok(PolicyDecision::Deny {
-                        reason: format!("policy explicitly denies access"),
+                        reason: "policy explicitly denies access".to_string(),
                     });
                 }
 
                 if p.is_expired() {
                     return Ok(PolicyDecision::Deny {
-                        reason: format!("policy has expired"),
+                        reason: "policy has expired".to_string(),
                     });
                 }
 
@@ -1264,12 +1285,12 @@ impl MindVaultEngine {
     // ── Proxy Audit ─────────────────────────────────────────────────
 
     /// Log a proxy audit entry.
-    pub async fn log_proxy_audit(&self, entry: &ProxyAuditEntry) -> MvResult<()> {
+    pub(crate) async fn log_proxy_audit(&self, entry: &ProxyAuditEntry) -> MvResult<()> {
         self.store.nodes.log_proxy_audit(entry).await
     }
 
     /// Update a proxy audit entry with execution results.
-    pub async fn update_proxy_audit(
+    pub(crate) async fn update_proxy_audit(
         &self,
         id: Uuid,
         success: bool,
@@ -1299,7 +1320,7 @@ impl MindVaultEngine {
     // ── Proxy Approvals ─────────────────────────────────────────────
 
     /// Create a new approval request.
-    pub async fn create_approval(&self, request: &ApprovalRequest) -> MvResult<()> {
+    pub(crate) async fn create_approval(&self, request: &ApprovalRequest) -> MvResult<()> {
         self.store.nodes.create_approval(request).await
     }
 
@@ -1336,7 +1357,7 @@ impl MindVaultEngine {
     }
 
     /// Find an active (approved, non-expired) approval for a consumer+secret pair.
-    pub async fn find_active_approval(
+    pub(crate) async fn find_active_approval(
         &self,
         consumer: &str,
         secret_key: &str,
@@ -1431,9 +1452,11 @@ impl MindVaultEngine {
         Ok(updated)
     }
 
+    // ── Node CRUD & Search ────────────────────────────────────────────
+
     /// Store a knowledge node.
     pub async fn store_node(&self, node: KnowledgeNode) -> MvResult<KnowledgeNode> {
-        self.ensure_unsealed_for_node_io()?;
+        self.ensure_unsealed_for_node_io().await?;
         let stored = self.ingest.ingest(node).await?;
         self.auto_link_node_to_daily_note_best_effort(&stored).await;
         self.auto_backlink_node_references_best_effort(&stored)
@@ -1442,20 +1465,22 @@ impl MindVaultEngine {
     }
 
     /// Store a node with relationships.
-    pub async fn store_with_relations(
+    pub(crate) async fn store_with_relations(
         &self,
         node: KnowledgeNode,
         relations: Vec<Relationship>,
     ) -> MvResult<KnowledgeNode> {
-        self.ensure_unsealed_for_node_io()?;
+        self.ensure_unsealed_for_node_io().await?;
         self.ingest.ingest_with_relations(node, relations).await
     }
 
     /// Recall knowledge matching a query.
     pub async fn recall(&self, query: &MemoryQuery) -> MvResult<Vec<SearchResult>> {
-        self.ensure_unsealed_for_node_io()?;
+        self.ensure_unsealed_for_node_io().await?;
         self.recall.recall(query).await
     }
+
+    // ── Relay & Messaging ─────────────────────────────────────────────
 
     /// Receive a relay message and optionally generate an auto-reply or proposal.
     pub async fn receive_relay_message(
@@ -1731,13 +1756,13 @@ impl MindVaultEngine {
 
     /// Get a node by ID.
     pub async fn get_node(&self, id: uuid::Uuid) -> MvResult<Option<KnowledgeNode>> {
-        self.ensure_unsealed_for_node_io()?;
+        self.ensure_unsealed_for_node_io().await?;
         self.store.nodes.get(id).await
     }
 
     /// Update an existing node.
     pub async fn update_node(&self, node: KnowledgeNode) -> MvResult<KnowledgeNode> {
-        self.ensure_unsealed_for_node_io()?;
+        self.ensure_unsealed_for_node_io().await?;
         let updated = self.ingest.update(node).await?;
         self.auto_link_node_to_daily_note_best_effort(&updated)
             .await;
@@ -1748,7 +1773,7 @@ impl MindVaultEngine {
 
     /// Delete a node.
     pub async fn delete_node(&self, id: uuid::Uuid) -> MvResult<bool> {
-        self.ensure_unsealed_for_node_io()?;
+        self.ensure_unsealed_for_node_io().await?;
         self.ingest.delete(id).await
     }
 
@@ -1759,17 +1784,19 @@ impl MindVaultEngine {
         limit: usize,
         offset: usize,
     ) -> MvResult<Vec<KnowledgeNode>> {
-        self.ensure_unsealed_for_node_io()?;
+        self.ensure_unsealed_for_node_io().await?;
         self.store.nodes.list(filters, limit, offset).await
     }
 
     /// Return the daily note for a specific day/namespace if present.
+    // ── Daily Notes & Recurrence ──────────────────────────────────────
+
     pub async fn find_daily_note(
         &self,
         date: NaiveDate,
         namespace: &str,
     ) -> MvResult<Option<KnowledgeNode>> {
-        self.ensure_unsealed_for_node_io()?;
+        self.ensure_unsealed_for_node_io().await?;
         let filters = QueryFilters {
             namespace: Some(namespace.to_string()),
             tags: Some(vec![daily_note_day_tag(date)]),
@@ -2058,6 +2085,8 @@ impl MindVaultEngine {
 
         Ok(stats)
     }
+
+    // ── Task Intelligence (Due Tasks, Prioritization, Reminders) ────
 
     /// List due tasks up to `due_before`.
     pub async fn list_due_tasks(
@@ -2461,6 +2490,8 @@ impl MindVaultEngine {
 
         Ok(stats)
     }
+
+    // ── Graph & Relationships ─────────────────────────────────────────
 
     /// Add a relationship between nodes.
     pub async fn add_relationship(&self, rel: Relationship) -> MvResult<()> {
@@ -2869,6 +2900,8 @@ impl MindVaultEngine {
         self.store.nodes.set_trust_model(model).await
     }
 
+    // ── Chronicle & Audit Trail ───────────────────────────────────────
+
     /// List chronicle entries with optional node filter.
     pub async fn list_chronicles(
         &self,
@@ -2895,12 +2928,12 @@ impl MindVaultEngine {
     }
 
     /// Get acceptance rate for an intent type. Returns (total, applied).
-    pub async fn get_acceptance_rate(&self, intent_type: &str) -> MvResult<(usize, usize)> {
+    pub(crate) async fn get_acceptance_rate(&self, intent_type: &str) -> MvResult<(usize, usize)> {
         self.store.nodes.get_acceptance_rate(intent_type).await
     }
 
     /// Get confidence override for an intent type.
-    pub async fn get_confidence_override(
+    pub(crate) async fn get_confidence_override(
         &self,
         intent_type: &str,
     ) -> MvResult<Option<ConfidenceOverride>> {
@@ -2976,7 +3009,7 @@ impl MindVaultEngine {
         self.store.nodes.count_proposals(state).await
     }
 
-    pub async fn expire_proposals(&self, before: DateTime<Utc>) -> MvResult<usize> {
+    pub(crate) async fn expire_proposals(&self, before: DateTime<Utc>) -> MvResult<usize> {
         self.store.nodes.expire_proposals(before).await
     }
 }

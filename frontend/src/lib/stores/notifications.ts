@@ -2,27 +2,27 @@ import { get } from 'svelte/store';
 import { tasksStore } from './tasks';
 import { pushToast } from './toast';
 import { dispatchQuickCapture, type QuickCaptureMode, type QuickCaptureTarget } from '$lib/capture/quick-capture';
+import { STORAGE_KEYS } from '$lib/constants/storage-keys';
 
 let checkInterval: ReturnType<typeof setInterval> | null = null;
 let notifiedIds = new Set<string>();
-const NOTIFICATION_CLICK_ACTION_STORAGE_KEY = 'mv_notification_click_action';
 
 export type NotificationClickAction = 'none' | 'inbox' | 'daily' | 'planned' | 'review';
 
 function isEnabled(): boolean {
-	return localStorage.getItem('mv_feature_notifications') !== 'false';
+	return localStorage.getItem(STORAGE_KEYS.FEATURE_NOTIFICATIONS) !== 'false';
 }
 
 function getLeadMinutes(): number {
-	return parseInt(localStorage.getItem('mv_notification_lead_minutes') ?? '30', 10);
+	return parseInt(localStorage.getItem(STORAGE_KEYS.NOTIFICATION_LEAD_MINUTES) ?? '30', 10);
 }
 
 function getCheckIntervalMs(): number {
-	return parseInt(localStorage.getItem('mv_notification_check_interval') ?? '60000', 10);
+	return parseInt(localStorage.getItem(STORAGE_KEYS.NOTIFICATION_CHECK_INTERVAL) ?? '60000', 10);
 }
 
 export function getNotificationClickAction(): NotificationClickAction {
-	const stored = localStorage.getItem(NOTIFICATION_CLICK_ACTION_STORAGE_KEY);
+	const stored = localStorage.getItem(STORAGE_KEYS.NOTIFICATION_CLICK_ACTION);
 	if (
 		stored === 'none' ||
 		stored === 'daily' ||

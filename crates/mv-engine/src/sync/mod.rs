@@ -266,12 +266,12 @@ impl SyncEngine {
 
     /// Last successful export timestamp.
     pub async fn last_export(&self) -> Option<DateTime<Utc>> {
-        self.last_export.read().await.clone()
+        *self.last_export.read().await
     }
 
     /// Last successful import timestamp.
     pub async fn last_import(&self) -> Option<DateTime<Utc>> {
-        self.last_import.read().await.clone()
+        *self.last_import.read().await
     }
 
     /// Get the current vector clock state.

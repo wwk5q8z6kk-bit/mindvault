@@ -111,6 +111,7 @@ enum Commands {
     },
 
     /// Server management
+    #[cfg(feature = "server")]
     Server {
         #[command(subcommand)]
         action: ServerAction,
@@ -175,6 +176,7 @@ enum Commands {
     },
 
     /// Start the MCP (Model Context Protocol) server on stdio
+    #[cfg(feature = "server")]
     Mcp {
         /// Access key for scoped MCP access (or set MINDVAULT_MCP_ACCESS_KEY)
         #[arg(long)]
@@ -317,6 +319,7 @@ enum GraphAction {
     },
 }
 
+#[cfg(feature = "server")]
 #[derive(Subcommand)]
 enum ServerAction {
     /// Start the server
@@ -754,6 +757,7 @@ async fn main() -> Result<()> {
             dry_run,
         } => commands::import::run(from, path, namespace, dry_run, &cli.config).await,
 
+        #[cfg(feature = "server")]
         Commands::Server { action } => match action {
             ServerAction::Start {
                 port,
@@ -1003,6 +1007,7 @@ async fn main() -> Result<()> {
             KeychainAction::ShamirStatus => commands::keychain::shamir_status(&cli.config).await,
         },
 
+        #[cfg(feature = "server")]
         Commands::Mcp {
             access_key,
             allow_unscoped,

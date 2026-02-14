@@ -28,18 +28,10 @@ use crate::state::AppState;
 fn map_keychain_error(err: MvError) -> (StatusCode, String) {
     match &err {
         MvError::VaultSealed => (StatusCode::LOCKED, err.to_string()),
-        MvError::Keychain(msg) if msg.contains("not found") => {
-            (StatusCode::NOT_FOUND, err.to_string())
-        }
-        MvError::Keychain(msg) if msg.contains("not initialized") => {
-            (StatusCode::PRECONDITION_FAILED, err.to_string())
-        }
-        MvError::Keychain(msg) if msg.contains("invalid password") => {
-            (StatusCode::UNAUTHORIZED, err.to_string())
-        }
-        MvError::Keychain(msg) if msg.contains("already initialized") => {
-            (StatusCode::CONFLICT, err.to_string())
-        }
+        MvError::KeychainNotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
+        MvError::KeychainNotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
+        MvError::KeychainInvalidPassword => (StatusCode::UNAUTHORIZED, err.to_string()),
+        MvError::KeychainAlreadyInitialized => (StatusCode::CONFLICT, err.to_string()),
         MvError::Keychain(_) => (StatusCode::BAD_REQUEST, err.to_string()),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
@@ -153,11 +145,7 @@ async fn run_post_unseal_maintenance(
         let err = MvError::Storage("post-unseal migrate failpoint triggered".into());
         get_metrics().incr_vault_migration_failure();
         let reason = format!("post_unseal_migrate_failed:{err}");
-        if let Err(rate_limited) =
-            log_and_record_unseal_failure(state, subject, method, reason.as_str()).await
-        {
-            return Err(rate_limited);
-        }
+        log_and_record_unseal_failure(state, subject, method, reason.as_str()).await?;
         let _ = state.engine.keychain.seal("system").await;
         return Err(map_keychain_error(err));
     }
@@ -165,11 +153,7 @@ async fn run_post_unseal_maintenance(
     if let Err(err) = state.engine.migrate_sealed_storage().await {
         get_metrics().incr_vault_migration_failure();
         let reason = format!("post_unseal_migrate_failed:{err}");
-        if let Err(rate_limited) =
-            log_and_record_unseal_failure(state, subject, method, reason.as_str()).await
-        {
-            return Err(rate_limited);
-        }
+        log_and_record_unseal_failure(state, subject, method, reason.as_str()).await?;
         let _ = state.engine.keychain.seal("system").await;
         return Err(map_keychain_error(err));
     }
@@ -179,11 +163,7 @@ async fn run_post_unseal_maintenance(
         let err = MvError::Storage("post-unseal rebuild failpoint triggered".into());
         get_metrics().incr_vault_rebuild_failure();
         let reason = format!("post_unseal_rebuild_failed:{err}");
-        if let Err(rate_limited) =
-            log_and_record_unseal_failure(state, subject, method, reason.as_str()).await
-        {
-            return Err(rate_limited);
-        }
+        log_and_record_unseal_failure(state, subject, method, reason.as_str()).await?;
         let _ = state.engine.keychain.seal("system").await;
         return Err(map_keychain_error(err));
     }
@@ -191,11 +171,7 @@ async fn run_post_unseal_maintenance(
     if let Err(err) = state.engine.rebuild_runtime_indexes().await {
         get_metrics().incr_vault_rebuild_failure();
         let reason = format!("post_unseal_rebuild_failed:{err}");
-        if let Err(rate_limited) =
-            log_and_record_unseal_failure(state, subject, method, reason.as_str()).await
-        {
-            return Err(rate_limited);
-        }
+        log_and_record_unseal_failure(state, subject, method, reason.as_str()).await?;
         let _ = state.engine.keychain.seal("system").await;
         return Err(map_keychain_error(err));
     }
@@ -422,11 +398,7 @@ pub async fn unseal_vault(
         }
         Err(err) => {
             let reason = err.to_string();
-            if let Err(rate_limited) =
-                log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
-            {
-                return Err(rate_limited);
-            }
+            log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await?;
             return Err(map_keychain_error(err));
         }
     }
@@ -1056,11 +1028,7 @@ pub async fn shamir_unseal(
     enforce_unseal_failure_backoff(&state, subject, method).await?;
     if let Err(err) = state.engine.keychain.unseal_from_shares(subject).await {
         let reason = err.to_string();
-        if let Err(rate_limited) =
-            log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
-        {
-            return Err(rate_limited);
-        }
+        log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await?;
         return Err(map_keychain_error(err));
     }
     run_post_unseal_maintenance(&state, subject, method).await?;

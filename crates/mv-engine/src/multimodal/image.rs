@@ -70,6 +70,17 @@ const DEFAULT_CLIP_MIN_SIMILARITY: f32 = 0.24;
 const DEFAULT_CLIP_TOP_K: usize = 3;
 
 #[cfg(feature = "image-embeddings")]
+type ClipStatusDetails = (
+    bool,
+    Option<String>,
+    Option<String>,
+    usize,
+    f32,
+    usize,
+    String,
+);
+
+#[cfg(feature = "image-embeddings")]
 static CLIP_TAGGER_STATE: OnceLock<ClipTaggerState> = OnceLock::new();
 
 #[cfg(feature = "image-embeddings")]
@@ -277,8 +288,7 @@ fn clip_enabled() -> bool {
 }
 
 #[cfg(feature = "image-embeddings")]
-fn clip_status_details() -> Option<(bool, Option<String>, Option<String>, usize, f32, usize, String)>
-{
+fn clip_status_details() -> Option<ClipStatusDetails> {
     let state = CLIP_TAGGER_STATE.get_or_init(ClipTaggerState::from_env);
     match state {
         ClipTaggerState::Ready(tagger) => Some((
@@ -366,6 +376,12 @@ fn cosine_similarity(a: &[f32], b: &[f32], norm_a: f32) -> f32 {
     }
 }
 
+impl Default for ImageProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ImageProcessor {
     pub fn new() -> Self {
         Self
@@ -398,13 +414,12 @@ fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
         }
         let marker = data[i + 1];
         // SOF0 (0xC0) or SOF2 (0xC2) contain dimensions
-        if marker == 0xC0 || marker == 0xC2 {
-            if i + 9 <= data.len() {
+        if (marker == 0xC0 || marker == 0xC2)
+            && i + 9 <= data.len() {
                 let h = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
                 let w = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
                 return Some((w, h));
             }
-        }
         if i + 3 < data.len() {
             let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
             if len == 0 {
@@ -536,7 +551,7 @@ impl ModalityProcessor for ImageProcessor {
     async fn process(&self, file_path: &str, node: &KnowledgeNode) -> MvResult<ProcessingResult> {
         tracing::info!(file_path, "Processing image file");
 
-        let file_size = check_file_size(file_path).map_err(|e| MvError::Storage(e))?;
+        let file_size = check_file_size(file_path).map_err(MvError::Storage)?;
 
         let path = Path::new(file_path);
         let file_name = path

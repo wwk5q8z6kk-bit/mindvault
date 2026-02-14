@@ -32,11 +32,11 @@ sha2 = { workspace = true }
 hkdf = { workspace = true }
 hmac = { workspace = true }
 sharks = { workspace = true }
-aes-gcm = "0.10"
-argon2 = "0.5"
-rand = "0.8"
-zeroize = { version = "1", features = ["derive"] }
-base64 = "0.22"
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }
+base64 = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]

@@ -1,7 +1,8 @@
 import { writable, derived } from 'svelte/store';
 import { browser } from '$app/environment';
+import { STORAGE_KEYS } from '$lib/constants/storage-keys';
 
-const STORAGE_KEY = 'mv_onboarding';
+const STORAGE_KEY = STORAGE_KEYS.ONBOARDING;
 
 export type OnboardingStep =
 	| 'welcome'

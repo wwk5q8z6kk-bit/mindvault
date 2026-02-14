@@ -242,7 +242,7 @@ async fn execute_proposal_action(
                 payload.importance,
                 payload.metadata.as_ref(),
             )
-            .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+            .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
             let namespace = namespace_for_create(auth, payload.namespace, "default")?;
             enforce_namespace_quota(&state.engine, &namespace)
@@ -344,7 +344,7 @@ async fn execute_proposal_action(
                 Some(updated.importance),
                 Some(&updated.metadata),
             )
-            .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+            .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
             updated.tags = tags;
             let saved = state

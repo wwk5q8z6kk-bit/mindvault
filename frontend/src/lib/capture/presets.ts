@@ -4,8 +4,9 @@ import {
 	type QuickCaptureMode,
 	type QuickCaptureTarget
 } from './quick-capture';
+import { STORAGE_KEYS } from '$lib/constants/storage-keys';
 
-export const CAPTURE_PRESETS_STORAGE_KEY = 'mv_quick_capture_presets_v1';
+export const CAPTURE_PRESETS_STORAGE_KEY = STORAGE_KEYS.CAPTURE_PRESETS;
 
 export type CapturePresetShortcut = 'none' | '1' | '2' | '3' | '4' | '5';
 

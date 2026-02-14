@@ -126,7 +126,7 @@ pub async fn proxy_http(
 
     // Input validation
     if let Err(e) = validate_http_proxy_request(&req) {
-        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: e })).into_response();
+        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: e.to_string() })).into_response();
     }
 
     // Per-consumer per-secret rate limiting
@@ -188,7 +188,7 @@ pub async fn proxy_exec(
 
     // Input validation
     if let Err(e) = validate_exec_proxy_request(&req) {
-        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: e })).into_response();
+        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: e.to_string() })).into_response();
     }
 
     // Per-consumer rate limiting (use first secret_ref for key)

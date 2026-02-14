@@ -110,14 +110,75 @@ let syncTimer: ReturnType<typeof setInterval> | null = null;
 export async function loadTasks(): Promise<void> {
 	try {
 		const ns = get(activeNamespace);
-		const items = await listTasks(undefined, ns);
+		const remoteItems = await listTasks(undefined, ns);
+		const localItems = await db.tasks.toArray();
+		const merged = mergeWithConflictDetection(localItems, remoteItems);
 		await db.tasks.clear();
-		await db.tasks.bulkPut(items);
-		tasksStore.set(items);
+		await db.tasks.bulkPut(merged);
+		tasksStore.set(merged);
 	} catch {
 		const cached = await db.tasks.toArray();
 		tasksStore.set(cached);
 	}
+}
+
+/**
+ * Merge remote tasks with local tasks using last-write-wins on updated_at.
+ * Local-only tasks (not yet synced) are always preserved.
+ * For tasks that exist both locally and remotely:
+ *   - remote.updated_at > local.updated_at → accept remote
+ *   - local.updated_at >= remote.updated_at → keep local, queue for sync
+ */
+export function mergeWithConflictDetection(
+	localItems: TaskRecord[],
+	remoteItems: TaskRecord[]
+): TaskRecord[] {
+	const localMap = new Map<string, TaskRecord>();
+	for (const item of localItems) {
+		localMap.set(item.id, item);
+	}
+
+	const merged: TaskRecord[] = [];
+	const seen = new Set<string>();
+
+	// Process remote items, comparing against local
+	for (const remote of remoteItems) {
+		seen.add(remote.id);
+		const local = localMap.get(remote.id);
+
+		if (!local || !local.pending) {
+			// No local version or local is not pending — accept remote
+			merged.push(remote);
+			continue;
+		}
+
+		// Local has pending changes — compare timestamps
+		const remoteTime = Date.parse(remote.updated_at);
+		const localTime = Date.parse(local.updated_at);
+
+		if (remoteTime > localTime) {
+			// Remote is newer — accept remote, discard local pending changes
+			console.warn(
+				`[sync] conflict on task "${local.title}" (${local.id}): remote wins (remote=${remote.updated_at}, local=${local.updated_at})`
+			);
+			merged.push(remote);
+		} else {
+			// Local is same age or newer — keep local, it will sync on next queue flush
+			console.warn(
+				`[sync] conflict on task "${local.title}" (${local.id}): local wins (local=${local.updated_at}, remote=${remote.updated_at})`
+			);
+			merged.push(local);
+		}
+	}
+
+	// Preserve local-only tasks that don't exist on remote
+	for (const local of localItems) {
+		if (!seen.has(local.id) && local.localOnly) {
+			merged.push(local);
+		}
+	}
+
+	return merged;
 }
 
 export async function createTaskOptimistic(payload: TaskCreatePayload): Promise<Task | TaskRecord> {
@@ -447,4 +508,11 @@ export function startSyncLoop() {
 	}, ONLINE_PING_MS);
 	window.addEventListener('online', () => void syncQueue());
 	void syncQueue();
+}
+
+export function stopSyncLoop() {
+	if (syncTimer) {
+		clearInterval(syncTimer);
+		syncTimer = null;
+	}
 }

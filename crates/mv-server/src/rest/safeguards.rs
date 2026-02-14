@@ -235,7 +235,7 @@ pub async fn update_auto_approve_rule(
         rule.action_types = actions;
     }
     if let Some(confidence) = req.min_confidence {
-        if confidence < 0.0 || confidence > 1.0 {
+        if !(0.0..=1.0).contains(&confidence) {
             return Err((
                 StatusCode::BAD_REQUEST,
                 "min_confidence must be between 0.0 and 1.0".to_string(),

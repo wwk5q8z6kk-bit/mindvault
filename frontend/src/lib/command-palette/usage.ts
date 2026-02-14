@@ -1,4 +1,6 @@
-const STORAGE_KEY = 'mindvault.commandPalette.usage';
+import { STORAGE_KEYS } from '$lib/constants/storage-keys';
+
+const STORAGE_KEY = STORAGE_KEYS.COMMAND_PALETTE_USAGE;
 
 type UsageEntry = { count: number; lastUsed: number };
 

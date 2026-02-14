@@ -15,7 +15,7 @@ use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy};
 use uuid::Uuid;
 
 use mv_core::*;
-use mv_storage::sealed_runtime::{runtime_root_key, sealed_mode_enabled};
+use mv_storage::sealed_runtime::{runtime_root_key_for_scope, runtime_scope_from_parent};
 use mv_storage::vault_crypto::VaultCrypto;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -32,8 +32,8 @@ fn io_other(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())
 }
 
-fn derive_tantivy_kek() -> MvResult<[u8; 32]> {
-    let root = runtime_root_key().ok_or(MvError::VaultSealed)?;
+fn derive_tantivy_kek(runtime_scope: &str) -> MvResult<[u8; 32]> {
+    let root = runtime_root_key_for_scope(runtime_scope).ok_or(MvError::VaultSealed)?;
     let mut crypto = VaultCrypto::new();
     crypto.set_master_key(Zeroizing::new(root));
     let key = crypto
@@ -120,13 +120,13 @@ impl std::fmt::Debug for EncryptedTantivyDirectory {
 }
 
 impl EncryptedTantivyDirectory {
-    fn open(root: &Path) -> MvResult<Self> {
+    fn open(root: &Path, runtime_scope: String) -> MvResult<Self> {
         std::fs::create_dir_all(root)
             .map_err(|err| MvError::Index(format!("create sealed tantivy dir: {err}")))?;
 
         Ok(Self {
             root: root.to_path_buf(),
-            kek: derive_tantivy_kek()?,
+            kek: derive_tantivy_kek(&runtime_scope)?,
             watch_callbacks: Arc::new(WatchCallbackList::default()),
         })
     }
@@ -301,16 +301,21 @@ pub struct TantivyFullTextIndex {
 
 impl TantivyFullTextIndex {
     pub fn open(path: &Path) -> MvResult<Self> {
+        Self::open_with_mode(path, false)
+    }
+
+    pub fn open_with_mode(path: &Path, sealed_mode: bool) -> MvResult<Self> {
         std::fs::create_dir_all(path)
             .map_err(|e| MvError::Index(format!("create index dir: {e}")))?;
 
-        if sealed_mode_enabled() {
-            if runtime_root_key().is_none() {
+        if sealed_mode {
+            let runtime_scope = runtime_scope_from_parent(path);
+            if runtime_root_key_for_scope(&runtime_scope).is_none() {
                 // Startup in sealed mode occurs before an explicit unseal step, so
                 // an in-memory index is required until runtime key material exists.
                 return Self::open_in_memory();
             }
-            let dir = EncryptedTantivyDirectory::open(path)?;
+            let dir = EncryptedTantivyDirectory::open(path, runtime_scope)?;
             return Self::open_with_dir(dir);
         }
 
@@ -463,9 +468,7 @@ impl FullTextIndex for TantivyFullTextIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mv_storage::sealed_runtime::{
-        clear_runtime_root_key, set_runtime_root_key, set_sealed_mode_enabled,
-    };
+    use mv_storage::sealed_runtime::{clear_runtime_root_key, set_runtime_root_key};
     use tempfile::tempdir;
     use uuid::Uuid;
 
@@ -474,7 +477,6 @@ mod tests {
     impl Drop for SealedRuntimeReset {
         fn drop(&mut self) {
             clear_runtime_root_key();
-            set_sealed_mode_enabled(false);
         }
     }
 
@@ -554,11 +556,10 @@ mod tests {
     #[test]
     fn sealed_tantivy_files_do_not_store_plaintext_payload() {
         let _reset = SealedRuntimeReset;
-        set_sealed_mode_enabled(true);
         set_runtime_root_key([19u8; 32], false);
 
         let dir = tempdir().expect("tempdir");
-        let idx = TantivyFullTextIndex::open(dir.path()).expect("sealed index open");
+        let idx = TantivyFullTextIndex::open_with_mode(dir.path(), true).expect("sealed index open");
         let marker = format!("sealed-tantivy-marker-{}", Uuid::now_v7());
         let node = KnowledgeNode::new(NodeKind::Fact, marker.clone())
             .with_title(marker.clone())

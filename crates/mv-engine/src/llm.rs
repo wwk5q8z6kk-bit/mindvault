@@ -33,21 +33,13 @@ impl ChatMessage {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct CompletionParams {
     pub model: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
 }
 
-impl Default for CompletionParams {
-    fn default() -> Self {
-        Self {
-            model: None,
-            max_tokens: None,
-            temperature: None,
-        }
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
@@ -411,10 +403,10 @@ pub async fn llm_completion_suggestions(
         .lines()
         .map(|line| {
             line.trim()
-                .trim_start_matches(|c: char| c == '-' || c == '*' || c == '•')
+                .trim_start_matches(['-', '*', '•'])
                 .trim()
                 .trim_start_matches(|c: char| c.is_ascii_digit())
-                .trim_start_matches(|c| c == '.' || c == ')')
+                .trim_start_matches(['.', ')'])
                 .trim()
                 .to_string()
         })
@@ -522,6 +514,7 @@ pub async fn llm_meeting_notes(
 }
 
 /// Generate a daily briefing summary using the LLM.
+#[allow(clippy::too_many_arguments)]
 pub async fn llm_briefing_summary(
     llm: &dyn LlmProvider,
     due_today_count: usize,

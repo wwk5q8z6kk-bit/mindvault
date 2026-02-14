@@ -45,6 +45,18 @@ pub enum MvError {
     #[error("keychain error: {0}")]
     Keychain(String),
 
+    #[error("keychain not found: {0}")]
+    KeychainNotFound(String),
+
+    #[error("keychain error: vault not initialized")]
+    KeychainNotInitialized,
+
+    #[error("keychain error: invalid password")]
+    KeychainInvalidPassword,
+
+    #[error("keychain error: vault already initialized")]
+    KeychainAlreadyInitialized,
+
     #[error("vault sealed: unlock the vault before accessing credentials")]
     VaultSealed,
 

@@ -1,8 +1,9 @@
 import { writable } from 'svelte/store';
+import { STORAGE_KEYS } from '$lib/constants/storage-keys';
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 
-const STORAGE_KEY = 'mindvault.theme';
+const STORAGE_KEY = STORAGE_KEYS.THEME;
 
 function applyTheme(mode: ThemeMode) {
 	const root = document.documentElement;

@@ -1,8 +1,55 @@
 use std::collections::HashMap;
+use std::fmt;
 
 use mv_core::{HttpProxyRequest, ExecProxyRequest, NodeKind};
 use mv_engine::recurrence::validate_recurrence_metadata_for_kind;
 use serde_json::Value;
+
+/// Structured validation error with meaningful variants.
+#[derive(Debug, Clone)]
+pub enum ValidationError {
+    /// A required field is empty or blank.
+    Empty { field: String },
+    /// A field exceeds its maximum allowed length/size.
+    TooLong { field: String, max: usize },
+    /// A numeric value is out of its allowed range.
+    OutOfRange { field: String, detail: String },
+    /// A field contains characters that are not permitted.
+    InvalidChars { field: String },
+    /// A collection (tags, headers, args) has too many items.
+    TooMany { field: String, max: usize },
+    /// A field value is not one of the allowed options.
+    NotAllowed { field: String, detail: String },
+    /// Metadata serialization or structural issue.
+    BadMetadata { detail: String },
+    /// Recurrence metadata issue (delegated from mv-engine).
+    Recurrence { detail: String },
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty { field } => write!(f, "{field} cannot be empty"),
+            Self::TooLong { field, max } => {
+                write!(f, "{field} exceeds max length of {max}")
+            }
+            Self::OutOfRange { field, detail } => write!(f, "{field} {detail}"),
+            Self::InvalidChars { field } => {
+                write!(f, "{field} contains invalid characters")
+            }
+            Self::TooMany { field, max } => {
+                write!(f, "{field} cannot exceed {max} items")
+            }
+            Self::NotAllowed { field, detail } => {
+                write!(f, "{field} {detail}")
+            }
+            Self::BadMetadata { detail } => write!(f, "{detail}"),
+            Self::Recurrence { detail } => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for ValidationError {}
 
 const MAX_NODE_CONTENT_LEN: usize = 64 * 1024;
 const MAX_NODE_TITLE_LEN: usize = 512;
@@ -44,7 +91,7 @@ pub fn validate_node_payload(
     tags: &[String],
     importance: Option<f64>,
     metadata: Option<&HashMap<String, Value>>,
-) -> Result<(), String> {
+) -> Result<(), ValidationError> {
     validate_required_text("content", content, MAX_NODE_CONTENT_LEN)?;
     validate_optional_text("title", title, MAX_NODE_TITLE_LEN)?;
     validate_optional_text("source", source, MAX_NODE_SOURCE_LEN)?;
@@ -57,98 +104,134 @@ pub fn validate_node_payload(
 
     if let Some(importance) = importance {
         if !importance.is_finite() || !(0.0..=1.0).contains(&importance) {
-            return Err("importance must be a finite value between 0.0 and 1.0".into());
+            return Err(ValidationError::OutOfRange {
+                field: "importance".into(),
+                detail: "must be a finite value between 0.0 and 1.0".into(),
+            });
         }
     }
 
     validate_metadata(metadata)?;
-    validate_recurrence_metadata_for_kind(kind, metadata)?;
+    validate_recurrence_metadata_for_kind(kind, metadata)
+        .map_err(|detail| ValidationError::Recurrence { detail })?;
 
     Ok(())
 }
 
-pub fn validate_query_text(field_name: &str, text: &str) -> Result<(), String> {
+pub fn validate_query_text(field_name: &str, text: &str) -> Result<(), ValidationError> {
     validate_required_text(field_name, text, MAX_QUERY_TEXT_LEN)
 }
 
-pub fn validate_recall_limit(limit: usize) -> Result<(), String> {
+pub fn validate_recall_limit(limit: usize) -> Result<(), ValidationError> {
     if limit == 0 {
-        return Err("limit must be greater than 0".into());
+        return Err(ValidationError::OutOfRange {
+            field: "limit".into(),
+            detail: "must be greater than 0".into(),
+        });
     }
     if limit > MAX_RECALL_LIMIT {
-        return Err(format!("limit must be <= {MAX_RECALL_LIMIT}"));
+        return Err(ValidationError::OutOfRange {
+            field: "limit".into(),
+            detail: format!("must be <= {MAX_RECALL_LIMIT}"),
+        });
     }
     Ok(())
 }
 
-pub fn validate_list_limit(limit: usize) -> Result<(), String> {
+pub fn validate_list_limit(limit: usize) -> Result<(), ValidationError> {
     if limit == 0 {
-        return Err("limit must be greater than 0".into());
+        return Err(ValidationError::OutOfRange {
+            field: "limit".into(),
+            detail: "must be greater than 0".into(),
+        });
     }
     if limit > MAX_LIST_LIMIT {
-        return Err(format!("limit must be <= {MAX_LIST_LIMIT}"));
+        return Err(ValidationError::OutOfRange {
+            field: "limit".into(),
+            detail: format!("must be <= {MAX_LIST_LIMIT}"),
+        });
     }
     Ok(())
 }
 
-pub fn validate_text_input(name: &str, value: &str) -> Result<(), String> {
+pub fn validate_text_input(name: &str, value: &str) -> Result<(), ValidationError> {
     validate_required_text(name, value, MAX_NODE_TITLE_LEN)
 }
 
-pub fn validate_namespace_input(namespace: Option<&str>) -> Result<(), String> {
+pub fn validate_namespace_input(namespace: Option<&str>) -> Result<(), ValidationError> {
     if let Some(namespace) = namespace {
         validate_namespace(namespace)?;
     }
     Ok(())
 }
 
-pub fn validate_tags_input(tags: &[String]) -> Result<(), String> {
+pub fn validate_tags_input(tags: &[String]) -> Result<(), ValidationError> {
     validate_tags(tags)
 }
 
-pub fn validate_depth(depth: usize) -> Result<(), String> {
+pub fn validate_depth(depth: usize) -> Result<(), ValidationError> {
     if depth == 0 {
-        return Err("depth must be greater than 0".into());
+        return Err(ValidationError::OutOfRange {
+            field: "depth".into(),
+            detail: "must be greater than 0".into(),
+        });
     }
     if depth > MAX_NEIGHBOR_DEPTH {
-        return Err(format!("depth must be <= {MAX_NEIGHBOR_DEPTH}"));
+        return Err(ValidationError::OutOfRange {
+            field: "depth".into(),
+            detail: format!("must be <= {MAX_NEIGHBOR_DEPTH}"),
+        });
     }
     Ok(())
 }
 
-fn validate_required_text(name: &str, value: &str, max_len: usize) -> Result<(), String> {
+fn validate_required_text(name: &str, value: &str, max_len: usize) -> Result<(), ValidationError> {
     if value.trim().is_empty() {
-        return Err(format!("{name} cannot be empty"));
+        return Err(ValidationError::Empty {
+            field: name.into(),
+        });
     }
 
     if value.len() > max_len {
-        return Err(format!("{name} exceeds max length of {max_len}"));
+        return Err(ValidationError::TooLong {
+            field: name.into(),
+            max: max_len,
+        });
     }
 
     Ok(())
 }
 
-fn validate_optional_text(name: &str, value: Option<&str>, max_len: usize) -> Result<(), String> {
+fn validate_optional_text(
+    name: &str,
+    value: Option<&str>,
+    max_len: usize,
+) -> Result<(), ValidationError> {
     if let Some(value) = value {
         validate_required_text(name, value, max_len)?;
     }
     Ok(())
 }
 
-fn validate_namespace(namespace: &str) -> Result<(), String> {
+fn validate_namespace(namespace: &str) -> Result<(), ValidationError> {
     validate_required_text("namespace", namespace, MAX_NAMESPACE_LEN)?;
     if namespace
         .chars()
         .any(|ch| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/')))
     {
-        return Err("namespace contains invalid characters".into());
+        return Err(ValidationError::InvalidChars {
+            field: "namespace".into(),
+        });
     }
     Ok(())
 }
 
-fn validate_tags(tags: &[String]) -> Result<(), String> {
+fn validate_tags(tags: &[String]) -> Result<(), ValidationError> {
     if tags.len() > MAX_TAGS {
-        return Err(format!("tags cannot exceed {MAX_TAGS} items"));
+        return Err(ValidationError::TooMany {
+            field: "tags".into(),
+            max: MAX_TAGS,
+        });
     }
 
     for tag in tags {
@@ -163,53 +246,62 @@ fn validate_tags(tags: &[String]) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 /// Validate an HTTP proxy request before passing to ProxyEngine.
-pub fn validate_http_proxy_request(req: &HttpProxyRequest) -> Result<(), String> {
+pub fn validate_http_proxy_request(req: &HttpProxyRequest) -> Result<(), ValidationError> {
     // URL
     if req.url.trim().is_empty() {
-        return Err("url cannot be empty".into());
+        return Err(ValidationError::Empty {
+            field: "url".into(),
+        });
     }
     if req.url.len() > MAX_PROXY_URL_LEN {
-        return Err(format!("url exceeds max length of {MAX_PROXY_URL_LEN}"));
+        return Err(ValidationError::TooLong {
+            field: "url".into(),
+            max: MAX_PROXY_URL_LEN,
+        });
     }
 
     // Method
     let method_upper = req.method.to_ascii_uppercase();
     if !ALLOWED_HTTP_METHODS.contains(&method_upper.as_str()) {
-        return Err(format!(
-            "method '{}' is not allowed; permitted: {}",
-            req.method,
-            ALLOWED_HTTP_METHODS.join(", ")
-        ));
+        return Err(ValidationError::NotAllowed {
+            field: "method".into(),
+            detail: format!(
+                "'{}' is not allowed; permitted: {}",
+                req.method,
+                ALLOWED_HTTP_METHODS.join(", ")
+            ),
+        });
     }
 
     // Body
     if let Some(ref body) = req.body {
         if body.len() > MAX_PROXY_BODY_LEN {
-            return Err(format!(
-                "body exceeds max size of {} bytes",
-                MAX_PROXY_BODY_LEN
-            ));
+            return Err(ValidationError::TooLong {
+                field: "body".into(),
+                max: MAX_PROXY_BODY_LEN,
+            });
         }
     }
 
     // Headers
     if req.headers.len() > MAX_PROXY_HEADERS {
-        return Err(format!(
-            "headers cannot exceed {MAX_PROXY_HEADERS} entries"
-        ));
+        return Err(ValidationError::TooMany {
+            field: "headers".into(),
+            max: MAX_PROXY_HEADERS,
+        });
     }
     for (name, value) in &req.headers {
         if name.len() > MAX_PROXY_HEADER_NAME_LEN {
-            return Err(format!(
-                "header name '{}' exceeds max length of {MAX_PROXY_HEADER_NAME_LEN}",
-                &name[..64.min(name.len())]
-            ));
+            return Err(ValidationError::TooLong {
+                field: format!("header name '{}'", &name[..64.min(name.len())]),
+                max: MAX_PROXY_HEADER_NAME_LEN,
+            });
         }
         if value.len() > MAX_PROXY_HEADER_VALUE_LEN {
-            return Err(format!(
-                "header value for '{}' exceeds max length of {MAX_PROXY_HEADER_VALUE_LEN}",
-                name
-            ));
+            return Err(ValidationError::TooLong {
+                field: format!("header value for '{name}'"),
+                max: MAX_PROXY_HEADER_VALUE_LEN,
+            });
         }
     }
 
@@ -223,42 +315,52 @@ pub fn validate_http_proxy_request(req: &HttpProxyRequest) -> Result<(), String>
 }
 
 /// Validate an exec proxy request before passing to ProxyEngine.
-pub fn validate_exec_proxy_request(req: &ExecProxyRequest) -> Result<(), String> {
+pub fn validate_exec_proxy_request(req: &ExecProxyRequest) -> Result<(), ValidationError> {
     // Command
     if req.command.trim().is_empty() {
-        return Err("command cannot be empty".into());
+        return Err(ValidationError::Empty {
+            field: "command".into(),
+        });
     }
     if req.command.len() > MAX_PROXY_COMMAND_LEN {
-        return Err(format!(
-            "command exceeds max length of {MAX_PROXY_COMMAND_LEN}"
-        ));
+        return Err(ValidationError::TooLong {
+            field: "command".into(),
+            max: MAX_PROXY_COMMAND_LEN,
+        });
     }
 
     // Args
     if req.args.len() > MAX_PROXY_ARGS {
-        return Err(format!("args cannot exceed {MAX_PROXY_ARGS} entries"));
+        return Err(ValidationError::TooMany {
+            field: "args".into(),
+            max: MAX_PROXY_ARGS,
+        });
     }
     for (i, arg) in req.args.iter().enumerate() {
         if arg.len() > MAX_PROXY_ARG_LEN {
-            return Err(format!(
-                "arg[{i}] exceeds max length of {MAX_PROXY_ARG_LEN}"
-            ));
+            return Err(ValidationError::TooLong {
+                field: format!("arg[{i}]"),
+                max: MAX_PROXY_ARG_LEN,
+            });
         }
     }
 
     // Env inject: validate secret refs
     for (env_var, secret_key) in &req.env_inject {
         if env_var.trim().is_empty() {
-            return Err("env_inject key cannot be empty".into());
+            return Err(ValidationError::Empty {
+                field: "env_inject key".into(),
+            });
         }
         validate_proxy_secret_ref(secret_key)?;
     }
 
     // Timeout
     if req.timeout_seconds > MAX_PROXY_TIMEOUT_SECS {
-        return Err(format!(
-            "timeout_seconds cannot exceed {MAX_PROXY_TIMEOUT_SECS}"
-        ));
+        return Err(ValidationError::OutOfRange {
+            field: "timeout_seconds".into(),
+            detail: format!("cannot exceed {MAX_PROXY_TIMEOUT_SECS}"),
+        });
     }
 
     // Intent
@@ -267,44 +369,51 @@ pub fn validate_exec_proxy_request(req: &ExecProxyRequest) -> Result<(), String>
     Ok(())
 }
 
-fn validate_proxy_secret_ref(secret_ref: &str) -> Result<(), String> {
+fn validate_proxy_secret_ref(secret_ref: &str) -> Result<(), ValidationError> {
     if secret_ref.trim().is_empty() {
-        return Err("secret_ref cannot be empty".into());
+        return Err(ValidationError::Empty {
+            field: "secret_ref".into(),
+        });
     }
     if secret_ref.len() > MAX_PROXY_SECRET_REF_LEN {
-        return Err(format!(
-            "secret_ref exceeds max length of {MAX_PROXY_SECRET_REF_LEN}"
-        ));
+        return Err(ValidationError::TooLong {
+            field: "secret_ref".into(),
+            max: MAX_PROXY_SECRET_REF_LEN,
+        });
     }
     Ok(())
 }
 
-fn validate_proxy_intent(intent: &str) -> Result<(), String> {
+fn validate_proxy_intent(intent: &str) -> Result<(), ValidationError> {
     let trimmed = intent.trim();
     if trimmed.len() < MIN_PROXY_INTENT_LEN {
-        return Err(format!(
-            "intent must be at least {MIN_PROXY_INTENT_LEN} characters"
-        ));
+        return Err(ValidationError::OutOfRange {
+            field: "intent".into(),
+            detail: format!("must be at least {MIN_PROXY_INTENT_LEN} characters"),
+        });
     }
     if intent.len() > MAX_PROXY_INTENT_LEN {
-        return Err(format!(
-            "intent exceeds max length of {MAX_PROXY_INTENT_LEN}"
-        ));
+        return Err(ValidationError::TooLong {
+            field: "intent".into(),
+            max: MAX_PROXY_INTENT_LEN,
+        });
     }
     Ok(())
 }
 
-fn validate_metadata(metadata: Option<&HashMap<String, Value>>) -> Result<(), String> {
+fn validate_metadata(metadata: Option<&HashMap<String, Value>>) -> Result<(), ValidationError> {
     let Some(metadata) = metadata else {
         return Ok(());
     };
 
-    let encoded = serde_json::to_string(metadata)
-        .map_err(|err| format!("metadata must be valid JSON serializable object: {err}"))?;
+    let encoded = serde_json::to_string(metadata).map_err(|err| ValidationError::BadMetadata {
+        detail: format!("metadata must be valid JSON serializable object: {err}"),
+    })?;
     if encoded.len() > MAX_METADATA_JSON_LEN {
-        return Err(format!(
-            "metadata exceeds max serialized size of {MAX_METADATA_JSON_LEN} bytes"
-        ));
+        return Err(ValidationError::TooLong {
+            field: "metadata".into(),
+            max: MAX_METADATA_JSON_LEN,
+        });
     }
 
     Ok(())
@@ -327,7 +436,7 @@ mod tests {
             None,
         )
         .expect_err("empty content should fail");
-        assert!(err.contains("content cannot be empty"));
+        assert!(matches!(err, ValidationError::Empty { ref field } if field == "content"));
     }
 
     #[test]
@@ -343,7 +452,7 @@ mod tests {
             None,
         )
         .expect_err("namespace should fail");
-        assert!(err.contains("invalid characters"));
+        assert!(matches!(err, ValidationError::InvalidChars { .. }));
     }
 
     #[test]
@@ -359,7 +468,7 @@ mod tests {
             None,
         )
         .expect_err("importance should fail");
-        assert!(err.contains("importance"));
+        assert!(matches!(err, ValidationError::OutOfRange { ref field, .. } if field == "importance"));
     }
 
     #[test]
@@ -383,7 +492,7 @@ mod tests {
             Some(&metadata),
         )
         .expect_err("task_recurrence on fact should fail");
-        assert!(err.contains("task_recurrence"));
+        assert!(matches!(err, ValidationError::Recurrence { .. }));
     }
 
     #[test]
@@ -438,18 +547,20 @@ mod tests {
     fn proxy_http_rejects_bad_method() {
         let mut req = make_http_proxy_req();
         req.method = "CONNECT".into();
-        assert!(validate_http_proxy_request(&req)
-            .unwrap_err()
-            .contains("not allowed"));
+        assert!(matches!(
+            validate_http_proxy_request(&req).unwrap_err(),
+            ValidationError::NotAllowed { .. }
+        ));
     }
 
     #[test]
     fn proxy_http_rejects_oversized_body() {
         let mut req = make_http_proxy_req();
         req.body = Some("x".repeat(MAX_PROXY_BODY_LEN + 1));
-        assert!(validate_http_proxy_request(&req)
-            .unwrap_err()
-            .contains("body exceeds"));
+        assert!(matches!(
+            validate_http_proxy_request(&req).unwrap_err(),
+            ValidationError::TooLong { ref field, .. } if field == "body"
+        ));
     }
 
     #[test]
@@ -458,27 +569,30 @@ mod tests {
         for i in 0..MAX_PROXY_HEADERS + 1 {
             req.headers.insert(format!("X-Header-{i}"), "v".into());
         }
-        assert!(validate_http_proxy_request(&req)
-            .unwrap_err()
-            .contains("headers cannot exceed"));
+        assert!(matches!(
+            validate_http_proxy_request(&req).unwrap_err(),
+            ValidationError::TooMany { ref field, .. } if field == "headers"
+        ));
     }
 
     #[test]
     fn proxy_http_rejects_short_intent() {
         let mut req = make_http_proxy_req();
         req.intent = "short".into();
-        assert!(validate_http_proxy_request(&req)
-            .unwrap_err()
-            .contains("at least"));
+        assert!(matches!(
+            validate_http_proxy_request(&req).unwrap_err(),
+            ValidationError::OutOfRange { ref field, .. } if field == "intent"
+        ));
     }
 
     #[test]
     fn proxy_http_rejects_long_intent() {
         let mut req = make_http_proxy_req();
         req.intent = "x".repeat(MAX_PROXY_INTENT_LEN + 1);
-        assert!(validate_http_proxy_request(&req)
-            .unwrap_err()
-            .contains("exceeds max"));
+        assert!(matches!(
+            validate_http_proxy_request(&req).unwrap_err(),
+            ValidationError::TooLong { ref field, .. } if field == "intent"
+        ));
     }
 
     #[test]
@@ -490,17 +604,19 @@ mod tests {
     fn proxy_exec_rejects_too_many_args() {
         let mut req = make_exec_proxy_req();
         req.args = (0..MAX_PROXY_ARGS + 1).map(|i| format!("arg{i}")).collect();
-        assert!(validate_exec_proxy_request(&req)
-            .unwrap_err()
-            .contains("args cannot exceed"));
+        assert!(matches!(
+            validate_exec_proxy_request(&req).unwrap_err(),
+            ValidationError::TooMany { ref field, .. } if field == "args"
+        ));
     }
 
     #[test]
     fn proxy_exec_rejects_oversized_timeout() {
         let mut req = make_exec_proxy_req();
         req.timeout_seconds = MAX_PROXY_TIMEOUT_SECS + 1;
-        assert!(validate_exec_proxy_request(&req)
-            .unwrap_err()
-            .contains("timeout_seconds"));
+        assert!(matches!(
+            validate_exec_proxy_request(&req).unwrap_err(),
+            ValidationError::OutOfRange { ref field, .. } if field == "timeout_seconds"
+        ));
     }
 }

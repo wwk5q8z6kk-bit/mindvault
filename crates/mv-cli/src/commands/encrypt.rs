@@ -3,21 +3,56 @@
 use anyhow::{bail, Context, Result};
 use mv_storage::crypto::{EncryptionConfig, KeyManager};
 use std::io::{self, Write};
+use std::path::Path;
 
 use super::load_config;
 
+/// Validate that the data directory path is safe (no traversal components that
+/// could escape the intended root). Creates the directory if it doesn't exist
+/// so that `canonicalize` can resolve it, then verifies the canonical path
+/// doesn't differ in unexpected ways.
+fn validate_data_dir(data_dir: &str) -> Result<std::path::PathBuf> {
+    let path = Path::new(data_dir);
+
+    // Reject obvious traversal patterns before touching the filesystem
+    for component in path.components() {
+        if let std::path::Component::ParentDir = component {
+            bail!("data_dir must not contain '..' path components: {data_dir}");
+        }
+    }
+
+    // Create the directory if needed so canonicalize works
+    std::fs::create_dir_all(path)
+        .with_context(|| format!("Failed to create data directory: {data_dir}"))?;
+
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve data directory: {data_dir}"))?;
+
+    Ok(canonical)
+}
+
 const SQLITE_DB_FILE: &str = "mindvault.sqlite";
-const NODE_TABLE: &str = "knowledge_nodes";
-const METADATA_COLUMN: &str = "metadata_json";
+
+// SQL queries as string-literal constants (avoids runtime format! for fixed table/column names).
+const SQL_COUNT_ALL: &str = "SELECT COUNT(*) FROM knowledge_nodes";
+const SQL_COUNT_ENCRYPTED: &str =
+    "SELECT COUNT(*) FROM knowledge_nodes WHERE content LIKE 'enc:v1:%'";
+const SQL_SELECT_UNENCRYPTED: &str =
+    "SELECT id, content, metadata_json FROM knowledge_nodes WHERE content NOT LIKE 'enc:v1:%' LIMIT ?";
+const SQL_SELECT_ENCRYPTED: &str =
+    "SELECT id, content, metadata_json FROM knowledge_nodes WHERE content LIKE 'enc:v1:%' LIMIT ?";
+const SQL_UPDATE_NODE: &str =
+    "UPDATE knowledge_nodes SET content = ?, metadata_json = ? WHERE id = ?";
 
 /// Initialize encryption for the vault.
 pub async fn init(from_env: bool, config_path: &str) -> Result<()> {
     let config = load_config(config_path)?;
-    let data_dir = &config.data_dir;
+    let data_dir = validate_data_dir(&config.data_dir)?;
 
     // Check if encryption is already initialized
-    let key_marker_path = format!("{data_dir}/.encryption_initialized");
-    if std::path::Path::new(&key_marker_path).exists() {
+    let key_marker_path = data_dir.join(".encryption_initialized");
+    if key_marker_path.exists() {
         bail!("Encryption is already initialized. Use `mv encrypt status` to check status.");
     }
 
@@ -41,11 +76,7 @@ pub async fn init(from_env: bool, config_path: &str) -> Result<()> {
 
     // Generate a random salt and store it
     let salt = generate_salt();
-    let salt_path = format!("{data_dir}/.encryption_salt");
-
-    // Create data directory if it doesn't exist
-    std::fs::create_dir_all(data_dir)
-        .with_context(|| format!("Failed to create data directory: {data_dir}"))?;
+    let salt_path = data_dir.join(".encryption_salt");
 
     // Test key derivation
     let crypto_config = EncryptionConfig {
@@ -97,11 +128,11 @@ pub async fn init(from_env: bool, config_path: &str) -> Result<()> {
 /// Migrate an existing unencrypted vault to encrypted storage.
 pub async fn migrate(dry_run: bool, config_path: &str) -> Result<()> {
     let config = load_config(config_path)?;
-    let data_dir = &config.data_dir;
+    let data_dir = validate_data_dir(&config.data_dir)?;
 
     // Check if encryption is initialized
-    let key_marker_path = format!("{data_dir}/.encryption_initialized");
-    if !std::path::Path::new(&key_marker_path).exists() {
+    let key_marker_path = data_dir.join(".encryption_initialized");
+    if !key_marker_path.exists() {
         bail!("Encryption not initialized. Run `mv encrypt init` first.");
     }
 
@@ -109,7 +140,7 @@ pub async fn migrate(dry_run: bool, config_path: &str) -> Result<()> {
     let password = std::env::var("MINDVAULT_ENCRYPTION_KEY")
         .context("MINDVAULT_ENCRYPTION_KEY environment variable required for migration")?;
 
-    let salt_path = format!("{data_dir}/.encryption_salt");
+    let salt_path = data_dir.join(".encryption_salt");
     let salt = std::fs::read_to_string(&salt_path).context("Failed to read encryption salt")?;
 
     let crypto_config = EncryptionConfig {
@@ -125,9 +156,9 @@ pub async fn migrate(dry_run: bool, config_path: &str) -> Result<()> {
         .context("Failed to derive encryption key")?;
 
     // Find SQLite database
-    let db_path = format!("{data_dir}/{SQLITE_DB_FILE}");
-    if !std::path::Path::new(&db_path).exists() {
-        println!("No database found at {db_path}. Nothing to migrate.");
+    let db_path = data_dir.join(SQLITE_DB_FILE);
+    if !db_path.exists() {
+        println!("No database found at {}. Nothing to migrate.", db_path.display());
         return Ok(());
     }
 
@@ -140,9 +171,7 @@ pub async fn migrate(dry_run: bool, config_path: &str) -> Result<()> {
     let conn = rusqlite::Connection::open(&db_path).context("Failed to open database")?;
 
     let node_count: i64 = conn
-        .query_row(&format!("SELECT COUNT(*) FROM {NODE_TABLE}"), [], |row| {
-            row.get(0)
-        })
+        .query_row(SQL_COUNT_ALL, [], |row| row.get(0))
         .unwrap_or(0);
 
     println!("Found {node_count} nodes to migrate");
@@ -179,11 +208,7 @@ pub async fn migrate(dry_run: bool, config_path: &str) -> Result<()> {
     let mut migrated = 0;
 
     loop {
-        let mut stmt = conn.prepare(
-            &format!(
-                "SELECT id, content, {METADATA_COLUMN} FROM {NODE_TABLE} WHERE content NOT LIKE 'enc:v1:%' LIMIT ?"
-            ),
-        )?;
+        let mut stmt = conn.prepare(SQL_SELECT_UNENCRYPTED)?;
 
         let rows: Vec<(String, String, Option<String>)> = stmt
             .query_map([batch_size], |row| {
@@ -212,7 +237,7 @@ pub async fn migrate(dry_run: bool, config_path: &str) -> Result<()> {
             };
 
             conn.execute(
-                &format!("UPDATE {NODE_TABLE} SET content = ?, {METADATA_COLUMN} = ? WHERE id = ?"),
+                SQL_UPDATE_NODE,
                 rusqlite::params![encrypted_content, encrypted_metadata, id],
             )?;
 
@@ -226,7 +251,7 @@ pub async fn migrate(dry_run: bool, config_path: &str) -> Result<()> {
     println!("\rMigrated {migrated} nodes successfully.     ");
 
     // Create migration marker
-    let migration_marker = format!("{data_dir}/.encryption_migrated");
+    let migration_marker = data_dir.join(".encryption_migrated");
     std::fs::write(&migration_marker, chrono::Utc::now().to_rfc3339())?;
 
     println!();
@@ -238,11 +263,11 @@ pub async fn migrate(dry_run: bool, config_path: &str) -> Result<()> {
 /// Decrypt the vault (disable encryption).
 pub async fn decrypt(confirm: bool, config_path: &str) -> Result<()> {
     let config = load_config(config_path)?;
-    let data_dir = &config.data_dir;
+    let data_dir = validate_data_dir(&config.data_dir)?;
 
     // Check if encryption is initialized
-    let key_marker_path = format!("{data_dir}/.encryption_initialized");
-    if !std::path::Path::new(&key_marker_path).exists() {
+    let key_marker_path = data_dir.join(".encryption_initialized");
+    if !key_marker_path.exists() {
         println!("Encryption is not initialized.");
         return Ok(());
     }
@@ -257,7 +282,7 @@ pub async fn decrypt(confirm: bool, config_path: &str) -> Result<()> {
     let password = std::env::var("MINDVAULT_ENCRYPTION_KEY")
         .context("MINDVAULT_ENCRYPTION_KEY environment variable required for decryption")?;
 
-    let salt_path = format!("{data_dir}/.encryption_salt");
+    let salt_path = data_dir.join(".encryption_salt");
     let salt = std::fs::read_to_string(&salt_path).context("Failed to read encryption salt")?;
 
     let crypto_config = EncryptionConfig {
@@ -272,8 +297,8 @@ pub async fn decrypt(confirm: bool, config_path: &str) -> Result<()> {
         .derive_master_key(&password, salt.as_bytes())
         .context("Failed to derive encryption key")?;
 
-    let db_path = format!("{data_dir}/{SQLITE_DB_FILE}");
-    if !std::path::Path::new(&db_path).exists() {
+    let db_path = data_dir.join(SQLITE_DB_FILE);
+    if !db_path.exists() {
         println!("No database found. Removing encryption markers.");
         std::fs::remove_file(&key_marker_path).ok();
         std::fs::remove_file(&salt_path).ok();
@@ -283,11 +308,7 @@ pub async fn decrypt(confirm: bool, config_path: &str) -> Result<()> {
     let conn = rusqlite::Connection::open(&db_path).context("Failed to open database")?;
 
     let encrypted_count: i64 = conn
-        .query_row(
-            &format!("SELECT COUNT(*) FROM {NODE_TABLE} WHERE content LIKE 'enc:v1:%'"),
-            [],
-            |row| row.get(0),
-        )
+        .query_row(SQL_COUNT_ENCRYPTED, [], |row| row.get(0))
         .unwrap_or(0);
 
     if encrypted_count == 0 {
@@ -303,11 +324,7 @@ pub async fn decrypt(confirm: bool, config_path: &str) -> Result<()> {
     let mut decrypted = 0;
 
     loop {
-        let mut stmt = conn.prepare(
-            &format!(
-                "SELECT id, content, {METADATA_COLUMN} FROM {NODE_TABLE} WHERE content LIKE 'enc:v1:%' LIMIT ?"
-            ),
-        )?;
+        let mut stmt = conn.prepare(SQL_SELECT_ENCRYPTED)?;
 
         let rows: Vec<(String, String, Option<String>)> = stmt
             .query_map([batch_size], |row| {
@@ -344,7 +361,7 @@ pub async fn decrypt(confirm: bool, config_path: &str) -> Result<()> {
             };
 
             conn.execute(
-                &format!("UPDATE {NODE_TABLE} SET content = ?, {METADATA_COLUMN} = ? WHERE id = ?"),
+                SQL_UPDATE_NODE,
                 rusqlite::params![plain_content, plain_metadata, id],
             )?;
 
@@ -360,7 +377,7 @@ pub async fn decrypt(confirm: bool, config_path: &str) -> Result<()> {
     // Remove encryption markers
     std::fs::remove_file(&key_marker_path).ok();
     std::fs::remove_file(&salt_path).ok();
-    let migration_marker = format!("{data_dir}/.encryption_migrated");
+    let migration_marker = data_dir.join(".encryption_migrated");
     std::fs::remove_file(&migration_marker).ok();
 
     println!();
@@ -372,20 +389,20 @@ pub async fn decrypt(confirm: bool, config_path: &str) -> Result<()> {
 /// Check encryption status.
 pub async fn status(config_path: &str) -> Result<()> {
     let config = load_config(config_path)?;
-    let data_dir = &config.data_dir;
+    let data_dir = validate_data_dir(&config.data_dir)?;
 
-    let key_marker_path = format!("{data_dir}/.encryption_initialized");
-    let salt_path = format!("{data_dir}/.encryption_salt");
-    let migration_marker = format!("{data_dir}/.encryption_migrated");
+    let key_marker_path = data_dir.join(".encryption_initialized");
+    let salt_path = data_dir.join(".encryption_salt");
+    let migration_marker = data_dir.join(".encryption_migrated");
 
-    let initialized = std::path::Path::new(&key_marker_path).exists();
-    let salt_exists = std::path::Path::new(&salt_path).exists();
-    let migrated = std::path::Path::new(&migration_marker).exists();
+    let initialized = key_marker_path.exists();
+    let salt_exists = salt_path.exists();
+    let migrated = migration_marker.exists();
 
     println!("Encryption Status");
     println!("=================");
     println!();
-    println!("Data directory: {data_dir}");
+    println!("Data directory: {}", data_dir.display());
     println!();
 
     if !initialized {
@@ -422,22 +439,16 @@ pub async fn status(config_path: &str) -> Result<()> {
     );
 
     // Check database
-    let db_path = format!("{data_dir}/{SQLITE_DB_FILE}");
-    if std::path::Path::new(&db_path).exists() {
+    let db_path = data_dir.join(SQLITE_DB_FILE);
+    if db_path.exists() {
         let conn = rusqlite::Connection::open(&db_path)?;
 
         let total_nodes: i64 = conn
-            .query_row(&format!("SELECT COUNT(*) FROM {NODE_TABLE}"), [], |row| {
-                row.get(0)
-            })
+            .query_row(SQL_COUNT_ALL, [], |row| row.get(0))
             .unwrap_or(0);
 
         let encrypted_nodes: i64 = conn
-            .query_row(
-                &format!("SELECT COUNT(*) FROM {NODE_TABLE} WHERE content LIKE 'enc:v1:%'"),
-                [],
-                |row| row.get(0),
-            )
+            .query_row(SQL_COUNT_ENCRYPTED, [], |row| row.get(0))
             .unwrap_or(0);
 
         println!();
@@ -492,4 +503,136 @@ fn generate_salt() -> String {
     let mut rng = rand::thread_rng();
     let bytes: [u8; 32] = rng.gen();
     base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_data_dir_accepts_simple_path() {
+        let dir = std::env::temp_dir().join(format!("mv_encrypt_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let result = validate_data_dir(dir.to_str().unwrap());
+        assert!(result.is_ok(), "valid path should succeed: {result:?}");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_data_dir_rejects_parent_traversal() {
+        let result = validate_data_dir("/tmp/foo/../../../etc");
+        assert!(result.is_err(), "path with .. should be rejected");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains(".."),
+            "error should mention '..' but got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn validate_data_dir_rejects_relative_traversal() {
+        let result = validate_data_dir("foo/../../bar");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_data_dir_creates_missing_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "mv_encrypt_test_create_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!dir.exists());
+
+        let result = validate_data_dir(dir.to_str().unwrap());
+        assert!(result.is_ok());
+        assert!(dir.exists(), "directory should have been created");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_data_dir_returns_canonical_path() {
+        let dir = std::env::temp_dir().join(format!("mv_encrypt_test_canon_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let canonical = validate_data_dir(dir.to_str().unwrap()).unwrap();
+        // Canonical path should not contain any . or symlink indirection
+        assert!(
+            canonical.is_absolute(),
+            "canonical path should be absolute: {}",
+            canonical.display()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sql_constants_are_valid_sql() {
+        // Basic structural checks: each SQL constant should be a valid single statement
+        assert!(SQL_COUNT_ALL.starts_with("SELECT"));
+        assert!(SQL_COUNT_ALL.contains("FROM knowledge_nodes"));
+
+        assert!(SQL_COUNT_ENCRYPTED.starts_with("SELECT"));
+        assert!(SQL_COUNT_ENCRYPTED.contains("WHERE"));
+        assert!(SQL_COUNT_ENCRYPTED.contains("enc:v1:"));
+
+        assert!(SQL_SELECT_UNENCRYPTED.starts_with("SELECT"));
+        assert!(SQL_SELECT_UNENCRYPTED.contains("LIMIT ?"));
+        assert!(SQL_SELECT_UNENCRYPTED.contains("NOT LIKE"));
+
+        assert!(SQL_SELECT_ENCRYPTED.starts_with("SELECT"));
+        assert!(SQL_SELECT_ENCRYPTED.contains("LIMIT ?"));
+        assert!(SQL_SELECT_ENCRYPTED.contains("LIKE 'enc:v1:%'"));
+        assert!(!SQL_SELECT_ENCRYPTED.contains("NOT LIKE"));
+
+        assert!(SQL_UPDATE_NODE.starts_with("UPDATE"));
+        assert!(SQL_UPDATE_NODE.contains("WHERE id = ?"));
+    }
+
+    #[test]
+    fn sql_select_columns_match_update() {
+        // SELECT queries retrieve id, content, metadata_json — UPDATE sets content, metadata_json by id
+        assert!(SQL_SELECT_UNENCRYPTED.contains("id, content, metadata_json"));
+        assert!(SQL_SELECT_ENCRYPTED.contains("id, content, metadata_json"));
+        assert!(SQL_UPDATE_NODE.contains("content = ?"));
+        assert!(SQL_UPDATE_NODE.contains("metadata_json = ?"));
+    }
+
+    #[test]
+    fn generate_salt_produces_valid_base64() {
+        let salt = generate_salt();
+        assert!(!salt.is_empty(), "salt should not be empty");
+
+        let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &salt);
+        assert!(decoded.is_ok(), "salt should be valid base64: {salt}");
+    }
+
+    #[test]
+    fn generate_salt_has_expected_length() {
+        let salt = generate_salt();
+        let decoded =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &salt).unwrap();
+        assert_eq!(
+            decoded.len(),
+            32,
+            "salt should decode to 32 bytes, got {}",
+            decoded.len()
+        );
+    }
+
+    #[test]
+    fn generate_salt_is_random() {
+        let salt1 = generate_salt();
+        let salt2 = generate_salt();
+        assert_ne!(salt1, salt2, "two salts should (almost certainly) differ");
+    }
+
+    #[test]
+    fn sqlite_db_file_constant() {
+        assert_eq!(SQLITE_DB_FILE, "mindvault.sqlite");
+    }
 }

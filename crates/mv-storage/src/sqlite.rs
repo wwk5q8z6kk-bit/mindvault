@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use crate::sealed_runtime::{runtime_root_key, sealed_mode_enabled};
+use crate::sealed_runtime::{runtime_root_key_for_scope, runtime_scope_from_parent};
 use crate::vault_crypto::VaultCrypto;
 use mv_core::*;
 
@@ -19,6 +19,15 @@ use mv_core::*;
 /// SQLite WAL mode supports 1 writer + N readers, so even a small pool
 /// eliminates head-of-line blocking for concurrent read queries.
 const DEFAULT_POOL_SIZE: usize = 4;
+
+type StoredNodeProjection = (
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SealedNodePayload {
@@ -35,6 +44,8 @@ pub struct SqliteNodeStore {
     pool: Vec<Mutex<Connection>>,
     /// Atomic counter for round-robin slot selection.
     next_slot: std::sync::atomic::AtomicUsize,
+    sealed_mode: bool,
+    runtime_scope: String,
 }
 
 impl SqliteNodeStore {
@@ -68,6 +79,16 @@ impl SqliteNodeStore {
             % self.pool.len();
         &self.pool[idx]
     }
+
+    #[inline]
+    fn sealed_mode(&self) -> bool {
+        self.sealed_mode
+    }
+
+    #[inline]
+    fn runtime_scope(&self) -> &str {
+        &self.runtime_scope
+    }
 }
 
 impl SqliteNodeStore {
@@ -84,6 +105,10 @@ impl SqliteNodeStore {
     }
 
     pub fn open(path: &Path) -> MvResult<Self> {
+        Self::open_with_mode(path, false)
+    }
+
+    pub fn open_with_mode(path: &Path, sealed_mode: bool) -> MvResult<Self> {
         let mut pool = Vec::with_capacity(DEFAULT_POOL_SIZE);
         for _ in 0..DEFAULT_POOL_SIZE {
             pool.push(Mutex::new(Self::open_connection(path)?));
@@ -92,12 +117,18 @@ impl SqliteNodeStore {
         let store = Self {
             pool,
             next_slot: std::sync::atomic::AtomicUsize::new(0),
+            sealed_mode,
+            runtime_scope: runtime_scope_from_parent(path),
         };
         store.run_migrations()?;
         Ok(store)
     }
 
     pub fn open_in_memory() -> MvResult<Self> {
+        Self::open_in_memory_with_mode(false)
+    }
+
+    pub fn open_in_memory_with_mode(sealed_mode: bool) -> MvResult<Self> {
         // In-memory DBs: use a shared cache URI so all pool connections see
         // the same data. Without this, each Connection::open_in_memory()
         // gets its own isolated database.
@@ -124,12 +155,18 @@ impl SqliteNodeStore {
         let store = Self {
             pool,
             next_slot: std::sync::atomic::AtomicUsize::new(0),
+            sealed_mode,
+            runtime_scope: String::new(),
         };
         store.run_migrations()?;
         Ok(store)
     }
 
     pub fn open_read_only(path: &Path) -> MvResult<Self> {
+        Self::open_read_only_with_mode(path, false)
+    }
+
+    pub fn open_read_only_with_mode(path: &Path, sealed_mode: bool) -> MvResult<Self> {
         let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|e| MvError::Storage(format!("failed to open sqlite (read-only): {e}")))?;
 
@@ -140,6 +177,8 @@ impl SqliteNodeStore {
         Ok(Self {
             pool: vec![Mutex::new(conn)],
             next_slot: std::sync::atomic::AtomicUsize::new(0),
+            sealed_mode,
+            runtime_scope: runtime_scope_from_parent(path),
         })
     }
 
@@ -249,8 +288,8 @@ impl SqliteNodeStore {
         )
     }
 
-    fn derive_namespace_kek(namespace: &str) -> MvResult<[u8; 32]> {
-        let root = runtime_root_key().ok_or(MvError::VaultSealed)?;
+    fn derive_namespace_kek(&self, namespace: &str) -> MvResult<[u8; 32]> {
+        let root = runtime_root_key_for_scope(self.runtime_scope()).ok_or(MvError::VaultSealed)?;
         let mut crypto = VaultCrypto::new();
         crypto.set_master_key(Zeroizing::new(root));
         let key = crypto
@@ -259,8 +298,8 @@ impl SqliteNodeStore {
         Ok(*key)
     }
 
-    fn encrypt_node_payload(node: &KnowledgeNode) -> MvResult<(String, String)> {
-        let kek = Self::derive_namespace_kek(&node.namespace)?;
+    fn encrypt_node_payload(&self, node: &KnowledgeNode) -> MvResult<(String, String)> {
+        let kek = self.derive_namespace_kek(&node.namespace)?;
         let dek = VaultCrypto::generate_node_dek();
         let payload = SealedNodePayload {
             title: node.title.clone(),
@@ -278,11 +317,12 @@ impl SqliteNodeStore {
     }
 
     fn decrypt_node_payload(
+        &self,
         namespace: &str,
         wrapped_dek: &str,
         payload_ciphertext: &str,
     ) -> MvResult<SealedNodePayload> {
-        let kek = Self::derive_namespace_kek(namespace)?;
+        let kek = self.derive_namespace_kek(namespace)?;
         let dek = VaultCrypto::unwrap_node_dek(&kek, wrapped_dek)
             .map_err(|err| MvError::Storage(format!("unwrap node dek failed: {err}")))?;
         let ciphertext = BASE64
@@ -295,18 +335,9 @@ impl SqliteNodeStore {
         Ok(payload)
     }
 
-    fn project_node_for_storage(
-        node: &KnowledgeNode,
-    ) -> MvResult<(
-        Option<String>,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> {
-        if sealed_mode_enabled() {
-            let (wrapped_dek, ciphertext) = Self::encrypt_node_payload(node)?;
+    fn project_node_for_storage(&self, node: &KnowledgeNode) -> MvResult<StoredNodeProjection> {
+        if self.sealed_mode() {
+            let (wrapped_dek, ciphertext) = self.encrypt_node_payload(node)?;
             Ok((
                 None,
                 String::new(),
@@ -327,7 +358,7 @@ impl SqliteNodeStore {
         }
     }
 
-    fn row_to_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeNode> {
+    fn row_to_node(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeNode> {
         let id_str: String = row.get(0)?;
         let kind_str: String = row.get(1)?;
         let mut title: Option<String> = row.get(2)?;
@@ -346,7 +377,8 @@ impl SqliteNodeStore {
         let wrapped_dek: Option<String> = row.get(15).ok();
 
         if let (Some(payload_ciphertext), Some(wrapped_dek)) = (payload_ciphertext, wrapped_dek) {
-            let payload = Self::decrypt_node_payload(&namespace, &wrapped_dek, &payload_ciphertext)
+            let payload = self
+                .decrypt_node_payload(&namespace, &wrapped_dek, &payload_ciphertext)
                 .map_err(|err| {
                     Self::as_sql_conversion_error(
                         14,
@@ -578,8 +610,8 @@ fn row_to_mcp_connector(row: &rusqlite::Row<'_>) -> rusqlite::Result<McpConnecto
 impl NodeStore for SqliteNodeStore {
     async fn insert(&self, node: &KnowledgeNode) -> MvResult<()> {
         self.with_conn(|conn| {
-            let (title, content, source, metadata_json, payload_ciphertext, payload_wrapped_dek) =
-                Self::project_node_for_storage(node)?;
+                let (title, content, source, metadata_json, payload_ciphertext, payload_wrapped_dek) =
+                    self.project_node_for_storage(node)?;
 
             conn.execute(
                 "INSERT INTO knowledge_nodes (id, kind, title, content, source, namespace, importance,
@@ -623,7 +655,7 @@ impl NodeStore for SqliteNodeStore {
                 .map_err(|e| MvError::Storage(e.to_string()))?;
 
             let node = stmt
-                .query_row(params![id.to_string()], Self::row_to_node)
+                .query_row(params![id.to_string()], |row| self.row_to_node(row))
                 .optional()
                 .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -641,8 +673,8 @@ impl NodeStore for SqliteNodeStore {
             .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
-        let (title, content, source, metadata_json, payload_ciphertext, payload_wrapped_dek) =
-            Self::project_node_for_storage(node)?;
+                let (title, content, source, metadata_json, payload_ciphertext, payload_wrapped_dek) =
+                    self.project_node_for_storage(node)?;
 
         let rows = conn
             .execute(
@@ -786,7 +818,7 @@ impl NodeStore for SqliteNodeStore {
             .prepare(&sql)
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let rows = stmt
-            .query_map(params_refs.as_slice(), Self::row_to_node)
+            .query_map(params_refs.as_slice(), |row| self.row_to_node(row))
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
         let mut nodes = Vec::new();
@@ -916,7 +948,7 @@ impl SqliteNodeStore {
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
         let row = stmt
-            .query_row(params![source], Self::row_to_node)
+            .query_row(params![source], |row| self.row_to_node(row))
             .optional()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -926,7 +958,7 @@ impl SqliteNodeStore {
                 Ok(Some(node))
             }
             None => {
-                if !sealed_mode_enabled() {
+                if !self.sealed_mode() {
                     return Ok(None);
                 }
                 let mut stmt = conn
@@ -937,7 +969,7 @@ impl SqliteNodeStore {
                     )
                     .map_err(|e| MvError::Storage(e.to_string()))?;
                 let rows = stmt
-                    .query_map([], Self::row_to_node)
+                    .query_map([], |row| self.row_to_node(row))
                     .map_err(|e| MvError::Storage(e.to_string()))?;
                 for row in rows {
                     let mut node = row.map_err(|e| MvError::Storage(e.to_string()))?;
@@ -1058,7 +1090,7 @@ impl SqliteNodeStore {
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
         let row = stmt
-            .query_row(params![name], |row| row_to_permission_template(row))
+            .query_row(params![name], row_to_permission_template)
             .optional()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -1147,7 +1179,7 @@ impl SqliteNodeStore {
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
         let rows = stmt
-            .query_map([], |row| row_to_access_key(row))
+            .query_map([], row_to_access_key)
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
         let mut keys = Vec::new();
@@ -1171,7 +1203,7 @@ impl SqliteNodeStore {
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
         let row = stmt
-            .query_row(params![id.to_string()], |row| row_to_access_key(row))
+            .query_row(params![id.to_string()], row_to_access_key)
             .optional()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -1191,7 +1223,7 @@ impl SqliteNodeStore {
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
         let row = stmt
-            .query_row(params![key_hash], |row| row_to_access_key(row))
+            .query_row(params![key_hash], row_to_access_key)
             .optional()
             .map_err(|e| MvError::Storage(e.to_string()))?;
 
@@ -1675,7 +1707,7 @@ fn row_to_chronicle_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chronicle
     let timestamp: String = row.get(6)?;
 
     let id = parse_uuid_str(0, &id_str)?;
-    let node_id = node_id_str.map(|s| Uuid::parse_str(&s).ok()).flatten();
+    let node_id = node_id_str.and_then(|s| Uuid::parse_str(&s).ok());
 
     Ok(ChronicleEntry {
         id,
@@ -1710,10 +1742,8 @@ fn row_to_proposal(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
     let resolved_at: Option<String> = row.get(11)?;
 
     let id = parse_uuid_str(0, &id_str)?;
-    let node_id = node_id_str.map(|s| Uuid::parse_str(&s).ok()).flatten();
-    let target_node_id = target_node_id_str
-        .map(|s| Uuid::parse_str(&s).ok())
-        .flatten();
+    let node_id = node_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+    let target_node_id = target_node_id_str.and_then(|s| Uuid::parse_str(&s).ok());
 
     let sender: ProposalSender = sender_str.parse().map_err(|e: String| {
         rusqlite::Error::FromSqlConversionFailure(
@@ -2002,8 +2032,8 @@ fn safeguard_glob_match(pattern: &str, value: &str) -> bool {
     if pattern == "*" {
         return true;
     }
-    if pattern.ends_with('*') {
-        value.starts_with(&pattern[..pattern.len() - 1])
+    if let Some(stripped) = pattern.strip_suffix('*') {
+        value.starts_with(stripped)
     } else {
         pattern == value
     }
@@ -4934,9 +4964,7 @@ impl ConversationStore for SqliteNodeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sealed_runtime::{
-        clear_runtime_root_key, set_runtime_root_key, set_sealed_mode_enabled,
-    };
+    use crate::sealed_runtime::{clear_runtime_root_key, set_runtime_root_key};
     use tempfile::tempdir;
     use uuid::Uuid;
 
@@ -4945,7 +4973,6 @@ mod tests {
     impl Drop for SealedRuntimeReset {
         fn drop(&mut self) {
             clear_runtime_root_key();
-            set_sealed_mode_enabled(false);
         }
     }
 
@@ -4975,10 +5002,9 @@ mod tests {
     #[tokio::test]
     async fn test_sealed_node_payload_persists_encrypted_columns() {
         let _reset = SealedRuntimeReset;
-        set_sealed_mode_enabled(true);
         set_runtime_root_key([7u8; 32], false);
 
-        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let store = SqliteNodeStore::open_in_memory_with_mode(true).unwrap();
         let mut node = KnowledgeNode::new(NodeKind::Fact, "sealed-content")
             .with_title("sealed-title")
             .with_namespace("default");
@@ -5029,10 +5055,9 @@ mod tests {
     #[tokio::test]
     async fn test_sealed_node_update_refreshes_encrypted_payload() {
         let _reset = SealedRuntimeReset;
-        set_sealed_mode_enabled(true);
         set_runtime_root_key([9u8; 32], false);
 
-        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let store = SqliteNodeStore::open_in_memory_with_mode(true).unwrap();
         let mut node = KnowledgeNode::new(NodeKind::Fact, "v1-content")
             .with_title("v1-title")
             .with_namespace("default");
@@ -5089,12 +5114,11 @@ mod tests {
     #[tokio::test]
     async fn test_sealed_sqlite_file_does_not_contain_plaintext_marker() {
         let _reset = SealedRuntimeReset;
-        set_sealed_mode_enabled(true);
         set_runtime_root_key([11u8; 32], false);
 
         let dir = tempdir().expect("tempdir");
         let db_path = dir.path().join("mindvault.sqlite");
-        let store = SqliteNodeStore::open(&db_path).expect("open sqlite store");
+        let store = SqliteNodeStore::open_with_mode(&db_path, true).expect("open sqlite store");
         let marker = format!("sealed-sqlite-marker-{}", Uuid::now_v7());
 
         let mut node = KnowledgeNode::new(NodeKind::Fact, marker.clone())

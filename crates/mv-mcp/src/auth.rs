@@ -380,8 +380,10 @@ mod tests {
     #[test]
     fn apply_filters_enforces_namespace() {
         let scope = scope_with_namespace("work");
-        let mut filters = QueryFilters::default();
-        filters.namespace = Some("personal".to_string());
+        let mut filters = QueryFilters {
+            namespace: Some("personal".to_string()),
+            ..Default::default()
+        };
         assert!(scope.apply_filters(&mut filters).is_err());
     }
 
@@ -406,8 +408,10 @@ mod tests {
     #[test]
     fn apply_filters_rejects_unpermitted_kinds() {
         let scope = scope_with_kinds(vec![NodeKind::Fact]);
-        let mut filters = QueryFilters::default();
-        filters.kinds = Some(vec![NodeKind::Task]);
+        let mut filters = QueryFilters {
+            kinds: Some(vec![NodeKind::Task]),
+            ..Default::default()
+        };
         assert!(scope.apply_filters(&mut filters).is_err());
     }
 

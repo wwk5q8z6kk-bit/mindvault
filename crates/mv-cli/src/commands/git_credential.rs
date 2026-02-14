@@ -13,8 +13,7 @@ fn store() -> CredentialStore {
 fn host_to_secret_key(host: &str) -> String {
     let normalized = host
         .to_ascii_uppercase()
-        .replace('.', "_")
-        .replace('-', "_");
+        .replace(['.', '-'], "_");
     format!("GIT_CREDENTIAL_{normalized}")
 }
 

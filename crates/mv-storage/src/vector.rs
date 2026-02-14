@@ -19,7 +19,7 @@ use tracing::warn;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use crate::sealed_runtime::{runtime_root_key, sealed_mode_enabled};
+use crate::sealed_runtime::{runtime_root_key_for_scope, runtime_scope_from_parent};
 use crate::vault_crypto::VaultCrypto;
 use mv_core::*;
 
@@ -29,6 +29,7 @@ use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 const LANCEDB_SNAPSHOT_CONTEXT: &str = "sealed:lancedb:snapshot";
 const LANCEDB_SNAPSHOT_MAGIC: &[u8] = b"MVLDB1";
 const LANCEDB_SNAPSHOT_FILENAME: &str = "vectors.snapshot";
+type InMemoryVectorEntry = (Vec<f32>, Option<String>);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct SealedVectorSnapshot {
@@ -47,6 +48,7 @@ struct SealedVectorRow {
 #[derive(Debug, Clone)]
 struct SealedLanceSnapshotStore {
     snapshot_path: PathBuf,
+    runtime_scope: String,
 }
 
 impl SealedLanceSnapshotStore {
@@ -56,6 +58,7 @@ impl SealedLanceSnapshotStore {
 
         Ok(Self {
             snapshot_path: root.join(LANCEDB_SNAPSHOT_FILENAME),
+            runtime_scope: runtime_scope_from_parent(root),
         })
     }
 
@@ -70,13 +73,13 @@ impl SealedLanceSnapshotStore {
             }
         };
 
-        let kek = derive_lancedb_kek()?;
+        let kek = derive_lancedb_kek(&self.runtime_scope)?;
         let snapshot = open_snapshot_envelope(&kek, &bytes)?;
         Ok(Some(snapshot))
     }
 
     fn save_snapshot(&self, snapshot: &SealedVectorSnapshot) -> MvResult<()> {
-        let kek = derive_lancedb_kek()?;
+        let kek = derive_lancedb_kek(&self.runtime_scope)?;
         let encoded = seal_snapshot(&kek, snapshot)?;
         let tmp_path = self.snapshot_path.with_extension("tmp");
         std::fs::write(&tmp_path, encoded).map_err(|err| {
@@ -89,8 +92,8 @@ impl SealedLanceSnapshotStore {
     }
 }
 
-fn derive_lancedb_kek() -> MvResult<[u8; 32]> {
-    let root = runtime_root_key().ok_or(MvError::VaultSealed)?;
+fn derive_lancedb_kek(runtime_scope: &str) -> MvResult<[u8; 32]> {
+    let root = runtime_root_key_for_scope(runtime_scope).ok_or(MvError::VaultSealed)?;
     let mut crypto = VaultCrypto::new();
     crypto.set_master_key(Zeroizing::new(root));
     let key = crypto
@@ -161,11 +164,12 @@ pub struct LanceVectorStore {
     table: OnceCell<lancedb::Table>,
     namespace_supported: AtomicBool,
     sealed_snapshot: Option<SealedLanceSnapshotStore>,
+    sealed_mode: bool,
 }
 
 pub struct InMemoryVectorStore {
     dimensions: usize,
-    entries: RwLock<HashMap<Uuid, (Vec<f32>, Option<String>)>>,
+    entries: RwLock<HashMap<Uuid, InMemoryVectorEntry>>,
 }
 
 impl InMemoryVectorStore {
@@ -199,7 +203,11 @@ impl InMemoryVectorStore {
 
 impl LanceVectorStore {
     pub async fn open(path: &Path, dimensions: usize) -> MvResult<Self> {
-        let (db, sealed_snapshot) = if sealed_mode_enabled() {
+        Self::open_with_mode(path, dimensions, false).await
+    }
+
+    pub async fn open_with_mode(path: &Path, dimensions: usize, sealed_mode: bool) -> MvResult<Self> {
+        let (db, sealed_snapshot) = if sealed_mode {
             let sealed_snapshot = SealedLanceSnapshotStore::open(path)?;
             let memory_uri = format!("memory://mindvault-{}", Uuid::now_v7());
             let db = lancedb::connect(&memory_uri)
@@ -225,6 +233,7 @@ impl LanceVectorStore {
             table: OnceCell::new(),
             namespace_supported: AtomicBool::new(true),
             sealed_snapshot,
+            sealed_mode,
         };
 
         store.ensure_table().await?;
@@ -305,6 +314,9 @@ impl LanceVectorStore {
     }
 
     async fn restore_sealed_snapshot(&self) -> MvResult<()> {
+        if !self.sealed_mode {
+            return Ok(());
+        }
         let Some(snapshot_store) = &self.sealed_snapshot else {
             return Ok(());
         };
@@ -341,6 +353,9 @@ impl LanceVectorStore {
     }
 
     async fn persist_sealed_snapshot_if_needed(&self) -> MvResult<()> {
+        if !self.sealed_mode {
+            return Ok(());
+        }
         let Some(snapshot_store) = &self.sealed_snapshot else {
             return Ok(());
         };
@@ -1106,9 +1121,7 @@ fn fastembed_embedding_model_from_name(model_name: &str) -> Option<EmbeddingMode
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sealed_runtime::{
-        clear_runtime_root_key, set_runtime_root_key, set_sealed_mode_enabled,
-    };
+    use crate::sealed_runtime::{clear_runtime_root_key, set_runtime_root_key};
     use tempfile::tempdir;
 
     fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -1123,7 +1136,6 @@ mod tests {
     impl Drop for SealedRuntimeReset {
         fn drop(&mut self) {
             clear_runtime_root_key();
-            set_sealed_mode_enabled(false);
         }
     }
 
@@ -1155,11 +1167,10 @@ mod tests {
     #[tokio::test]
     async fn sealed_lancedb_open_without_runtime_key_succeeds() {
         let _reset = SealedRuntimeReset;
-        set_sealed_mode_enabled(true);
         clear_runtime_root_key();
 
         let dir = tempdir().expect("tempdir");
-        let opened = LanceVectorStore::open(dir.path(), 8).await;
+        let opened = LanceVectorStore::open_with_mode(dir.path(), 8, true).await;
         let err = opened.err();
         assert!(
             err.is_none(),
@@ -1171,14 +1182,15 @@ mod tests {
     #[tokio::test]
     async fn sealed_lancedb_snapshot_roundtrip() {
         let _reset = SealedRuntimeReset;
-        set_sealed_mode_enabled(true);
         set_runtime_root_key([13u8; 32], false);
 
         let dir = tempdir().expect("tempdir");
         let id = Uuid::now_v7();
         let marker = format!("sealed-vector-content-{}", Uuid::now_v7());
 
-        let store = LanceVectorStore::open(dir.path(), 3).await.unwrap();
+        let store = LanceVectorStore::open_with_mode(dir.path(), 3, true)
+            .await
+            .unwrap();
         store
             .upsert(
                 id,
@@ -1201,7 +1213,9 @@ mod tests {
         );
         drop(store);
 
-        let reopened = LanceVectorStore::open(dir.path(), 3).await.unwrap();
+        let reopened = LanceVectorStore::open_with_mode(dir.path(), 3, true)
+            .await
+            .unwrap();
         let hits = reopened
             .search(vec![0.9, 0.1, 0.0], 10, 0.0, Some("default"))
             .await

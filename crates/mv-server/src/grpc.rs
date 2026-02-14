@@ -222,123 +222,6 @@ fn ensure_vault_unsealed(state: &AppState) -> Result<(), Status> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::state::AppState;
-    use mv_engine::config::EngineConfig;
-    use mv_engine::engine::MindVaultEngine;
-    use tempfile::TempDir;
-
-    #[tokio::test]
-    async fn auth_context_from_request_with_state_resolves_access_key() {
-        let temp_dir = TempDir::new().expect("temp dir");
-        let mut config = EngineConfig::default();
-        config.data_dir = temp_dir.path().to_string_lossy().to_string();
-        config.embedding.provider = "noop".into();
-        let engine = MindVaultEngine::init(config).await.expect("engine init");
-        let state = AppState::new(Arc::new(engine));
-
-        let templates = state
-            .engine
-            .list_permission_templates(10, 0)
-            .await
-            .expect("templates");
-        let template_id = templates.first().expect("template exists").id;
-        let (_key, token) = state
-            .engine
-            .create_access_key(template_id, Some("grpc-test".into()), None)
-            .await
-            .expect("create access key");
-
-        let mut request = Request::new(());
-        request
-            .metadata_mut()
-            .insert("authorization", format!("Bearer {token}").parse().unwrap());
-
-        let auth = auth_context_from_request_with_state(&state, &request)
-            .await
-            .expect("auth ok");
-
-        assert!(auth.subject.unwrap_or_default().starts_with("access-key:"));
-    }
-
-    #[tokio::test]
-    async fn auth_context_from_request_with_state_resolves_consumer_token() {
-        let temp_dir = TempDir::new().expect("temp dir");
-        let mut config = EngineConfig::default();
-        config.data_dir = temp_dir.path().to_string_lossy().to_string();
-        config.embedding.provider = "noop".into();
-        let engine = MindVaultEngine::init(config).await.expect("engine init");
-        let state = AppState::new(Arc::new(engine));
-
-        let (_profile, token) = state
-            .engine
-            .create_consumer("grpc-consumer", None)
-            .await
-            .expect("create consumer");
-
-        let mut request = Request::new(());
-        request
-            .metadata_mut()
-            .insert("authorization", format!("Bearer {token}").parse().unwrap());
-
-        let auth = auth_context_from_request_with_state(&state, &request)
-            .await
-            .expect("auth ok");
-
-        assert_eq!(auth.consumer_name.as_deref(), Some("grpc-consumer"));
-    }
-
-    #[tokio::test]
-    async fn ensure_vault_unsealed_returns_unavailable_when_sealed() {
-        let temp_dir = TempDir::new().expect("temp dir");
-        let mut config = EngineConfig::default();
-        config.data_dir = temp_dir.path().to_string_lossy().to_string();
-        config.embedding.provider = "noop".into();
-        config.sealed_mode = true;
-        let engine = MindVaultEngine::init(config).await.expect("engine init");
-        engine
-            .keychain
-            .initialize_vault("test-password", false, "grpc-test")
-            .await
-            .expect("vault initialized");
-        engine
-            .keychain
-            .seal("grpc-test")
-            .await
-            .expect("vault sealed");
-        let state = AppState::new(Arc::new(engine));
-
-        let err = ensure_vault_unsealed(&state).expect_err("sealed vault must fail");
-        assert_eq!(err.code(), tonic::Code::Unavailable);
-        assert_eq!(err.message(), "Vault sealed - please unseal");
-    }
-
-    #[tokio::test]
-    async fn ensure_vault_unsealed_allows_unsealed_state() {
-        let temp_dir = TempDir::new().expect("temp dir");
-        let mut config = EngineConfig::default();
-        config.data_dir = temp_dir.path().to_string_lossy().to_string();
-        config.embedding.provider = "noop".into();
-        config.sealed_mode = true;
-        let engine = MindVaultEngine::init(config).await.expect("engine init");
-        engine
-            .keychain
-            .initialize_vault("test-password", false, "grpc-test")
-            .await
-            .expect("vault initialized");
-        engine
-            .keychain
-            .unseal("test-password", "grpc-test")
-            .await
-            .expect("vault unsealed");
-        let state = AppState::new(Arc::new(engine));
-
-        ensure_vault_unsealed(&state).expect("unsealed vault should pass");
-    }
-}
-
 #[tonic::async_trait]
 impl MindVaultService for MindVaultGrpc {
     async fn store_node(
@@ -370,7 +253,7 @@ impl MindVaultService for MindVaultGrpc {
             req.importance,
             Some(&metadata),
         )
-        .map_err(Status::invalid_argument)?;
+        .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let mut node = KnowledgeNode::new(kind, req.content);
         if let Some(title) = req.title {
@@ -507,7 +390,7 @@ impl MindVaultService for MindVaultGrpc {
             Some(node.importance),
             Some(&node.metadata),
         )
-        .map_err(Status::invalid_argument)?;
+        .map_err(|e| Status::invalid_argument(e.to_string()))?;
         if node.namespace != existing_namespace {
             enforce_namespace_quota(&self.state.engine, &node.namespace)
                 .await
@@ -577,7 +460,7 @@ impl MindVaultService for MindVaultGrpc {
         ensure_vault_unsealed(&self.state)?;
 
         let req = request.into_inner();
-        validate_query_text("text", &req.text).map_err(Status::invalid_argument)?;
+        validate_query_text("text", &req.text).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let strategy: SearchStrategy = if req.strategy.is_empty() {
             SearchStrategy::Hybrid
@@ -587,7 +470,7 @@ impl MindVaultService for MindVaultGrpc {
                 .map_err(|e: String| Status::invalid_argument(e))?
         };
 
-        let kinds = parse_kind_list(&req.kinds).map_err(Status::invalid_argument)?;
+        let kinds = parse_kind_list(&req.kinds).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let requested_namespace = req.namespace.filter(|ns| !ns.is_empty());
         let namespace = scoped_namespace_grpc(&auth, requested_namespace)?;
@@ -596,7 +479,7 @@ impl MindVaultService for MindVaultGrpc {
         } else {
             10
         };
-        validate_recall_limit(limit).map_err(Status::invalid_argument)?;
+        validate_recall_limit(limit).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let query = MemoryQuery {
             text: req.text,
@@ -646,7 +529,7 @@ impl MindVaultService for MindVaultGrpc {
 
         let req = request.into_inner();
 
-        let kinds = parse_kind_list(&req.kinds).map_err(Status::invalid_argument)?;
+        let kinds = parse_kind_list(&req.kinds).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let requested_namespace = req.namespace.filter(|ns| !ns.is_empty());
         let namespace = scoped_namespace_grpc(&auth, requested_namespace)?;
@@ -655,7 +538,7 @@ impl MindVaultService for MindVaultGrpc {
         } else {
             50
         };
-        validate_list_limit(limit).map_err(Status::invalid_argument)?;
+        validate_list_limit(limit).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let filters = QueryFilters {
             namespace,
@@ -750,7 +633,7 @@ impl MindVaultService for MindVaultGrpc {
         let uuid = Uuid::parse_str(&req.node_id)
             .map_err(|e| Status::invalid_argument(format!("invalid UUID: {e}")))?;
         let depth = if req.depth > 0 { req.depth as usize } else { 2 };
-        validate_depth(depth).map_err(Status::invalid_argument)?;
+        validate_depth(depth).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let source_node = self
             .state
@@ -884,12 +767,8 @@ async fn ensure_admin(
 fn map_keychain_status(err: mv_core::MvError) -> Status {
     match &err {
         mv_core::MvError::VaultSealed => Status::failed_precondition(err.to_string()),
-        mv_core::MvError::Keychain(ref msg) if msg.contains("not found") => {
-            Status::not_found(err.to_string())
-        }
-        mv_core::MvError::Keychain(ref msg) if msg.contains("invalid password") => {
-            Status::unauthenticated(err.to_string())
-        }
+        mv_core::MvError::KeychainNotFound(_) => Status::not_found(err.to_string()),
+        mv_core::MvError::KeychainInvalidPassword => Status::unauthenticated(err.to_string()),
         _ => Status::internal(err.to_string()),
     }
 }
@@ -1391,5 +1270,130 @@ impl KeychainService for KeychainGrpc {
                 None
             },
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+    use mv_engine::config::EngineConfig;
+    use mv_engine::engine::MindVaultEngine;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn auth_context_from_request_with_state_resolves_access_key() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        config.embedding.provider = "noop".into();
+        let engine = MindVaultEngine::init(config).await.expect("engine init");
+        let state = AppState::new(Arc::new(engine));
+
+        let templates = state
+            .engine
+            .list_permission_templates(10, 0)
+            .await
+            .expect("templates");
+        let template_id = templates.first().expect("template exists").id;
+        let (_key, token) = state
+            .engine
+            .create_access_key(template_id, Some("grpc-test".into()), None)
+            .await
+            .expect("create access key");
+
+        let mut request = Request::new(());
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+
+        let auth = auth_context_from_request_with_state(&state, &request)
+            .await
+            .expect("auth ok");
+
+        assert!(auth.subject.unwrap_or_default().starts_with("access-key:"));
+    }
+
+    #[tokio::test]
+    async fn auth_context_from_request_with_state_resolves_consumer_token() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        config.embedding.provider = "noop".into();
+        let engine = MindVaultEngine::init(config).await.expect("engine init");
+        let state = AppState::new(Arc::new(engine));
+
+        let (_profile, token) = state
+            .engine
+            .create_consumer("grpc-consumer", None)
+            .await
+            .expect("create consumer");
+
+        let mut request = Request::new(());
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+
+        let auth = auth_context_from_request_with_state(&state, &request)
+            .await
+            .expect("auth ok");
+
+        assert_eq!(auth.consumer_name.as_deref(), Some("grpc-consumer"));
+    }
+
+    #[tokio::test]
+    async fn ensure_vault_unsealed_returns_unavailable_when_sealed() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            sealed_mode: true,
+            ..Default::default()
+        };
+        config.embedding.provider = "noop".into();
+        let engine = MindVaultEngine::init(config).await.expect("engine init");
+        engine
+            .keychain
+            .initialize_vault("test-password", false, "grpc-test")
+            .await
+            .expect("vault initialized");
+        engine
+            .keychain
+            .seal("grpc-test")
+            .await
+            .expect("vault sealed");
+        let state = AppState::new(Arc::new(engine));
+
+        let err = ensure_vault_unsealed(&state).expect_err("sealed vault must fail");
+        assert_eq!(err.code(), tonic::Code::Unavailable);
+        assert_eq!(err.message(), "Vault sealed - please unseal");
+    }
+
+    #[tokio::test]
+    async fn ensure_vault_unsealed_allows_unsealed_state() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            sealed_mode: true,
+            ..Default::default()
+        };
+        config.embedding.provider = "noop".into();
+        let engine = MindVaultEngine::init(config).await.expect("engine init");
+        engine
+            .keychain
+            .initialize_vault("test-password", false, "grpc-test")
+            .await
+            .expect("vault initialized");
+        engine
+            .keychain
+            .unseal("test-password", "grpc-test")
+            .await
+            .expect("vault unsealed");
+        let state = AppState::new(Arc::new(engine));
+
+        ensure_vault_unsealed(&state).expect("unsealed vault should pass");
     }
 }

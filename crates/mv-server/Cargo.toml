@@ -8,14 +8,15 @@ description = "Axum REST + tonic gRPC server for MindVault"
 repository.workspace = true
 
 [features]
-default = ["local-embeddings"]
+default = ["local-embeddings", "image-embeddings"]
 local-embeddings = ["mv-engine/local-embeddings"]
+image-embeddings = ["mv-engine/image-embeddings"]
 local-llm = ["mv-engine/local-llm"]
 wip = ["mv-engine/wip"]
 
 [dependencies]
 mv-core = { workspace = true }
-mv-engine = { workspace = true, features = ["image-embeddings"] }
+mv-engine = { workspace = true }
 mv-storage = { workspace = true }
 mv-plugin = { workspace = true }
 axum = { workspace = true }
@@ -41,7 +42,7 @@ bytes = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 async-stream = "0.3"
 utoipa = { workspace = true }
-utoipa-swagger-ui = { workspace = true }
+utoipa-swagger-ui = { workspace = true } # set SWAGGER_UI_DOWNLOAD_URL for offline builds (file:// or http(s)://)
 base64 = { workspace = true }
 toml = { workspace = true }
 rand = { workspace = true }

@@ -1,7 +1,8 @@
 import { writable } from 'svelte/store';
 import { browser } from '$app/environment';
+import { STORAGE_KEYS } from '$lib/constants/storage-keys';
 
-const STORAGE_KEY = 'mv-view-preferences';
+const STORAGE_KEY = STORAGE_KEYS.VIEW_PREFERENCES;
 
 interface ViewPreferences {
 	tasks: string;

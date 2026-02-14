@@ -358,8 +358,10 @@ mod tests {
         let temp_dir = unique_test_dir("sealed-preflight-fail");
         std::fs::create_dir_all(temp_dir.join("tantivy")).expect("create legacy dir");
 
-        let mut config = EngineConfig::default();
-        config.data_dir = temp_dir.to_string_lossy().to_string();
+        let config = EngineConfig {
+            data_dir: temp_dir.to_string_lossy().to_string(),
+            ..Default::default()
+        };
         let err = evaluate_sealed_storage_preflight(&config).expect_err("must fail");
         assert!(err.contains("legacy index directory present"));
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -368,8 +370,10 @@ mod tests {
     #[test]
     fn sealed_storage_preflight_passes_clean_data_dir() {
         let temp_dir = unique_test_dir("sealed-preflight-pass");
-        let mut config = EngineConfig::default();
-        config.data_dir = temp_dir.to_string_lossy().to_string();
+        let config = EngineConfig {
+            data_dir: temp_dir.to_string_lossy().to_string(),
+            ..Default::default()
+        };
         evaluate_sealed_storage_preflight(&config).expect("clean scan should pass");
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

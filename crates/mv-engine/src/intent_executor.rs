@@ -135,7 +135,7 @@ impl IntentExecutor {
 
         // Create a new task node
         let mut task = KnowledgeNode::new(NodeKind::Task, task_content.clone())
-            .with_title(&self.extract_task_title(&task_content))
+            .with_title(self.extract_task_title(&task_content))
             .with_namespace(&node.namespace);
 
         // Copy tags from source
@@ -313,22 +313,22 @@ impl IntentExecutor {
 
         let now = Utc::now();
         let reminder_at = match relative {
-            "today" => now.date_naive().and_hms_opt(9, 0, 0).unwrap(),
-            "tomorrow" => (now + Duration::days(1)).date_naive().and_hms_opt(9, 0, 0).unwrap(),
-            "next_week" => (now + Duration::weeks(1)).date_naive().and_hms_opt(9, 0, 0).unwrap(),
-            "next_month" => (now + Duration::days(30)).date_naive().and_hms_opt(9, 0, 0).unwrap(),
-            "in_2_days" => (now + Duration::days(2)).date_naive().and_hms_opt(9, 0, 0).unwrap(),
-            "in_3_days" => (now + Duration::days(3)).date_naive().and_hms_opt(9, 0, 0).unwrap(),
+            "today" => now.date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time"),
+            "tomorrow" => (now + Duration::days(1)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time"),
+            "next_week" => (now + Duration::weeks(1)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time"),
+            "next_month" => (now + Duration::days(30)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time"),
+            "in_2_days" => (now + Duration::days(2)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time"),
+            "in_3_days" => (now + Duration::days(3)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time"),
             other => {
                 // Try to parse "in_N_days" pattern
                 if other.starts_with("in_") && other.ends_with("_days") {
                     if let Ok(days) = other[3..other.len() - 5].parse::<i64>() {
-                        (now + Duration::days(days)).date_naive().and_hms_opt(9, 0, 0).unwrap()
+                        (now + Duration::days(days)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time")
                     } else {
-                        (now + Duration::days(1)).date_naive().and_hms_opt(9, 0, 0).unwrap()
+                        (now + Duration::days(1)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time")
                     }
                 } else {
-                    (now + Duration::days(1)).date_naive().and_hms_opt(9, 0, 0).unwrap()
+                    (now + Duration::days(1)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time")
                 }
             }
         };

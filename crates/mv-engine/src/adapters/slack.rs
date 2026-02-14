@@ -88,12 +88,12 @@ impl ExternalAdapter for SlackAdapter {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             let err = format!("slack webhook returned {status}: {body}");
-            *self.last_error.lock().unwrap() = Some(err.clone());
+            *self.last_error.lock().expect("last_error mutex poisoned") = Some(err.clone());
             return Err(MvError::Internal(err));
         }
 
-        *self.last_send.lock().unwrap() = Some(Utc::now());
-        *self.last_error.lock().unwrap() = None;
+        *self.last_send.lock().expect("last_send mutex poisoned") = Some(Utc::now());
+        *self.last_error.lock().expect("last_error mutex poisoned") = None;
         Ok(())
     }
 
@@ -180,7 +180,7 @@ impl ExternalAdapter for SlackAdapter {
             .unwrap_or_else(|| cursor.unwrap_or("0").to_string());
 
         if !messages.is_empty() {
-            *self.last_receive.lock().unwrap() = Some(Utc::now());
+            *self.last_receive.lock().expect("last_receive mutex poisoned") = Some(Utc::now());
         }
 
         Ok((messages, new_cursor))
@@ -210,9 +210,9 @@ impl ExternalAdapter for SlackAdapter {
     }
 
     fn status(&self) -> AdapterStatus {
-        let error = self.last_error.lock().unwrap().clone();
-        let last_send = *self.last_send.lock().unwrap();
-        let last_receive = *self.last_receive.lock().unwrap();
+        let error = self.last_error.lock().expect("last_error mutex poisoned").clone();
+        let last_send = *self.last_send.lock().expect("last_send mutex poisoned");
+        let last_receive = *self.last_receive.lock().expect("last_receive mutex poisoned");
         AdapterStatus {
             adapter_type: AdapterType::Slack,
             name: self.config.name.clone(),
@@ -311,7 +311,7 @@ mod tests {
             .await;
 
         let config = AdapterConfig::new(AdapterType::Slack, "test-slack")
-            .with_setting("webhook_url", &server.url());
+            .with_setting("webhook_url", server.url());
         let adapter = SlackAdapter::new(config).unwrap();
         let msg = AdapterOutboundMessage {
             channel: "#test".into(),
@@ -336,7 +336,7 @@ mod tests {
             .await;
 
         let config = AdapterConfig::new(AdapterType::Slack, "test-slack")
-            .with_setting("webhook_url", &server.url());
+            .with_setting("webhook_url", server.url());
         let adapter = SlackAdapter::new(config).unwrap();
         let msg = AdapterOutboundMessage {
             channel: "#test".into(),
@@ -361,7 +361,7 @@ mod tests {
             .await;
 
         let config = AdapterConfig::new(AdapterType::Slack, "test-slack")
-            .with_setting("webhook_url", &server.url());
+            .with_setting("webhook_url", server.url());
         let adapter = SlackAdapter::new(config).unwrap();
         let msg = AdapterOutboundMessage {
             channel: "#test".into(),

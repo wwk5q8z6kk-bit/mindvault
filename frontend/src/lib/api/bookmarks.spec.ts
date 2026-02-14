@@ -6,7 +6,7 @@ import {
 	normalizeBookmarkUrl,
 	setBookmarkRead
 } from './bookmarks';
-import { markApiSuccess } from '$lib/stores/api-health';
+import { markApiSuccess } from '$lib/api/client';
 
 const API_BASE = 'http://127.0.0.1:9470';
 

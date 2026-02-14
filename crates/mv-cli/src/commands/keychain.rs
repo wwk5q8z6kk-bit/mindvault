@@ -349,18 +349,25 @@ pub async fn doctor(config_path: &str) -> Result<()> {
         println!("  sealed_mode: disabled (scan still checks for legacy plaintext artifacts)");
     }
 
-    let report = mv_server::scan_sealed_storage(&config)
-        .map_err(|err| anyhow::anyhow!("sealed storage scan failed: {err}"))?;
-    if report.is_clean() {
-        println!("result: PASS");
-        return Ok(());
-    }
+    #[cfg(feature = "server")]
+    {
+        let report = mv_server::scan_sealed_storage(&config)
+            .map_err(|err| anyhow::anyhow!("sealed storage scan failed: {err}"))?;
+        if report.is_clean() {
+            println!("result: PASS");
+            return Ok(());
+        }
 
-    println!("result: FAIL");
-    for finding in report.findings {
-        println!("  - {finding}");
+        println!("result: FAIL");
+        for finding in report.findings {
+            println!("  - {finding}");
+        }
+        bail!("sealed storage doctor found legacy/plaintext artifacts")
     }
-    bail!("sealed storage doctor found legacy/plaintext artifacts")
+    #[cfg(not(feature = "server"))]
+    {
+        bail!("keychain doctor requires the 'server' feature (rebuild with --features server)")
+    }
 }
 
 pub async fn seal(config_path: &str) -> Result<()> {
@@ -454,7 +461,7 @@ pub async fn domain_list(config_path: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<38} {:<20} {:<8} {}", "ID", "Name", "Creds", "Status");
+    println!("{:<38} {:<20} {:<8} Status", "ID", "Name", "Creds");
     println!("{}", "─".repeat(76));
     for d in &domains {
         let status = if d.revoked_at.is_some() {
@@ -574,8 +581,8 @@ pub async fn list_credentials(
     }
 
     println!(
-        "{:<38} {:<20} {:<12} {:<10} {}",
-        "ID", "Name", "Kind", "State", "Epoch"
+        "{:<38} {:<20} {:<12} {:<10} Epoch",
+        "ID", "Name", "Kind", "State"
     );
     println!("{}", "─".repeat(90));
     for c in &creds {
@@ -661,14 +668,14 @@ pub async fn delegate_list(credential_id: &str, config_path: &str) -> Result<()>
     }
 
     println!(
-        "{:<38} {:<20} {:<8} {:<8} {}",
-        "ID", "Delegatee", "Depth", "Max", "Status"
+        "{:<38} {:<20} {:<8} {:<8} Status",
+        "ID", "Delegatee", "Depth", "Max"
     );
     println!("{}", "─".repeat(82));
     for d in &delegations {
         let status = if d.revoked_at.is_some() {
             "revoked"
-        } else if d.expires_at.map_or(false, |exp| exp < chrono::Utc::now()) {
+        } else if d.expires_at.is_some_and(|exp| exp < chrono::Utc::now()) {
             "expired"
         } else {
             "active"
@@ -753,8 +760,8 @@ pub async fn alerts(limit: u32, config_path: &str) -> Result<()> {
     }
 
     println!(
-        "{:<38} {:<22} {:<10} {}",
-        "ID", "Type", "Severity", "Timestamp"
+        "{:<38} {:<22} {:<10} Timestamp",
+        "ID", "Type", "Severity"
     );
     println!("{}", "─".repeat(90));
     for a in &alerts {

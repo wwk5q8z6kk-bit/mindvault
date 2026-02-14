@@ -7,11 +7,13 @@ pub mod git_credential;
 pub mod graph;
 pub mod import;
 pub mod keychain;
+#[cfg(feature = "server")]
 pub mod mcp;
 pub mod profile;
 pub mod recall;
 pub mod search;
 pub mod secret;
+#[cfg(feature = "server")]
 pub mod server;
 pub mod stats;
 pub mod store;

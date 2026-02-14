@@ -177,6 +177,12 @@ pub struct MultiModalPipeline {
     processors: Vec<Box<dyn ModalityProcessor>>,
 }
 
+impl Default for MultiModalPipeline {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MultiModalPipeline {
     pub fn new() -> Self {
         Self {
@@ -196,7 +202,7 @@ impl MultiModalPipeline {
         node: &KnowledgeNode,
     ) -> MvResult<Option<ProcessingResult>> {
         for processor in &self.processors {
-            if processor.handles().iter().any(|&ct| ct == content_type) {
+            if processor.handles().contains(&content_type) {
                 let result = processor.process(file_path, node).await?;
                 return Ok(Some(result));
             }
@@ -208,7 +214,7 @@ impl MultiModalPipeline {
     pub fn can_process(&self, content_type: &str) -> bool {
         self.processors
             .iter()
-            .any(|p| p.handles().iter().any(|&ct| ct == content_type))
+            .any(|p| p.handles().contains(&content_type))
     }
 
     /// Return all content types that are supported by registered processors.

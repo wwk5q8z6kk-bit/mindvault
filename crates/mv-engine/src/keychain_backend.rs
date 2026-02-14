@@ -37,7 +37,7 @@ impl KeychainBackend {
     fn resolve_domain(&self) -> Result<Option<Uuid>, CredentialError> {
         // Fast path: check cache
         {
-            let cached = self.api_keys_domain.lock().unwrap();
+            let cached = self.api_keys_domain.lock().expect("api_keys_domain mutex poisoned");
             if let Some(id) = *cached {
                 return Ok(Some(id));
             }
@@ -57,7 +57,7 @@ impl KeychainBackend {
 
         // Cache it
         {
-            let mut cached = self.api_keys_domain.lock().unwrap();
+            let mut cached = self.api_keys_domain.lock().expect("api_keys_domain mutex poisoned");
             *cached = Some(domain_id);
         }
 

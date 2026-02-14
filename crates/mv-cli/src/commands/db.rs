@@ -238,7 +238,8 @@ pub async fn rebuild_vectors(
     let timestamp = Utc::now().format("%Y%m%d%H%M%S").to_string();
     let rebuild_dir = data_dir.join(format!("lancedb-rebuild-{timestamp}"));
 
-    let node_store = mv_storage::sqlite::SqliteNodeStore::open_read_only(&sqlite_path)?;
+    let node_store =
+        mv_storage::sqlite::SqliteNodeStore::open_read_only_with_mode(&sqlite_path, config.sealed_mode)?;
     let total_nodes = node_store.count(&QueryFilters::default()).await?;
 
     println!("Vector rebuild plan");
@@ -291,7 +292,9 @@ pub async fn rebuild_vectors(
     }
 
     println!("Creating new LanceDB index...");
-    let vectors = LanceVectorStore::open(&rebuild_dir, runtime.dimensions).await?;
+    let vectors =
+        LanceVectorStore::open_with_mode(&rebuild_dir, runtime.dimensions, config.sealed_mode)
+            .await?;
 
     let mut offset = 0usize;
     let mut processed = 0usize;

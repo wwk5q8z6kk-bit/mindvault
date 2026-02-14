@@ -120,7 +120,7 @@ fn trim_reference_url_suffix(mut value: String) -> String {
 }
 
 fn canonicalize_reference_url(value: &str) -> Option<String> {
-    let first_token = value.trim().split_whitespace().next()?;
+    let first_token = value.split_whitespace().next()?;
     if first_token.is_empty() {
         return None;
     }

@@ -1,7 +1,8 @@
 import { writable, derived } from 'svelte/store';
 import { browser } from '$app/environment';
+import { STORAGE_KEYS } from '$lib/constants/storage-keys';
 
-const STORAGE_KEY = 'mv_recent_items';
+const STORAGE_KEY = STORAGE_KEYS.RECENT_ITEMS;
 const MAX_ITEMS = 15;
 
 export type RecentItemType = 'note' | 'task' | 'search';

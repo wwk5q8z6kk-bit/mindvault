@@ -23,6 +23,12 @@ pub struct AudioProcessor {
     local_available: bool,
 }
 
+impl Default for AudioProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AudioProcessor {
     pub fn new() -> Self {
         let whisper_bin = std::env::var("MINDVAULT_WHISPER_BIN")
@@ -219,7 +225,7 @@ impl ModalityProcessor for AudioProcessor {
         tracing::info!(file_path, "Processing audio file");
 
         check_file_size(file_path)
-            .map_err(|e| mv_core::MvError::Storage(e))?;
+            .map_err(mv_core::MvError::Storage)?;
 
         // Try local Whisper first, then API fallback
         let transcript = if self.local_available {

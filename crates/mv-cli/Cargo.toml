@@ -8,8 +8,9 @@ description = "MindVault CLI — local-first knowledge memory for humans and AI 
 repository.workspace = true
 
 [features]
-default = []
-local-embeddings = ["mv-engine/local-embeddings", "mv-server/local-embeddings", "mv-mcp/local-embeddings"]
+default = ["server"]
+server = ["dep:mv-server", "dep:mv-mcp"]
+local-embeddings = ["mv-engine/local-embeddings", "mv-server?/local-embeddings", "mv-mcp?/local-embeddings"]
 
 [[bin]]
 name = "mv"
@@ -18,8 +19,8 @@ path = "src/main.rs"
 [dependencies]
 mv-core = { workspace = true }
 mv-engine = { workspace = true }
-mv-mcp = { workspace = true }
-mv-server = { workspace = true }
+mv-mcp = { workspace = true, optional = true }
+mv-server = { workspace = true, optional = true }
 mv-storage = { workspace = true }
 clap = { workspace = true }
 figment = { workspace = true }

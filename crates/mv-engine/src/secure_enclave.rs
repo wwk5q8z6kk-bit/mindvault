@@ -4,8 +4,6 @@
 //! Secure Enclave-backed EC keys (ECIES). Also provides screen-lock
 //! auto-seal notifications.
 
-#![cfg(target_os = "macos")]
-
 use security_framework::item::{ItemClass, ItemSearchOptions, Reference, SearchResult};
 use security_framework::key::{Algorithm, GenerateKeyOptions, KeyType, SecKey, Token};
 

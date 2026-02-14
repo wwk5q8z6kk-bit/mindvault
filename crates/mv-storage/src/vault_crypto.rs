@@ -128,7 +128,13 @@ impl VaultCrypto {
         // Lock key memory to prevent swapping to disk
         #[cfg(unix)]
         unsafe {
-            libc::mlock(key.as_ptr() as *const libc::c_void, KEY_SIZE);
+            let ret = libc::mlock(key.as_ptr() as *const libc::c_void, KEY_SIZE);
+            if ret != 0 {
+                warn!(
+                    errno = std::io::Error::last_os_error().raw_os_error(),
+                    "mlock failed for master key; key memory may be swappable"
+                );
+            }
         }
 
         self.master_key = Some(key);
@@ -141,7 +147,13 @@ impl VaultCrypto {
         if let Some(ref key) = self.master_key {
             #[cfg(unix)]
             unsafe {
-                libc::munlock(key.as_ptr() as *const libc::c_void, KEY_SIZE);
+                let ret = libc::munlock(key.as_ptr() as *const libc::c_void, KEY_SIZE);
+                if ret != 0 {
+                    warn!(
+                        errno = std::io::Error::last_os_error().raw_os_error(),
+                        "munlock failed for master key"
+                    );
+                }
             }
         }
         self.master_key = None;
@@ -162,7 +174,13 @@ impl VaultCrypto {
     pub fn set_master_key(&mut self, key: Zeroizing<[u8; KEY_SIZE]>) {
         #[cfg(unix)]
         unsafe {
-            libc::mlock(key.as_ptr() as *const libc::c_void, KEY_SIZE);
+            let ret = libc::mlock(key.as_ptr() as *const libc::c_void, KEY_SIZE);
+            if ret != 0 {
+                warn!(
+                    errno = std::io::Error::last_os_error().raw_os_error(),
+                    "mlock failed for master key; key memory may be swappable"
+                );
+            }
         }
         self.master_key = Some(key);
     }
@@ -218,10 +236,7 @@ impl VaultCrypto {
     }
 
     fn master_key(&self) -> Result<&[u8; KEY_SIZE], VaultCryptoError> {
-        self.master_key
-            .as_ref()
-            .map(|k| &**k)
-            .ok_or(VaultCryptoError::Sealed)
+        self.master_key.as_deref().ok_or(VaultCryptoError::Sealed)
     }
 
     /// Derive a domain-level key: HKDF-SHA256(master_key, info=derivation_info).
@@ -300,7 +315,7 @@ impl VaultCrypto {
         cred_info: &str,
     ) -> Result<String, VaultCryptoError> {
         let key = self.derive_credential_key(domain_info, cred_info)?;
-        let encrypted = aes_gcm_encrypt(&*key, plaintext)?;
+        let encrypted = aes_gcm_encrypt(&key, plaintext)?;
         Ok(BASE64.encode(encrypted))
     }
 
@@ -315,7 +330,7 @@ impl VaultCrypto {
         let data = BASE64
             .decode(encoded)
             .map_err(|e| VaultCryptoError::Decryption(format!("base64: {e}")))?;
-        aes_gcm_decrypt(&*key, &data).map(Zeroizing::new)
+        aes_gcm_decrypt(&key, &data).map(Zeroizing::new)
     }
 
     /// Decrypt using a specific epoch's grace key (for rotation grace period).
@@ -330,7 +345,7 @@ impl VaultCrypto {
         let data = BASE64
             .decode(encoded)
             .map_err(|e| VaultCryptoError::Decryption(format!("base64: {e}")))?;
-        aes_gcm_decrypt(&*key, &data).map(Zeroizing::new)
+        aes_gcm_decrypt(&key, &data).map(Zeroizing::new)
     }
 
     /// Generate a verification blob by encrypting a known sentinel.
@@ -354,6 +369,7 @@ impl VaultCrypto {
 
     /// Compute an HMAC-SHA256 chain hash for delegation verification.
     /// `depth` and `max_depth` are included in the HMAC input for strengthened delegation chains.
+    #[allow(clippy::too_many_arguments)]
     pub fn compute_chain_hash(
         &self,
         domain_info: &str,
@@ -470,6 +486,7 @@ impl VaultCrypto {
     }
 
     /// Verify an audit entry's HMAC signature.
+    #[allow(clippy::too_many_arguments)]
     pub fn verify_audit_signature(
         &self,
         sequence: i64,
@@ -579,7 +596,7 @@ impl VaultCrypto {
     /// Returns a base64-encoded ciphertext.
     pub fn encrypt_metadata(&self, plaintext: &str) -> Result<String, VaultCryptoError> {
         let key = self.derive_domain_key("metadata-encryption")?;
-        let encrypted = aes_gcm_encrypt(&*key, plaintext.as_bytes())?;
+        let encrypted = aes_gcm_encrypt(&key, plaintext.as_bytes())?;
         Ok(BASE64.encode(encrypted))
     }
 
@@ -589,7 +606,7 @@ impl VaultCrypto {
         let data = BASE64
             .decode(encoded)
             .map_err(|e| VaultCryptoError::Decryption(format!("base64: {e}")))?;
-        let plaintext = aes_gcm_decrypt(&*key, &data)?;
+        let plaintext = aes_gcm_decrypt(&key, &data)?;
         String::from_utf8(plaintext)
             .map_err(|e| VaultCryptoError::Decryption(format!("utf-8: {e}")))
     }
@@ -610,7 +627,7 @@ impl VaultCrypto {
         let data = BASE64
             .decode(encoded)
             .map_err(|e| VaultCryptoError::Decryption(format!("base64: {e}")))?;
-        let plaintext = aes_gcm_decrypt(&*meta_key, &data)?;
+        let plaintext = aes_gcm_decrypt(&meta_key, &data)?;
         String::from_utf8(plaintext)
             .map_err(|e| VaultCryptoError::Decryption(format!("utf-8: {e}")))
     }

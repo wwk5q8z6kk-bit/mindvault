@@ -88,12 +88,8 @@ pub struct OAuthTokenResponse {
 fn map_keychain_error(err: MvError) -> (StatusCode, String) {
     match &err {
         MvError::VaultSealed => (StatusCode::LOCKED, err.to_string()),
-        MvError::Keychain(msg) if msg.contains("not found") => {
-            (StatusCode::NOT_FOUND, err.to_string())
-        }
-        MvError::Keychain(msg) if msg.contains("not initialized") => {
-            (StatusCode::PRECONDITION_FAILED, err.to_string())
-        }
+        MvError::KeychainNotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
+        MvError::KeychainNotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
         MvError::Keychain(_) => (StatusCode::BAD_REQUEST, err.to_string()),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
@@ -226,11 +222,10 @@ async fn revoke_oauth_access_keys(
     let label = format!("oauth:{client_id}");
     let mut revoked = 0;
     for key in keys {
-        if key.name.as_deref() == Some(label.as_str()) {
-            if engine.revoke_access_key(key.id).await? {
+        if key.name.as_deref() == Some(label.as_str())
+            && engine.revoke_access_key(key.id).await? {
                 revoked += 1;
             }
-        }
     }
     Ok(revoked)
 }
@@ -246,7 +241,7 @@ pub async fn create_oauth_client(
 ) -> Result<Json<OAuthClientCreateResponse>, (StatusCode, String)> {
     require_admin(&auth)?;
 
-    validate_text_input("name", &payload.name).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_text_input("name", &payload.name).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let template_id = Uuid::parse_str(&payload.template_id)
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid template_id".into()))?;
@@ -343,7 +338,7 @@ pub async fn list_oauth_clients(
     }
 
     let limit = params.limit.unwrap_or(200).min(500);
-    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let offset = params.offset.unwrap_or(0);
 
     let domain_id = oauth_domain_id(&state.engine)

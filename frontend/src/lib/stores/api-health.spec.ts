@@ -6,7 +6,7 @@ import {
 	markApiFailure,
 	getOfflineCooldownMs,
 	type ApiHealthState
-} from './api-health';
+} from '$lib/api/client';
 
 const defaultState: ApiHealthState = {
 	status: 'unknown',

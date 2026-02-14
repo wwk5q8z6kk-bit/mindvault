@@ -2201,7 +2201,7 @@ fn parse_saved_search_kind_filters(
             for value in values {
                 let kind = value
                     .parse::<NodeKind>()
-                    .map_err(|err: String| (StatusCode::BAD_REQUEST, err))?;
+                    .map_err(|err: String| (StatusCode::BAD_REQUEST, err.to_string()))?;
                 if seen.insert(kind.as_str()) {
                     parsed.push(kind);
                 }
@@ -2221,7 +2221,7 @@ fn parse_saved_search_strategy(
             .trim()
             .to_ascii_lowercase()
             .parse::<SearchStrategy>()
-            .map_err(|err: String| (StatusCode::BAD_REQUEST, err)),
+            .map_err(|err: String| (StatusCode::BAD_REQUEST, err.to_string())),
         None => Ok(default),
     }
 }
@@ -2291,9 +2291,7 @@ fn normalize_clip_url(raw: &str) -> Option<String> {
     if !lowered.starts_with("http://") && !lowered.starts_with("https://") {
         let authority_candidate = input.split('/').next().unwrap_or(input);
         if authority_candidate.contains(':') {
-            let Some((host_part, port_part)) = authority_candidate.rsplit_once(':') else {
-                return None;
-            };
+            let (host_part, port_part) = authority_candidate.rsplit_once(':')?;
             if host_part.trim().is_empty()
                 || port_part.is_empty()
                 || !port_part.chars().all(|ch| ch.is_ascii_digit())
@@ -2557,7 +2555,7 @@ async fn create_clip_note_for_bookmark(
         Some(note.importance),
         Some(&note.metadata),
     )
-    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let stored_note = state.engine.store_node(note).await.map_err(map_mv_error)?;
     state.notify_change(
@@ -2889,7 +2887,7 @@ fn build_clip_suggested_tags(
 
     if let Some(keywords) = keywords {
         for token in keywords
-            .split(|ch: char| ch == ',' || ch == ';' || ch == '|')
+            .split([',', ';', '|'])
             .map(str::trim)
             .filter(|token| !token.is_empty())
         {
@@ -2998,7 +2996,7 @@ fn normalize_saved_search_filter_tags(
 
 fn normalize_saved_search_limit(limit: Option<usize>) -> Result<usize, (StatusCode, String)> {
     let normalized_limit = limit.unwrap_or(DEFAULT_SAVED_SEARCH_LIMIT);
-    validate_recall_limit(normalized_limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_recall_limit(normalized_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     Ok(normalized_limit)
 }
 
@@ -3983,19 +3981,17 @@ fn merge_template_payload(
         }
     }
 
-    if overwrite || updated.content.trim().is_empty() {
-        if !payload.content.trim().is_empty() {
+    if (overwrite || updated.content.trim().is_empty())
+        && !payload.content.trim().is_empty() {
             updated.content = payload.content.clone();
             record_template_field(&mut summary, "content", overwrite);
         }
-    }
 
-    if overwrite || updated.tags.is_empty() {
-        if !payload.tags.is_empty() {
+    if (overwrite || updated.tags.is_empty())
+        && !payload.tags.is_empty() {
             updated.tags = payload.tags.clone();
             record_template_field(&mut summary, "tags", overwrite);
         }
-    }
 
     let source_empty = updated
         .source
@@ -4009,12 +4005,11 @@ fn merge_template_payload(
         }
     }
 
-    if overwrite {
-        if (updated.importance - payload.importance).abs() > f64::EPSILON {
+    if overwrite
+        && (updated.importance - payload.importance).abs() > f64::EPSILON {
             updated.importance = payload.importance;
             record_template_field(&mut summary, "importance", true);
         }
-    }
 
     for (key, value) in payload.metadata.iter() {
         let should_set = overwrite
@@ -4037,7 +4032,7 @@ fn parse_template_target_kind(raw: &str) -> Result<NodeKind, (StatusCode, String
     let parsed: NodeKind = raw
         .trim()
         .parse()
-        .map_err(|err: String| (StatusCode::BAD_REQUEST, err))?;
+        .map_err(|err: String| (StatusCode::BAD_REQUEST, err.to_string()))?;
     if matches!(parsed, NodeKind::Template | NodeKind::SavedView) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -4131,7 +4126,7 @@ fn parse_saved_view_sort(
 
 fn parse_saved_view_view_type(raw: &str) -> Result<SavedViewType, (StatusCode, String)> {
     raw.parse()
-        .map_err(|err: String| (StatusCode::BAD_REQUEST, err))
+        .map_err(|err: String| (StatusCode::BAD_REQUEST, err.to_string()))
 }
 
 fn parse_saved_view_query(raw: Option<String>) -> Result<Option<String>, (StatusCode, String)> {
@@ -4142,7 +4137,7 @@ fn parse_saved_view_query(raw: Option<String>) -> Result<Option<String>, (Status
     if trimmed.is_empty() {
         return Ok(None);
     }
-    validate_query_text("query", trimmed).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_query_text("query", trimmed).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     Ok(Some(trimmed.to_string()))
 }
 
@@ -5097,8 +5092,10 @@ fn collect_attachment_items(
 }
 
 fn attachment_status_facets(items: &[AttachmentListItemResponse]) -> AttachmentStatusFacetResponse {
-    let mut facets = AttachmentStatusFacetResponse::default();
-    facets.all = items.len();
+    let mut facets = AttachmentStatusFacetResponse {
+        all: items.len(),
+        ..Default::default()
+    };
     for item in items {
         let status = normalize_attachment_status(item.extraction_status.as_deref());
         if is_failed_attachment_status(&status) {
@@ -5490,10 +5487,10 @@ async fn assist_completion(
     Json(mut req): Json<AssistCompletionRequest>,
 ) -> Result<Json<AssistCompletionResponse>, (StatusCode, String)> {
     authorize_read(&auth)?;
-    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let requested_limit = req.limit.unwrap_or(4);
-    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let suggestion_limit = requested_limit.clamp(1, 8);
     let recall_limit = (suggestion_limit * 5).clamp(10, 40);
 
@@ -5576,10 +5573,10 @@ async fn assist_autocomplete(
     Json(mut req): Json<AssistAutocompleteRequest>,
 ) -> Result<Json<AssistAutocompleteResponse>, (StatusCode, String)> {
     authorize_read(&auth)?;
-    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let requested_limit = req.limit.unwrap_or(5);
-    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let completion_limit = requested_limit.clamp(1, 8);
     let recall_limit = (completion_limit * 5).clamp(10, 40);
 
@@ -5612,10 +5609,10 @@ async fn assist_links(
     Json(mut req): Json<AssistLinkSuggestionsRequest>,
 ) -> Result<Json<AssistLinkSuggestionsResponse>, (StatusCode, String)> {
     authorize_read(&auth)?;
-    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let requested_limit = req.limit.unwrap_or(6);
-    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let suggestion_limit = requested_limit.clamp(1, 10);
     let recall_limit = (suggestion_limit * 6).clamp(24, 80);
     let exclude_node_id = match req.exclude_node_id.take() {
@@ -5667,11 +5664,11 @@ async fn assist_transform(
     Json(mut req): Json<AssistTransformRequest>,
 ) -> Result<Json<AssistTransformResponse>, (StatusCode, String)> {
     authorize_read(&auth)?;
-    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let mode = AssistTransformMode::parse(req.mode.as_deref())?;
     let requested_limit = req.limit.unwrap_or(4);
-    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let transform_limit = requested_limit.clamp(1, 8);
     let recall_limit = (transform_limit * 6).clamp(20, 64);
 
@@ -5796,7 +5793,7 @@ async fn list_daily_notes(
 ) -> Result<Json<Vec<KnowledgeNode>>, (StatusCode, String)> {
     authorize_read(&auth)?;
     let limit = params.limit.unwrap_or(30);
-    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let offset = params.offset.unwrap_or(0);
     let requested_date = parse_optional_iso_date(params.date.take(), "date")?;
 
@@ -5889,7 +5886,7 @@ async fn list_calendar_items(
 ) -> Result<Json<CalendarItemsResponse>, (StatusCode, String)> {
     authorize_read(&auth)?;
     let requested_limit = params.limit.unwrap_or(200);
-    validate_list_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_list_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let include_tasks = params.include_tasks.unwrap_or(true);
     let include_completed = params.include_completed.unwrap_or(false);
     let namespace = scoped_namespace(&auth, params.namespace.take())?;
@@ -5929,7 +5926,7 @@ async fn export_calendar_ical(
 ) -> Result<Response, (StatusCode, String)> {
     authorize_read(&auth)?;
     let requested_limit = params.limit.unwrap_or(500);
-    validate_list_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_list_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let include_tasks = params.include_tasks.unwrap_or(true);
     let include_completed = params.include_completed.unwrap_or(false);
     let namespace = scoped_namespace(&auth, params.namespace.take())?;
@@ -6031,7 +6028,7 @@ async fn import_calendar_ical(
                     .trim()
                     .to_ascii_lowercase()
                     .parse::<NodeKind>()
-                    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+                    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
                 if !matches!(default_kind, NodeKind::Task | NodeKind::Event) {
                     return Err((
                         StatusCode::BAD_REQUEST,
@@ -6100,7 +6097,7 @@ async fn import_calendar_ical(
             Some(node.importance),
             Some(&node.metadata),
         )
-        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
         let existing_by_id = state.engine.get_node(node.id).await.map_err(map_mv_error)?;
         let existing = if existing_by_id.is_some() {
@@ -6152,7 +6149,7 @@ async fn list_due_tasks(
 ) -> Result<Json<Vec<KnowledgeNode>>, (StatusCode, String)> {
     authorize_read(&auth)?;
     let limit = params.limit.unwrap_or(50);
-    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let due_before =
         parse_optional_rfc3339_datetime(params.before.take(), "before")?.unwrap_or_else(Utc::now);
     let namespace = scoped_namespace(&auth, params.namespace.take())?;
@@ -7027,7 +7024,7 @@ async fn prioritize_tasks(
     }
 
     let requested_limit = req.limit.unwrap_or(20);
-    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let limit = requested_limit.clamp(1, 200);
     let namespace = scoped_namespace(&auth, req.namespace.take())?;
     let now = parse_optional_rfc3339_datetime(req.now.take(), "now")?.unwrap_or_else(Utc::now);
@@ -7138,7 +7135,7 @@ async fn import_bundle(
             Some(node.importance),
             Some(&node.metadata),
         )
-        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
         let exists = state
             .engine
@@ -7690,7 +7687,7 @@ async fn list_attachments_index(
     authorize_read(&auth)?;
 
     let limit = params.limit.unwrap_or(100);
-    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let offset = params.offset.unwrap_or(0);
     let sort = normalize_attachment_sort(params.sort.as_deref()).to_string();
 
@@ -7733,7 +7730,7 @@ async fn list_attachments_index(
         }
 
         for node in &nodes {
-            let attachment_items = collect_attachment_items(&node, &query);
+            let attachment_items = collect_attachment_items(node, &query);
             for item in attachment_items {
                 items.push(AttachmentIndexItemResponse {
                     node_id: node.id.to_string(),
@@ -8054,8 +8051,7 @@ async fn reindex_failed_attachments(
     let mut skipped = 0usize;
     let mut items = Vec::with_capacity(total_attachments);
 
-    for index in 0..attachments.len() {
-        let mut attachment = attachments[index].clone();
+    for attachment in &mut attachments {
         let attachment_id = attachment.id.clone();
         let previous_status = attachment.extraction_status.clone();
         let normalized_previous = previous_status
@@ -8099,7 +8095,7 @@ async fn reindex_failed_attachments(
         }
 
         attempted_reindex += 1;
-        let safe_path = match resolve_attachment_path(&state, node_id, &attachment).await {
+        let safe_path = match resolve_attachment_path(&state, node_id, attachment).await {
             Ok(path) => path,
             Err((code, message)) => {
                 failed += 1;
@@ -8190,7 +8186,6 @@ async fn reindex_failed_attachments(
 
         attachment.extraction_status = Some(extraction.status.clone());
         attachment.extracted_chars = Some(extraction.extracted_chars);
-        attachments[index] = attachment.clone();
 
         upsert_attachment_text_index_entry(
             &mut node,
@@ -8986,7 +8981,7 @@ async fn list_templates(
         None => None,
     };
     let limit = params.limit.unwrap_or(100);
-    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let offset = params.offset.unwrap_or(0);
 
     let filters = QueryFilters {
@@ -9034,7 +9029,7 @@ async fn create_template(
         req.importance,
         req.metadata.as_ref(),
     )
-    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let namespace = namespace_for_create(&auth, req.namespace.take(), "default")?;
     enforce_namespace_quota(&state.engine, &namespace)
@@ -9243,7 +9238,7 @@ async fn update_template(
         Some(updated.importance),
         Some(&updated.metadata),
     )
-    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let updated = state
         .engine
@@ -9336,7 +9331,7 @@ async fn instantiate_template(
         Some(template.importance),
         Some(&metadata),
     )
-    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let mut instance =
         KnowledgeNode::new(target_kind, rendered_content).with_namespace(target_namespace);
@@ -9470,7 +9465,7 @@ async fn apply_template(
             Some(updated.importance),
             Some(&updated.metadata),
         )
-        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
         let updated = state
             .engine
@@ -9579,7 +9574,7 @@ async fn apply_template(
             Some(node.importance),
             Some(&node.metadata),
         )
-        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
         let stored = state.engine.store_node(node).await.map_err(map_mv_error)?;
 
@@ -9761,7 +9756,7 @@ async fn duplicate_template(
         Some(template.importance),
         Some(&duplicated_metadata),
     )
-    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let mut duplicated = KnowledgeNode::new(NodeKind::Template, template.content.clone())
         .with_namespace(target_namespace);
@@ -9994,7 +9989,7 @@ async fn restore_template_version(
         Some(restored.importance),
         Some(&restored.metadata),
     )
-    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     if restored.namespace != template.namespace {
         enforce_namespace_quota(&state.engine, &restored.namespace)
             .await
@@ -10116,7 +10111,7 @@ async fn restore_node_version(
         Some(restored.importance),
         Some(&restored.metadata),
     )
-    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     if restored.namespace != node.namespace {
         enforce_namespace_quota(&state.engine, &restored.namespace)
             .await
@@ -10279,7 +10274,7 @@ async fn import_clip(
                 Some(node.importance),
                 Some(&node.metadata),
             )
-            .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+            .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
             let stored = state.engine.store_node(node).await.map_err(map_mv_error)?;
             state.notify_change(&stored.id.to_string(), "create", Some(&stored.namespace));
@@ -10327,7 +10322,7 @@ async fn import_clip(
             Some(node.importance),
             Some(&node.metadata),
         )
-        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
         let stored = state.engine.store_node(node).await.map_err(map_mv_error)?;
         state.notify_change(&stored.id.to_string(), "create", Some(&stored.namespace));
@@ -10465,7 +10460,7 @@ async fn store_node(
         req.importance,
         req.metadata.as_ref(),
     )
-    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let mut node = KnowledgeNode::new(kind, req.content);
     if let Some(title) = req.title {
@@ -10584,7 +10579,7 @@ async fn update_node(
         Some(node.importance),
         Some(&node.metadata),
     )
-    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     if node.namespace != existing.namespace {
         enforce_namespace_quota(&state.engine, &node.namespace)
             .await
@@ -10625,7 +10620,7 @@ async fn recall(
     Json(mut req): Json<RecallRequest>,
 ) -> Result<Json<Vec<SearchResultDto>>, (StatusCode, String)> {
     authorize_read(&auth)?;
-    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let strategy = req
         .strategy
@@ -10636,7 +10631,7 @@ async fn recall(
 
     let kinds = parse_kind_list(req.kinds)?;
     let limit = req.limit.unwrap_or(10);
-    validate_recall_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_recall_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let query = MemoryQuery {
         text: req.text,
@@ -10673,9 +10668,9 @@ async fn search(
     Query(params): Query<SearchQuery>,
 ) -> Result<Json<Vec<SearchResultDto>>, (StatusCode, String)> {
     authorize_read(&auth)?;
-    validate_query_text("q", &params.q).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_query_text("q", &params.q).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let limit = params.limit.unwrap_or(10);
-    validate_recall_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_recall_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let strategy = match params.search_type.as_deref() {
         Some("fulltext") | Some("full_text") => SearchStrategy::FullText,
@@ -10715,7 +10710,7 @@ async fn list_saved_views(
     authorize_read(&auth)?;
     let namespace = scoped_namespace(&auth, params.namespace)?;
     let limit = params.limit.unwrap_or(100);
-    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let offset = params.offset.unwrap_or(0);
 
     let filters = QueryFilters {
@@ -10782,7 +10777,7 @@ async fn create_saved_view(
         Some(node.importance),
         Some(&node.metadata),
     )
-    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let stored = state.engine.store_node(node).await.map_err(map_mv_error)?;
     state.notify_change(&stored.id.to_string(), "create", Some(&stored.namespace));
@@ -10852,7 +10847,7 @@ async fn update_saved_view(
         Some(updated.importance),
         Some(&updated.metadata),
     )
-    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let updated = state
         .engine
@@ -10909,7 +10904,7 @@ async fn list_saved_searches(
     authorize_read(&auth)?;
     let namespace = scoped_namespace(&auth, normalize_optional_namespace_value(params.namespace))?;
     let limit = params.limit.unwrap_or(100);
-    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let offset = params.offset.unwrap_or(0);
 
     let filters = QueryFilters {
@@ -10943,7 +10938,7 @@ async fn create_saved_search(
     authorize_write(&auth)?;
 
     let name = normalize_saved_search_name(&req.name)?;
-    validate_query_text("query", &req.query).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_query_text("query", &req.query).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let query = req.query.trim().to_string();
     let description = normalize_saved_search_description(req.description)?;
     let strategy = parse_saved_search_strategy(req.search_type, SearchStrategy::Hybrid)?;
@@ -10993,7 +10988,7 @@ async fn create_saved_search(
         Some(node.importance),
         Some(&node.metadata),
     )
-    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let stored = state.engine.store_node(node).await.map_err(map_mv_error)?;
     state.notify_change(&stored.id.to_string(), "create", Some(&stored.namespace));
@@ -11037,7 +11032,7 @@ async fn update_saved_search(
     };
     let query = match req.query {
         Some(raw) => {
-            validate_query_text("query", &raw).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+            validate_query_text("query", &raw).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
             raw.trim().to_string()
         }
         None => existing_definition.query,
@@ -11098,7 +11093,7 @@ async fn update_saved_search(
         Some(updated_payload.importance),
         Some(&updated_payload.metadata),
     )
-    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let updated = state
         .engine
@@ -11219,7 +11214,7 @@ async fn list_audit_logs(
     }
 
     let limit = params.limit.unwrap_or(100);
-    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let offset = params.offset.unwrap_or(0);
     let since = parse_optional_rfc3339_datetime(params.since.take(), "since")?;
     let subject = params
@@ -11245,7 +11240,7 @@ async fn list_nodes(
 ) -> Result<Json<Vec<KnowledgeNode>>, (StatusCode, String)> {
     authorize_read(&auth)?;
     let limit = params.limit.unwrap_or(50);
-    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let kinds = match params.kind {
         Some(kind) => Some(vec![kind
@@ -11576,7 +11571,7 @@ async fn get_neighbors(
 ) -> Result<Json<Vec<String>>, (StatusCode, String)> {
     authorize_read(&auth)?;
     let depth = params.depth.unwrap_or(2);
-    validate_depth(depth).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_depth(depth).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let uuid = parse_uuid_param(&id, "node id")?;
 
     let node = state
@@ -15478,8 +15473,7 @@ mod tests {
 
     #[tokio::test]
     async fn enrich_clip_prefers_article_content_for_preview() {
-        let article_words = std::iter::repeat("durable")
-            .take(220)
+        let article_words = std::iter::repeat_n("durable", 220)
             .collect::<Vec<_>>()
             .join(" ");
         let html = format!(
@@ -15843,8 +15837,7 @@ mod tests {
         assert!(response
             .node
             .metadata
-            .get(TASK_DUE_AT_METADATA_KEY)
-            .is_some());
+            .contains_key(TASK_DUE_AT_METADATA_KEY));
     }
 
     #[tokio::test]
@@ -15912,8 +15905,7 @@ mod tests {
         assert!(response
             .node
             .metadata
-            .get(TASK_DUE_AT_METADATA_KEY)
-            .is_some());
+            .contains_key(TASK_DUE_AT_METADATA_KEY));
         assert!(response
             .filled_fields
             .iter()

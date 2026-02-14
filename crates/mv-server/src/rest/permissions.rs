@@ -105,35 +105,34 @@ fn access_key_to_response(key: AccessKey, template_name: Option<String>) -> Acce
     }
 }
 
+type ParsedTemplateRequest = (
+    String,
+    Option<String>,
+    PermissionTier,
+    Option<String>,
+    Vec<String>,
+    Vec<NodeKind>,
+    Vec<String>,
+);
+
 fn parse_template_request(
     request: PermissionTemplateRequest,
-) -> Result<
-    (
-        String,
-        Option<String>,
-        PermissionTier,
-        Option<String>,
-        Vec<String>,
-        Vec<NodeKind>,
-        Vec<String>,
-    ),
-    (StatusCode, String),
-> {
-    validate_text_input("name", &request.name).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+) -> Result<ParsedTemplateRequest, (StatusCode, String)> {
+    validate_text_input("name", &request.name).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     validate_namespace_input(request.scope_namespace.as_deref())
-        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let scope_tags = request.scope_tags.unwrap_or_default();
-    validate_tags_input(&scope_tags).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_tags_input(&scope_tags).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let tier =
-        PermissionTier::from_str(&request.tier).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+        PermissionTier::from_str(&request.tier).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let mut allow_kinds = Vec::new();
     if let Some(kinds) = request.allow_kinds {
         for kind in kinds {
             let parsed: NodeKind = kind
                 .parse()
-                .map_err(|err: String| (StatusCode::BAD_REQUEST, err))?;
+                .map_err(|err: String| (StatusCode::BAD_REQUEST, err.to_string()))?;
             allow_kinds.push(parsed);
         }
     }
@@ -162,7 +161,7 @@ pub async fn list_permission_templates(
     }
 
     let limit = params.limit.unwrap_or(200).min(500);
-    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    validate_list_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let offset = params.offset.unwrap_or(0);
 
     let templates = state

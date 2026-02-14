@@ -120,7 +120,7 @@ impl IntentEngine {
             || content_lower.contains("review")
             || content_lower.contains("follow up");
 
-        if !is_reminder && !(has_time_expr && has_action_verb) {
+        if !(is_reminder || has_time_expr && has_action_verb) {
             return None;
         }
 
@@ -650,7 +650,7 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
         for prefix in &["due by ", "deadline: ", "deadline ", "due: ", "due date: ", "before "] {
             if let Some(pos) = content.find(prefix) {
                 let rest = &content[pos + prefix.len()..];
-                let fragment = rest.split(|c: char| c == '.' || c == ',' || c == '\n').next().unwrap_or("");
+                let fragment = rest.split(['.', ',', '\n']).next().unwrap_or("");
                 if let Some(date) = self.parse_relative_date(fragment.trim()) {
                     return Some(date);
                 }
@@ -665,7 +665,7 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
         // Pattern: "by tomorrow", "by friday", "by next week"
         if let Some(pos) = content.find(" by ") {
             let rest = &content[pos + 4..];
-            let fragment = rest.split(|c: char| c == '.' || c == ',' || c == '\n').next().unwrap_or("");
+            let fragment = rest.split(['.', ',', '\n']).next().unwrap_or("");
             if let Some(date) = self.parse_relative_date(fragment.trim()) {
                 return Some(date);
             }
@@ -680,7 +680,7 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
             if let Some(pos) = content.find(prefix) {
                 let rest = &content[pos + prefix.len()..];
                 let dep = rest
-                    .split(|c: char| c == '.' || c == ',' || c == '\n')
+                    .split(['.', ',', '\n'])
                     .next()
                     .unwrap_or("")
                     .trim()

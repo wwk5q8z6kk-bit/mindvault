@@ -8,8 +8,19 @@ import { nodeToTask, nodeToNote } from '$lib/api/mappers';
 import { getNode } from '$lib/api/nodes';
 import type { KnowledgeNode } from '$lib/api/types';
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export type WsStatus = 'connected' | 'connecting' | 'disconnected';
 export const wsStatus = writable<WsStatus>('disconnected');
+
+let lastWsWarnTime = 0;
+function warnThrottled(msg: string, err: unknown) {
+	const now = Date.now();
+	if (now - lastWsWarnTime > 30_000) {
+		console.warn(msg, err);
+		lastWsWarnTime = now;
+	}
+}
 
 let changesWs: WebSocket | null = null;
 let remindersWs: WebSocket | null = null;
@@ -84,6 +95,11 @@ async function handleChangeMessage(data: unknown) {
 		return;
 	}
 
+	if (!UUID_RE.test(payload.node_id)) {
+		warnThrottled('[ws:changes] invalid node_id format', payload.node_id);
+		return;
+	}
+
 	const operation = (payload.operation ?? '').toLowerCase();
 	if (operation === 'delete') {
 		removeNodeFromCaches(payload.node_id);
@@ -117,7 +133,7 @@ function connectChanges() {
 			try {
 				const data = JSON.parse(event.data);
 				void handleChangeMessage(data);
-			} catch { /* ignore parse errors */ }
+			} catch (err) { warnThrottled('[ws:changes] message parse error', err); }
 		};
 
 		changesWs.onclose = () => {
@@ -129,7 +145,8 @@ function connectChanges() {
 		changesWs.onerror = () => {
 			changesWs?.close();
 		};
-	} catch {
+	} catch (err) {
+		warnThrottled('[ws:changes] connection error', err);
 		wsStatus.set('disconnected');
 		changesRetryTimer = setTimeout(connectChanges, changesRetryMs);
 		changesRetryMs = Math.min(changesRetryMs * 2, 30000);
@@ -154,7 +171,7 @@ function connectReminders() {
 					});
 				}
 				pushToast(data.title || 'Task reminder', 'info');
-			} catch { /* ignore */ }
+			} catch (err) { warnThrottled('[ws:reminders] message parse error', err); }
 		};
 
 		remindersWs.onclose = () => {
@@ -163,7 +180,8 @@ function connectReminders() {
 		};
 
 		remindersWs.onerror = () => { remindersWs?.close(); };
-	} catch {
+	} catch (err) {
+		warnThrottled('[ws:reminders] connection error', err);
 		remindersRetryTimer = setTimeout(connectReminders, remindersRetryMs);
 		remindersRetryMs = Math.min(remindersRetryMs * 2, 30000);
 	}

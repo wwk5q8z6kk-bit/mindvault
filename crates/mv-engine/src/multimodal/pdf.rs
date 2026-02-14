@@ -19,6 +19,12 @@ pub struct PdfProcessor {
     ghostscript_available: bool,
 }
 
+impl Default for PdfProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PdfProcessor {
     pub fn new() -> Self {
         let pdftotext_available = Command::new("pdftotext")
@@ -157,7 +163,7 @@ impl ModalityProcessor for PdfProcessor {
         tracing::info!(file_path, "Processing PDF file");
 
         let file_size = check_file_size(file_path)
-            .map_err(|e| MvError::Storage(e))?;
+            .map_err(MvError::Storage)?;
 
         let page_count = self.get_page_count(file_path);
 

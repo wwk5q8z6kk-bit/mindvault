@@ -17,6 +17,14 @@
 		5: 'bg-slate-500'
 	};
 
+	const priorityLabels: Record<number, string> = {
+		1: 'Critical',
+		2: 'High',
+		3: 'Medium',
+		4: 'Low',
+		5: 'Minimal'
+	};
+
 	const statusColors: Record<string, string> = {
 		inbox: 'bg-slate-700 text-slate-300',
 		planned: 'bg-violet-500/20 text-violet-300',
@@ -84,6 +92,8 @@
 				? 'border-emerald-500 bg-emerald-500/20 text-emerald-300'
 				: 'border-slate-700 hover:border-slate-500'}"
 			on:click={handleComplete}
+			role="checkbox"
+			aria-checked={isDone}
 			aria-label={isDone ? 'Mark incomplete' : 'Mark complete'}
 		>
 			{#if isDone}
@@ -94,7 +104,11 @@
 		</button>
 
 		<!-- Priority dot -->
-		<span class="h-2 w-2 flex-shrink-0 rounded-full {priorityDot}"></span>
+		<span
+			class="h-2 w-2 flex-shrink-0 rounded-full {priorityDot}"
+			aria-label="Priority: {priorityLabels[task.priority] ?? 'Medium'}"
+			title="Priority: {priorityLabels[task.priority] ?? 'Medium'}"
+		></span>
 
 		{#if isPinned}
 			<svg class="h-3.5 w-3.5 flex-shrink-0 text-amber-400" fill="currentColor" stroke="currentColor" viewBox="0 0 24 24">
@@ -115,6 +129,7 @@
 		<!-- Status badge -->
 		<span
 			class="flex-shrink-0 rounded-full px-2 py-0.5 text-[9px] uppercase tracking-wide {statusClass}"
+			aria-label="Status: {task.status.replace('_', ' ')}"
 		>
 			{task.status.replace('_', ' ')}
 		</span>

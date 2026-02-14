@@ -142,10 +142,13 @@
 					</button>
 				</div>
 				<div class="mt-2 flex items-center gap-2">
-					<span class="rounded-full px-2.5 py-1 text-[10px] uppercase tracking-wide {statusClass}">
+					<span
+						class="rounded-full px-2.5 py-1 text-[10px] uppercase tracking-wide {statusClass}"
+						aria-label="Status: {task.status.replace('_', ' ')}"
+					>
 						{task.status.replace('_', ' ')}
 					</span>
-					<span class="text-[10px] {prio.color}">P{task.priority} · {prio.label}</span>
+					<span class="text-[10px] {prio.color}" aria-label="Priority: {prio.label}">P{task.priority} · {prio.label}</span>
 					{#if task.pending}
 						<span class="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] text-amber-200">
 							Pending sync
@@ -180,6 +183,8 @@
 						? statusColors[opt]
 						: 'border border-slate-800 text-slate-500 hover:border-slate-700 hover:text-slate-400'}"
 					on:click={() => dispatch('statusChange', opt)}
+					aria-pressed={task.status === opt}
+					aria-label="Set status to {opt.replace('_', ' ')}"
 				>
 					{opt.replace('_', ' ')}
 				</button>
@@ -219,6 +224,8 @@
 									? 'border-emerald-500 bg-emerald-500/20 text-emerald-300'
 									: 'border-slate-600 hover:border-slate-500'}"
 								on:click={() => toggleSubtask(subtask.id)}
+								role="checkbox"
+								aria-checked={subtask.done}
 								aria-label={subtask.done ? 'Mark incomplete' : 'Mark complete'}
 							>
 								{#if subtask.done}

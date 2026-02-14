@@ -204,7 +204,7 @@ pub async fn file_unlock(action: FileUnlockAction) -> Result<()> {
         }
         FileUnlockAction::Status => {
             let statuses = creds.status();
-            println!("{:<20} {:<10} {}", "Backend", "Available", "Keys");
+            println!("{:<20} {:<10} Keys", "Backend", "Available");
             println!("{}", "\u{2500}".repeat(60));
             for status in &statuses {
                 let avail = if status.available { "yes" } else { "no" };
@@ -308,8 +308,8 @@ pub async fn policy_list(secret: Option<&str>, consumer: Option<&str>) -> Result
     }
 
     println!(
-        "{:<38} {:<20} {:<20} {:<8} {}",
-        "ID", "Secret", "Consumer", "Allowed", "Expires"
+        "{:<38} {:<20} {:<20} {:<8} Expires",
+        "ID", "Secret", "Consumer", "Allowed"
     );
     println!("{}", "-".repeat(110));
 
@@ -354,7 +354,7 @@ pub async fn status() -> Result<()> {
     let creds = store();
     let statuses = creds.status();
 
-    println!("{:<20} {:<10} {}", "Backend", "Available", "Keys");
+    println!("{:<20} {:<10} Keys", "Backend", "Available");
     println!("{}", "─".repeat(60));
 
     for status in &statuses {

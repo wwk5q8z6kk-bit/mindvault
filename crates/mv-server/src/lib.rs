@@ -1052,10 +1052,12 @@ mod tests {
     #[tokio::test]
     async fn startup_rejects_sealed_vault_state() {
         let temp_dir = TempDir::new().expect("temp dir");
-        let mut config = EngineConfig::default();
-        config.data_dir = temp_dir.path().to_string_lossy().to_string();
+        let mut config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            sealed_mode: true,
+            ..Default::default()
+        };
         config.embedding.provider = "noop".into();
-        config.sealed_mode = true;
 
         let engine = MindVaultEngine::init(config).await.expect("engine init");
         engine
@@ -1072,10 +1074,12 @@ mod tests {
     #[tokio::test]
     async fn startup_allows_unsealed_vault_state() {
         let temp_dir = TempDir::new().expect("temp dir");
-        let mut config = EngineConfig::default();
-        config.data_dir = temp_dir.path().to_string_lossy().to_string();
+        let mut config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            sealed_mode: true,
+            ..Default::default()
+        };
         config.embedding.provider = "noop".into();
-        config.sealed_mode = true;
 
         let engine = MindVaultEngine::init(config).await.expect("engine init");
         engine
@@ -1098,9 +1102,11 @@ mod tests {
         let data_dir = temp_dir.path();
         std::fs::create_dir_all(data_dir.join("tantivy")).expect("create tantivy");
 
-        let mut config = EngineConfig::default();
-        config.data_dir = data_dir.to_string_lossy().to_string();
-        config.sealed_mode = true;
+        let config = EngineConfig {
+            data_dir: data_dir.to_string_lossy().to_string(),
+            sealed_mode: true,
+            ..Default::default()
+        };
 
         let err =
             startup_sealed_storage_preflight(&config).expect_err("legacy plaintext dirs rejected");
@@ -1119,9 +1125,11 @@ mod tests {
         std::fs::create_dir_all(blob_file.parent().expect("blob parent")).expect("create dirs");
         std::fs::write(&blob_file, b"plaintext payload").expect("write plaintext blob");
 
-        let mut config = EngineConfig::default();
-        config.data_dir = temp_dir.path().to_string_lossy().to_string();
-        config.sealed_mode = true;
+        let config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            sealed_mode: true,
+            ..Default::default()
+        };
 
         let err =
             startup_sealed_storage_preflight(&config).expect_err("plaintext blob must fail scan");
@@ -1144,9 +1152,11 @@ mod tests {
         )
         .expect("write encrypted blob");
 
-        let mut config = EngineConfig::default();
-        config.data_dir = temp_dir.path().to_string_lossy().to_string();
-        config.sealed_mode = true;
+        let config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            sealed_mode: true,
+            ..Default::default()
+        };
 
         startup_sealed_storage_preflight(&config).expect("encrypted blob should pass scan");
     }
@@ -1156,9 +1166,10 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         std::fs::create_dir_all(temp_dir.path().join("tantivy")).expect("create tantivy");
 
-        let mut config = EngineConfig::default();
-        config.data_dir = temp_dir.path().to_string_lossy().to_string();
-        config.sealed_mode = false;
+        let config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
 
         let report = scan_sealed_storage(&config).expect("scan");
         assert!(

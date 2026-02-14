@@ -2,8 +2,8 @@
 	import '../app.css';
 	import { page } from '$app/stores';
 	import ToastStack from '$lib/components/ToastStack.svelte';
-	import CommandPalette from '$lib/components/CommandPalette.svelte';
-	import FocusPlannerModal from '$lib/components/FocusPlannerModal.svelte';
+	import { focusPlannerState } from '$lib/stores/ui';
+	import { paletteOpen, openPalette } from '$lib/command-palette/store';
 	import QuickCaptureModal from '$lib/components/QuickCaptureModal.svelte';
 	import QuickSearch from '$lib/components/QuickSearch.svelte';
 	import KeyboardShortcutsModal from '$lib/components/KeyboardShortcutsModal.svelte';
@@ -13,7 +13,7 @@
 	import FavoritesBar from '$lib/components/FavoritesBar.svelte';
 	import ProposalInbox from '$lib/components/ProposalInbox.svelte';
 	import ApiHealthBanner from '$lib/components/ApiHealthBanner.svelte';
-	import { startSyncLoop, pendingSyncCount } from '$lib/stores/tasks';
+	import { startSyncLoop, stopSyncLoop, pendingSyncCount } from '$lib/stores/tasks';
 	import { loadNotes } from '$lib/stores/notes';
 	import { startNotifications, stopNotifications } from '$lib/stores/notifications';
 	import { startWebSocket, stopWebSocket, wsStatus } from '$lib/stores/websocket';
@@ -22,6 +22,7 @@
 	import { loadAvailableNamespaces } from '$lib/stores/namespace';
 	import { connectAgentStream, disconnectAgentStream } from '$lib/api/agent';
 	import { keychainStore, pollVaultStatus } from '$lib/stores/keychain';
+	import { pushToast } from '$lib/stores/toast';
 	import { onMount } from 'svelte';
 	import { fly, slide } from 'svelte/transition';
 	import {
@@ -318,15 +319,23 @@
 		keychainStatusPoll = setInterval(() => {
 			void pollVaultStatus();
 		}, 30_000);
+		const onUnhandledRejection = (e: PromiseRejectionEvent) => {
+			console.error('Unhandled promise rejection:', e.reason);
+			pushToast('An unexpected error occurred', 'danger');
+		};
 		window.addEventListener('online', onOnline);
 		window.addEventListener('offline', onOffline);
+		window.addEventListener('unhandledrejection', onUnhandledRejection);
 		return () => {
 			window.removeEventListener('online', onOnline);
 			window.removeEventListener('offline', onOffline);
+			window.removeEventListener('unhandledrejection', onUnhandledRejection);
 			if (keychainStatusPoll) {
 				clearInterval(keychainStatusPoll);
 				keychainStatusPoll = null;
 			}
+			stopSyncLoop();
+			stopNotifications();
 			stopWebSocket();
 			disconnectAgentStream();
 		};
@@ -335,6 +344,12 @@
 	async function handleGlobalKeydown(event: KeyboardEvent) {
 		if (mobileMenuOpen && event.key === 'Escape') {
 			closeMobileMenu();
+			return;
+		}
+		// Open command palette on Cmd+K / Ctrl+K
+		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+			event.preventDefault();
+			openPalette('');
 			return;
 		}
 		// Handle undo/redo shortcuts (Cmd+Z, Cmd+Shift+Z, Ctrl+Y)
@@ -630,8 +645,16 @@
 </div>
 
 <ToastStack />
-<CommandPalette />
-<FocusPlannerModal />
+{#if $paletteOpen}
+	{#await import('$lib/components/CommandPalette.svelte') then { default: CommandPalette }}
+		<svelte:component this={CommandPalette} />
+	{/await}
+{/if}
+{#if $focusPlannerState.open}
+	{#await import('$lib/components/FocusPlannerModal.svelte') then { default: FocusPlannerModal }}
+		<svelte:component this={FocusPlannerModal} />
+	{/await}
+{/if}
 <QuickCaptureModal />
 <QuickSearch />
 <KeyboardShortcutsModal />

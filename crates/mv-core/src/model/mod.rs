@@ -651,9 +651,10 @@ impl std::fmt::Display for IntentType {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum IntentStatus {
+    #[default]
     Suggested,
     Applied,
     Dismissed,
@@ -679,12 +680,6 @@ impl std::str::FromStr for IntentStatus {
             "dismissed" => Ok(Self::Dismissed),
             _ => Err(format!("unknown intent status: {s}")),
         }
-    }
-}
-
-impl Default for IntentStatus {
-    fn default() -> Self {
-        Self::Suggested
     }
 }
 

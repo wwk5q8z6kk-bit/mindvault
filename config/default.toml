@@ -187,11 +187,6 @@ argon2_parallelism = 4
 # - MINDVAULT_ENCRYPTION_ARGON2_ITERATIONS
 # - MINDVAULT_ENCRYPTION_ARGON2_PARALLELISM
 
-[lifecycle]
-importance_decay_rate = 0.01
-min_importance = 0.05
-consolidation_interval_hours = 24
-
 [auth]
 enabled = false
 # Runtime auth configuration is environment-driven:

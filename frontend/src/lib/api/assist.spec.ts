@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assistAutocomplete, assistCompletion, assistLinks } from './assist';
-import { markApiSuccess } from '$lib/stores/api-health';
+import { markApiSuccess } from '$lib/api/client';
 
 const API_BASE = 'http://127.0.0.1:9470';
 

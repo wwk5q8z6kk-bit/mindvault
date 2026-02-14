@@ -1,4 +1,6 @@
-export const INBOX_TRIAGE_SETTINGS_STORAGE_KEY = 'mv_inbox_triage_settings_v1';
+import { STORAGE_KEYS } from '$lib/constants/storage-keys';
+
+export const INBOX_TRIAGE_SETTINGS_STORAGE_KEY = STORAGE_KEYS.INBOX_TRIAGE_SETTINGS;
 export const INBOX_TRIAGE_SETTINGS_UPDATED_EVENT_NAME = 'mindvault:inbox-triage-settings-updated';
 
 export interface InboxTriageSettings {

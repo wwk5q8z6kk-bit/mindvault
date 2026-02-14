@@ -1,7 +1,8 @@
 import { writable } from 'svelte/store';
 import { listNodes } from '$lib/api/nodes';
+import { STORAGE_KEYS } from '$lib/constants/storage-keys';
 
-const STORAGE_KEY = 'mv_active_namespace';
+const STORAGE_KEY = STORAGE_KEYS.ACTIVE_NAMESPACE;
 
 function getStored(): string | null {
 	if (typeof localStorage === 'undefined') return null;

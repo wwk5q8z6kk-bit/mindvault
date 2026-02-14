@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { apiHealth } from '$lib/stores/api-health';
+	import { apiHealth } from '$lib/api/client';
 	import { onDestroy } from 'svelte';
 
 	export let online = true;

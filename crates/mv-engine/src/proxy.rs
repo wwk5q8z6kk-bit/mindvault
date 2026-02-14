@@ -359,7 +359,7 @@ impl ProxyEngine {
             SecretInjection::QueryParam { name } => {
                 let mut url =
                     url::Url::parse(&req.url).map_err(|e| ProxyError::Failed(format!("invalid URL: {e}")))?;
-                url.query_pairs_mut().append_pair(name, &*secret_str);
+                url.query_pairs_mut().append_pair(name, &secret_str);
                 // Rebuild the request with the modified URL
                 let mut rebuilt = client.request(method, url.as_str());
                 for (key, value) in &req.headers {
