@@ -1121,7 +1121,10 @@ fn fastembed_embedding_model_from_name(model_name: &str) -> Option<EmbeddingMode
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sealed_runtime::{clear_runtime_root_key, set_runtime_root_key};
+    use crate::sealed_runtime::{
+        clear_runtime_root_key_for_scope, runtime_scope_from_parent,
+        set_runtime_root_key_for_scope,
+    };
     use tempfile::tempdir;
 
     fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -1131,11 +1134,13 @@ mod tests {
         haystack.windows(needle.len()).any(|window| window == needle)
     }
 
-    struct SealedRuntimeReset;
+    struct SealedRuntimeReset {
+        scope: String,
+    }
 
     impl Drop for SealedRuntimeReset {
         fn drop(&mut self) {
-            clear_runtime_root_key();
+            clear_runtime_root_key_for_scope(&self.scope);
         }
     }
 
@@ -1166,11 +1171,12 @@ mod tests {
 
     #[tokio::test]
     async fn sealed_lancedb_open_without_runtime_key_succeeds() {
-        let _reset = SealedRuntimeReset;
-        clear_runtime_root_key();
-
         let dir = tempdir().expect("tempdir");
-        let opened = LanceVectorStore::open_with_mode(dir.path(), 8, true).await;
+        let vector_path = dir.path().join("vector_index");
+        let scope = runtime_scope_from_parent(&vector_path);
+        clear_runtime_root_key_for_scope(&scope);
+
+        let opened = LanceVectorStore::open_with_mode(&vector_path, 8, true).await;
         let err = opened.err();
         assert!(
             err.is_none(),
@@ -1181,14 +1187,16 @@ mod tests {
 
     #[tokio::test]
     async fn sealed_lancedb_snapshot_roundtrip() {
-        let _reset = SealedRuntimeReset;
-        set_runtime_root_key([13u8; 32], false);
-
         let dir = tempdir().expect("tempdir");
+        let vector_path = dir.path().join("vector_index");
+        let scope = runtime_scope_from_parent(&vector_path);
+        set_runtime_root_key_for_scope(&scope, [13u8; 32], false);
+        let _reset = SealedRuntimeReset { scope };
+
         let id = Uuid::now_v7();
         let marker = format!("sealed-vector-content-{}", Uuid::now_v7());
 
-        let store = LanceVectorStore::open_with_mode(dir.path(), 3, true)
+        let store = LanceVectorStore::open_with_mode(&vector_path, 3, true)
             .await
             .unwrap();
         store
@@ -1201,7 +1209,7 @@ mod tests {
             .await
             .unwrap();
 
-        let snapshot_path = dir.path().join(LANCEDB_SNAPSHOT_FILENAME);
+        let snapshot_path = vector_path.join(LANCEDB_SNAPSHOT_FILENAME);
         let snapshot_bytes = std::fs::read(&snapshot_path).expect("snapshot should exist");
         assert!(
             snapshot_bytes.starts_with(LANCEDB_SNAPSHOT_MAGIC),
@@ -1213,7 +1221,7 @@ mod tests {
         );
         drop(store);
 
-        let reopened = LanceVectorStore::open_with_mode(dir.path(), 3, true)
+        let reopened = LanceVectorStore::open_with_mode(&vector_path, 3, true)
             .await
             .unwrap();
         let hits = reopened

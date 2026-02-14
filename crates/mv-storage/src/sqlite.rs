@@ -4964,16 +4964,27 @@ impl ConversationStore for SqliteNodeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sealed_runtime::{clear_runtime_root_key, set_runtime_root_key};
+    use crate::sealed_runtime::{
+        clear_runtime_root_key_for_scope, runtime_scope_from_parent,
+        set_runtime_root_key_for_scope,
+    };
     use tempfile::tempdir;
     use uuid::Uuid;
 
-    struct SealedRuntimeReset;
+    struct SealedRuntimeReset {
+        scope: String,
+    }
 
     impl Drop for SealedRuntimeReset {
         fn drop(&mut self) {
-            clear_runtime_root_key();
+            clear_runtime_root_key_for_scope(&self.scope);
         }
+    }
+
+    fn install_scoped_runtime_key(path: &std::path::Path, key: [u8; 32]) -> SealedRuntimeReset {
+        let scope = runtime_scope_from_parent(path);
+        set_runtime_root_key_for_scope(&scope, key, false);
+        SealedRuntimeReset { scope }
     }
 
     fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -5001,10 +5012,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_sealed_node_payload_persists_encrypted_columns() {
-        let _reset = SealedRuntimeReset;
-        set_runtime_root_key([7u8; 32], false);
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("sealed_payload.sqlite");
+        let _reset = install_scoped_runtime_key(&db_path, [7u8; 32]);
 
-        let store = SqliteNodeStore::open_in_memory_with_mode(true).unwrap();
+        let store = SqliteNodeStore::open_with_mode(&db_path, true).unwrap();
         let mut node = KnowledgeNode::new(NodeKind::Fact, "sealed-content")
             .with_title("sealed-title")
             .with_namespace("default");
@@ -5054,10 +5066,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_sealed_node_update_refreshes_encrypted_payload() {
-        let _reset = SealedRuntimeReset;
-        set_runtime_root_key([9u8; 32], false);
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("sealed_update.sqlite");
+        let _reset = install_scoped_runtime_key(&db_path, [9u8; 32]);
 
-        let store = SqliteNodeStore::open_in_memory_with_mode(true).unwrap();
+        let store = SqliteNodeStore::open_with_mode(&db_path, true).unwrap();
         let mut node = KnowledgeNode::new(NodeKind::Fact, "v1-content")
             .with_title("v1-title")
             .with_namespace("default");
@@ -5113,11 +5126,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_sealed_sqlite_file_does_not_contain_plaintext_marker() {
-        let _reset = SealedRuntimeReset;
-        set_runtime_root_key([11u8; 32], false);
-
         let dir = tempdir().expect("tempdir");
         let db_path = dir.path().join("mindvault.sqlite");
+        let _reset = install_scoped_runtime_key(&db_path, [11u8; 32]);
         let store = SqliteNodeStore::open_with_mode(&db_path, true).expect("open sqlite store");
         let marker = format!("sealed-sqlite-marker-{}", Uuid::now_v7());
 

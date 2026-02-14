@@ -468,15 +468,20 @@ impl FullTextIndex for TantivyFullTextIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mv_storage::sealed_runtime::{clear_runtime_root_key, set_runtime_root_key};
+    use mv_storage::sealed_runtime::{
+        clear_runtime_root_key_for_scope, runtime_scope_from_parent,
+        set_runtime_root_key_for_scope,
+    };
     use tempfile::tempdir;
     use uuid::Uuid;
 
-    struct SealedRuntimeReset;
+    struct SealedRuntimeReset {
+        scope: String,
+    }
 
     impl Drop for SealedRuntimeReset {
         fn drop(&mut self) {
-            clear_runtime_root_key();
+            clear_runtime_root_key_for_scope(&self.scope);
         }
     }
 
@@ -555,11 +560,14 @@ mod tests {
 
     #[test]
     fn sealed_tantivy_files_do_not_store_plaintext_payload() {
-        let _reset = SealedRuntimeReset;
-        set_runtime_root_key([19u8; 32], false);
-
         let dir = tempdir().expect("tempdir");
-        let idx = TantivyFullTextIndex::open_with_mode(dir.path(), true).expect("sealed index open");
+        let index_path = dir.path().join("text_index");
+        let scope = runtime_scope_from_parent(&index_path);
+        set_runtime_root_key_for_scope(&scope, [19u8; 32], false);
+        let _reset = SealedRuntimeReset { scope };
+
+        let idx =
+            TantivyFullTextIndex::open_with_mode(&index_path, true).expect("sealed index open");
         let marker = format!("sealed-tantivy-marker-{}", Uuid::now_v7());
         let node = KnowledgeNode::new(NodeKind::Fact, marker.clone())
             .with_title(marker.clone())
