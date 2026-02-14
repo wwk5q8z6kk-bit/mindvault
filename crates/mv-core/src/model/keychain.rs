@@ -75,6 +75,10 @@ pub struct KeyEpoch {
     pub created_at: DateTime<Utc>,
     pub grace_expires_at: Option<DateTime<Utc>>,
     pub retired_at: Option<DateTime<Utc>>,
+    /// Timestamp when all credentials were successfully re-encrypted from this epoch.
+    /// Set after `re_encrypt_all_credentials` completes for a rotation away from this epoch.
+    #[serde(default)]
+    pub re_encryption_completed_at: Option<DateTime<Utc>>,
 }
 
 // ---------------------------------------------------------------------------

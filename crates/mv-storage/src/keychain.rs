@@ -104,6 +104,17 @@ impl SqliteKeychainStore {
             }
         }
 
+        // Key epoch re-encryption tracking (idempotent — column may already exist)
+        let reenc_sql = include_str!("../../../migrations/029_key_epoch_reencryption.sql");
+        if let Err(e) = conn.execute_batch(reenc_sql) {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column") {
+                return Err(MvError::Migration(format!(
+                    "key epoch re-encryption migration failed: {e}"
+                )));
+            }
+        }
+
         Ok(())
     }
 }
@@ -369,14 +380,15 @@ impl KeychainStore for SqliteKeychainStore {
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
         conn.execute(
-            "INSERT INTO key_epochs (epoch, wrapped_key, created_at, grace_expires_at, retired_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO key_epochs (epoch, wrapped_key, created_at, grace_expires_at, retired_at, re_encryption_completed_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 epoch.epoch as i64,
                 epoch.wrapped_key,
                 epoch.created_at.to_rfc3339(),
                 epoch.grace_expires_at.map(|dt| dt.to_rfc3339()),
                 epoch.retired_at.map(|dt| dt.to_rfc3339()),
+                epoch.re_encryption_completed_at.map(|dt| dt.to_rfc3339()),
             ],
         )
         .map_err(|e| MvError::Storage(e.to_string()))?;
@@ -390,7 +402,7 @@ impl KeychainStore for SqliteKeychainStore {
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
-                "SELECT epoch, wrapped_key, created_at, grace_expires_at, retired_at \
+                "SELECT epoch, wrapped_key, created_at, grace_expires_at, retired_at, re_encryption_completed_at \
                  FROM key_epochs WHERE epoch = ?1",
             )
             .map_err(|e| MvError::Storage(e.to_string()))?;
@@ -410,6 +422,10 @@ impl KeychainStore for SqliteKeychainStore {
                     .get::<_, Option<String>>(4)?
                     .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
                     .map(|dt| dt.with_timezone(&Utc)),
+                re_encryption_completed_at: row
+                    .get::<_, Option<String>>(5)?
+                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                    .map(|dt| dt.with_timezone(&Utc)),
             })
         })
         .optional()
@@ -423,7 +439,7 @@ impl KeychainStore for SqliteKeychainStore {
             .map_err(|e| MvError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
-                "SELECT epoch, wrapped_key, created_at, grace_expires_at, retired_at \
+                "SELECT epoch, wrapped_key, created_at, grace_expires_at, retired_at, re_encryption_completed_at \
                  FROM key_epochs ORDER BY epoch",
             )
             .map_err(|e| MvError::Storage(e.to_string()))?;
@@ -442,6 +458,10 @@ impl KeychainStore for SqliteKeychainStore {
                         .map(|dt| dt.with_timezone(&Utc)),
                     retired_at: row
                         .get::<_, Option<String>>(4)?
+                        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                        .map(|dt| dt.with_timezone(&Utc)),
+                    re_encryption_completed_at: row
+                        .get::<_, Option<String>>(5)?
                         .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
                         .map(|dt| dt.with_timezone(&Utc)),
                 })
@@ -463,6 +483,36 @@ impl KeychainStore for SqliteKeychainStore {
         )
         .map_err(|e| MvError::Storage(e.to_string()))?;
         Ok(())
+    }
+
+    async fn mark_epoch_re_encryption_complete(&self, epoch: u64) -> MvResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        conn.execute(
+            "UPDATE key_epochs SET re_encryption_completed_at = ?1 WHERE epoch = ?2",
+            params![Utc::now().to_rfc3339(), epoch as i64],
+        )
+        .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_expired_epochs(&self) -> MvResult<u64> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+        let deleted = conn
+            .execute(
+                "DELETE FROM key_epochs WHERE grace_expires_at IS NOT NULL \
+                 AND grace_expires_at < ?1 \
+                 AND re_encryption_completed_at IS NOT NULL",
+                params![now],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(deleted as u64)
     }
 
     // -- Domains --
@@ -1362,6 +1412,7 @@ mod tests {
             created_at: Utc::now(),
             grace_expires_at: None,
             retired_at: None,
+            re_encryption_completed_at: None,
         };
         s.insert_key_epoch(&epoch).await.unwrap();
         assert_eq!(s.list_key_epochs().await.unwrap().len(), 1);
@@ -1380,6 +1431,7 @@ mod tests {
             created_at: Utc::now(),
             grace_expires_at: None,
             retired_at: None,
+            re_encryption_completed_at: None,
         })
         .await
         .unwrap();
@@ -1409,6 +1461,7 @@ mod tests {
             created_at: Utc::now(),
             grace_expires_at: None,
             retired_at: None,
+            re_encryption_completed_at: None,
         })
         .await
         .unwrap();
@@ -1448,6 +1501,7 @@ mod tests {
             created_at: Utc::now(),
             grace_expires_at: None,
             retired_at: None,
+            re_encryption_completed_at: None,
         })
         .await
         .unwrap();

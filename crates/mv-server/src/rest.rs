@@ -5439,12 +5439,36 @@ impl AssistTransformMode {
 // --- Handlers ---
 
 /// List all registered config sections and their known keys (for agent discoverability).
+/// Accepts an optional `?scope=ai|email|storage` query parameter to filter sections.
 async fn list_config_sections(
     Extension(auth): Extension<AuthContext>,
+    Query(params): Query<ConfigSectionsQuery>,
 ) -> Result<Json<ConfigSectionsResponse>, (StatusCode, String)> {
     authorize_read(&auth)?;
-    let sections = mv_core::ConfigRegistry::builtin_section_catalog();
+    let sections = match params.scope.as_deref() {
+        Some("ai") => {
+            mv_core::ConfigRegistry::builtin_section_catalog_scoped(&["ai", "search", "embedding", "llm"])
+        }
+        Some("email") => {
+            mv_core::ConfigRegistry::builtin_section_catalog_scoped(&["email"])
+        }
+        Some("storage") => {
+            mv_core::ConfigRegistry::builtin_section_catalog_scoped(&["storage", "encryption"])
+        }
+        Some(unknown) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("unknown scope: {unknown}; valid scopes are: ai, email, storage"),
+            ));
+        }
+        None => mv_core::ConfigRegistry::builtin_section_catalog(),
+    };
     Ok(Json(ConfigSectionsResponse { sections }))
+}
+
+#[derive(Deserialize)]
+struct ConfigSectionsQuery {
+    scope: Option<String>,
 }
 
 #[derive(Serialize)]

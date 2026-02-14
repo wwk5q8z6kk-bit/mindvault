@@ -82,6 +82,10 @@ pub trait KeychainStore: Send + Sync {
     async fn get_key_epoch(&self, epoch: u64) -> MvResult<Option<KeyEpoch>>;
     async fn list_key_epochs(&self) -> MvResult<Vec<KeyEpoch>>;
     async fn retire_key_epoch(&self, epoch: u64) -> MvResult<()>;
+    /// Mark an epoch's re-encryption as complete (all credentials migrated to a newer epoch).
+    async fn mark_epoch_re_encryption_complete(&self, epoch: u64) -> MvResult<()>;
+    /// Delete key epoch rows that are expired and fully re-encrypted.
+    async fn delete_expired_epochs(&self) -> MvResult<u64>;
 
     // --- Domains ---
     async fn insert_domain(&self, domain: &DomainKey) -> MvResult<()>;

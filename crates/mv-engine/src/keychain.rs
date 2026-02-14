@@ -405,6 +405,7 @@ impl KeychainEngine {
             created_at: Utc::now(),
             grace_expires_at: None,
             retired_at: None,
+            re_encryption_completed_at: None,
         };
         self.store.insert_key_epoch(&epoch).await?;
 
@@ -1023,6 +1024,7 @@ impl KeychainEngine {
                     + std::time::Duration::from_secs(grace_period_hours as u64 * 3600),
             )),
             retired_at: None,
+            re_encryption_completed_at: None,
         };
         self.store.insert_key_epoch(&new_key_epoch).await?;
 
@@ -1047,6 +1049,15 @@ impl KeychainEngine {
         // Re-encrypt all credentials: decrypt with OLD epoch grace key, encrypt with NEW master
         self.re_encrypt_all_credentials(old_epoch, new_epoch)
             .await?;
+
+        // Mark re-encryption complete for the old epoch and evict grace key from memory
+        self.store
+            .mark_epoch_re_encryption_complete(old_epoch)
+            .await?;
+        {
+            let mut crypto = self.crypto.write().await;
+            crypto.remove_grace_key(old_epoch);
+        }
 
         self.audit_log(
             KeychainAuditAction::KeyRotated,
@@ -2250,8 +2261,162 @@ impl KeychainEngine {
                         tracing::warn!(error = %e, "lifecycle scheduler: auto-rotation check failed");
                     }
                 }
+
+                // Verify incomplete re-encryptions and retry with grace keys
+                if let Err(e) = engine.verify_and_resume_re_encryption().await {
+                    tracing::warn!(error = %e, "lifecycle scheduler: re-encryption verification failed");
+                }
+
+                // Prune expired epoch rows that have completed re-encryption
+                match engine.store.delete_expired_epochs().await {
+                    Ok(n) if n > 0 => {
+                        tracing::info!(deleted = n, "lifecycle scheduler: pruned expired key epochs");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "lifecycle scheduler: epoch pruning failed");
+                    }
+                    _ => {}
+                }
             }
         }));
+    }
+
+    /// Check for credentials still on an old epoch and attempt re-encryption
+    /// using the grace key if available. This handles interrupted rotations.
+    async fn verify_and_resume_re_encryption(&self) -> MvResult<()> {
+        let meta = match self.store.get_vault_meta().await? {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+
+        let current_epoch = meta.key_epoch;
+        if current_epoch == 0 {
+            return Ok(());
+        }
+
+        // Check each old epoch that hasn't completed re-encryption
+        let epochs = self.store.list_key_epochs().await?;
+        for epoch_entry in &epochs {
+            if epoch_entry.epoch >= current_epoch {
+                continue;
+            }
+            if epoch_entry.re_encryption_completed_at.is_some() {
+                continue;
+            }
+
+            // Find credentials still on this old epoch
+            let creds = self
+                .store
+                .list_credentials(None, Some(CredentialState::Active), 10000, 0)
+                .await?;
+            let stale: Vec<_> = creds
+                .into_iter()
+                .filter(|c| c.epoch == epoch_entry.epoch)
+                .collect();
+
+            if stale.is_empty() {
+                // All credentials already re-encrypted; stamp completion
+                self.store
+                    .mark_epoch_re_encryption_complete(epoch_entry.epoch)
+                    .await?;
+                let mut crypto = self.crypto.write().await;
+                crypto.remove_grace_key(epoch_entry.epoch);
+                tracing::info!(
+                    epoch = epoch_entry.epoch,
+                    "marked epoch re-encryption complete (no stale credentials)"
+                );
+                continue;
+            }
+
+            // Check if we have the grace key to re-encrypt
+            let has_grace_key = {
+                let crypto = self.crypto.read().await;
+                crypto.grace_key_count() > 0
+                    && crypto
+                        .decrypt_metadata_with_epoch("dGVzdA==", epoch_entry.epoch) // probe; will fail but not with "no grace key" if key exists
+                        .err()
+                        .map_or(true, |e| !e.to_string().contains("no grace key"))
+            };
+
+            if !has_grace_key {
+                tracing::warn!(
+                    epoch = epoch_entry.epoch,
+                    stale_count = stale.len(),
+                    "credentials on old epoch but grace key is unavailable — cannot re-encrypt"
+                );
+                continue;
+            }
+
+            // Re-encrypt stale credentials
+            tracing::info!(
+                epoch = epoch_entry.epoch,
+                stale_count = stale.len(),
+                "resuming re-encryption for stale credentials"
+            );
+
+            let crypto = self.crypto.read().await;
+            for mut cred in stale {
+                let domain = self.store.get_domain(cred.domain_id).await?;
+                if let Some(domain) = domain {
+                    let plaintext = crypto
+                        .decrypt_credential_with_epoch(
+                            &cred.encrypted_value,
+                            &domain.derivation_info,
+                            &cred.derivation_info,
+                            epoch_entry.epoch,
+                        )
+                        .map_err(map_crypto_err)?;
+
+                    let encrypted = crypto
+                        .encrypt_credential(
+                            &plaintext,
+                            &domain.derivation_info,
+                            &cred.derivation_info,
+                        )
+                        .map_err(map_crypto_err)?;
+
+                    if cred.metadata_encrypted {
+                        let plain_name = crypto
+                            .decrypt_metadata_with_epoch(&cred.name, epoch_entry.epoch)
+                            .map_err(map_crypto_err)?;
+                        cred.name = crypto
+                            .encrypt_metadata(&plain_name)
+                            .map_err(map_crypto_err)?;
+                        if let Some(ref desc) = cred.description {
+                            let plain_desc = crypto
+                                .decrypt_metadata_with_epoch(desc, epoch_entry.epoch)
+                                .map_err(map_crypto_err)?;
+                            cred.description = Some(
+                                crypto
+                                    .encrypt_metadata(&plain_desc)
+                                    .map_err(map_crypto_err)?,
+                            );
+                        }
+                    }
+
+                    cred.encrypted_value = encrypted;
+                    cred.epoch = current_epoch;
+                    cred.updated_at = Utc::now();
+                    self.store.update_credential(&cred).await?;
+                }
+            }
+            drop(crypto);
+
+            // Mark epoch complete and remove grace key
+            self.store
+                .mark_epoch_re_encryption_complete(epoch_entry.epoch)
+                .await?;
+            {
+                let mut crypto = self.crypto.write().await;
+                crypto.remove_grace_key(epoch_entry.epoch);
+            }
+            tracing::info!(
+                epoch = epoch_entry.epoch,
+                "resumed re-encryption complete"
+            );
+        }
+
+        Ok(())
     }
 
     /// Check if auto-rotation is due and perform it if so.
@@ -2331,6 +2496,7 @@ impl KeychainEngine {
                     + std::time::Duration::from_secs(grace_hours as u64 * 3600),
             )),
             retired_at: None,
+            re_encryption_completed_at: None,
         };
         self.store.insert_key_epoch(&new_key_epoch).await?;
         self.store.retire_key_epoch(old_epoch).await?;
@@ -2353,6 +2519,15 @@ impl KeychainEngine {
         // Re-encrypt all credentials
         self.re_encrypt_all_credentials(old_epoch, new_epoch)
             .await?;
+
+        // Mark re-encryption complete for the old epoch and evict grace key from memory
+        self.store
+            .mark_epoch_re_encryption_complete(old_epoch)
+            .await?;
+        {
+            let mut crypto = self.crypto.write().await;
+            crypto.remove_grace_key(old_epoch);
+        }
 
         // If Shamir is enabled, re-split the new key and store share 1 in OS Keychain
         if let (Some(threshold), Some(total)) = (meta.shamir_threshold, meta.shamir_total) {

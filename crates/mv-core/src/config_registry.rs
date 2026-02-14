@@ -1,5 +1,5 @@
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Trait implemented by each config section (server, storage, ai, etc.)
 pub trait ConfigSection: Any + Send + Sync + 'static {
@@ -147,6 +147,91 @@ impl ConfigRegistry {
             .collect();
         sections.sort_by(|a, b| a.name.cmp(&b.name));
         sections
+    }
+
+    /// Return a static catalog filtered to the given section names.
+    pub fn builtin_section_catalog_scoped(sections: &[&str]) -> Vec<SectionInfo> {
+        let allowed: HashSet<&str> = sections.iter().copied().collect();
+        let mut result: Vec<SectionInfo> = BUILTIN_SECTIONS
+            .iter()
+            .filter(|(name, _)| allowed.contains(name))
+            .map(|(name, keys)| SectionInfo {
+                name: name.to_string(),
+                keys: keys.iter().map(|k| k.to_string()).collect(),
+            })
+            .collect();
+        result.sort_by(|a, b| a.name.cmp(&b.name));
+        result
+    }
+
+    /// Create a scoped view limited to the specified section names.
+    pub fn scope(&self, sections: &[&str]) -> ConfigScope<'_> {
+        ConfigScope {
+            registry: self,
+            allowed_sections: sections.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// Scope for AI/search modules.
+    pub fn ai_scope(&self) -> ConfigScope<'_> {
+        self.scope(&["ai", "search", "embedding", "llm"])
+    }
+
+    /// Scope for email adapter.
+    pub fn email_scope(&self) -> ConfigScope<'_> {
+        self.scope(&["email"])
+    }
+
+    /// Scope for storage operations.
+    pub fn storage_scope(&self) -> ConfigScope<'_> {
+        self.scope(&["storage", "encryption"])
+    }
+}
+
+/// A scoped view into the config registry, limiting visibility to specific sections.
+pub struct ConfigScope<'a> {
+    registry: &'a ConfigRegistry,
+    allowed_sections: HashSet<String>,
+}
+
+impl<'a> ConfigScope<'a> {
+    /// Get a config section by type (only if it is in this scope's allow list).
+    pub fn get<T: ConfigSection>(&self) -> Option<&T> {
+        let section = self.registry.get::<T>()?;
+        if self.allowed_sections.contains(section.section_name()) {
+            Some(section)
+        } else {
+            None
+        }
+    }
+
+    /// List only the section names visible to this scope (sorted).
+    pub fn list_sections(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .registry
+            .entries
+            .values()
+            .filter(|e| self.allowed_sections.contains(e.name))
+            .map(|e| e.name)
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// List sections with keys, filtered to this scope (sorted).
+    pub fn list_sections_with_keys(&self) -> Vec<SectionInfo> {
+        let mut result: Vec<SectionInfo> = self
+            .registry
+            .entries
+            .values()
+            .filter(|entry| self.allowed_sections.contains(entry.name))
+            .map(|entry| SectionInfo {
+                name: entry.name.to_string(),
+                keys: entry.keys.iter().map(|k| k.to_string()).collect(),
+            })
+            .collect();
+        result.sort_by(|a, b| a.name.cmp(&b.name));
+        result
     }
 }
 
@@ -321,5 +406,149 @@ mod tests {
         assert!(server.keys.contains(&"bind_host".to_string()));
         assert!(server.keys.contains(&"rest_port".to_string()));
         assert!(server.keys.contains(&"cors_allowed_origins".to_string()));
+    }
+
+    // --- ConfigScope tests ---
+
+    struct AiSection;
+    impl ConfigSection for AiSection {
+        fn section_name(&self) -> &'static str {
+            "ai"
+        }
+        fn validate(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn known_keys(&self) -> &'static [&'static str] {
+            &["model"]
+        }
+    }
+
+    struct StorageSection;
+    impl ConfigSection for StorageSection {
+        fn section_name(&self) -> &'static str {
+            "storage"
+        }
+        fn validate(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn known_keys(&self) -> &'static [&'static str] {
+            &["data_dir"]
+        }
+    }
+
+    struct EmailSection;
+    impl ConfigSection for EmailSection {
+        fn section_name(&self) -> &'static str {
+            "email"
+        }
+        fn validate(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn known_keys(&self) -> &'static [&'static str] {
+            &["enabled"]
+        }
+    }
+
+    #[test]
+    fn scope_get_returns_allowed_section() {
+        let mut registry = ConfigRegistry::new();
+        registry.register(AiSection);
+        registry.register(StorageSection);
+        let scope = registry.scope(&["ai"]);
+        assert!(scope.get::<AiSection>().is_some());
+    }
+
+    #[test]
+    fn scope_get_returns_none_for_disallowed_section() {
+        let mut registry = ConfigRegistry::new();
+        registry.register(AiSection);
+        registry.register(StorageSection);
+        let scope = registry.scope(&["ai"]);
+        assert!(scope.get::<StorageSection>().is_none());
+    }
+
+    #[test]
+    fn scope_list_sections_only_returns_allowed() {
+        let mut registry = ConfigRegistry::new();
+        registry.register(AiSection);
+        registry.register(StorageSection);
+        registry.register(EmailSection);
+        let scope = registry.scope(&["ai", "email"]);
+        let sections = scope.list_sections();
+        assert_eq!(sections, vec!["ai", "email"]);
+    }
+
+    #[test]
+    fn scope_list_sections_with_keys_only_returns_allowed() {
+        let mut registry = ConfigRegistry::new();
+        registry.register(AiSection);
+        registry.register(StorageSection);
+        let scope = registry.scope(&["storage"]);
+        let sections = scope.list_sections_with_keys();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].name, "storage");
+        assert_eq!(sections[0].keys, vec!["data_dir"]);
+    }
+
+    #[test]
+    fn scope_with_empty_allow_list_returns_nothing() {
+        let mut registry = ConfigRegistry::new();
+        registry.register(AiSection);
+        let scope = registry.scope(&[]);
+        assert!(scope.list_sections().is_empty());
+        assert!(scope.get::<AiSection>().is_none());
+    }
+
+    #[test]
+    fn predefined_ai_scope_has_expected_sections() {
+        let mut registry = ConfigRegistry::new();
+        registry.register(AiSection);
+        registry.register(StorageSection);
+        registry.register(EmailSection);
+        let scope = registry.ai_scope();
+        // ai is registered and in the allow list
+        assert!(scope.get::<AiSection>().is_some());
+        // storage and email are not in ai scope
+        assert!(scope.get::<StorageSection>().is_none());
+        assert!(scope.get::<EmailSection>().is_none());
+    }
+
+    #[test]
+    fn predefined_email_scope_has_expected_sections() {
+        let mut registry = ConfigRegistry::new();
+        registry.register(AiSection);
+        registry.register(EmailSection);
+        let scope = registry.email_scope();
+        assert!(scope.get::<EmailSection>().is_some());
+        assert!(scope.get::<AiSection>().is_none());
+    }
+
+    #[test]
+    fn predefined_storage_scope_has_expected_sections() {
+        let mut registry = ConfigRegistry::new();
+        registry.register(StorageSection);
+        registry.register(AiSection);
+        let scope = registry.storage_scope();
+        assert!(scope.get::<StorageSection>().is_some());
+        assert!(scope.get::<AiSection>().is_none());
+    }
+
+    #[test]
+    fn builtin_catalog_scoped_filters_correctly() {
+        let scoped = ConfigRegistry::builtin_section_catalog_scoped(&["ai", "email"]);
+        let names: Vec<&str> = scoped.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["ai", "email"]);
+    }
+
+    #[test]
+    fn builtin_catalog_scoped_empty_returns_empty() {
+        let scoped = ConfigRegistry::builtin_section_catalog_scoped(&[]);
+        assert!(scoped.is_empty());
+    }
+
+    #[test]
+    fn builtin_catalog_scoped_unknown_section_ignored() {
+        let scoped = ConfigRegistry::builtin_section_catalog_scoped(&["nonexistent"]);
+        assert!(scoped.is_empty());
     }
 }
