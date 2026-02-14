@@ -1,7 +1,7 @@
 {
-  "name": "@openclaw-user/mindvault",
+  "name": "@openclaw-user/knowledgevault",
   "version": "0.1.0",
-  "description": "MindVault memory plugin for OpenClaw — shared brain connector",
+  "description": "KnowledgeVault memory plugin for OpenClaw — knowledge graph connector",
   "type": "module",
   "openclaw": {
     "extensions": ["./index.ts"]

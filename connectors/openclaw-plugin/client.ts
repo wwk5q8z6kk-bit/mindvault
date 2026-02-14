@@ -1,9 +1,9 @@
 /**
- * MindVault REST API client.
- * Connects via HTTP or Unix socket to the MindVault server.
+ * KnowledgeVault REST API client.
+ * Connects via HTTP or Unix socket to the KnowledgeVault server.
  */
 
-export interface MindVaultConfig {
+export interface KnowledgeVaultConfig {
   serverUrl: string;
   socketPath?: string;
   authToken?: string;
@@ -58,13 +58,13 @@ export interface RecallRequest {
   tags?: string[];
 }
 
-export class MindVaultClient {
+export class KnowledgeVaultClient {
   private baseUrl: string;
   private headers: Record<string, string>;
   private requestTimeoutMs: number;
   private maxRetries: number;
 
-  constructor(private config: MindVaultConfig) {
+  constructor(private config: KnowledgeVaultConfig) {
     this.baseUrl = config.serverUrl.replace(/\/$/, "");
     this.headers = { "Content-Type": "application/json" };
     this.requestTimeoutMs = config.requestTimeoutMs ?? 10_000;
@@ -109,7 +109,7 @@ export class MindVaultClient {
         }
 
         throw new Error(
-          `MindVault API error: ${resp.status} ${resp.statusText} — ${text}`,
+          `KnowledgeVault API error: ${resp.status} ${resp.statusText} — ${text}`,
         );
       } catch (err) {
         if (attempt >= this.maxRetries) {

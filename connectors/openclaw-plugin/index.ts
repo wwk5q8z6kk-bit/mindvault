@@ -1,17 +1,17 @@
 /**
- * MindVault — OpenClaw Memory Plugin
+ * KnowledgeVault — OpenClaw Memory Plugin
  *
  * Drop-in replacement for memory-lancedb.
- * Connects to MindVault server via REST API.
+ * Connects to KnowledgeVault server via REST API.
  *
  * Configure in openclaw.json:
- *   "plugins.slots.memory": "mindvault"
- *   "plugins.entries.mindvault.config": { ... }
+ *   "plugins.slots.memory": "knowledgevault"
+ *   "plugins.entries.knowledgevault.config": { ... }
  */
 
 import {
-  MindVaultClient,
-  type MindVaultConfig,
+  KnowledgeVaultClient,
+  type KnowledgeVaultConfig,
   type RecallRequest,
   type StoreRequest,
 } from "./client.ts";
@@ -57,12 +57,12 @@ function getLog(api: PluginApi) {
   };
 }
 
-export default function mindvaultPlugin(api: PluginApi) {
+export default function knowledgevaultPlugin(api: PluginApi) {
   const log = getLog(api);
   const cfg = api.pluginConfig ?? {};
 
   // Parse config
-  const mvConfig: MindVaultConfig = {
+  const mvConfig: KnowledgeVaultConfig = {
     serverUrl: (cfg.serverUrl as string) || "http://localhost:9470",
     socketPath: cfg.socketPath as string | undefined,
     authToken: cfg.authToken as string | undefined,
@@ -76,15 +76,15 @@ export default function mindvaultPlugin(api: PluginApi) {
   const recallLimit = (cfg.recallLimit as number) || 5;
   const recallStrategy = (cfg.recallStrategy as string) || "hybrid";
 
-  const client = new MindVaultClient(mvConfig);
+  const client = new KnowledgeVaultClient(mvConfig);
 
-  log.info("[mindvault] plugin initializing");
+  log.info("[knowledgevault] plugin initializing");
 
   // --- Register Service ---
   api.registerService?.({
-    id: "mindvault",
-    start: () => log.info("[mindvault] service started"),
-    stop: () => log.info("[mindvault] service stopped"),
+    id: "knowledgevault",
+    start: () => log.info("[knowledgevault] service started"),
+    stop: () => log.info("[knowledgevault] service stopped"),
   });
 
   // --- Hook: before_agent_start (auto-recall) ---
@@ -106,7 +106,7 @@ export default function mindvaultPlugin(api: PluginApi) {
           const available = await client.isAvailable();
           if (!available) {
             log.debug(
-              "[mindvault] server not available, skipping auto-recall",
+              "[knowledgevault] server not available, skipping auto-recall",
             );
             return;
           }
@@ -127,16 +127,16 @@ export default function mindvaultPlugin(api: PluginApi) {
             )
             .join("\n");
 
-          const context = `<mindvault-memories>\nRelevant knowledge from MindVault (${results.length} results):\n${memories}\n</mindvault-memories>`;
+          const context = `<knowledgevault-memories>\nRelevant knowledge from KnowledgeVault (${results.length} results):\n${memories}\n</knowledgevault-memories>`;
 
           log.info(
-            `[mindvault] recalled ${results.length} memories for agent context`,
+            `[knowledgevault] recalled ${results.length} memories for agent context`,
           );
 
           return { prependContext: context };
         } catch (err) {
           log.warn(
-            `[mindvault] auto-recall failed: ${err instanceof Error ? err.message : String(err)}`,
+            `[knowledgevault] auto-recall failed: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       },
@@ -186,10 +186,10 @@ export default function mindvaultPlugin(api: PluginApi) {
           importance: 0.3,
         });
 
-        log.debug("[mindvault] auto-captured conversation knowledge");
+        log.debug("[knowledgevault] auto-captured conversation knowledge");
       } catch (err) {
         log.debug(
-          `[mindvault] auto-capture failed: ${err instanceof Error ? err.message : String(err)}`,
+          `[knowledgevault] auto-capture failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     });
@@ -199,9 +199,9 @@ export default function mindvaultPlugin(api: PluginApi) {
   api.registerTool?.(
     {
       name: "memory_store",
-      label: "MindVault Store",
+      label: "KnowledgeVault Store",
       description:
-        "Store a piece of knowledge in MindVault. Use this to remember facts, decisions, preferences, or any important information.",
+        "Store a piece of knowledge in KnowledgeVault. Use this to remember facts, decisions, preferences, or any important information.",
       parameters: {
         type: "object",
         properties: {
@@ -259,7 +259,7 @@ export default function mindvaultPlugin(api: PluginApi) {
             content: [
               {
                 type: "text",
-                text: `Stored in MindVault: ${node.id} (${node.kind})${node.title ? " — " + node.title : ""}`,
+                text: `Stored in KnowledgeVault: ${node.id} (${node.kind})${node.title ? " — " + node.title : ""}`,
               },
             ],
           };
@@ -283,9 +283,9 @@ export default function mindvaultPlugin(api: PluginApi) {
   api.registerTool?.(
     {
       name: "memory_search",
-      label: "MindVault Search",
+      label: "KnowledgeVault Search",
       description:
-        "Search knowledge stored in MindVault. Returns relevant memories matching the query.",
+        "Search knowledge stored in KnowledgeVault. Returns relevant memories matching the query.",
       parameters: {
         type: "object",
         properties: {
@@ -371,8 +371,8 @@ export default function mindvaultPlugin(api: PluginApi) {
   api.registerTool?.(
     {
       name: "memory_forget",
-      label: "MindVault Forget",
-      description: "Delete a knowledge node from MindVault by its ID.",
+      label: "KnowledgeVault Forget",
+      description: "Delete a knowledge node from KnowledgeVault by its ID.",
       parameters: {
         type: "object",
         properties: {
@@ -413,6 +413,6 @@ export default function mindvaultPlugin(api: PluginApi) {
   );
 
   log.info(
-    `[mindvault] plugin ready (autoCapture=${autoCapture}, autoRecall=${autoRecall}, server=${mvConfig.serverUrl})`,
+    `[knowledgevault] plugin ready (autoCapture=${autoCapture}, autoRecall=${autoRecall}, server=${mvConfig.serverUrl})`,
   );
 }

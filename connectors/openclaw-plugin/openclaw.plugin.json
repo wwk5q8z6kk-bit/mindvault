@@ -1,5 +1,5 @@
 {
-  "id": "mindvault",
+  "id": "knowledgevault",
   "kind": "memory",
   "configSchema": {
     "type": "object",
@@ -7,11 +7,11 @@
     "properties": {
       "serverUrl": {
         "type": "string",
-        "description": "MindVault REST API URL"
+        "description": "KnowledgeVault REST API URL"
       },
       "socketPath": {
         "type": "string",
-        "description": "Unix socket path for local MindVault server"
+        "description": "Unix socket path for local KnowledgeVault server"
       },
       "authToken": {
         "type": "string",
@@ -50,13 +50,13 @@
   "uiHints": {
     "serverUrl": {
       "label": "Server URL",
-      "help": "URL of MindVault REST API (default: http://localhost:9470)",
+      "help": "URL of KnowledgeVault REST API (default: http://localhost:9470)",
       "placeholder": "http://localhost:9470"
     },
     "socketPath": {
       "label": "Socket Path",
       "help": "Unix socket for local connections (faster than HTTP)",
-      "placeholder": "~/.mindvault/mindvault.sock",
+      "placeholder": "/tmp/knowledgevault.sock",
       "advanced": true
     },
     "authToken": {
@@ -74,7 +74,7 @@
     },
     "requestTimeoutMs": {
       "label": "Request Timeout",
-      "help": "Timeout for MindVault API requests in milliseconds",
+      "help": "Timeout for KnowledgeVault API requests in milliseconds",
       "advanced": true
     },
     "maxRetries": {
