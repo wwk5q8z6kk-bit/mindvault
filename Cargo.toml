@@ -39,7 +39,7 @@ mv-mcp = { path = "crates/mv-mcp" }
 mv-plugin = { path = "crates/mv-plugin" }
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "fs", "sync", "io-util", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "fs", "sync", "io-util", "io-std", "process"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

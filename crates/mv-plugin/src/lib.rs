@@ -4,6 +4,7 @@
 //! MindVault's functionality. WASM runtime support is available behind the
 //! `wasm-runtime` feature flag.
 
+#[cfg(feature = "wasm-runtime")]
 pub(crate) mod abi;
 #[cfg(feature = "wasm-runtime")]
 pub(crate) mod host;
@@ -12,6 +13,7 @@ pub(crate) mod manager;
 pub(crate) mod manifest;
 pub(crate) mod registry;
 pub(crate) mod runtime;
+#[cfg(feature = "wasm-runtime")]
 pub(crate) mod sandbox;
 #[cfg(feature = "wasm-runtime")]
 pub(crate) mod wasm_plugin;
