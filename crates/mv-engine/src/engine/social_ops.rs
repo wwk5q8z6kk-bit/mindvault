@@ -123,19 +123,6 @@ impl MindVaultEngine {
         self.store.nodes.record_feedback(fb).await
     }
 
-    /// Get acceptance rate for an intent type. Returns (total, applied).
-    pub(crate) async fn get_acceptance_rate(&self, intent_type: &str) -> MvResult<(usize, usize)> {
-        self.store.nodes.get_acceptance_rate(intent_type).await
-    }
-
-    /// Get confidence override for an intent type.
-    pub(crate) async fn get_confidence_override(
-        &self,
-        intent_type: &str,
-    ) -> MvResult<Option<ConfidenceOverride>> {
-        self.store.nodes.get_confidence_override(intent_type).await
-    }
-
     /// Recalculate and store a confidence override based on accumulated feedback.
     pub async fn recalculate_confidence(&self, intent_type: &str) -> MvResult<()> {
         let (total, applied) = self.store.nodes.get_acceptance_rate(intent_type).await?;

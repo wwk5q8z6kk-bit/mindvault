@@ -14,7 +14,7 @@ impl MindVaultEngine {
     }
 
     /// Store a node with relationships.
-    pub(crate) async fn store_with_relations(
+    pub async fn store_with_relations(
         &self,
         node: KnowledgeNode,
         relations: Vec<Relationship>,

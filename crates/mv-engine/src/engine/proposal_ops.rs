@@ -32,7 +32,7 @@ impl MindVaultEngine {
         self.store.nodes.count_proposals(state).await
     }
 
-    pub(crate) async fn expire_proposals(&self, before: DateTime<Utc>) -> MvResult<usize> {
+    pub async fn expire_proposals(&self, before: DateTime<Utc>) -> MvResult<usize> {
         self.store.nodes.expire_proposals(before).await
     }
 
