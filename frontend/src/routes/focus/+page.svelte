@@ -1,7 +1,12 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { tasksStore, loadTasks, completeTaskOptimistic, updateTaskOptimistic } from '$lib/stores/tasks';
+	import {
+		tasksStore,
+		loadTasks,
+		completeTaskOptimistic,
+		updateTaskOptimistic
+	} from '$lib/stores/tasks';
 	import { prioritizeTasks, type PrioritizedTaskItem } from '$lib/api/ai';
 	import { pushToast } from '$lib/stores/toast';
 	import { selectedTaskId } from '$lib/stores/ui';
@@ -199,9 +204,18 @@
 	}
 
 	$: currentTask = focusItems[currentIndex] ?? null;
-	$: currentTaskTimeSpent = currentTask ? (taskTimeSpent.get(currentTask.task.id) ?? (currentTask.task.metadata?.time_spent_min as number ?? 0)) : 0;
-	$: currentTaskEstimate = currentTask ? (currentTask.task.metadata?.estimate_min as number ?? null) : null;
-	$: progress = focusItems.length > 0 ? ((currentIndex + completedInSession.length) / focusItems.length) * 100 : 0;
+	$: currentTaskTimeSpent = currentTask
+		? (taskTimeSpent.get(currentTask.task.id) ??
+			(currentTask.task.metadata?.time_spent_min as number) ??
+			0)
+		: 0;
+	$: currentTaskEstimate = currentTask
+		? ((currentTask.task.metadata?.estimate_min as number) ?? null)
+		: null;
+	$: progress =
+		focusItems.length > 0
+			? ((currentIndex + completedInSession.length) / focusItems.length) * 100
+			: 0;
 </script>
 
 <div class="mx-auto max-w-4xl space-y-6">
@@ -245,7 +259,9 @@
 
 	{#if loading}
 		<div class="flex items-center justify-center py-12">
-			<div class="h-8 w-8 animate-spin rounded-full border-2 border-slate-600 border-t-sky-500"></div>
+			<div
+				class="h-8 w-8 animate-spin rounded-full border-2 border-slate-600 border-t-sky-500"
+			></div>
 		</div>
 	{:else if focusItems.length === 0}
 		<div class="rounded-2xl border border-dashed border-slate-800 p-12 text-center">
@@ -262,8 +278,13 @@
 		<!-- Active Focus Session -->
 		<div class="grid gap-6 lg:grid-cols-2">
 			<!-- Current Task -->
-			<div class="rounded-2xl border border-slate-700 bg-slate-900/80 p-6">
-				<div class="flex items-center justify-between">
+			<div
+				class="relative overflow-hidden rounded-[var(--mv-radius)] border border-white/5 bg-[rgb(var(--mv-panel))]/40 p-6 backdrop-blur-2xl shadow-xl"
+			>
+				<div
+					class="absolute -right-20 -top-20 h-48 w-48 rounded-full bg-sky-500/10 blur-3xl pointer-events-none"
+				></div>
+				<div class="relative z-10 flex items-center justify-between">
 					<span class="text-xs uppercase tracking-wide text-slate-500">
 						Task {currentIndex + 1} of {focusItems.length}
 					</span>
@@ -293,24 +314,24 @@
 					</div>
 				{/if}
 
-				<div class="mt-6 flex gap-2">
+				<div class="relative z-10 mt-8 flex flex-col sm:flex-row gap-3">
 					<button
-						class="flex-1 rounded-lg bg-emerald-500 py-3 text-sm font-semibold text-white hover:bg-emerald-400"
+						class="flex-1 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-400 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-500/20 transition-all hover:-translate-y-0.5 hover:shadow-emerald-500/40 active:scale-95 border border-emerald-400/50"
 						on:click={completeCurrentTask}
 					>
-						Complete
+						Mark Complete
 					</button>
 					<button
-						class="rounded-lg border border-slate-700 px-4 py-3 text-sm text-slate-300 hover:bg-slate-800"
+						class="rounded-xl border border-white/10 bg-[rgb(var(--mv-panel-strong))]/50 px-5 py-3 text-sm font-semibold text-[rgb(var(--mv-muted))] transition-all hover:bg-white/10 hover:text-[rgb(var(--mv-text))] active:scale-95"
 						on:click={skipTask}
 					>
-						Skip
+						Skip For Now
 					</button>
 					<button
-						class="rounded-lg border border-slate-700 px-4 py-3 text-sm text-slate-300 hover:bg-slate-800"
+						class="rounded-xl border border-white/10 bg-[rgb(var(--mv-panel-strong))]/50 px-5 py-3 text-sm font-semibold text-[rgb(var(--mv-muted))] transition-all hover:bg-white/10 hover:text-[rgb(var(--mv-text))] active:scale-95"
 						on:click={() => openTaskDetail(currentTask.task.id)}
 					>
-						Details
+						View Details
 					</button>
 				</div>
 
@@ -344,19 +365,30 @@
 			</div>
 
 			<!-- Timer -->
-			<div class="rounded-2xl border border-slate-700 bg-slate-900/80 p-6">
-				<div class="flex items-center justify-between">
+			<div
+				class="relative overflow-hidden rounded-[var(--mv-radius)] border border-white/5 bg-[rgb(var(--mv-panel))]/40 p-6 backdrop-blur-2xl shadow-xl flex flex-col justify-between"
+			>
+				<div
+					class="absolute -left-20 -top-20 h-48 w-48 rounded-full bg-emerald-500/10 blur-3xl pointer-events-none"
+				></div>
+				<div class="relative z-10 flex items-center justify-between">
 					<span class="text-xs uppercase tracking-wide text-slate-500">Timer</span>
 					<div class="flex gap-1">
 						<button
 							class={`rounded px-2 py-1 text-[10px] ${timerMode === 'pomodoro' ? 'bg-sky-500/20 text-sky-300' : 'text-slate-500'}`}
-							on:click={() => { timerMode = 'pomodoro'; resetTimer(); }}
+							on:click={() => {
+								timerMode = 'pomodoro';
+								resetTimer();
+							}}
 						>
 							Pomodoro
 						</button>
 						<button
 							class={`rounded px-2 py-1 text-[10px] ${timerMode === 'stopwatch' ? 'bg-sky-500/20 text-sky-300' : 'text-slate-500'}`}
-							on:click={() => { timerMode = 'stopwatch'; resetTimer(); }}
+							on:click={() => {
+								timerMode = 'stopwatch';
+								resetTimer();
+							}}
 						>
 							Stopwatch
 						</button>
@@ -381,24 +413,24 @@
 						</div>
 					{/if}
 
-					<div class="mt-6 flex justify-center gap-2">
+					<div class="relative z-10 mt-8 flex justify-center gap-3">
 						{#if timerRunning}
 							<button
-								class="rounded-lg bg-amber-500 px-6 py-2 text-sm font-semibold text-white hover:bg-amber-400"
+								class="rounded-xl bg-gradient-to-r from-amber-500 to-amber-400 px-8 py-3 text-sm font-bold text-white shadow-lg shadow-amber-500/20 transition-all hover:-translate-y-0.5 active:scale-95 border border-amber-400/50"
 								on:click={stopTimer}
 							>
-								Pause
+								Pause Timer
 							</button>
 						{:else}
 							<button
-								class="rounded-lg bg-emerald-500 px-6 py-2 text-sm font-semibold text-white hover:bg-emerald-400"
+								class="rounded-xl bg-gradient-to-r from-sky-500 to-indigo-500 px-8 py-3 text-sm font-bold text-white shadow-lg shadow-sky-500/20 transition-all hover:-translate-y-0.5 active:scale-95 border border-sky-400/50"
 								on:click={startTimer}
 							>
-								Start
+								Start Timer
 							</button>
 						{/if}
 						<button
-							class="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
+							class="rounded-xl border border-white/10 bg-[rgb(var(--mv-panel-strong))]/50 px-6 py-3 text-sm font-semibold text-[rgb(var(--mv-muted))] transition-all hover:bg-white/10 hover:text-[rgb(var(--mv-text))] active:scale-95"
 							on:click={resetTimer}
 						>
 							Reset
@@ -420,27 +452,41 @@
 		</div>
 
 		<!-- Progress -->
-		<div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-			<div class="flex items-center justify-between text-xs text-slate-400">
+		<div
+			class="rounded-xl border border-white/5 bg-[rgb(var(--mv-panel))]/30 p-4 backdrop-blur-xl shadow-lg"
+		>
+			<div
+				class="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-[rgb(var(--mv-muted))]"
+			>
 				<span>Session Progress</span>
-				<span>{completedInSession.length} / {focusItems.length} tasks</span>
+				<span class="text-sky-300">{completedInSession.length} / {focusItems.length} tasks</span>
 			</div>
-			<div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
+			<div
+				class="mt-3 h-2.5 overflow-hidden rounded-full bg-[rgb(var(--mv-panel-strong))]/50 shadow-inner"
+			>
 				<div
-					class="h-full bg-gradient-to-r from-sky-500 to-emerald-500 transition-all duration-300"
+					class="relative h-full bg-gradient-to-r from-sky-500 via-indigo-500 to-fuchsia-500 transition-all duration-500 ease-out"
 					style="width: {progress}%"
-				></div>
+				>
+					<div class="absolute inset-0 bg-white/20 animate-pulse"></div>
+				</div>
 			</div>
 		</div>
 
 		<!-- Up Next -->
 		{#if focusItems.length > currentIndex + 1}
-			<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-				<h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Up Next</h3>
-				<div class="mt-3 space-y-2">
+			<div
+				class="rounded-xl border border-white/5 bg-[rgb(var(--mv-panel))]/20 p-5 backdrop-blur-md"
+			>
+				<h3 class="text-[10px] font-bold uppercase tracking-widest text-[rgb(var(--mv-muted))]">
+					Up Next
+				</h3>
+				<div class="mt-4 space-y-3">
 					{#each focusItems.slice(currentIndex + 1, currentIndex + 4) as item, i}
-						<div class="flex items-center gap-3 text-xs">
-							<span class="flex h-5 w-5 items-center justify-center rounded-full bg-slate-800 text-[10px] text-slate-500">
+						<div class="flex items-center gap-3 text-sm">
+							<span
+								class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[rgb(var(--mv-panel-strong))] text-[10px] font-bold text-[rgb(var(--mv-muted))] shadow-inner"
+							>
 								{currentIndex + i + 2}
 							</span>
 							<span class="text-slate-300">{item.task.title}</span>
@@ -452,28 +498,54 @@
 		{/if}
 	{:else}
 		<!-- Pre-session: Show task list -->
-		<div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-			<h3 class="text-sm font-semibold text-white">Focus Queue</h3>
-			<p class="text-xs text-slate-400">AI-ranked tasks for your focus session</p>
+		<div
+			class="relative overflow-hidden rounded-[var(--mv-radius)] border border-white/5 bg-[rgb(var(--mv-panel))]/40 p-6 backdrop-blur-2xl shadow-xl"
+		>
+			<div
+				class="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-indigo-500/10 blur-3xl pointer-events-none"
+			></div>
 
-			<div class="mt-4 space-y-2">
+			<div class="relative z-10">
+				<h3
+					class="text-sm font-bold text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-400"
+				>
+					Focus Queue
+				</h3>
+				<p class="mt-1 text-xs font-medium text-[rgb(var(--mv-muted))]">
+					AI-ranked tasks for your focus session
+				</p>
+			</div>
+
+			<div class="relative z-10 mt-5 space-y-2">
 				{#each focusItems as item, i (item.task.id)}
-					<div class="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-900/40 p-3">
-						<div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-800 text-sm font-bold text-slate-300">
+					<div
+						class="group flex items-center gap-4 rounded-xl border border-white/5 bg-[rgb(var(--mv-panel-strong))]/30 p-3.5 transition-all hover:bg-[rgb(var(--mv-panel-strong))]/60"
+					>
+						<div
+							class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[rgb(var(--mv-panel-strong))] shadow-inner text-xs font-bold text-[rgb(var(--mv-text))]"
+						>
 							{i + 1}
 						</div>
 						<div class="min-w-0 flex-1">
 							<div class="flex items-center gap-2">
-								<span class="truncate text-sm font-medium text-white">{item.task.title}</span>
+								<span
+									class="truncate text-sm font-semibold text-[rgb(var(--mv-text))] group-hover:text-sky-300 transition-colors"
+									>{item.task.title}</span
+								>
 								<span class="shrink-0 rounded bg-sky-500/20 px-1.5 py-0.5 text-[9px] text-sky-300">
 									{(item.score * 100).toFixed(0)}%
 								</span>
 							</div>
 							{#if item.reason}
-								<p class="mt-0.5 truncate text-[11px] text-slate-400">{item.reason}</p>
+								<p class="mt-1 truncate text-xs font-medium text-[rgb(var(--mv-muted))]/80">
+									{item.reason}
+								</p>
 							{/if}
 						</div>
-						<span class="text-[10px] text-slate-500">P{item.task.priority}</span>
+						<span
+							class="text-[10px] font-bold text-[rgb(var(--mv-muted))] px-2 py-0.5 rounded border border-white/5 bg-white/5"
+							>P{item.task.priority}</span
+						>
 					</div>
 				{/each}
 			</div>

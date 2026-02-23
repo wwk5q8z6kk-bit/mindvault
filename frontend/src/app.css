@@ -11,7 +11,7 @@
 		color: rgb(var(--mv-text));
 		@apply antialiased selection:bg-[rgb(var(--mv-accent))]/30 selection:text-[rgb(var(--mv-accent-strong))];
 		font-family:
-			'Plus Jakarta Sans',
+			'Outfit',
 			'Inter',
 			system-ui,
 			-apple-system,
@@ -57,31 +57,31 @@
 	}
 
 	.mv-card {
-		@apply rounded-2xl border border-[rgb(var(--mv-border))]/60 bg-[rgb(var(--mv-panel))]/80 backdrop-blur-xl shadow-xl;
+		@apply rounded-[var(--mv-radius)] border border-white/5 bg-[rgb(var(--mv-panel))]/50 backdrop-blur-2xl shadow-lg transition-all duration-300 hover:shadow-xl hover:bg-[rgb(var(--mv-panel))]/70 hover:-translate-y-0.5;
 	}
 
 	.mv-input {
-		@apply w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/50 px-3 py-2 text-sm text-[rgb(var(--mv-text))] placeholder:text-[rgb(var(--mv-muted))]/60 focus:border-[rgb(var(--mv-accent))] focus:outline-none focus:ring-1 focus:ring-[rgb(var(--mv-accent))]/50 transition-all duration-200;
+		@apply w-full rounded-lg border border-white/10 bg-[rgb(var(--mv-panel-strong))]/40 px-4 py-2.5 text-sm text-[rgb(var(--mv-text))] placeholder:text-[rgb(var(--mv-muted))]/60 focus:border-[rgb(var(--mv-accent))] focus:outline-none focus:ring-2 focus:ring-[rgb(var(--mv-accent))]/30 transition-all duration-300 backdrop-blur-md hover:bg-[rgb(var(--mv-panel-strong))]/60;
 	}
 
 	.mv-btn {
-		@apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+		@apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed hover:-translate-y-0.5;
 	}
 
 	.mv-btn-primary {
-		@apply bg-gradient-to-br from-[rgb(var(--mv-accent))] to-[rgb(var(--mv-accent-strong))] text-white hover:shadow-lg hover:shadow-[rgb(var(--mv-accent))]/20 hover:scale-[1.02] active:scale-[0.98];
+		@apply bg-gradient-to-br from-[rgb(var(--mv-accent))] to-[rgb(var(--mv-accent-strong))] text-white shadow-md shadow-[rgb(var(--mv-accent))]/20 hover:shadow-lg hover:shadow-[rgb(var(--mv-accent))]/40 hover:scale-[1.02] active:scale-[0.98];
 	}
 
 	.mv-btn-secondary {
-		@apply border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-panel-strong))]/80 hover:border-[rgb(var(--mv-muted))]/40 active:scale-[0.98];
+		@apply border border-white/10 bg-[rgb(var(--mv-panel-strong))]/60 text-[rgb(var(--mv-text))] hover:bg-[rgb(var(--mv-panel-strong))]/80 hover:border-white/20 active:scale-[0.98] backdrop-blur-md shadow-sm;
 	}
 
 	.mv-btn-ghost {
-		@apply text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/50 hover:text-[rgb(var(--mv-text))];
+		@apply text-[rgb(var(--mv-muted))] hover:bg-white/5 hover:text-[rgb(var(--mv-text))] active:scale-[0.98] transition-colors duration-200;
 	}
 
 	.mv-section {
-		@apply rounded-xl border border-[rgb(var(--mv-border))]/60 bg-[rgb(var(--mv-panel))]/40 p-4;
+		@apply rounded-[var(--mv-radius)] border border-white/5 bg-[rgb(var(--mv-panel))]/30 p-5 backdrop-blur-xl transition-all duration-300 hover:bg-[rgb(var(--mv-panel))]/40;
 	}
 
 	.mv-badge {

@@ -6,6 +6,7 @@
 	import TasksKanbanView from '$lib/components/TasksKanbanView.svelte';
 	import TasksCalendarView from '$lib/components/TasksCalendarView.svelte';
 	import TasksTimelineView from '$lib/components/TasksTimelineView.svelte';
+	import { fade } from 'svelte/transition';
 
 	const currentView = createViewMode('list', ['list', 'kanban', 'calendar', 'timeline']);
 
@@ -39,19 +40,62 @@
 	}
 </script>
 
-<div class="flex flex-col gap-4">
-	<div class="flex items-center justify-between">
-		<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">Tasks</h2>
-		<ViewToggle {views} activeView={$currentView} on:change={handleViewChange} />
+<div class="flex flex-col gap-6">
+	<div
+		class="relative flex flex-col gap-4 overflow-hidden rounded-[var(--mv-radius)] border border-white/5 bg-[rgb(var(--mv-panel))]/40 p-6 backdrop-blur-xl shadow-lg sm:flex-row sm:items-center sm:justify-between"
+	>
+		<div
+			class="absolute -left-20 -top-20 h-40 w-40 rounded-full bg-[rgb(var(--mv-accent))]/10 blur-3xl pointer-events-none"
+		></div>
+
+		<div class="relative z-10">
+			<h2
+				class="text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-[rgb(var(--mv-text))] to-[rgb(var(--mv-muted))]"
+			>
+				Tasks
+			</h2>
+			<p class="mt-1 text-sm font-medium text-[rgb(var(--mv-muted))]/80">
+				Manage, prioritize, and conquer your day.
+			</p>
+		</div>
+		<div class="relative z-10">
+			<ViewToggle {views} activeView={$currentView} on:change={handleViewChange} />
+		</div>
 	</div>
 
-	{#if $currentView === 'list'}
-		<TasksListView />
-	{:else if $currentView === 'kanban'}
-		<TasksKanbanView />
-	{:else if $currentView === 'calendar'}
-		<TasksCalendarView />
-	{:else if $currentView === 'timeline'}
-		<TasksTimelineView />
-	{/if}
+	<div class="grid w-full items-start mt-2">
+		{#if $currentView === 'list'}
+			<div
+				in:fade={{ duration: 300, delay: 150 }}
+				out:fade={{ duration: 150 }}
+				class="col-start-1 row-start-1 w-full min-w-0"
+			>
+				<TasksListView />
+			</div>
+		{:else if $currentView === 'kanban'}
+			<div
+				in:fade={{ duration: 300, delay: 150 }}
+				out:fade={{ duration: 150 }}
+				class="col-start-1 row-start-1 w-full min-w-0"
+			>
+				<TasksKanbanView />
+			</div>
+		{:else if $currentView === 'calendar'}
+			<div
+				in:fade={{ duration: 300, delay: 150 }}
+				out:fade={{ duration: 150 }}
+				class="col-start-1 row-start-1 w-full min-w-0"
+			>
+				<TasksCalendarView />
+			</div>
+		{:else if $currentView === 'timeline'}
+			<div
+				in:fade={{ duration: 300, delay: 150 }}
+				out:fade={{ duration: 150 }}
+				class="col-start-1 row-start-1 w-full min-w-0"
+			>
+				<TasksTimelineView />
+			</div>
+		{/if}
+	</div>
 </div>

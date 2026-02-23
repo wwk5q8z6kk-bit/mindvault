@@ -201,7 +201,10 @@
 				duplicate_strategy: importDuplicateStrategy,
 				tags: tags.length > 0 ? tags : undefined
 			});
-			pushToast(`Imported ${result.imported_count} events (${result.skipped_count} skipped)`, 'success');
+			pushToast(
+				`Imported ${result.imported_count} events (${result.skipped_count} skipped)`,
+				'success'
+			);
 			showImportOptions = false;
 			importFile = null;
 			await calendarViewRef?.reload();
@@ -216,7 +219,9 @@
 
 <div class="flex flex-col gap-4">
 	<div class="flex items-center justify-between">
-		<p class="text-xs text-[rgb(var(--mv-muted))]">View events and tasks from the server. Export/import iCal.</p>
+		<p class="text-xs text-[rgb(var(--mv-muted))]">
+			View events and tasks from the server. Export/import iCal.
+		</p>
 		<div class="flex gap-2">
 			<button
 				class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))] transition hover:bg-[rgb(var(--mv-panel-strong))]/80 disabled:opacity-50"
@@ -225,9 +230,17 @@
 			>
 				{exporting ? 'Exporting...' : 'Export .ics'}
 			</button>
-			<label class="cursor-pointer rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))] transition hover:bg-[rgb(var(--mv-panel-strong))]/80">
+			<label
+				class="cursor-pointer rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-3 py-2 text-xs text-[rgb(var(--mv-text))] transition hover:bg-[rgb(var(--mv-panel-strong))]/80"
+			>
 				Import .ics
-				<input type="file" accept=".ics,.ical" class="hidden" bind:this={icalInput} on:change={handleIcalFileSelect} />
+				<input
+					type="file"
+					accept=".ics,.ical"
+					class="hidden"
+					bind:this={icalInput}
+					on:change={handleIcalFileSelect}
+				/>
 			</label>
 		</div>
 	</div>
@@ -240,7 +253,9 @@
 		<div class="flex flex-wrap items-center justify-between gap-3">
 			<div>
 				<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">AI Time-Blocking</h3>
-				<p class="text-xs text-[rgb(var(--mv-muted))]">Suggest focus blocks from prioritized tasks and available calendar space.</p>
+				<p class="text-xs text-[rgb(var(--mv-muted))]">
+					Suggest focus blocks from prioritized tasks and available calendar space.
+				</p>
 			</div>
 			<div class="flex flex-wrap items-center gap-2">
 				<button
@@ -305,13 +320,19 @@
 		</div>
 
 		{#if blockSuggestions.length > 0}
-			<div class="mt-3 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/50 p-3">
+			<div
+				class="mt-3 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/50 p-3"
+			>
 				<div class="flex items-center justify-between gap-2">
-					<p class="text-xs text-[rgb(var(--mv-text))]">Suggestions for {formatCalendarDate(plannerDate)}</p>
+					<p class="text-xs text-[rgb(var(--mv-text))]">
+						Suggestions for {formatCalendarDate(plannerDate)}
+					</p>
 					<div class="flex items-center gap-2">
 						<button
 							class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
-							on:click={() => { blockSuggestions = []; }}
+							on:click={() => {
+								blockSuggestions = [];
+							}}
 						>
 							Clear
 						</button>
@@ -328,7 +349,9 @@
 					{#each blockSuggestions as block (block.taskId + block.start)}
 						<li class="rounded-md border border-[rgb(var(--mv-border))] px-2 py-1.5 text-[11px]">
 							<p class="font-medium text-[rgb(var(--mv-text))]">{block.taskTitle}</p>
-							<p class="text-[rgb(var(--mv-muted))]">{formatSuggestionWindow(block.start, block.end)} • {block.durationMinutes}m</p>
+							<p class="text-[rgb(var(--mv-muted))]">
+								{formatSuggestionWindow(block.start, block.end)} • {block.durationMinutes}m
+							</p>
 							{#if block.reason}
 								<p class="text-[rgb(var(--mv-muted))]/60">{block.reason}</p>
 							{/if}
@@ -345,7 +368,9 @@
 					<div class="flex items-center gap-2">
 						<button
 							class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
-							on:click={() => { reflowSuggestions = []; }}
+							on:click={() => {
+								reflowSuggestions = [];
+							}}
 						>
 							Clear
 						</button>
@@ -363,7 +388,10 @@
 						<li class="rounded-md border border-amber-500/20 px-2 py-1.5 text-[11px]">
 							<p class="font-medium text-[rgb(var(--mv-text))]">{block.taskTitle}</p>
 							<p class="text-[rgb(var(--mv-muted))]">
-								{formatSuggestionWindow(block.previousStart, block.previousEnd)} -> {formatSuggestionWindow(block.start, block.end)}
+								{formatSuggestionWindow(block.previousStart, block.previousEnd)} -> {formatSuggestionWindow(
+									block.start,
+									block.end
+								)}
 							</p>
 						</li>
 					{/each}
@@ -372,8 +400,20 @@
 		{/if}
 	</div>
 
-	<div class="calendar-wrapper rounded-xl border border-[rgb(var(--mv-border))]/60 overflow-hidden" style="min-height: 600px;">
-		<CalendarView bind:this={calendarViewRef} on:itemClick={handleItemClick} on:dateChange={handleDateChange} />
+	<div
+		class="calendar-wrapper relative rounded-[var(--mv-radius)] border border-white/5 bg-[rgb(var(--mv-panel))]/40 backdrop-blur-3xl shadow-2xl overflow-hidden"
+		style="min-height: 600px;"
+	>
+		<div
+			class="absolute -left-20 -top-20 h-64 w-64 rounded-full bg-[rgb(var(--mv-accent))]/5 blur-3xl pointer-events-none"
+		></div>
+		<div class="relative z-10 h-full flex flex-col">
+			<CalendarView
+				bind:this={calendarViewRef}
+				on:itemClick={handleItemClick}
+				on:dateChange={handleDateChange}
+			/>
+		</div>
 	</div>
 </div>
 
@@ -388,7 +428,9 @@
 			tabindex="-1"
 			aria-label="Close"
 		></div>
-		<div class="relative z-10 w-full max-w-md rounded-2xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-5 shadow-2xl">
+		<div
+			class="relative z-10 w-full max-w-md rounded-2xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-5 shadow-2xl"
+		>
 			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Import iCal</h3>
 			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]">
 				{importFile?.name ?? 'Selected file'} ({Math.round((importFile?.size ?? 0) / 1024)}KB)
@@ -396,7 +438,10 @@
 
 			<div class="mt-4 space-y-3">
 				<div>
-					<label class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/60" for="ical-dup-strategy">
+					<label
+						class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/60"
+						for="ical-dup-strategy"
+					>
 						Duplicate handling
 					</label>
 					<select
@@ -411,7 +456,10 @@
 				</div>
 
 				<div>
-					<label class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/60" for="ical-tags">
+					<label
+						class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/60"
+						for="ical-tags"
+					>
 						Tags (comma-separated)
 					</label>
 					<input
@@ -445,32 +493,65 @@
 
 <style>
 	.calendar-wrapper :global(.calendar-view) {
-		--surface-color: rgb(var(--mv-panel) / 0.4);
-		--border-color: rgb(var(--mv-border) / 0.6);
+		--surface-color: transparent;
+		--border-color: rgba(255, 255, 255, 0.05);
 		--text-muted: rgb(var(--mv-muted));
 		--primary-color: rgb(var(--mv-accent));
-		--primary-light: rgb(var(--mv-accent) / 0.1);
-		--primary-lighter: rgb(var(--mv-accent) / 0.2);
+		--primary-light: rgb(var(--mv-accent) / 0.15);
+		--primary-lighter: rgb(var(--mv-accent) / 0.25);
 		--primary-bg: rgb(var(--mv-accent) / 0.05);
-		--success-light: rgb(16 185 129 / 0.1);
-		--success-lighter: rgb(16 185 129 / 0.2);
-		--bg-muted: rgb(var(--mv-bg) / 0.3);
+		--success-light: rgb(16 185 129 / 0.15);
+		--success-lighter: rgb(16 185 129 / 0.25);
+		--bg-muted: rgb(var(--mv-panel-strong) / 0.2);
 		background: transparent;
 		color: rgb(var(--mv-text));
 	}
-	.calendar-wrapper :global(.calendar-title) { color: rgb(var(--mv-text)); }
-	.calendar-wrapper :global(.btn-nav), .calendar-wrapper :global(.btn-today), .calendar-wrapper :global(.btn-export) {
+	.calendar-wrapper :global(.calendar-title) {
 		color: rgb(var(--mv-text));
-		border-color: rgb(var(--mv-border));
-		background: rgb(var(--mv-panel-strong) / 0.6);
+		font-weight: 800;
+		letter-spacing: -0.025em;
 	}
-	.calendar-wrapper :global(.btn-nav:hover), .calendar-wrapper :global(.btn-today:hover), .calendar-wrapper :global(.btn-export:hover) {
-		background: rgb(var(--mv-panel-strong));
+	.calendar-wrapper :global(.btn-nav),
+	.calendar-wrapper :global(.btn-today),
+	.calendar-wrapper :global(.btn-export) {
+		color: rgb(var(--mv-text));
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		background: rgb(var(--mv-panel-strong) / 0.4);
+		backdrop-filter: blur(8px);
+		box-shadow:
+			0 4px 6px -1px rgba(0, 0, 0, 0.1),
+			0 2px 4px -1px rgba(0, 0, 0, 0.06);
+		transition: all 0.3s ease;
 	}
-	.calendar-wrapper :global(.view-toggle) { border-color: rgb(var(--mv-border)); }
-	.calendar-wrapper :global(.view-toggle button) { color: rgb(var(--mv-muted)); }
-	.calendar-wrapper :global(.view-toggle button.active) { background: rgb(var(--mv-accent)); color: white; }
-	.calendar-wrapper :global(.day-number) { color: rgb(var(--mv-text)); }
-	.calendar-wrapper :global(.item-title) { color: rgb(var(--mv-text)); }
-	.calendar-wrapper :global(.calendar-item) { color: rgb(var(--mv-text)); }
+	.calendar-wrapper :global(.btn-nav:hover),
+	.calendar-wrapper :global(.btn-today:hover),
+	.calendar-wrapper :global(.btn-export:hover) {
+		background: rgb(var(--mv-panel-strong) / 0.8);
+		border-color: rgba(255, 255, 255, 0.2);
+		transform: translateY(-1px);
+	}
+	.calendar-wrapper :global(.view-toggle) {
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		background: rgb(var(--mv-panel) / 0.3);
+		backdrop-filter: blur(8px);
+		box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.06);
+	}
+	.calendar-wrapper :global(.view-toggle button) {
+		color: rgb(var(--mv-muted));
+		font-weight: 600;
+		transition: all 0.3s ease;
+	}
+	.calendar-wrapper :global(.view-toggle button.active) {
+		background: rgb(var(--mv-accent));
+		color: white;
+	}
+	.calendar-wrapper :global(.day-number) {
+		color: rgb(var(--mv-text));
+	}
+	.calendar-wrapper :global(.item-title) {
+		color: rgb(var(--mv-text));
+	}
+	.calendar-wrapper :global(.calendar-item) {
+		color: rgb(var(--mv-text));
+	}
 </style>

@@ -24,8 +24,20 @@
 	let loading = true;
 
 	const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-	const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
-		'July', 'August', 'September', 'October', 'November', 'December'];
+	const MONTHS = [
+		'January',
+		'February',
+		'March',
+		'April',
+		'May',
+		'June',
+		'July',
+		'August',
+		'September',
+		'October',
+		'November',
+		'December'
+	];
 
 	$: dateRange = getViewDateRange(currentDate, view);
 	$: formattedTitle = getFormattedTitle(currentDate, view);
@@ -122,7 +134,7 @@
 
 	function getItemsForDate(date: Date): CalendarItem[] {
 		const dateStr = formatCalendarDate(date);
-		return items.filter(item => item.start.startsWith(dateStr));
+		return items.filter((item) => item.start.startsWith(dateStr));
 	}
 
 	function navigate(direction: -1 | 1) {
@@ -130,7 +142,7 @@
 		if (view === 'day') {
 			newDate.setDate(newDate.getDate() + direction);
 		} else if (view === 'week') {
-			newDate.setDate(newDate.getDate() + (direction * 7));
+			newDate.setDate(newDate.getDate() + direction * 7);
 		} else {
 			newDate.setMonth(newDate.getMonth() + direction);
 		}
@@ -174,9 +186,11 @@
 
 	function isToday(date: Date): boolean {
 		const today = new Date();
-		return date.getDate() === today.getDate() &&
+		return (
+			date.getDate() === today.getDate() &&
 			date.getMonth() === today.getMonth() &&
-			date.getFullYear() === today.getFullYear();
+			date.getFullYear() === today.getFullYear()
+		);
 	}
 </script>
 
@@ -184,14 +198,28 @@
 	<header class="calendar-header">
 		<div class="nav-controls">
 			<button class="btn-nav" on:click={() => navigate(-1)} aria-label="Previous">
-				<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
-					<path d="M15 18l-6-6 6-6"/>
+				<svg
+					viewBox="0 0 24 24"
+					width="20"
+					height="20"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+				>
+					<path d="M15 18l-6-6 6-6" />
 				</svg>
 			</button>
 			<button class="btn-today" on:click={goToToday}>Today</button>
 			<button class="btn-nav" on:click={() => navigate(1)} aria-label="Next">
-				<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
-					<path d="M9 18l6-6-6-6"/>
+				<svg
+					viewBox="0 0 24 24"
+					width="20"
+					height="20"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+				>
+					<path d="M9 18l6-6-6-6" />
 				</svg>
 			</button>
 		</div>
@@ -205,8 +233,15 @@
 				<button class:active={view === 'month'} on:click={() => setView('month')}>Month</button>
 			</div>
 			<button class="btn-export" on:click={exportCalendar} title="Export to iCal">
-				<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-					<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+				<svg
+					viewBox="0 0 24 24"
+					width="18"
+					height="18"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+				>
+					<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
 				</svg>
 			</button>
 		</div>
@@ -217,9 +252,18 @@
 			<div class="day-view">
 				<div class="day-items">
 					{#each getItemsForDate(currentDate) as item (item.id)}
-						<button class="calendar-item" class:task={item.kind === 'task'} on:click={() => handleItemClick(item)}>
+						<button
+							class="calendar-item"
+							class:task={item.kind === 'task'}
+							on:click={() => handleItemClick(item)}
+						>
 							<span class="item-time">
-								{item.all_day ? 'All day' : new Date(item.start).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+								{item.all_day
+									? 'All day'
+									: new Date(item.start).toLocaleTimeString(undefined, {
+											hour: '2-digit',
+											minute: '2-digit'
+										})}
 							</span>
 							<span class="item-title">{item.title}</span>
 						</button>
@@ -242,7 +286,11 @@
 					{#each weekDays as day}
 						<div class="week-day" class:today={isToday(day)}>
 							{#each getItemsForDate(day) as item (item.id)}
-								<button class="calendar-item compact" class:task={item.kind === 'task'} on:click={() => handleItemClick(item)}>
+								<button
+									class="calendar-item compact"
+									class:task={item.kind === 'task'}
+									on:click={() => handleItemClick(item)}
+								>
 									{item.title}
 								</button>
 							{/each}
@@ -265,7 +313,11 @@
 									<span class="day-number">{day.getDate()}</span>
 									<div class="day-items-compact">
 										{#each getItemsForDate(day).slice(0, 3) as item (item.id)}
-											<button class="calendar-item tiny" class:task={item.kind === 'task'} on:click={() => handleItemClick(item)}>
+											<button
+												class="calendar-item tiny"
+												class:task={item.kind === 'task'}
+												on:click={() => handleItemClick(item)}
+											>
 												{item.title}
 											</button>
 										{/each}
@@ -307,7 +359,9 @@
 		gap: 0.5rem;
 	}
 
-	.btn-nav, .btn-today, .btn-export {
+	.btn-nav,
+	.btn-today,
+	.btn-export {
 		padding: 0.5rem;
 		border: 1px solid var(--border-color, #e0e0e0);
 		background: var(--surface-color, #fff);
@@ -381,20 +435,26 @@
 		gap: 0.75rem;
 		padding: 0.75rem 1rem;
 		background: var(--primary-light, #dbeafe);
-		border: none;
+		border: 1px solid var(--primary-lighter);
 		border-radius: 8px;
 		text-align: left;
 		cursor: pointer;
-		transition: background 0.15s;
+		transition: all 0.3s ease;
 		width: 100%;
+		box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
 	}
 
 	.calendar-item:hover {
 		background: var(--primary-lighter, #bfdbfe);
+		transform: translateY(-2px);
+		box-shadow:
+			0 4px 6px -1px rgba(0, 0, 0, 0.2),
+			0 2px 4px -1px rgba(0, 0, 0, 0.1);
 	}
 
 	.calendar-item.task {
 		background: var(--success-light, #dcfce7);
+		border-color: var(--success-lighter);
 	}
 
 	.calendar-item.task:hover {

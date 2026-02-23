@@ -105,10 +105,13 @@
 	];
 
 	const topColorMap: Record<string, string> = {
-		sky: 'bg-sky-500/15 text-sky-300 hover:bg-sky-500/25',
-		violet: 'bg-violet-500/15 text-violet-300 hover:bg-violet-500/25',
-		amber: 'bg-amber-500/15 text-amber-300 hover:bg-amber-500/25',
-		emerald: 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
+		sky: 'bg-gradient-to-br from-sky-500/10 to-sky-500/5 text-sky-300 border border-sky-500/20 hover:from-sky-500/20 hover:to-sky-500/10 hover:border-sky-500/40 shadow-[0_0_15px_rgba(14,165,233,0.1)] hover:shadow-[0_0_20px_rgba(14,165,233,0.2)]',
+		violet:
+			'bg-gradient-to-br from-violet-500/10 to-violet-500/5 text-violet-300 border border-violet-500/20 hover:from-violet-500/20 hover:to-violet-500/10 hover:border-violet-500/40 shadow-[0_0_15px_rgba(139,92,246,0.1)] hover:shadow-[0_0_20px_rgba(139,92,246,0.2)]',
+		amber:
+			'bg-gradient-to-br from-amber-500/10 to-amber-500/5 text-amber-300 border border-amber-500/20 hover:from-amber-500/20 hover:to-amber-500/10 hover:border-amber-500/40 shadow-[0_0_15px_rgba(245,158,11,0.1)] hover:shadow-[0_0_20px_rgba(245,158,11,0.2)]',
+		emerald:
+			'bg-gradient-to-br from-emerald-500/10 to-emerald-500/5 text-emerald-300 border border-emerald-500/20 hover:from-emerald-500/20 hover:to-emerald-500/10 hover:border-emerald-500/40 shadow-[0_0_15px_rgba(16,185,129,0.1)] hover:shadow-[0_0_20px_rgba(16,185,129,0.2)]'
 	};
 
 	const quickActions = [
@@ -122,12 +125,15 @@
 	];
 
 	const colorMap: Record<string, string> = {
-		sky: 'bg-sky-500/20 text-sky-200',
-		violet: 'bg-violet-500/20 text-violet-200',
-		amber: 'bg-amber-500/20 text-amber-200',
-		emerald: 'bg-emerald-500/20 text-emerald-200',
-		rose: 'bg-rose-500/20 text-rose-200',
-		teal: 'bg-teal-500/20 text-teal-200'
+		sky: 'bg-gradient-to-br from-sky-500/20 to-sky-500/5 text-sky-300 shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)] border border-sky-500/20',
+		violet:
+			'bg-gradient-to-br from-violet-500/20 to-violet-500/5 text-violet-300 shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)] border border-violet-500/20',
+		amber:
+			'bg-gradient-to-br from-amber-500/20 to-amber-500/5 text-amber-300 shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)] border border-amber-500/20',
+		emerald:
+			'bg-gradient-to-br from-emerald-500/20 to-emerald-500/5 text-emerald-300 shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)] border border-emerald-500/20',
+		rose: 'bg-gradient-to-br from-rose-500/20 to-rose-500/5 text-rose-300 shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)] border border-rose-500/20',
+		teal: 'bg-gradient-to-br from-teal-500/20 to-teal-500/5 text-teal-300 shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)] border border-teal-500/20'
 	};
 
 	function formatRelativeTime(dateStr: string): string {
@@ -192,12 +198,18 @@
 		{#each topActions as action}
 			<a
 				href={action.href}
-				class={`mv-btn rounded-full gap-2 px-4 py-2 text-sm font-medium transition-all duration-200 ${topColorMap[action.color]}`}
+				class={`flex items-center rounded-full gap-2 px-4 py-2 text-sm font-semibold transition-all duration-300 hover:scale-[1.03] active:scale-95 backdrop-blur-md ${topColorMap[action.color]}`}
 			>
-				<svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+				<svg
+					class="h-4 w-4 drop-shadow-md"
+					fill="none"
+					viewBox="0 0 24 24"
+					stroke="currentColor"
+					stroke-width="2"
+				>
 					<path stroke-linecap="round" stroke-linejoin="round" d={action.icon} />
 				</svg>
-				{action.label}
+				<span class="drop-shadow-sm">{action.label}</span>
 			</a>
 		{/each}
 	</div>
@@ -210,32 +222,62 @@
 	/>
 
 	<!-- Stats row -->
-	<dl class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-5">
-		<div class="mv-section">
-			<dd class="text-2xl font-bold text-[rgb(var(--mv-text))]">{allTasks.length}</dd>
-			<dt class="text-xs text-[rgb(var(--mv-muted))]">Total Tasks</dt>
+	<dl class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-5">
+		<div class="mv-section flex flex-col items-center justify-center text-center">
+			<dd class="text-3xl font-extrabold text-[rgb(var(--mv-text))] drop-shadow-md">
+				{allTasks.length}
+			</dd>
+			<dt class="mt-1 text-xs font-semibold uppercase tracking-wider text-[rgb(var(--mv-muted))]">
+				Total
+			</dt>
 		</div>
-		<div class="mv-section">
-			<dd class="text-2xl font-bold text-sky-300">{inboxCount}</dd>
-			<dt class="text-xs text-[rgb(var(--mv-muted))]">Inbox</dt>
+		<div
+			class="mv-section flex flex-col items-center justify-center text-center relative overflow-hidden"
+		>
+			<div class="absolute inset-0 bg-sky-500/5 blur-xl pointer-events-none"></div>
+			<dd class="text-3xl font-extrabold text-sky-400 drop-shadow-[0_0_8px_rgba(56,189,248,0.5)]">
+				{inboxCount}
+			</dd>
+			<dt class="mt-1 text-xs font-semibold uppercase tracking-wider text-sky-400/80">Inbox</dt>
 		</div>
-		<div class="mv-section">
-			<dd class="text-2xl font-bold text-amber-300">{dueTodayCount}</dd>
-			<dt class="text-xs text-[rgb(var(--mv-muted))]">Due Today</dt>
+		<div
+			class="mv-section flex flex-col items-center justify-center text-center relative overflow-hidden"
+		>
+			<div class="absolute inset-0 bg-amber-500/5 blur-xl pointer-events-none"></div>
+			<dd class="text-3xl font-extrabold text-amber-400 drop-shadow-[0_0_8px_rgba(251,191,36,0.5)]">
+				{dueTodayCount}
+			</dd>
+			<dt class="mt-1 text-xs font-semibold uppercase tracking-wider text-amber-400/80">Today</dt>
 		</div>
-		<div class="mv-section">
+		<div
+			class="mv-section flex flex-col items-center justify-center text-center relative overflow-hidden"
+		>
+			<div class="absolute inset-0 bg-rose-500/5 blur-xl pointer-events-none"></div>
 			<dd
-				class="text-2xl font-bold {overdueCount > 0
-					? 'text-red-400'
-					: 'text-[rgb(var(--mv-text))]'}"
+				class="text-3xl font-extrabold {overdueCount > 0
+					? 'text-rose-400 drop-shadow-[0_0_8px_rgba(244,63,94,0.5)]'
+					: 'text-[rgb(var(--mv-text))] drop-shadow-md'}"
 			>
 				{overdueCount}
 			</dd>
-			<dt class="text-xs text-[rgb(var(--mv-muted))]">Overdue</dt>
+			<dt
+				class="mt-1 text-xs font-semibold uppercase tracking-wider {overdueCount > 0
+					? 'text-rose-400/80'
+					: 'text-[rgb(var(--mv-muted))]'}"
+			>
+				Overdue
+			</dt>
 		</div>
-		<div class="mv-section">
-			<dd class="text-2xl font-bold text-emerald-300">{doneThisWeek}</dd>
-			<dt class="text-xs text-[rgb(var(--mv-muted))]">Done This Week</dt>
+		<div
+			class="mv-section flex flex-col items-center justify-center text-center relative overflow-hidden"
+		>
+			<div class="absolute inset-0 bg-emerald-500/5 blur-xl pointer-events-none"></div>
+			<dd
+				class="text-3xl font-extrabold text-emerald-400 drop-shadow-[0_0_8px_rgba(52,211,153,0.5)]"
+			>
+				{doneThisWeek}
+			</dd>
+			<dt class="mt-1 text-xs font-semibold uppercase tracking-wider text-emerald-400/80">Done</dt>
 		</div>
 	</dl>
 
@@ -253,7 +295,11 @@
 
 			{#if (briefing?.overdue ?? []).length > 0}
 				<div class="mv-section">
-					<DueTasksWidget tasks={briefing?.overdue ?? []} title="Overdue" loading={briefingLoading} />
+					<DueTasksWidget
+						tasks={briefing?.overdue ?? []}
+						title="Overdue"
+						loading={briefingLoading}
+					/>
 				</div>
 			{/if}
 
@@ -326,16 +372,34 @@
 					class="mv-section flex items-center gap-3 transition hover:border-[rgb(var(--mv-accent))]/40"
 				>
 					<div class="flex h-10 w-10 items-center justify-center rounded-lg bg-violet-500/15">
-						<svg class="h-5 w-5 text-violet-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-							<circle cx="12" cy="5" r="2" /><circle cx="5" cy="19" r="2" /><circle cx="19" cy="19" r="2" />
+						<svg
+							class="h-5 w-5 text-violet-300"
+							fill="none"
+							viewBox="0 0 24 24"
+							stroke="currentColor"
+							stroke-width="2"
+						>
+							<circle cx="12" cy="5" r="2" /><circle cx="5" cy="19" r="2" /><circle
+								cx="19"
+								cy="19"
+								r="2"
+							/>
 							<path d="M12 7v4m-5.2 4.8L11 13m2 0l4.2 2.8" />
 						</svg>
 					</div>
 					<div>
 						<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Knowledge Graph</h3>
-						<p class="text-xs text-[rgb(var(--mv-muted))]">{graphNodes} nodes &middot; {graphEdges} edges</p>
+						<p class="text-xs text-[rgb(var(--mv-muted))]">
+							{graphNodes} nodes &middot; {graphEdges} edges
+						</p>
 					</div>
-					<svg class="ml-auto h-4 w-4 text-[rgb(var(--mv-muted))]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+					<svg
+						class="ml-auto h-4 w-4 text-[rgb(var(--mv-muted))]"
+						fill="none"
+						viewBox="0 0 24 24"
+						stroke="currentColor"
+						stroke-width="2"
+					>
 						<path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
 					</svg>
 				</a>
@@ -376,15 +440,39 @@
 				{#each activityItems as item (item.id)}
 					<div class="flex items-center gap-3 py-2.5">
 						{#if item.type === 'task'}
-							<div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-sky-500/15">
-								<svg class="h-3.5 w-3.5 text-sky-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-									<path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+							<div
+								class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-sky-500/15"
+							>
+								<svg
+									class="h-3.5 w-3.5 text-sky-300"
+									fill="none"
+									viewBox="0 0 24 24"
+									stroke="currentColor"
+									stroke-width="2"
+								>
+									<path
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+									/>
 								</svg>
 							</div>
 						{:else}
-							<div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-violet-500/15">
-								<svg class="h-3.5 w-3.5 text-violet-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-									<path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+							<div
+								class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-violet-500/15"
+							>
+								<svg
+									class="h-3.5 w-3.5 text-violet-300"
+									fill="none"
+									viewBox="0 0 24 24"
+									stroke="currentColor"
+									stroke-width="2"
+								>
+									<path
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+									/>
 								</svg>
 							</div>
 						{/if}
@@ -398,7 +486,9 @@
 								{/if}
 							</p>
 						</div>
-						<span class="shrink-0 text-xs text-[rgb(var(--mv-muted))]">{formatRelativeTime(item.updated_at)}</span>
+						<span class="shrink-0 text-xs text-[rgb(var(--mv-muted))]"
+							>{formatRelativeTime(item.updated_at)}</span
+						>
 					</div>
 				{/each}
 			</div>

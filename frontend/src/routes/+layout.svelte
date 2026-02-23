@@ -367,7 +367,7 @@
 	class="flex min-h-screen bg-[rgb(var(--mv-bg))] text-[rgb(var(--mv-text))] font-sans antialiased selection:bg-[rgb(var(--mv-accent))]/20 selection:text-[rgb(var(--mv-accent-strong))]"
 >
 	<aside
-		class="hidden w-[280px] flex-col border-r border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/60 backdrop-blur-xl p-4 md:flex transition-all duration-300 ease-spring"
+		class="hidden w-[280px] flex-col rounded-3xl border border-white/5 bg-[rgb(var(--mv-panel))]/60 backdrop-blur-3xl p-5 md:flex transition-all duration-500 ease-out m-4 h-[calc(100vh-2rem)] shadow-2xl"
 	>
 		<div class="flex items-center gap-3 px-2 py-3 mb-6">
 			<div
@@ -430,16 +430,16 @@
 									($page.url.pathname.startsWith(item.href) && item.href !== '/')}
 								<a
 									href={viewAwareHref(item.href, $viewPreferences)}
-									class={`group relative flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 ${
+									class={`group relative flex items-center gap-3 rounded-xl px-4 py-2.5 text-sm font-medium transition-all duration-300 ${
 										isActive
-											? 'bg-[rgb(var(--mv-accent))]/10 text-[rgb(var(--mv-accent-strong))]'
-											: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/50 hover:text-[rgb(var(--mv-text))]'
+											? 'bg-gradient-to-r from-[rgb(var(--mv-accent))]/10 to-transparent text-[rgb(var(--mv-text))] shadow-[inset_3px_0_0_0_rgb(var(--mv-accent-strong))]'
+											: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/50 hover:text-[rgb(var(--mv-text))] hover:translate-x-1'
 									}`}
 									aria-current={isActive ? 'page' : undefined}
 								>
 									{#if isActive}
 										<div
-											class="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-[rgb(var(--mv-accent-strong))]"
+											class="absolute right-4 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-[rgb(var(--mv-accent-strong))] shadow-[0_0_8px_rgb(var(--mv-accent))]"
 										></div>
 									{/if}
 									{item.label}
@@ -463,7 +463,7 @@
 
 	<div class="flex flex-1 flex-col min-w-0">
 		<header
-			class="sticky top-0 z-20 flex items-center justify-between border-b border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-bg))]/80 backdrop-blur-md px-6 py-4 transition-colors duration-200"
+			class="sticky top-4 z-20 flex items-center justify-between border border-white/5 bg-[rgb(var(--mv-panel))]/60 backdrop-blur-2xl px-6 py-4 transition-all duration-300 md:mr-4 md:rounded-2xl shadow-lg mx-4 md:mx-0 mt-4 md:mt-4 mb-2"
 		>
 			<div class="flex items-center gap-4">
 				<button
@@ -630,7 +630,7 @@
 			</div>
 		{/if}
 
-		<main class="flex-1 bg-[rgb(var(--mv-bg))] p-6 pb-20 md:pb-8 overflow-x-hidden">
+		<main class="flex-1 p-6 pb-20 md:pb-8 overflow-x-hidden pt-4">
 			{#key $page.url.pathname}
 				<div
 					class="mx-auto max-w-7xl"

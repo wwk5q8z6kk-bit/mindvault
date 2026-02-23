@@ -38,22 +38,28 @@
 </script>
 
 <button
-	class={`group w-full cursor-grab rounded-xl border px-3 py-3 text-left transition-all duration-200 active:cursor-grabbing hover:-translate-y-0.5 hover:shadow-lg ${
+	class={`group relative overflow-hidden w-full cursor-grab rounded-xl border px-4 py-3.5 text-left transition-all duration-300 active:cursor-grabbing hover:-translate-y-1 hover:shadow-xl ${
 		active
-			? 'border-[rgb(var(--mv-accent))]/60 bg-[rgb(var(--mv-accent))]/5 shadow-[rgb(var(--mv-accent))]/10 ring-1 ring-[rgb(var(--mv-accent))]/20'
-			: 'border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/60 hover:border-[rgb(var(--mv-accent))]/30 hover:shadow-[rgb(var(--mv-accent))]/5'
+			? 'border-[rgb(var(--mv-accent))]/60 bg-gradient-to-br from-[rgb(var(--mv-accent))]/10 to-transparent shadow-[0_0_15px_rgba(var(--mv-accent),0.2)] ring-1 ring-[rgb(var(--mv-accent))]/30'
+			: 'border-white/10 bg-[rgb(var(--mv-panel))]/60 backdrop-blur-sm hover:border-[rgb(var(--mv-accent))]/40 hover:bg-[rgb(var(--mv-panel))]/80'
 	}`}
 	draggable="true"
 	on:dragstart={onDragStart}
 	on:click={() => dispatch('select', task.id)}
 	aria-pressed={active}
 >
-	<div class="flex items-start justify-between gap-2">
-		<h4 class="text-xs font-semibold leading-relaxed text-[rgb(var(--mv-text))] line-clamp-2">
+	{#if active}
+		<div
+			class="absolute -left-10 -top-10 h-24 w-24 rounded-full bg-[rgb(var(--mv-accent))]/20 blur-xl pointer-events-none"
+		></div>
+	{/if}
+
+	<div class="relative z-10 flex items-start justify-between gap-2">
+		<h4 class="text-sm font-semibold leading-relaxed text-[rgb(var(--mv-text))] line-clamp-2">
 			{task.title}
 		</h4>
 		<span
-			class={`shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${task.priority === 1 ? 'bg-red-500/10 text-red-400 ring-1 ring-red-500/20' : task.priority === 2 ? 'bg-orange-500/10 text-orange-400 ring-1 ring-orange-500/20' : task.priority === 3 ? 'bg-sky-500/10 text-sky-400 ring-1 ring-sky-500/20' : 'bg-[rgb(var(--mv-panel-strong))] text-[rgb(var(--mv-muted))]'}`}
+			class={`shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider shadow-sm ${task.priority === 1 ? 'bg-red-500/15 text-red-400 border border-red-500/30' : task.priority === 2 ? 'bg-orange-500/15 text-orange-400 border border-orange-500/30' : task.priority === 3 ? 'bg-sky-500/15 text-sky-400 border border-sky-500/30' : 'bg-[rgb(var(--mv-panel-strong))] text-[rgb(var(--mv-muted))] border border-white/5'}`}
 		>
 			P{task.priority}
 		</span>

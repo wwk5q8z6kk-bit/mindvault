@@ -28,6 +28,7 @@
 	import NotesCanvasView from '$lib/components/NotesCanvasView.svelte';
 	import NotesPdfView from '$lib/components/NotesPdfView.svelte';
 	import NotesMediaView from '$lib/components/NotesMediaView.svelte';
+	import { fade } from 'svelte/transition';
 
 	const currentView = createViewMode('list', ['list', 'graph', 'canvas', 'pdf', 'media']);
 
@@ -791,11 +792,27 @@
 
 <svelte:window on:keydown={handleKeydown} />
 
-<div class="flex items-center justify-between">
-	<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">Notes</h2>
-	<div class="flex gap-2">
+<div
+	class="relative mb-6 flex flex-col gap-4 overflow-hidden rounded-[var(--mv-radius)] border border-white/5 bg-[rgb(var(--mv-panel))]/40 p-6 backdrop-blur-xl shadow-lg sm:flex-row sm:items-center sm:justify-between"
+>
+	<div
+		class="absolute -left-20 -top-20 h-40 w-40 rounded-full bg-sky-500/10 blur-3xl pointer-events-none"
+	></div>
+
+	<div class="relative z-10">
+		<h2
+			class="text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-[rgb(var(--mv-text))] to-[rgb(var(--mv-muted))]"
+		>
+			Notes
+		</h2>
+		<p class="mt-1 text-sm font-medium text-[rgb(var(--mv-muted))]/80">
+			Your sovereign second brain.
+		</p>
+	</div>
+
+	<div class="relative z-10 flex items-center gap-3">
 		<button
-			class="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-200 hover:bg-sky-500/20"
+			class="rounded-lg border border-sky-500/30 bg-sky-500/10 px-4 py-2 text-sm font-medium text-sky-200 transition-all hover:bg-sky-500/20 shadow-md hover:shadow-sky-500/20 hover:-translate-y-0.5"
 			on:click={() => {
 				showDistillPanel = true;
 			}}
@@ -843,531 +860,531 @@
 </div>
 
 {#if $currentView === 'list'}
-<div class="mt-4 grid gap-6 lg:grid-cols-12">
-	<section class="lg:col-span-4">
-		<div class="mt-4 flex items-center justify-between">
-			<p class="text-xs text-[rgb(var(--mv-muted))]/60">
-				{#if bulkMode && selectedCount > 0}
-					{selectedCount} selected
-				{:else}
-					{displayedNotes.length}{displayedNotes.length !== notes.length
-						? ` / ${notes.length}`
-						: ''} notes
-				{/if}
-			</p>
-			<p class="text-[10px] text-[rgb(var(--mv-muted))]/30">
-				<kbd
-					class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1"
-					>j</kbd
-				>/<kbd
-					class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1"
-					>k</kbd
-				> navigate
-			</p>
-		</div>
+	<div class="mt-4 grid gap-6 lg:grid-cols-12">
+		<section class="lg:col-span-4">
+			<div class="mt-4 flex items-center justify-between">
+				<p class="text-xs text-[rgb(var(--mv-muted))]/60">
+					{#if bulkMode && selectedCount > 0}
+						{selectedCount} selected
+					{:else}
+						{displayedNotes.length}{displayedNotes.length !== notes.length
+							? ` / ${notes.length}`
+							: ''} notes
+					{/if}
+				</p>
+				<p class="text-[10px] text-[rgb(var(--mv-muted))]/30">
+					<kbd
+						class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1"
+						>j</kbd
+					>/<kbd
+						class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1"
+						>k</kbd
+					> navigate
+				</p>
+			</div>
 
-		<div class="mt-3 flex flex-wrap gap-2">
-			<input
-				class="min-w-0 flex-1 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-1.5 text-xs text-[rgb(var(--mv-text))] placeholder-[rgb(var(--mv-muted))]/40"
-				placeholder="Search notes..."
-				bind:value={searchQuery}
-				aria-label="Search notes"
-			/>
-			<select
-				class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1.5 text-xs text-[rgb(var(--mv-text))]"
-				bind:value={kindFilter}
-				aria-label="Filter by kind"
-			>
-				<option value="all">All kinds</option>
-				{#each availableKinds as kind}
-					<option value={kind}>{kindLabel(kind)}</option>
-				{/each}
-			</select>
-			{#if allTags.length > 0}
+			<div class="mt-3 flex flex-wrap gap-2">
+				<input
+					class="min-w-0 flex-1 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-1.5 text-xs text-[rgb(var(--mv-text))] placeholder-[rgb(var(--mv-muted))]/40"
+					placeholder="Search notes..."
+					bind:value={searchQuery}
+					aria-label="Search notes"
+				/>
 				<select
 					class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1.5 text-xs text-[rgb(var(--mv-text))]"
-					bind:value={tagFilter}
-					aria-label="Filter by tag"
+					bind:value={kindFilter}
+					aria-label="Filter by kind"
 				>
-					<option value="">All tags</option>
-					{#each allTags as tag}
-						<option value={tag}>{tag}</option>
+					<option value="all">All kinds</option>
+					{#each availableKinds as kind}
+						<option value={kind}>{kindLabel(kind)}</option>
 					{/each}
 				</select>
-			{/if}
-		</div>
-
-		{#if bulkMode && displayedNotes.length > 0}
-			<div
-				class="mt-3 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/50 p-3"
-			>
-				<div class="flex flex-wrap items-center gap-2">
-					<button
-						class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80"
-						on:click={toggleSelectAll}
+				{#if allTags.length > 0}
+					<select
+						class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1.5 text-xs text-[rgb(var(--mv-text))]"
+						bind:value={tagFilter}
+						aria-label="Filter by tag"
 					>
-						{allDisplayedSelected ? 'Deselect all' : 'Select all'}
-					</button>
+						<option value="">All tags</option>
+						{#each allTags as tag}
+							<option value={tag}>{tag}</option>
+						{/each}
+					</select>
+				{/if}
+			</div>
 
-					{#if selectedCount > 0}
-						<span class="text-[11px] text-[rgb(var(--mv-muted))]/40">|</span>
-
+			{#if bulkMode && displayedNotes.length > 0}
+				<div
+					class="mt-3 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/50 p-3"
+				>
+					<div class="flex flex-wrap items-center gap-2">
 						<button
-							class="rounded-lg border border-emerald-500/30 px-2 py-1 text-[11px] text-emerald-300 hover:bg-emerald-500/10"
-							on:click={() => (showExportModal = true)}
-							disabled={bulkProcessing}
+							class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80"
+							on:click={toggleSelectAll}
 						>
-							Export ({selectedCount})
+							{allDisplayedSelected ? 'Deselect all' : 'Select all'}
 						</button>
 
-						<button
-							class="rounded-lg border border-red-500/30 px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/10"
-							on:click={bulkDeleteNotes}
-							disabled={bulkProcessing}
-						>
-							Delete ({selectedCount})
-						</button>
+						{#if selectedCount > 0}
+							<span class="text-[11px] text-[rgb(var(--mv-muted))]/40">|</span>
 
-						<div class="flex items-center gap-1">
-							<input
-								class="w-24 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-[11px] text-[rgb(var(--mv-text))] placeholder-[rgb(var(--mv-muted))]/40"
-								placeholder="Add tag..."
-								bind:value={bulkTagInput}
-								on:keydown={(e) => e.key === 'Enter' && bulkAddTag()}
-							/>
 							<button
-								class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80"
-								on:click={bulkAddTag}
-								disabled={bulkProcessing || !bulkTagInput.trim()}
+								class="rounded-lg border border-emerald-500/30 px-2 py-1 text-[11px] text-emerald-300 hover:bg-emerald-500/10"
+								on:click={() => (showExportModal = true)}
+								disabled={bulkProcessing}
 							>
-								Add
+								Export ({selectedCount})
 							</button>
-						</div>
 
-						{#if selectedNoteTags.length > 0}
-							<div class="flex flex-wrap items-center gap-1">
-								<span class="text-[11px] text-[rgb(var(--mv-muted))]/40">Remove:</span>
-								{#each selectedNoteTags.slice(0, 5) as tag}
-									<button
-										class="rounded bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-[10px] text-[rgb(var(--mv-muted))] hover:bg-red-500/30 hover:text-red-200"
-										on:click={() => bulkRemoveTag(tag)}
-										disabled={bulkProcessing}
+							<button
+								class="rounded-lg border border-red-500/30 px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/10"
+								on:click={bulkDeleteNotes}
+								disabled={bulkProcessing}
+							>
+								Delete ({selectedCount})
+							</button>
+
+							<div class="flex items-center gap-1">
+								<input
+									class="w-24 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1 text-[11px] text-[rgb(var(--mv-text))] placeholder-[rgb(var(--mv-muted))]/40"
+									placeholder="Add tag..."
+									bind:value={bulkTagInput}
+									on:keydown={(e) => e.key === 'Enter' && bulkAddTag()}
+								/>
+								<button
+									class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]/80"
+									on:click={bulkAddTag}
+									disabled={bulkProcessing || !bulkTagInput.trim()}
+								>
+									Add
+								</button>
+							</div>
+
+							{#if selectedNoteTags.length > 0}
+								<div class="flex flex-wrap items-center gap-1">
+									<span class="text-[11px] text-[rgb(var(--mv-muted))]/40">Remove:</span>
+									{#each selectedNoteTags.slice(0, 5) as tag}
+										<button
+											class="rounded bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-[10px] text-[rgb(var(--mv-muted))] hover:bg-red-500/30 hover:text-red-200"
+											on:click={() => bulkRemoveTag(tag)}
+											disabled={bulkProcessing}
+										>
+											{tag} &times;
+										</button>
+									{/each}
+								</div>
+							{/if}
+						{/if}
+					</div>
+				</div>
+			{/if}
+
+			<div class="mt-3" bind:this={listContainer}>
+				{#if loading}
+					<div
+						class="rounded-lg border border-[rgb(var(--mv-border))] p-4 text-xs text-[rgb(var(--mv-muted))]/60"
+					>
+						Loading notes...
+					</div>
+				{:else if notes.length === 0}
+					<div
+						class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-6 text-center"
+					>
+						<div
+							class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-sky-500/20 text-sm text-sky-300"
+						>
+							N
+						</div>
+						<h3 class="text-sm font-medium text-[rgb(var(--mv-text))]">No notes yet</h3>
+						<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]/40">
+							Start building your knowledge base.
+						</p>
+						<button
+							class="mt-3 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
+							on:click={newNote}
+						>
+							Create your first note
+						</button>
+						<p class="mt-2 text-[10px] text-[rgb(var(--mv-muted))]/30">
+							<kbd
+								class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5"
+								>Cmd+Shift+N</kbd
+							> for quick capture
+						</p>
+					</div>
+				{:else if displayedNotes.length === 0}
+					<div
+						class="rounded-lg border border-dashed border-[rgb(var(--mv-border))] p-4 text-xs text-[rgb(var(--mv-muted))]/60"
+					>
+						No notes match your search.
+					</div>
+				{:else}
+					<div bind:this={notesListParentRef} style="max-height: 70vh; overflow-y: auto;">
+						<div
+							style="height: {$notesVirtualizer.getTotalSize()}px; width: 100%; position: relative;"
+						>
+							{#each $notesVirtualizer.getVirtualItems() as row (row.key)}
+								{@const note = displayedNotes[row.index]}
+								{@const idx = row.index}
+								<div
+									style="position: absolute; top: 0; left: 0; width: 100%; transform: translateY({row.start}px);"
+								>
+									<div
+										data-note-item
+										class={`flex items-start gap-2 rounded-lg border px-3 py-2 mb-2 text-left text-xs transition ${
+											idx === focusedIndex ? 'ring-1 ring-sky-400/50' : ''
+										} ${
+											selectedNoteIds.has(note.id)
+												? 'border-sky-500 bg-sky-500/10'
+												: note.id === selectedNote?.id
+													? 'border-sky-500 bg-sky-500/10 text-sky-200'
+													: 'border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 text-[rgb(var(--mv-text))]/90 hover:border-[rgb(var(--mv-border))]/80'
+										}`}
 									>
-										{tag} &times;
-									</button>
+										{#if bulkMode}
+											<label class="flex h-5 cursor-pointer items-center">
+												<input
+													type="checkbox"
+													class="h-3.5 w-3.5 cursor-pointer rounded border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] text-sky-500 focus:ring-sky-500 focus:ring-offset-0"
+													checked={selectedNoteIds.has(note.id)}
+													on:change={() => toggleNoteSelection(note.id)}
+												/>
+											</label>
+										{/if}
+										<button
+											class="min-w-0 flex-1 text-left"
+											on:mouseenter={() => {
+												focusedIndex = idx;
+											}}
+											on:click={() => (bulkMode ? toggleNoteSelection(note.id) : selectNote(note))}
+										>
+											<div class="flex items-center gap-1.5">
+												<span
+													class={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${kindBadgeClass(note.kind)}`}
+												>
+													{kindLabel(note.kind)}
+												</span>
+												{#if note.pinned}<span class="text-amber-400" title="Pinned">*</span>{/if}
+												<span class="font-semibold truncate">{note.title}</span>
+											</div>
+											{#if note.tags && note.tags.length > 0}
+												<div class="mt-1 flex flex-wrap gap-1">
+													{#each note.tags.slice(0, 3) as tag}
+														<span
+															class="rounded bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-[9px] text-[rgb(var(--mv-muted))]/60"
+															>{tag}</span
+														>
+													{/each}
+												</div>
+											{/if}
+											<p class="mt-1 line-clamp-2 text-[11px] text-[rgb(var(--mv-muted))]/60">
+												{note.markdown.slice(0, 120) || 'No content'}
+											</p>
+										</button>
+									</div>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+			</div>
+		</section>
+
+		<section class="lg:col-span-8">
+			<div class="flex items-center justify-between">
+				<div>
+					<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">
+						{selectedNote ? 'Edit note' : 'New note'}
+					</h2>
+					<p class="text-xs text-[rgb(var(--mv-muted))]/60">Markdown remains canonical.</p>
+				</div>
+				<div class="flex items-center gap-2">
+					<TemplatePicker
+						kind="fact"
+						namespace={selectedNote?.namespace ?? undefined}
+						label="Use template"
+						on:apply={(event) => applyTemplateToNote(event.detail)}
+					/>
+					<button
+						class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
+						on:click={saveNote}
+						disabled={saving}
+					>
+						{saving ? 'Saving…' : 'Save note'}
+					</button>
+				</div>
+			</div>
+
+			<div class="mt-4">
+				<label
+					class="text-xs uppercase tracking-wide text-[rgb(var(--mv-muted))]/40"
+					for="note-title"
+				>
+					Title
+				</label>
+				<input
+					id="note-title"
+					class="mt-2 w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-2 text-sm text-[rgb(var(--mv-text))]"
+					placeholder="Note title"
+					bind:value={title}
+				/>
+			</div>
+
+			<div class="mt-4">
+				<RichNoteEditor
+					bind:markdown
+					placeholder="Write a note…"
+					noteTitle={title}
+					namespace={selectedNote?.namespace ?? undefined}
+					excludeNodeId={selectedNote?.id}
+				/>
+			</div>
+
+			{#if selectedNote}
+				<div class="mt-4 flex items-center gap-2">
+					<button
+						class="rounded-lg border px-3 py-2 text-xs transition {selectedNote.pinned
+							? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+							: 'border-[rgb(var(--mv-border))] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]'}"
+						on:click={togglePin}
+					>
+						{selectedNote.pinned ? 'Unpin' : 'Pin'}
+					</button>
+					<button
+						class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
+						on:click={() => {
+							if (!selectedNote) return;
+							const content = `# ${selectedNote.title ?? 'Untitled'}\n\n${selectedNote.markdown ?? ''}`;
+							const filename =
+								(selectedNote.title ?? 'untitled')
+									.replace(/[^a-zA-Z0-9-_ ]/g, '')
+									.trim()
+									.replace(/\s+/g, '-') + '.md';
+							const blob = new Blob([content], { type: 'text/markdown' });
+							const url = URL.createObjectURL(blob);
+							const a = document.createElement('a');
+							a.href = url;
+							a.download = filename;
+							document.body.appendChild(a);
+							a.click();
+							document.body.removeChild(a);
+							URL.revokeObjectURL(url);
+							pushToast('Downloaded as Markdown', 'success');
+						}}
+					>
+						Export .md
+					</button>
+					<button
+						class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
+						on:click={() => {
+							showVersionHistory = true;
+						}}
+					>
+						History
+					</button>
+					<button
+						class="rounded-lg border border-red-500/30 px-3 py-2 text-xs text-red-300 hover:bg-red-500/10"
+						on:click={deleteSelected}
+					>
+						Delete note
+					</button>
+					<button
+						class="rounded-lg border border-purple-500/30 px-3 py-2 text-xs text-purple-300 hover:bg-purple-500/10 disabled:opacity-50"
+						on:click={autoTag}
+						disabled={autoTagging}
+					>
+						{autoTagging ? 'Analyzing...' : 'Auto-tag'}
+					</button>
+					<button
+						class="rounded-lg border border-emerald-500/30 px-3 py-2 text-xs text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
+						on:click={extractActionItems}
+						disabled={extractingActionItems}
+					>
+						{extractingActionItems ? 'Extracting...' : 'Extract tasks'}
+					</button>
+				</div>
+
+				{#if suggestedTags.length > 0}
+					<div class="mt-3 flex items-center gap-2">
+						<span class="text-[10px] text-[rgb(var(--mv-muted))]/40">Suggested:</span>
+						{#each suggestedTags as tag}
+							<button
+								class="rounded-lg border border-purple-500/30 bg-purple-500/10 px-2 py-1 text-[10px] text-purple-300 transition hover:bg-purple-500/20"
+								on:click={() => applyTag(tag)}
+							>
+								+ {tag}
+							</button>
+						{/each}
+						<button
+							class="text-[10px] text-[rgb(var(--mv-muted))]/40 hover:text-[rgb(var(--mv-text))]"
+							on:click={() => {
+								suggestedTags = [];
+							}}
+						>
+							dismiss
+						</button>
+					</div>
+				{/if}
+
+				<div class="mt-4">
+					<BacklinksPanel nodeId={selectedNote.id} />
+				</div>
+
+				<div class="mt-4">
+					<SuggestedConnections nodeId={selectedNote.id} content={selectedNote.markdown ?? ''} />
+				</div>
+
+				{#if showAiSuggestions}
+					<div class="mt-4">
+						<AiSuggestionsPanel
+							nodeId={selectedNote.id}
+							on:applied={async () => {
+								showAiSuggestions = false;
+								await loadNotes();
+								const refreshed = notes.find((n) => n.id === selectedNote?.id);
+								if (refreshed) selectNote(refreshed);
+							}}
+							on:dismissed={() => {
+								showAiSuggestions = false;
+							}}
+						/>
+					</div>
+				{/if}
+
+				{#if $agentStore.relatedNodes.length > 0 || agentContextLoading}
+					<div class="mt-4 rounded-xl border border-sky-500/20 bg-sky-500/5 p-4">
+						<div class="flex items-center gap-2 mb-2">
+							{#if agentContextLoading}
+								<div class="h-2 w-2 rounded-full bg-sky-400 animate-pulse"></div>
+							{/if}
+							<h4 class="text-[10px] font-bold uppercase tracking-wider text-sky-400">
+								Agent Context
+							</h4>
+						</div>
+						<p class="text-xs text-[rgb(var(--mv-muted))] leading-relaxed">{$agentStore.summary}</p>
+						{#if $agentStore.relatedNodes.length > 0}
+							<div class="mt-2 space-y-1">
+								{#each $agentStore.relatedNodes.slice(0, 5) as node (node.id)}
+									<a
+										href="/notes?note={node.id}"
+										class="block rounded-lg border border-[rgb(var(--mv-border))]/60 bg-[rgb(var(--mv-panel))]/40 px-2 py-1.5 text-xs text-[rgb(var(--mv-muted))] transition hover:border-sky-500/30 hover:text-sky-200"
+									>
+										{node.title || 'Untitled'}
+									</a>
 								{/each}
 							</div>
 						{/if}
-					{/if}
-				</div>
-			</div>
-		{/if}
-
-		<div class="mt-3" bind:this={listContainer}>
-			{#if loading}
-				<div
-					class="rounded-lg border border-[rgb(var(--mv-border))] p-4 text-xs text-[rgb(var(--mv-muted))]/60"
-				>
-					Loading notes...
-				</div>
-			{:else if notes.length === 0}
-				<div
-					class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-6 text-center"
-				>
-					<div
-						class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-sky-500/20 text-sm text-sky-300"
-					>
-						N
 					</div>
-					<h3 class="text-sm font-medium text-[rgb(var(--mv-text))]">No notes yet</h3>
-					<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]/40">
-						Start building your knowledge base.
-					</p>
-					<button
-						class="mt-3 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
-						on:click={newNote}
-					>
-						Create your first note
-					</button>
-					<p class="mt-2 text-[10px] text-[rgb(var(--mv-muted))]/30">
-						<kbd
-							class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5"
-							>Cmd+Shift+N</kbd
-						> for quick capture
-					</p>
+				{/if}
+
+				<div class="mt-4">
+					<AttachmentsPanel
+						nodeId={selectedNote.id}
+						allowEmbed
+						onEmbed={handleAttachmentEmbed}
+						title="Attachments"
+						description="Files linked to this note."
+					/>
 				</div>
-			{:else if displayedNotes.length === 0}
-				<div
-					class="rounded-lg border border-dashed border-[rgb(var(--mv-border))] p-4 text-xs text-[rgb(var(--mv-muted))]/60"
-				>
-					No notes match your search.
+
+				<div class="mt-4">
+					<PublicSharePanel nodeId={selectedNote.id} nodeTitle={selectedNote.title ?? 'Untitled'} />
 				</div>
-			{:else}
-				<div bind:this={notesListParentRef} style="max-height: 70vh; overflow-y: auto;">
-					<div
-						style="height: {$notesVirtualizer.getTotalSize()}px; width: 100%; position: relative;"
+				<div class="mt-4">
+					<CommentsPanel nodeId={selectedNote.id} nodeTitle={selectedNote.title ?? 'Untitled'} />
+				</div>
+			{/if}
+		</section>
+	</div>
+
+	{#if selectedNote}
+		<VersionHistory
+			nodeId={selectedNote.id}
+			bind:open={showVersionHistory}
+			on:restored={async () => {
+				showVersionHistory = false;
+				await loadNotes();
+				if (selectedNote) {
+					const refreshed = notes.find((n) => n.id === selectedNote?.id);
+					if (refreshed) selectNote(refreshed);
+				}
+			}}
+		/>
+	{/if}
+
+	<!-- Export Modal -->
+	{#if showExportModal}
+		<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+			<div
+				class="w-full max-w-sm rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-5 shadow-xl"
+			>
+				<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Export Notes</h3>
+				<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]/60">
+					Export {selectedCount} selected note{selectedCount === 1 ? '' : 's'}
+				</p>
+
+				<div class="mt-4">
+					<span class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/40"
+						>Format</span
 					>
-						{#each $notesVirtualizer.getVirtualItems() as row (row.key)}
-							{@const note = displayedNotes[row.index]}
-							{@const idx = row.index}
-							<div
-								style="position: absolute; top: 0; left: 0; width: 100%; transform: translateY({row.start}px);"
+					<div class="mt-2 grid grid-cols-3 gap-2">
+						{#each [{ value: 'markdown', label: 'Markdown', desc: '.md file' }, { value: 'json', label: 'JSON', desc: 'Structured data' }, { value: 'html', label: 'HTML', desc: 'Styled page' }] as format}
+							<button
+								class="rounded-lg border px-3 py-2 text-left transition {exportFormat ===
+								format.value
+									? 'border-sky-500 bg-sky-500/10'
+									: 'border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/50 hover:border-[rgb(var(--mv-muted))]/40'}"
+								on:click={() => (exportFormat = format.value as ExportFormat)}
 							>
 								<div
-									data-note-item
-									class={`flex items-start gap-2 rounded-lg border px-3 py-2 mb-2 text-left text-xs transition ${
-										idx === focusedIndex ? 'ring-1 ring-sky-400/50' : ''
-									} ${
-										selectedNoteIds.has(note.id)
-											? 'border-sky-500 bg-sky-500/10'
-											: note.id === selectedNote?.id
-												? 'border-sky-500 bg-sky-500/10 text-sky-200'
-												: 'border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/40 text-[rgb(var(--mv-text))]/90 hover:border-[rgb(var(--mv-border))]/80'
-									}`}
+									class="text-xs font-medium {exportFormat === format.value
+										? 'text-sky-300'
+										: 'text-[rgb(var(--mv-text))]/90'}"
 								>
-									{#if bulkMode}
-										<label class="flex h-5 cursor-pointer items-center">
-											<input
-												type="checkbox"
-												class="h-3.5 w-3.5 cursor-pointer rounded border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] text-sky-500 focus:ring-sky-500 focus:ring-offset-0"
-												checked={selectedNoteIds.has(note.id)}
-												on:change={() => toggleNoteSelection(note.id)}
-											/>
-										</label>
-									{/if}
-									<button
-										class="min-w-0 flex-1 text-left"
-										on:mouseenter={() => {
-											focusedIndex = idx;
-										}}
-										on:click={() => (bulkMode ? toggleNoteSelection(note.id) : selectNote(note))}
-									>
-										<div class="flex items-center gap-1.5">
-											<span
-												class={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${kindBadgeClass(note.kind)}`}
-											>
-												{kindLabel(note.kind)}
-											</span>
-											{#if note.pinned}<span class="text-amber-400" title="Pinned">*</span>{/if}
-											<span class="font-semibold truncate">{note.title}</span>
-										</div>
-										{#if note.tags && note.tags.length > 0}
-											<div class="mt-1 flex flex-wrap gap-1">
-												{#each note.tags.slice(0, 3) as tag}
-													<span
-														class="rounded bg-[rgb(var(--mv-panel-strong))] px-1.5 py-0.5 text-[9px] text-[rgb(var(--mv-muted))]/60"
-														>{tag}</span
-													>
-												{/each}
-											</div>
-										{/if}
-										<p class="mt-1 line-clamp-2 text-[11px] text-[rgb(var(--mv-muted))]/60">
-											{note.markdown.slice(0, 120) || 'No content'}
-										</p>
-									</button>
+									{format.label}
 								</div>
-							</div>
+								<div class="text-[9px] text-[rgb(var(--mv-muted))]/40">{format.desc}</div>
+							</button>
 						{/each}
 					</div>
 				</div>
-			{/if}
-		</div>
-	</section>
 
-	<section class="lg:col-span-8">
-		<div class="flex items-center justify-between">
-			<div>
-				<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">
-					{selectedNote ? 'Edit note' : 'New note'}
-				</h2>
-				<p class="text-xs text-[rgb(var(--mv-muted))]/60">Markdown remains canonical.</p>
-			</div>
-			<div class="flex items-center gap-2">
-				<TemplatePicker
-					kind="fact"
-					namespace={selectedNote?.namespace ?? undefined}
-					label="Use template"
-					on:apply={(event) => applyTemplateToNote(event.detail)}
-				/>
-				<button
-					class="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
-					on:click={saveNote}
-					disabled={saving}
-				>
-					{saving ? 'Saving…' : 'Save note'}
-				</button>
-			</div>
-		</div>
+				{#if exporting}
+					<div class="mt-4">
+						<div class="h-2 w-full rounded-full bg-[rgb(var(--mv-panel-strong))]">
+							<div
+								class="h-full rounded-full bg-sky-500 transition-all"
+								style="width: {exportProgress}%"
+							></div>
+						</div>
+						<p class="mt-1 text-center text-[10px] text-[rgb(var(--mv-muted))]/60">
+							Preparing export...
+						</p>
+					</div>
+				{/if}
 
-		<div class="mt-4">
-			<label
-				class="text-xs uppercase tracking-wide text-[rgb(var(--mv-muted))]/40"
-				for="note-title"
-			>
-				Title
-			</label>
-			<input
-				id="note-title"
-				class="mt-2 w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-2 text-sm text-[rgb(var(--mv-text))]"
-				placeholder="Note title"
-				bind:value={title}
-			/>
-		</div>
-
-		<div class="mt-4">
-			<RichNoteEditor
-				bind:markdown
-				placeholder="Write a note…"
-				noteTitle={title}
-				namespace={selectedNote?.namespace ?? undefined}
-				excludeNodeId={selectedNote?.id}
-			/>
-		</div>
-
-		{#if selectedNote}
-			<div class="mt-4 flex items-center gap-2">
-				<button
-					class="rounded-lg border px-3 py-2 text-xs transition {selectedNote.pinned
-						? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
-						: 'border-[rgb(var(--mv-border))] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]'}"
-					on:click={togglePin}
-				>
-					{selectedNote.pinned ? 'Unpin' : 'Pin'}
-				</button>
-				<button
-					class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
-					on:click={() => {
-						if (!selectedNote) return;
-						const content = `# ${selectedNote.title ?? 'Untitled'}\n\n${selectedNote.markdown ?? ''}`;
-						const filename =
-							(selectedNote.title ?? 'untitled')
-								.replace(/[^a-zA-Z0-9-_ ]/g, '')
-								.trim()
-								.replace(/\s+/g, '-') + '.md';
-						const blob = new Blob([content], { type: 'text/markdown' });
-						const url = URL.createObjectURL(blob);
-						const a = document.createElement('a');
-						a.href = url;
-						a.download = filename;
-						document.body.appendChild(a);
-						a.click();
-						document.body.removeChild(a);
-						URL.revokeObjectURL(url);
-						pushToast('Downloaded as Markdown', 'success');
-					}}
-				>
-					Export .md
-				</button>
-				<button
-					class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
-					on:click={() => {
-						showVersionHistory = true;
-					}}
-				>
-					History
-				</button>
-				<button
-					class="rounded-lg border border-red-500/30 px-3 py-2 text-xs text-red-300 hover:bg-red-500/10"
-					on:click={deleteSelected}
-				>
-					Delete note
-				</button>
-				<button
-					class="rounded-lg border border-purple-500/30 px-3 py-2 text-xs text-purple-300 hover:bg-purple-500/10 disabled:opacity-50"
-					on:click={autoTag}
-					disabled={autoTagging}
-				>
-					{autoTagging ? 'Analyzing...' : 'Auto-tag'}
-				</button>
-				<button
-					class="rounded-lg border border-emerald-500/30 px-3 py-2 text-xs text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
-					on:click={extractActionItems}
-					disabled={extractingActionItems}
-				>
-					{extractingActionItems ? 'Extracting...' : 'Extract tasks'}
-				</button>
-			</div>
-
-			{#if suggestedTags.length > 0}
-				<div class="mt-3 flex items-center gap-2">
-					<span class="text-[10px] text-[rgb(var(--mv-muted))]/40">Suggested:</span>
-					{#each suggestedTags as tag}
-						<button
-							class="rounded-lg border border-purple-500/30 bg-purple-500/10 px-2 py-1 text-[10px] text-purple-300 transition hover:bg-purple-500/20"
-							on:click={() => applyTag(tag)}
-						>
-							+ {tag}
-						</button>
-					{/each}
+				<div class="mt-5 flex justify-end gap-2">
 					<button
-						class="text-[10px] text-[rgb(var(--mv-muted))]/40 hover:text-[rgb(var(--mv-text))]"
-						on:click={() => {
-							suggestedTags = [];
-						}}
+						class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
+						on:click={() => (showExportModal = false)}
+						disabled={exporting}
 					>
-						dismiss
+						Cancel
+					</button>
+					<button
+						class="rounded-lg bg-sky-500 px-4 py-1.5 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400 disabled:opacity-50"
+						on:click={bulkExportNotes}
+						disabled={exporting || selectedCount === 0}
+					>
+						{exporting
+							? 'Exporting...'
+							: `Export ${selectedCount} Note${selectedCount === 1 ? '' : 's'}`}
 					</button>
 				</div>
-			{/if}
-
-			<div class="mt-4">
-				<BacklinksPanel nodeId={selectedNote.id} />
-			</div>
-
-			<div class="mt-4">
-				<SuggestedConnections nodeId={selectedNote.id} content={selectedNote.markdown ?? ''} />
-			</div>
-
-			{#if showAiSuggestions}
-				<div class="mt-4">
-					<AiSuggestionsPanel
-						nodeId={selectedNote.id}
-						on:applied={async () => {
-							showAiSuggestions = false;
-							await loadNotes();
-							const refreshed = notes.find((n) => n.id === selectedNote?.id);
-							if (refreshed) selectNote(refreshed);
-						}}
-						on:dismissed={() => {
-							showAiSuggestions = false;
-						}}
-					/>
-				</div>
-			{/if}
-
-			{#if $agentStore.relatedNodes.length > 0 || agentContextLoading}
-				<div class="mt-4 rounded-xl border border-sky-500/20 bg-sky-500/5 p-4">
-					<div class="flex items-center gap-2 mb-2">
-						{#if agentContextLoading}
-							<div class="h-2 w-2 rounded-full bg-sky-400 animate-pulse"></div>
-						{/if}
-						<h4 class="text-[10px] font-bold uppercase tracking-wider text-sky-400">
-							Agent Context
-						</h4>
-					</div>
-					<p class="text-xs text-[rgb(var(--mv-muted))] leading-relaxed">{$agentStore.summary}</p>
-					{#if $agentStore.relatedNodes.length > 0}
-						<div class="mt-2 space-y-1">
-							{#each $agentStore.relatedNodes.slice(0, 5) as node (node.id)}
-								<a
-									href="/notes?note={node.id}"
-									class="block rounded-lg border border-[rgb(var(--mv-border))]/60 bg-[rgb(var(--mv-panel))]/40 px-2 py-1.5 text-xs text-[rgb(var(--mv-muted))] transition hover:border-sky-500/30 hover:text-sky-200"
-								>
-									{node.title || 'Untitled'}
-								</a>
-							{/each}
-						</div>
-					{/if}
-				</div>
-			{/if}
-
-			<div class="mt-4">
-				<AttachmentsPanel
-					nodeId={selectedNote.id}
-					allowEmbed
-					onEmbed={handleAttachmentEmbed}
-					title="Attachments"
-					description="Files linked to this note."
-				/>
-			</div>
-
-			<div class="mt-4">
-				<PublicSharePanel nodeId={selectedNote.id} nodeTitle={selectedNote.title ?? 'Untitled'} />
-			</div>
-			<div class="mt-4">
-				<CommentsPanel nodeId={selectedNote.id} nodeTitle={selectedNote.title ?? 'Untitled'} />
-			</div>
-		{/if}
-	</section>
-</div>
-
-{#if selectedNote}
-	<VersionHistory
-		nodeId={selectedNote.id}
-		bind:open={showVersionHistory}
-		on:restored={async () => {
-			showVersionHistory = false;
-			await loadNotes();
-			if (selectedNote) {
-				const refreshed = notes.find((n) => n.id === selectedNote?.id);
-				if (refreshed) selectNote(refreshed);
-			}
-		}}
-	/>
-{/if}
-
-<!-- Export Modal -->
-{#if showExportModal}
-	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-		<div
-			class="w-full max-w-sm rounded-xl border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] p-5 shadow-xl"
-		>
-			<h3 class="text-sm font-semibold text-[rgb(var(--mv-text))]">Export Notes</h3>
-			<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]/60">
-				Export {selectedCount} selected note{selectedCount === 1 ? '' : 's'}
-			</p>
-
-			<div class="mt-4">
-				<span class="text-[10px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/40"
-					>Format</span
-				>
-				<div class="mt-2 grid grid-cols-3 gap-2">
-					{#each [{ value: 'markdown', label: 'Markdown', desc: '.md file' }, { value: 'json', label: 'JSON', desc: 'Structured data' }, { value: 'html', label: 'HTML', desc: 'Styled page' }] as format}
-						<button
-							class="rounded-lg border px-3 py-2 text-left transition {exportFormat === format.value
-								? 'border-sky-500 bg-sky-500/10'
-								: 'border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/50 hover:border-[rgb(var(--mv-muted))]/40'}"
-							on:click={() => (exportFormat = format.value as ExportFormat)}
-						>
-							<div
-								class="text-xs font-medium {exportFormat === format.value
-									? 'text-sky-300'
-									: 'text-[rgb(var(--mv-text))]/90'}"
-							>
-								{format.label}
-							</div>
-							<div class="text-[9px] text-[rgb(var(--mv-muted))]/40">{format.desc}</div>
-						</button>
-					{/each}
-				</div>
-			</div>
-
-			{#if exporting}
-				<div class="mt-4">
-					<div class="h-2 w-full rounded-full bg-[rgb(var(--mv-panel-strong))]">
-						<div
-							class="h-full rounded-full bg-sky-500 transition-all"
-							style="width: {exportProgress}%"
-						></div>
-					</div>
-					<p class="mt-1 text-center text-[10px] text-[rgb(var(--mv-muted))]/60">
-						Preparing export...
-					</p>
-				</div>
-			{/if}
-
-			<div class="mt-5 flex justify-end gap-2">
-				<button
-					class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
-					on:click={() => (showExportModal = false)}
-					disabled={exporting}
-				>
-					Cancel
-				</button>
-				<button
-					class="rounded-lg bg-sky-500 px-4 py-1.5 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400 disabled:opacity-50"
-					on:click={bulkExportNotes}
-					disabled={exporting || selectedCount === 0}
-				>
-					{exporting
-						? 'Exporting...'
-						: `Export ${selectedCount} Note${selectedCount === 1 ? '' : 's'}`}
-				</button>
 			</div>
 		</div>
-	</div>
-{/if}
-
+	{/if}
 {:else if $currentView === 'graph' || $currentView === 'canvas'}
 	{#key $currentView}
 		{#if $currentView === 'graph'}
