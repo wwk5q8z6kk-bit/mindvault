@@ -1692,6 +1692,7 @@ fn row_to_proactive_insight(row: &rusqlite::Row<'_>) -> rusqlite::Result<Proacti
         insight_type,
         related_node_ids,
         importance: importance as f32,
+        metadata: std::collections::HashMap::new(),
         created_at: parse_dt_strict(6, &created_at)?,
         dismissed_at: parse_optional_dt_strict(7, dismissed_at)?,
     })

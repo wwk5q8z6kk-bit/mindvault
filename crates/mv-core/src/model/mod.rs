@@ -611,6 +611,7 @@ pub struct CapturedIntent {
 pub enum IntentType {
     ScheduleReminder,
     ExtractTask,
+    ExtractRelation,
     LinkToProject,
     SuggestTag,
     SuggestLink,
@@ -622,6 +623,7 @@ impl IntentType {
         match self {
             Self::ScheduleReminder => "schedule_reminder",
             Self::ExtractTask => "extract_task",
+            Self::ExtractRelation => "extract_relation",
             Self::LinkToProject => "link_to_project",
             Self::SuggestTag => "suggest_tag",
             Self::SuggestLink => "suggest_link",
@@ -637,6 +639,7 @@ impl std::str::FromStr for IntentType {
         match s {
             "schedule_reminder" => Ok(Self::ScheduleReminder),
             "extract_task" => Ok(Self::ExtractTask),
+            "extract_relation" => Ok(Self::ExtractRelation),
             "link_to_project" => Ok(Self::LinkToProject),
             "suggest_tag" => Ok(Self::SuggestTag),
             "suggest_link" => Ok(Self::SuggestLink),
@@ -720,6 +723,7 @@ pub struct ProactiveInsight {
     pub insight_type: InsightType,
     pub related_node_ids: Vec<Uuid>,
     pub importance: f32,
+    pub metadata: std::collections::HashMap<String, serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub dismissed_at: Option<DateTime<Utc>>,
 }
@@ -804,6 +808,7 @@ impl ProactiveInsight {
             insight_type,
             related_node_ids: Vec::new(),
             importance: 0.5,
+            metadata: std::collections::HashMap::new(),
             created_at: Utc::now(),
             dismissed_at: None,
         }

@@ -876,6 +876,129 @@ impl ProactiveEngine {
         Ok(persisted)
     }
 
+    // -----------------------------------------------------------------------
+    // Semantic Relation Extraction (Phase 3.4)
+    // -----------------------------------------------------------------------
+
+    /// Analyzes the node content for explicit Subject-Verb-Object semantic relationships
+    /// using the python `relations:default` AI pipeline. Unlinked "Object" nodes that match 
+    /// the extracted string will be proposed as new graph edges.
+    pub async fn detect_semantic_relations(
+        &self,
+        node_id: Uuid,
+    ) -> MvResult<Vec<ProactiveInsight>> {
+        let engine = self.engine();
+        let node = match engine.get_node(node_id).await? {
+            Some(n) => n,
+            None => return Ok(Vec::new()),
+        };
+
+        // If no LLM configured, we can't extract semantic relations.
+        let llm = match &engine.llm {
+            Some(llm) => llm,
+            None => return Ok(Vec::new()),
+        };
+
+        // Call the new python relations pipeline
+        let mut params = CompletionParams::default();
+        params.model = Some("relations:default".to_string());
+        
+        let messages = vec![ChatMessage::user(node.content.clone())];
+        
+        let response_text = match llm.complete(&messages, &params).await {
+            Ok(res) => res,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to run semantic relations extraction pipeline");
+                return Ok(Vec::new());
+            }
+        };
+
+        // Parse the JSON array from the relations pipeline
+        #[derive(serde::Deserialize)]
+        struct PipelineResponse {
+            relations: Vec<ExtractedRelation>,
+        }
+        
+        #[derive(serde::Deserialize)]
+        struct ExtractedRelation {
+            subject: String,
+            verb: String,
+            object: String,
+            kind: String,
+        }
+
+        let parsed: PipelineResponse = match serde_json::from_str(&response_text) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, text = %response_text, "Failed to parse relations payload");
+                return Ok(Vec::new());
+            }
+        };
+
+        let current_neighbors: HashSet<Uuid> = engine.get_neighbors(node.id, 1).await?.into_iter().collect();
+        let mut insights = Vec::new();
+
+        for rel in parsed.relations {
+            // Attempt to resolve the "object" to an existing node in the same namespace
+            let query = MemoryQuery::new(rel.object.clone())
+                .with_namespace(node.namespace.clone())
+                .with_limit(3)
+                .with_min_score(0.75); // Needs high confidence
+                
+            let results = match engine.recall(&query).await {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            for search_result in results {
+                let target = search_result.node;
+                if target.id == node.id || current_neighbors.contains(&target.id) {
+                    continue; // Skip self or already linked
+                }
+                
+                let kind_enum = rel.kind.parse::<mv_core::RelationKind>().unwrap_or(mv_core::RelationKind::RelatesTo);
+
+                let insight = ProactiveInsight::new(
+                    "Semantic Link Proposal",
+                    format!(
+                        "The text suggests '{}' {} '{}'. Consider linking them.",
+                        rel.subject, rel.verb, rel.object
+                    ),
+                    InsightType::Connection,
+                )
+                .with_related_nodes(vec![node.id, target.id])
+                .with_importance(0.8);
+                
+                // Add the explicit relation kind to the metadata
+                let mut insight = insight;
+                insight.metadata.insert("proposed_relation".to_string(), serde_json::json!(kind_enum));
+                
+                insights.push(insight);
+                break; // Just take the best target match for this relation
+            }
+        }
+
+        // Deduplicate and persist
+        let existing = engine.store.nodes.list_insights(200, 0).await?;
+        let mut seen_signatures: HashSet<String> = existing
+            .iter()
+            .filter(|i| i.dismissed_at.is_none())
+            .map(Self::insight_signature)
+            .collect();
+
+        let mut persisted = Vec::new();
+        for insight in insights {
+            let sig = Self::insight_signature(&insight);
+            if !seen_signatures.insert(sig) {
+                continue;
+            }
+            engine.store.nodes.log_insight(&insight).await?;
+            persisted.push(insight);
+        }
+
+        Ok(persisted)
+    }
+
     /// Convenience wrapper: run ambient synthesis for the "default" namespace
     /// with standard defaults (batch_size=10, similarity_threshold=0.78).
     pub async fn ambient_synthesis_batch(&self) -> MvResult<Vec<ProactiveInsight>> {

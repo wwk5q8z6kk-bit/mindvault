@@ -64,6 +64,7 @@ impl IntentExecutor {
         match intent.intent_type {
             IntentType::ScheduleReminder => self.execute_schedule_reminder(intent).await,
             IntentType::ExtractTask => self.execute_extract_task(intent).await,
+            IntentType::ExtractRelation => self.execute_extract_relation(intent).await,
             IntentType::SuggestLink => self.execute_suggest_link(intent).await,
             IntentType::LinkToProject => self.execute_link_to_project(intent).await,
             IntentType::SuggestTag => self.execute_suggest_tag(intent).await,
@@ -172,6 +173,29 @@ impl IntentExecutor {
 
         Ok(ExecutionResult::success(format!("Task created: {}", self.extract_task_title(&task_content)))
             .with_created(stored.id))
+    }
+
+    /// Extract SVO semantic relations and propose connections
+    async fn execute_extract_relation(&self, intent: &CapturedIntent) -> MvResult<ExecutionResult> {
+        // Run the proactive linkage pipeline on this node
+        let insights = self.engine.proactive.detect_semantic_relations(intent.node_id).await?;
+        
+        if insights.is_empty() {
+            return Ok(ExecutionResult::failure("No semantic relations were found in the text"));
+        }
+
+        // Log to chronicle
+        let entry = ChronicleEntry::new(
+            "intent_executed",
+            format!("Extracted {} semantic relations for note {}", insights.len(), intent.node_id),
+        )
+        .with_node(intent.node_id);
+        self.engine.log_chronicle(&entry).await?;
+
+        Ok(ExecutionResult::success(format!(
+            "Proposed {} new semantic connections",
+            insights.len()
+        )))
     }
 
     /// Add a suggested link/relationship
