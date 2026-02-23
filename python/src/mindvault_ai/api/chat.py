@@ -85,6 +85,13 @@ async def chat_completions(body: ChatCompletionRequest, request: Request) -> dic
                 messages=messages,
                 nlp=request.app.state.spacy_nlp,
             )
+        elif model.startswith("relations:"):
+            from mindvault_ai.pipelines.relations import run_relations
+
+            result = await run_relations(
+                messages=messages,
+                nlp=request.app.state.spacy_nlp,
+            )
         elif model.startswith("ollama/"):
             ollama_model = model[len("ollama/"):]
             result = await request.app.state.ollama.chat_completion(
