@@ -13,7 +13,7 @@
  * {
  *   "mindvault": {
  *     "command": "npx",
- *     "args": ["tsx", "/Users/x/Projects/mindvault/connectors/claude-code-mcp/index.ts"],
+ *     "args": ["tsx", "/path/to/mindvault/connectors/claude-code-mcp/index.ts"],
  *     "env": { "MINDVAULT_URL": "http://localhost:9470" }
  *   }
  * }

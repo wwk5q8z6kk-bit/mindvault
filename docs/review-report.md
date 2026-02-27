@@ -206,7 +206,7 @@ All P0 items are **Done**:
 
 ## 6. Known Build Constraints
 
-- Use the build coordinator (`~/.mindvault/scripts/mv-check`) for any `cargo` operation — `CLAUDE.md`
+- Avoid concurrent `cargo` builds on low-RAM machines — `CLAUDE.md`
 - Swagger UI build step downloads from GitHub; offline builds need `SWAGGER_UI_DOWNLOAD_URL` — `crates/mv-server/src/openapi.rs`
 - `aws-lc-sys` can take several minutes to compile from scratch (native C build)
 - LanceDB pinned to compatible Arrow line in current lockfile; avoid ad-hoc Arrow upgrades
