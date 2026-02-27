@@ -2,7 +2,7 @@
 # MindVault installer — downloads a pre-built release binary.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/nicholasgasior/mindvault/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/wwk5q8z6kk-bit/mindvault/main/scripts/install.sh | bash
 #   curl -fsSL ... | bash -s -- --version v0.1.0
 #   curl -fsSL ... | bash -s -- --prefix /usr/local
 #
@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-REPO="nicholasgasior/mindvault"
+REPO="wwk5q8z6kk-bit/mindvault"
 API_BASE="https://api.github.com/repos/${REPO}"
 DOWNLOAD_BASE="https://github.com/${REPO}/releases/download"
 
