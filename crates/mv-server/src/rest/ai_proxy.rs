@@ -108,7 +108,7 @@ async fn proxy_get(
             Json(ErrorBody {
                 error: format!(
                     "AI sidecar unreachable at {url}: {e}. \
-                     Ensure the Python AI service is running (start with ~/.mindvault/start-ai.sh)."
+                     Ensure the Python AI service is running. See python/start.sh for setup."
                 ),
             }),
         )
@@ -169,7 +169,7 @@ async fn proxy_post(
             Json(ErrorBody {
                 error: format!(
                     "AI sidecar unreachable at {url}: {e}. \
-                     Ensure the Python AI service is running (start with ~/.mindvault/start-ai.sh)."
+                     Ensure the Python AI service is running. See python/start.sh for setup."
                 ),
             }),
         )

@@ -5,7 +5,7 @@ Show that MindVault is secure by default, searchable, and stable for live demo c
 
 ## Prereqs / Notes
 
-- Use the build coordinator for any `cargo` operation: `~/.mindvault/scripts/mv-check`.
+- Use `cargo` for all build operations (e.g., `cargo check`, `cargo build`, `cargo test`).
 - Demo scripts write a temporary config to `/tmp/mindvault-demo.toml` and default to port `9570`.
 - `scripts/smoke_test.sh` defaults to local FastEmbed embeddings. You can override via
   `MV_EMBEDDING_PROVIDER`, `MV_EMBEDDING_MODEL`, and `MV_EMBEDDING_DIMENSIONS`.
@@ -14,7 +14,7 @@ Show that MindVault is secure by default, searchable, and stable for live demo c
 ## 60-second Validation
 
 ```bash
-cd /Users/x/Projects/mindvault
+cd /path/to/mindvault
 ./scripts/smoke_test.sh
 ```
 
@@ -49,7 +49,7 @@ MINDVAULT_AUTH_TOKEN=demo-token \
 If `./target/debug/mv` is missing, build via:
 
 ```bash
-~/.mindvault/scripts/mv-check build -p mv-cli
+cargo build -p mv-cli
 ```
 
 2. Store memory:
@@ -132,14 +132,10 @@ Then start the server with:
 ## Pre-Submit Checklist
 
 ```bash
-~/.mindvault/scripts/mv-check fmt -- --check
-~/.mindvault/scripts/mv-check clippy --workspace --all-targets -- -D warnings
-~/.mindvault/scripts/mv-check test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
-
-If `mv-check` does not support `fmt`/`clippy` in your environment, run the
-corresponding `cargo fmt` / `cargo clippy` commands in a single-session build
-window to avoid lock contention.
 
 ## Vector Index Rebuild
 

@@ -1,34 +1,13 @@
 # MindVault Development Guide
 
-## Build Coordination (CRITICAL)
-
-**NEVER run `cargo check`, `cargo build`, `cargo test`, or `cargo clippy` directly.**
-
-This is a multi-session environment on a 16GB machine. Running raw `cargo` causes
-OOM kills (SIGKILL/exit 137), lock contention (21+ minute waits), and a death
-spiral where sessions kill each other's builds. Use the build coordinator for ALL
-cargo operations:
+## Building
 
 ```bash
-# check (default subcommand)
-~/.mindvault/scripts/mv-check -p mv-storage
-~/.mindvault/scripts/mv-check --workspace
-
-# test (also coordinated — prevents OOM during test compilation)
-~/.mindvault/scripts/mv-check test -p mv-engine -- test_name
-
-# build
-~/.mindvault/scripts/mv-check build -p mv-cli --release
+cargo check -p mv-storage          # check a single crate
+cargo check --workspace            # check all crates
+cargo test -p mv-engine -- test_name  # run a specific test
+cargo build -p mv-cli --release    # build CLI binary
 ```
-
-The coordinator provides:
-- **Global lock**: only 1 cargo process at a time (prevents OOM on 16GB RAM)
-- **Source-mtime cache**: returns instantly (~150ms) if no .rs files changed
-- **Deduplication**: identical concurrent requests share one build's result
-- **pkill immunity**: uses a renamed binary that survives `pkill -f cargo`
-
-**NEVER run `pkill -f cargo` or `kill` on cargo processes.** Other sessions depend
-on them. Use `~/.mindvault/scripts/mv-check-cleanup --status` to see what's running.
 
 ## Workspace Layout
 
