@@ -22,6 +22,9 @@ examples/**/target/
 # Claude Code (per-developer permissions)
 .claude/settings.local.json
 
+# Internal planning docs
+plans/
+
 # Node (for connectors)
 node_modules/
 connectors/*/dist/
