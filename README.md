@@ -212,7 +212,7 @@ MindVault includes data lifecycle tuning in `[lifecycle]` (see `config/default.t
 
 ## Authentication
 
-MindVault supports two auth modes:
+MindVault supports three auth modes:
 
 1. Shared bearer token via `MINDVAULT_AUTH_TOKEN`.
 2. HS256 JWT bearer tokens via `MINDVAULT_JWT_SECRET`.

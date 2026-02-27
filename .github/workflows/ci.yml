@@ -36,6 +36,9 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Install protoc
+        run: sudo apt-get install -y protobuf-compiler
+
       - name: Sealed Engine Restart Regression
         run: cargo test -p mv-engine test_sealed_restart_cycle_recovers_data_after_unseal_and_rebuild -- --nocapture
 
@@ -67,8 +70,8 @@ jobs:
           npm ci
           npx tsc --noEmit
 
-      - name: OpenClaw Plugin Syntax Check
+      - name: OpenClaw Plugin Install & Typecheck
         working-directory: connectors/openclaw-plugin
         run: |
-          node --check index.ts
-          node --check client.ts
+          npm install --save-dev typescript @types/node
+          npx tsc --noEmit --esModuleInterop --moduleResolution node --target ES2022 --module ES2022 index.ts client.ts

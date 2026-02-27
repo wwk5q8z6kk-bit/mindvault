@@ -1,17 +1,20 @@
 # Contributing to MindVault
 
+Thank you for your interest in contributing to MindVault.
+
 ## Development Setup
 
 ### Prerequisites
-- Rust 1.75+ (install via [rustup](https://rustup.rs/))
-- Node.js 20+ and pnpm 8+
-- SQLite 3.35+ (bundled via `rusqlite`)
+
+- Rust (stable) — install via [rustup](https://rustup.rs/)
+- `protoc` — `brew install protobuf` (macOS) or `apt install protobuf-compiler` (Linux)
+- Node.js 20+ and pnpm 8+ (for frontend/connectors)
 
 ### Getting Started
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/mindvault.git
+git clone https://github.com/wwk5q8z6kk-bit/mindvault.git
 cd mindvault
 
 # Build the Rust workspace
@@ -20,19 +23,20 @@ cargo build --workspace
 # Run tests
 cargo test --workspace
 
-# Set up the frontend
+# Start the server
+cargo run -p mv-cli -- server start --foreground
+# REST: http://127.0.0.1:9470
+# Swagger UI: http://127.0.0.1:9470/api/docs
+```
+
+### Frontend (optional)
+
+```bash
 cd frontend
 pnpm install
 pnpm run check   # Type checking
 pnpm test         # Run vitest
 pnpm run dev      # Start dev server
-```
-
-### Running the Server
-```bash
-cargo run -p mv-server
-# Server starts on http://localhost:9470
-# Swagger UI at http://localhost:9470/swagger-ui
 ```
 
 ## Project Structure
@@ -49,6 +53,7 @@ crates/
   mv-cli/        # Command-line interface
   mv-plugin/     # Plugin system (WASM runtime)
 frontend/        # SvelteKit + Tauri 2 app
+connectors/      # MCP/OpenClaw connectors
 migrations/      # SQL migration files
 config/          # Default configuration
 docs/            # Architecture docs, guides
@@ -58,10 +63,9 @@ docs/            # Architecture docs, guides
 
 ### Rust
 - Follow standard Rust formatting (`cargo fmt`)
-- Use `cargo clippy` for lints
+- Use `cargo clippy` with `-D warnings`
 - Prefer `thiserror` for error types, `anyhow` for ad-hoc errors
-- Async traits use `#[async_trait]` from the `async-trait` crate
-- New storage features follow the trait pipeline: `mv-core` trait -> `mv-storage` impl -> `mv-engine` delegation -> `mv-server` REST
+- New features follow the trait pipeline: `mv-core` trait -> `mv-storage` impl -> `mv-engine` delegation -> `mv-server` REST
 
 ### Frontend
 - Svelte 5 runes syntax (`$state`, `$derived`, `$effect`)
@@ -69,20 +73,28 @@ docs/            # Architecture docs, guides
 - TypeScript strict mode
 - pnpm only (npm has peer dependency conflicts)
 
-## Pull Request Workflow
+## Submitting Changes
 
 1. Create a feature branch: `git checkout -b feat/my-feature`
-2. Make changes with tests
-3. Run `cargo test --workspace` and `cd frontend && pnpm test`
-4. Run `cargo clippy --workspace` and `cd frontend && pnpm run check`
-5. Commit with a descriptive message (conventional commits preferred)
-6. Open a PR against `main`
+2. Make your changes with clear, focused commits.
+3. Ensure all checks pass:
 
-## Test Requirements
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
 
-- New Rust features should include unit tests in the module and/or integration tests
-- New frontend stores/utilities should include vitest spec files
-- Existing tests must pass: `cargo test --workspace` and `pnpm test`
+4. Open a pull request against `main`.
+
+Integration tests may need `-- --test-threads=1` for determinism.
+
+## Build Notes
+
+- `protoc` is required (tonic gRPC code generation).
+- `utoipa-swagger-ui` downloads assets during build; offline builds need `SWAGGER_UI_DOWNLOAD_URL` set.
+- `aws-lc-sys` can take several minutes on first compile (native C build).
+- On low-RAM machines (16 GB), avoid concurrent `cargo` builds.
 
 ## Commit Conventions
 
@@ -93,3 +105,15 @@ Use conventional commits:
 - `test:` adding tests
 - `refactor:` code restructuring
 - `chore:` maintenance tasks
+
+## Reporting Issues
+
+Open a GitHub issue with:
+- What you expected to happen
+- What actually happened
+- Steps to reproduce
+- Environment details (OS, Rust version)
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the [Apache-2.0 License](LICENSE).
