@@ -19,11 +19,11 @@ exclude = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "Apache-2.0"
 authors = ["MindVault Contributors"]
 description = "A local-first knowledge memory system for humans and AI agents"
-homepage = "https://github.com/nicholasgasior/mindvault"
-repository = "https://github.com/nicholasgasior/mindvault"
+homepage = "https://github.com/wwk5q8z6kk-bit/mindvault"
+repository = "https://github.com/wwk5q8z6kk-bit/mindvault"
 categories = ["database", "command-line-utilities"]
 keywords = ["knowledge-graph", "memory", "local-first", "ai", "vault"]
 

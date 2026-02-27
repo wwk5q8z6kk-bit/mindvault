@@ -1,6 +1,7 @@
 {
   "name": "@openclaw-user/knowledgevault",
   "version": "0.1.0",
+  "private": true,
   "description": "KnowledgeVault memory plugin for OpenClaw — knowledge graph connector",
   "type": "module",
   "openclaw": {
