@@ -303,7 +303,7 @@ impl ProactiveEngine {
             .into_iter()
             .filter(|(_, count)| *count >= 3)
             .collect();
-        trending.sort_by(|a, b| b.1.cmp(&a.1));
+        trending.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         if trending.is_empty() {
             return Ok(None);
@@ -624,7 +624,7 @@ impl ProactiveEngine {
 
         // Sort clusters by size and take top N
         let mut sorted_clusters: Vec<_> = tag_clusters.into_iter().collect();
-        sorted_clusters.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        sorted_clusters.sort_by_key(|b| std::cmp::Reverse(b.1.len()));
         sorted_clusters.truncate(max_clusters);
 
         let clusters: Vec<serde_json::Value> = sorted_clusters
@@ -897,8 +897,10 @@ impl ProactiveEngine {
         };
 
         // Call the new python relations pipeline
-        let mut params = CompletionParams::default();
-        params.model = Some("relations:default".to_string());
+        let params = CompletionParams {
+            model: Some("relations:default".to_string()),
+            ..Default::default()
+        };
 
         let messages = vec![ChatMessage::user(node.content.clone())];
 
@@ -1021,7 +1023,7 @@ impl ProactiveEngine {
             }
         }
         let mut sorted: Vec<_> = tag_counts.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
         sorted.into_iter().take(limit).map(|(t, _)| t).collect()
     }
 }

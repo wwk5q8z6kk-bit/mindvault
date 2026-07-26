@@ -2335,7 +2335,7 @@ impl KeychainEngine {
                     && crypto
                         .decrypt_metadata_with_epoch("dGVzdA==", epoch_entry.epoch) // probe; will fail but not with "no grace key" if key exists
                         .err()
-                        .map_or(true, |e| !e.to_string().contains("no grace key"))
+                        .is_none_or(|e| !e.to_string().contains("no grace key"))
             };
 
             if !has_grace_key {

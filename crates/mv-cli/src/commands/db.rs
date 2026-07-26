@@ -320,7 +320,7 @@ pub async fn rebuild_vectors(
         }
 
         let mut items = Vec::with_capacity(batch.len());
-        for (node, embedding) in batch.into_iter().zip(embeddings.into_iter()) {
+        for (node, embedding) in batch.into_iter().zip(embeddings) {
             items.push((node.id, embedding, node.content, Some(node.namespace)));
         }
 

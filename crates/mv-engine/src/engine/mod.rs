@@ -2268,6 +2268,7 @@ mod tests {
             insight_type: InsightType::General,
             related_node_ids: vec![],
             importance: 0.8,
+            metadata: Default::default(),
             created_at: Utc::now(),
             dismissed_at: None,
         };

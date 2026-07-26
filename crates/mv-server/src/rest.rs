@@ -2356,7 +2356,7 @@ fn normalize_clip_tag(raw: &str) -> Option<String> {
 fn normalize_clip_tags(raw: Vec<String>) -> Vec<String> {
     let mut tags = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for value in std::iter::once("web-clip".to_string()).chain(raw.into_iter()) {
+    for value in std::iter::once("web-clip".to_string()).chain(raw) {
         let Some(normalized) = normalize_clip_tag(&value) else {
             continue;
         };
@@ -3688,15 +3688,11 @@ fn parse_ical_events(raw: &str) -> (Vec<ParsedIcalEvent>, usize) {
                     event.node_id = maybe_uuid_from_uid(&value);
                 }
             }
-            "SUMMARY" => {
-                if !value.trim().is_empty() {
-                    event.summary = Some(value);
-                }
+            "SUMMARY" if !value.trim().is_empty() => {
+                event.summary = Some(value);
             }
-            "DESCRIPTION" => {
-                if !value.trim().is_empty() {
-                    event.description = Some(value);
-                }
+            "DESCRIPTION" if !value.trim().is_empty() => {
+                event.description = Some(value);
             }
             "CATEGORIES" => {
                 event.categories = value
@@ -3705,10 +3701,8 @@ fn parse_ical_events(raw: &str) -> (Vec<ParsedIcalEvent>, usize) {
                     .filter(|item| !item.is_empty())
                     .collect();
             }
-            "STATUS" => {
-                if !value.trim().is_empty() {
-                    event.status = Some(value.to_ascii_uppercase());
-                }
+            "STATUS" if !value.trim().is_empty() => {
+                event.status = Some(value.to_ascii_uppercase());
             }
             "DTSTART" => {
                 let parsed = parse_ical_datetime(&value);
@@ -3726,10 +3720,8 @@ fn parse_ical_events(raw: &str) -> (Vec<ParsedIcalEvent>, usize) {
             "X-MINDVAULT-KIND" => {
                 event.kind = value.trim().to_ascii_lowercase().parse::<NodeKind>().ok();
             }
-            "X-MINDVAULT-NAMESPACE" => {
-                if !value.trim().is_empty() {
-                    event.namespace = Some(value.trim().to_string());
-                }
+            "X-MINDVAULT-NAMESPACE" if !value.trim().is_empty() => {
+                event.namespace = Some(value.trim().to_string());
             }
             _ => {}
         }
@@ -11552,8 +11544,8 @@ async fn get_node_relationships(
         }
     }
 
-    outgoing.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-    incoming.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    outgoing.sort_by_key(|right| std::cmp::Reverse(right.created_at));
+    incoming.sort_by_key(|right| std::cmp::Reverse(right.created_at));
 
     Ok(Json(NodeRelationshipOverviewResponse {
         node_id: node_id.to_string(),
@@ -11601,7 +11593,7 @@ async fn get_node_backlinks(
     incoming_rels.retain(|relationship| {
         backlink_relationship_matches(relationship, include_auto, include_manual, source_filter)
     });
-    incoming_rels.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    incoming_rels.sort_by_key(|right| std::cmp::Reverse(right.created_at));
 
     if auth.is_admin() {
         let total_backlinks = incoming_rels.len();
