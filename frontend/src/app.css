@@ -11,8 +11,7 @@
 		color: rgb(var(--mv-text));
 		@apply antialiased selection:bg-[rgb(var(--mv-accent))]/30 selection:text-[rgb(var(--mv-accent-strong))];
 		font-family:
-			'Outfit',
-			'Inter',
+			'Plus Jakarta Sans',
 			system-ui,
 			-apple-system,
 			sans-serif;
@@ -22,13 +21,7 @@
 	kbd,
 	samp,
 	pre {
-		font-family:
-			'JetBrains Mono',
-			'SFMono-Regular',
-			Consolas,
-			'Liberation Mono',
-			Menlo,
-			monospace;
+		font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
 	}
 
 	/* Custom Scrollbar for Webkit */
