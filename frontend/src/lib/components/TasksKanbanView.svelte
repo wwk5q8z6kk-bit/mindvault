@@ -1,4 +1,5 @@
 <script lang="ts">
+	import EmptyState from '$lib/components/EmptyState.svelte';
 	import { onMount } from 'svelte';
 	import { tasksStore, loadTasks, updateTaskOptimistic, completeTaskOptimistic, reopenTaskOptimistic } from '$lib/stores/tasks';
 	import { selectedTaskId, taskModalState } from '$lib/stores/ui';
@@ -175,24 +176,20 @@
 	</div>
 
 	{#if $tasksStore.length === 0}
-		<div class="rounded-2xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-12 text-center">
-			<div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-violet-500/20 text-violet-300">
-				<svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-				</svg>
-			</div>
-			<h3 class="text-sm font-medium text-[rgb(var(--mv-text))]">No tasks yet</h3>
-			<p class="mt-1 text-xs text-[rgb(var(--mv-muted))]/60">Create your first task to start organizing your work</p>
-			<button
-				class="mt-4 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-400"
-				on:click={openCreate}
-			>
-				Create your first task
-			</button>
-			<p class="mt-2 text-[10px] text-[rgb(var(--mv-muted))]">
-				Press <kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5">N</kbd> anytime to add a task
-			</p>
-		</div>
+		<EmptyState
+			icon="tasks"
+			tone="violet"
+			title="No tasks yet"
+			description="Create your first task to start organizing your work."
+			actionLabel="Create your first task"
+			onAction={openCreate}
+		>
+			<svelte:fragment slot="footer">
+				Press
+				<kbd class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5">N</kbd>
+				anytime to add a task
+			</svelte:fragment>
+		</EmptyState>
 	{:else}
 		<div class="flex gap-3 overflow-x-auto pb-2">
 			{#each columns as col (col.status)}

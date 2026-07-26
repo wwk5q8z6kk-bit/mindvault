@@ -1,4 +1,5 @@
 <script lang="ts">
+	import EmptyState from '$lib/components/EmptyState.svelte';
 	import { onMount } from 'svelte';
 	import { tasksStore, loadTasks, updateTaskOptimistic } from '$lib/stores/tasks';
 	import { notesStore, loadNotes } from '$lib/stores/notes';
@@ -332,9 +333,15 @@
 			{#if loading}
 				<div class="rounded-lg border border-slate-800 p-4 text-xs text-slate-400">Loading...</div>
 			{:else if filteredTags.length === 0}
-				<div class="rounded-lg border border-dashed border-slate-800 p-4 text-xs text-slate-400">
-					{searchQuery ? 'No matching tags.' : 'No tags yet.'}
-				</div>
+				<EmptyState
+					compact
+					icon={searchQuery ? 'search' : 'tags'}
+					tone="sky"
+					title={searchQuery ? 'No matching tags' : 'No tags yet'}
+					description={searchQuery
+						? 'Try a different search term.'
+						: 'Tags appear as you label notes and tasks.'}
+				/>
 			{:else}
 				{#each filteredTags as tag (tag.name)}
 					<button

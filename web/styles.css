@@ -113,6 +113,67 @@ nav {
     justify-content: flex-end;
 }
 
+header .header-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.global-connection-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border-color);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.global-connection-status .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border-color);
+    display: inline-block;
+}
+
+.global-connection-status[data-state="connecting"] .status-dot {
+    background: var(--warning-color);
+    animation: statusPulse 1.4s ease-in-out infinite;
+}
+
+.global-connection-status[data-state="live"] {
+    color: var(--success-color);
+    border-color: color-mix(in srgb, var(--success-color) 35%, transparent);
+}
+
+.global-connection-status[data-state="live"] .status-dot {
+    background: var(--success-color);
+}
+
+.global-connection-status[data-state="degraded"] {
+    color: var(--warning-color);
+    border-color: color-mix(in srgb, var(--warning-color) 35%, transparent);
+}
+
+.global-connection-status[data-state="degraded"] .status-dot {
+    background: var(--warning-color);
+}
+
+.global-connection-status[data-state="offline"] {
+    color: var(--error-color);
+    border-color: color-mix(in srgb, var(--error-color) 35%, transparent);
+}
+
+.global-connection-status[data-state="offline"] .status-dot {
+    background: var(--error-color);
+}
+
 .panel-status {
     display: inline-flex;
     align-items: center;

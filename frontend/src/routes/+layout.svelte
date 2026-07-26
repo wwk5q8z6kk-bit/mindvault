@@ -13,6 +13,11 @@
 	import FavoritesBar from '$lib/components/FavoritesBar.svelte';
 	import ProposalInbox from '$lib/components/ProposalInbox.svelte';
 	import ApiHealthBanner from '$lib/components/ApiHealthBanner.svelte';
+	import { apiHealth } from '$lib/api/client';
+	import {
+		connectionStatusLabel,
+		deriveConnectionStatus
+	} from '$lib/connection/status';
 	import { startSyncLoop, stopSyncLoop, pendingSyncCount } from '$lib/stores/tasks';
 	import { loadNotes } from '$lib/stores/notes';
 	import { startNotifications, stopNotifications } from '$lib/stores/notifications';
@@ -32,6 +37,11 @@
 	} from '$lib/stores/view-preferences';
 
 	let online = true;
+	$: connectionStatus = deriveConnectionStatus({
+		browserOnline: online,
+		apiStatus: $apiHealth.status,
+		wsStatus: $wsStatus
+	});
 	let mobileMenuOpen = false;
 	let keychainStatusPoll: ReturnType<typeof setInterval> | null = null;
 
@@ -504,19 +514,37 @@
 				<div class="h-4 w-px bg-[rgb(var(--mv-border))] mx-1"></div>
 				<span
 					class={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset ${
-						$wsStatus === 'connected'
+						connectionStatus === 'live'
 							? 'bg-emerald-500/10 text-emerald-400 ring-emerald-500/20'
-							: online
+							: connectionStatus === 'online' || connectionStatus === 'connecting'
 								? 'bg-sky-500/10 text-sky-400 ring-sky-500/20'
-								: 'bg-rose-500/10 text-rose-400 ring-rose-500/20'
+								: connectionStatus === 'degraded'
+									? 'bg-amber-500/10 text-amber-400 ring-amber-500/20'
+									: 'bg-rose-500/10 text-rose-400 ring-rose-500/20'
 					}`}
+					title={connectionStatus === 'live'
+						? 'API and realtime sync connected'
+						: connectionStatus === 'online'
+							? 'API reachable; realtime reconnecting'
+							: connectionStatus === 'connecting'
+								? 'Checking backend connectivity'
+								: connectionStatus === 'degraded'
+									? 'API returning errors'
+									: 'Backend unavailable'}
+					aria-label={`Connection status: ${connectionStatusLabel(connectionStatus)}`}
 				>
 					<span
 						class={`h-1.5 w-1.5 rounded-full ${
-							$wsStatus === 'connected' ? 'bg-emerald-400' : online ? 'bg-sky-400' : 'bg-rose-400'
+							connectionStatus === 'live'
+								? 'bg-emerald-400'
+								: connectionStatus === 'online' || connectionStatus === 'connecting'
+									? 'bg-sky-400'
+									: connectionStatus === 'degraded'
+										? 'bg-amber-400'
+										: 'bg-rose-400'
 						}`}
 					></span>
-					{$wsStatus === 'connected' ? 'Live' : online ? 'Online' : 'Offline'}
+					{connectionStatusLabel(connectionStatus)}
 				</span>
 				{#if $pendingSyncCount > 0}
 					<span

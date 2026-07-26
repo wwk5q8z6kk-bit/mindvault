@@ -18,6 +18,7 @@
 	import { parseQuickAddPreview, type TaskStatus } from '$lib/api/tasks';
 	import type { TaskView } from '$lib/stores/tasks';
 	import { page } from '$app/stores';
+	import EmptyState from '$lib/components/EmptyState.svelte';
 	import TaskListItem from '$lib/components/TaskListItem.svelte';
 	import TaskDetailPanel from '$lib/components/TaskDetailPanel.svelte';
 	import TaskFormModal from '$lib/components/TaskFormModal.svelte';
@@ -632,43 +633,35 @@
 
 		<div class="mt-3">
 			{#if $filteredTasks.length === 0}
-				<div
-					class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-8 text-center"
-				>
-					{#if $tasksStore.length === 0}
-						<div
-							class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-violet-500/20 text-lg text-violet-300"
-						>
-							+
-						</div>
-						<h3 class="text-sm font-medium text-[rgb(var(--mv-text))]">No tasks yet</h3>
-						<p class="mt-1 text-xs text-[rgb(var(--mv-muted))]/60">
-							Add your first task to start getting things done.
-						</p>
-						<div class="mt-4 flex justify-center gap-2">
-							<button
-								class="rounded-lg bg-violet-500 px-4 py-2 text-xs font-semibold text-white hover:bg-violet-400"
-								on:click={openCreate}
-							>
-								Create your first task
-							</button>
-						</div>
-						<p class="mt-3 text-xs text-[rgb(var(--mv-muted))]">
-							Or use <kbd
+				{#if $tasksStore.length === 0}
+					<EmptyState
+						icon="tasks"
+						tone="violet"
+						title="No tasks yet"
+						description="Add your first task to start getting things done."
+						actionLabel="Create your first task"
+						onAction={openCreate}
+					>
+						<svelte:fragment slot="footer">
+							Or use
+							<kbd
 								class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5"
 								>Cmd+Shift+N</kbd
-							> for quick capture
-						</p>
-					{:else}
-						<p class="text-sm text-[rgb(var(--mv-muted))]">No tasks match your current filter.</p>
-						<button
-							class="mt-2 text-xs text-sky-400 hover:text-sky-300"
-							on:click={() => applyFilter({ status: 'all', view: 'all', query: '' })}
-						>
-							Clear filters
-						</button>
-					{/if}
-				</div>
+							>
+							for quick capture
+						</svelte:fragment>
+					</EmptyState>
+				{:else}
+					<EmptyState
+						compact
+						icon="search"
+						tone="slate"
+						title="No tasks match your current filter"
+						description="Clear filters to see all tasks again."
+						actionLabel="Clear filters"
+						onAction={() => applyFilter({ status: 'all', view: 'all', query: '' })}
+					/>
+				{/if}
 			{:else}
 				<div bind:this={taskListParentRef} style="max-height: 70vh; overflow-y: auto;">
 					<div

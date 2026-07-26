@@ -8,8 +8,23 @@
 <body>
     <div class="container">
         <header>
-            <h1>MindVault</h1>
-            <p>Knowledge Memory System</p>
+            <div class="header-row">
+                <div>
+                    <h1>MindVault</h1>
+                    <p>Knowledge Memory System</p>
+                </div>
+                <div
+                    class="global-connection-status"
+                    id="global-connection-status"
+                    data-state="connecting"
+                    role="status"
+                    aria-live="polite"
+                    aria-label="Connection status: Connecting"
+                >
+                    <span class="status-dot" aria-hidden="true"></span>
+                    <span class="status-text">Connecting</span>
+                </div>
+            </div>
         </header>
 
         <nav>

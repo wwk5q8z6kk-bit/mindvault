@@ -17,6 +17,7 @@
 	import { assistAutoTag, assistTransform } from '$lib/api/assist';
 	import { activeNamespace } from '$lib/stores/namespace';
 	import { pushToast } from '$lib/stores/toast';
+	import EmptyState from '$lib/components/EmptyState.svelte';
 
 	// Folder/Collection system
 	const FOLDER_PREFIX = 'folder:';
@@ -700,12 +701,14 @@
 		{#if loading}
 			<div class="rounded-xl border border-slate-800 p-6 text-center text-xs text-slate-400">Loading bookmarks...</div>
 		{:else if displayed.length === 0}
-			<div class="rounded-xl border border-dashed border-slate-800 p-8 text-center">
-				<h3 class="text-sm font-semibold text-white">No bookmarks</h3>
-				<p class="mt-1 text-xs text-slate-400">
-					Save your first web clip above or use quick capture in link mode.
-				</p>
-			</div>
+			<EmptyState
+				icon="bookmarks"
+				tone="amber"
+				title={searchQuery || filter !== 'all' ? 'No matching bookmarks' : 'No bookmarks yet'}
+				description={searchQuery || filter !== 'all'
+					? 'Try clearing filters or search to see more clips.'
+					: 'Save your first web clip above or use quick capture in link mode.'}
+			/>
 		{:else}
 			{#each displayed as bookmark (bookmark.id)}
 				<div class="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4 transition hover:border-slate-700">
