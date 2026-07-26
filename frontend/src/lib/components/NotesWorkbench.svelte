@@ -91,6 +91,7 @@
 	let activeTags: string[] = [];
 	let searchQuery = '';
 	let activeTab: ListTab = 'all';
+	let activeTagFilter: string | null = null;
 	let loading = true;
 	let demoMode = false;
 	let toolsOpen = false;
@@ -106,6 +107,22 @@
 	let tagInput: HTMLInputElement;
 	let saveTimer: ReturnType<typeof setTimeout> | null = null;
 	let saveInFlight = false;
+
+	function normalizeTag(tag: string) {
+		return tag.trim().toLowerCase();
+	}
+
+	$: tagCounts = notes.reduce((counts, note) => {
+		for (const tag of new Set(note.tags.map(normalizeTag).filter(Boolean))) {
+			counts.set(tag, (counts.get(tag) ?? 0) + 1);
+		}
+		return counts;
+	}, new Map<string, number>());
+	$: availableTags = Array.from(tagCounts.keys()).sort(
+		(a, b) => (tagCounts.get(b) ?? 0) - (tagCounts.get(a) ?? 0) || a.localeCompare(b)
+	);
+	$: hasActiveFilters =
+		Boolean(searchQuery.trim()) || activeTab !== 'all' || activeTagFilter !== null;
 
 	function createDemoNotes(): WorkbenchNote[] {
 		const now = Date.now();
@@ -203,6 +220,8 @@
 				activeTab === 'recent' &&
 				Date.now() - new Date(note.updated_at).getTime() > 7 * 86_400_000
 			)
+				return false;
+			if (activeTagFilter && !note.tags.some((tag) => normalizeTag(tag) === activeTagFilter))
 				return false;
 			const query = searchQuery.trim().toLowerCase();
 			if (!query) return true;
@@ -422,6 +441,19 @@
 		scheduleSave();
 	}
 
+	function toggleTagFilter(tag: string, showList = false) {
+		const normalizedTag = normalizeTag(tag);
+		activeTagFilter = activeTagFilter === normalizedTag ? null : normalizedTag;
+		filtersExpanded = true;
+		if (showList) mobilePane = 'list';
+	}
+
+	function clearFilters() {
+		searchQuery = '';
+		activeTab = 'all';
+		activeTagFilter = null;
+	}
+
 	async function togglePin() {
 		if (!selectedNote) return;
 		const next = !selectedNote.pinned;
@@ -570,7 +602,10 @@
 				<button
 					aria-label="Filter notes"
 					title="Filter notes"
+					class:active={filtersExpanded || activeTagFilter !== null}
 					on:click={() => (filtersExpanded = !filtersExpanded)}
+					aria-controls="note-filters"
+					aria-expanded={filtersExpanded}
 				>
 					<SlidersHorizontal size={18} strokeWidth={1.8} />
 				</button>
@@ -639,14 +674,34 @@
 			</div>
 
 			{#if filtersExpanded}
-				<div class="filter-summary">
-					<span>{filteredNotes.length} visible</span>
-					<button
-						on:click={() => {
-							searchQuery = '';
-							activeTab = 'all';
-						}}>Clear filters</button
-					>
+				<div class="filter-panel" id="note-filters">
+					<div class="filter-panel-heading">
+						<div>
+							<strong>Filter by tag</strong>
+							<span
+								>{filteredNotes.length} {filteredNotes.length === 1 ? 'note' : 'notes'} shown</span
+							>
+						</div>
+						{#if hasActiveFilters}
+							<button on:click={clearFilters}>Clear all</button>
+						{/if}
+					</div>
+					{#if availableTags.length}
+						<div class="tag-filter-list" aria-label="Available tag filters">
+							{#each availableTags as tag (tag)}
+								<button
+									class:active={activeTagFilter === normalizeTag(tag)}
+									aria-pressed={activeTagFilter === normalizeTag(tag)}
+									on:click={() => toggleTagFilter(tag)}
+								>
+									<span>{tag}</span>
+									<small>{tagCounts.get(tag) ?? 0}</small>
+								</button>
+							{/each}
+						</div>
+					{:else}
+						<p class="no-tags">Add a tag to a note to filter your workspace.</p>
+					{/if}
 				</div>
 			{/if}
 		</div>
@@ -661,12 +716,7 @@
 				<div class="list-state">
 					<FileText size={24} strokeWidth={1.5} />
 					<p>No notes match this view.</p>
-					<button
-						on:click={() => {
-							searchQuery = '';
-							activeTab = 'all';
-						}}>Show all notes</button
-					>
+					<button on:click={clearFilters}>Show all notes</button>
 				</div>
 			{:else}
 				{#each filteredNotes as note (note.id)}
@@ -773,9 +823,25 @@
 
 				<div class="tag-row">
 					{#each activeTags as tag (tag)}
-						<button class="tag" on:dblclick={() => removeTag(tag)} title="Double-click to remove">
-							{tag}
-						</button>
+						<div class="editor-tag">
+							<button
+								class="tag"
+								class:active={activeTagFilter === normalizeTag(tag)}
+								on:click={() => toggleTagFilter(tag, true)}
+								aria-pressed={activeTagFilter === normalizeTag(tag)}
+								title={`Filter notes by ${tag}`}
+							>
+								{tag}
+							</button>
+							<button
+								class="remove-tag"
+								on:click={() => removeTag(tag)}
+								aria-label={`Remove ${tag} tag from this note`}
+								title={`Remove ${tag} tag`}
+							>
+								<X size={13} strokeWidth={2} />
+							</button>
+						</div>
 					{/each}
 					{#if tagEditorOpen}
 						<form on:submit|preventDefault={addTag}>
@@ -1081,12 +1147,15 @@
 	}
 
 	.notes-panel {
+		display: flex;
 		min-width: 0;
+		flex-direction: column;
 		overflow: hidden;
 		background: linear-gradient(165deg, #111116 0%, #0d0d11 66%);
 	}
 
 	.notes-panel-header {
+		flex: 0 0 auto;
 		padding: 35px 28px 0;
 	}
 
@@ -1121,6 +1190,12 @@
 		border-color: #32323a;
 		background: #18181d;
 		color: white;
+	}
+
+	.panel-title button.active {
+		border-color: #49405f;
+		background: #211c30;
+		color: #b5a8ff;
 	}
 
 	.new-note-row {
@@ -1255,26 +1330,112 @@
 		box-shadow: 0 0 8px rgb(115 84 255 / 45%);
 	}
 
-	.filter-summary {
-		display: flex;
-		height: 35px;
-		align-items: center;
-		justify-content: space-between;
+	.filter-panel {
+		padding: 13px 0 14px;
 		border-bottom: 1px solid #24242a;
-		color: #6f6f7a;
-		font-size: 11px;
 	}
 
-	.filter-summary button,
+	.filter-panel-heading {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 12px;
+		margin-bottom: 11px;
+	}
+
+	.filter-panel-heading > div {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: 3px;
+	}
+
+	.filter-panel-heading strong {
+		color: #c8c8d0;
+		font-size: 11px;
+		font-weight: 600;
+	}
+
+	.filter-panel-heading span,
+	.no-tags {
+		color: #6f6f7a;
+		font-size: 10px;
+	}
+
+	.filter-panel-heading button,
 	.list-state button {
 		border: 0;
 		background: transparent;
 		color: #a99cff;
+		font-size: 11px;
 		cursor: pointer;
 	}
 
+	.tag-filter-list {
+		display: flex;
+		max-height: 104px;
+		flex-wrap: wrap;
+		gap: 6px;
+		overflow-y: auto;
+		padding: 1px 2px 1px 0;
+		scrollbar-width: thin;
+		scrollbar-color: #313138 transparent;
+	}
+
+	.tag-filter-list button {
+		display: inline-flex;
+		height: 27px;
+		align-items: center;
+		gap: 7px;
+		border: 1px solid #30303a;
+		border-radius: 6px;
+		background: #1b1b22;
+		padding: 0 7px 0 9px;
+		color: #9d9da9;
+		font-size: 10px;
+		cursor: pointer;
+		transition:
+			border-color 140ms ease,
+			background 140ms ease,
+			color 140ms ease;
+	}
+
+	.tag-filter-list button:hover {
+		border-color: #494257;
+		background: #24202f;
+		color: #d5d0ef;
+	}
+
+	.tag-filter-list button.active {
+		border-color: #6652bd;
+		background: #2a2242;
+		color: #c4b8ff;
+	}
+
+	.tag-filter-list small {
+		display: grid;
+		min-width: 16px;
+		height: 16px;
+		place-items: center;
+		border-radius: 5px;
+		background: rgb(255 255 255 / 6%);
+		color: #777782;
+		font-size: 9px;
+	}
+
+	.tag-filter-list button.active small {
+		background: rgb(140 113 255 / 18%);
+		color: #b8aaff;
+	}
+
+	.no-tags {
+		margin: 0;
+		line-height: 1.45;
+	}
+
 	.note-list {
-		height: calc(100dvh - 267px);
+		min-height: 0;
+		flex: 1;
 		overflow-y: auto;
 		padding: 10px 19px 28px;
 		scrollbar-width: thin;
@@ -1600,20 +1761,53 @@
 		margin-top: 27px;
 	}
 
-	.tag {
+	.editor-tag {
+		display: inline-flex;
+		height: 29px;
+		align-items: stretch;
+		overflow: hidden;
 		border: 1px solid #302d44;
 		border-radius: 6px;
 		background: #201d31;
-		padding: 5px 10px;
 		color: #a995ff;
-		font-size: 11px;
-		cursor: default;
 	}
 
-	.tag:nth-child(even) {
+	.editor-tag:nth-child(even) {
 		border-color: #293143;
 		background: #1c2532;
 		color: #9bb7ef;
+	}
+
+	.tag,
+	.remove-tag {
+		border: 0;
+		background: transparent;
+		color: inherit;
+		cursor: pointer;
+	}
+
+	.tag {
+		padding: 0 8px 0 10px;
+		font-size: 11px;
+	}
+
+	.tag:hover,
+	.tag.active {
+		background: rgb(126 97 255 / 14%);
+		color: #c2b6ff;
+	}
+
+	.remove-tag {
+		display: grid;
+		width: 27px;
+		place-items: center;
+		border-left: 1px solid rgb(255 255 255 / 7%);
+		color: #736c8e;
+	}
+
+	.remove-tag:hover {
+		background: rgb(255 255 255 / 7%);
+		color: #d1c9ef;
 	}
 
 	.add-tag {
@@ -1799,10 +1993,6 @@
 
 		.notes-panel-header {
 			padding-top: 25px;
-		}
-
-		.note-list {
-			height: calc(100dvh - 257px);
 		}
 
 		.editor-panel {
