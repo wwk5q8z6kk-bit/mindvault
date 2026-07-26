@@ -1,0 +1,22 @@
+{
+  "fixture_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "dataset_tier": "S",
+  "canonical_schema_version": "replace-me",
+  "index_schema_versions": {
+    "full_text": "replace-me",
+    "vector": "replace-me",
+    "graph": "replace-me"
+  },
+  "tokenizer": "replace-me",
+  "embedding_model": {
+    "provider": "replace-me",
+    "model": "replace-me",
+    "revision_or_hash": "replace-me",
+    "dimensions": 0
+  },
+  "graph_projection_version": "replace-me",
+  "cold_warm": "warm",
+  "build_profile": "release",
+  "compiler_flags": "replace-me",
+  "filesystem": "replace-me"
+}
