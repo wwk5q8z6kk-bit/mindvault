@@ -3,8 +3,8 @@ use mv_core::*;
 use chrono::Utc;
 
 use super::{
-    google_export_events, google_list_events, google_refresh_access_token,
-    event_source, event_times, GoogleCalendarFetchError, GoogleCalendarSyncReport,
+    event_source, event_times, google_export_events, google_list_events,
+    google_refresh_access_token, GoogleCalendarFetchError, GoogleCalendarSyncReport,
     MindVaultEngine,
 };
 

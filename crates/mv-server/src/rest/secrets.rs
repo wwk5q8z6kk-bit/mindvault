@@ -127,14 +127,14 @@ pub async fn unlock_encrypted_file(
     Json(req): Json<UnlockRequest>,
 ) -> impl IntoResponse {
     if req.password.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            err_json("password is required"),
-        )
-            .into_response();
+        return (StatusCode::BAD_REQUEST, err_json("password is required")).into_response();
     }
 
-    match state.engine.credential_store.unlock_encrypted_file(&req.password) {
+    match state
+        .engine
+        .credential_store
+        .unlock_encrypted_file(&req.password)
+    {
         Ok(true) => Json(UnlockResponse { unlocked: true }).into_response(),
         Ok(false) => (
             StatusCode::NOT_FOUND,

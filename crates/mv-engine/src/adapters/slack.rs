@@ -143,20 +143,18 @@ impl ExternalAdapter for SlackAdapter {
                     .filter_map(|m| {
                         let ts = m.get("ts")?.as_str()?;
                         let text = m.get("text")?.as_str()?;
-                        let user = m
-                            .get("user")
-                            .and_then(|u| u.as_str())
-                            .unwrap_or("unknown");
-                        let thread_ts = m.get("thread_ts").and_then(|t| t.as_str()).map(String::from);
+                        let user = m.get("user").and_then(|u| u.as_str()).unwrap_or("unknown");
+                        let thread_ts = m
+                            .get("thread_ts")
+                            .and_then(|t| t.as_str())
+                            .map(String::from);
 
                         // Parse Slack timestamp (epoch.seq format)
                         let timestamp = ts
                             .split('.')
                             .next()
                             .and_then(|s| s.parse::<i64>().ok())
-                            .and_then(|secs| {
-                                DateTime::from_timestamp(secs, 0)
-                            })
+                            .and_then(|secs| DateTime::from_timestamp(secs, 0))
                             .unwrap_or_else(Utc::now);
 
                         Some(AdapterInboundMessage {
@@ -180,7 +178,10 @@ impl ExternalAdapter for SlackAdapter {
             .unwrap_or_else(|| cursor.unwrap_or("0").to_string());
 
         if !messages.is_empty() {
-            *self.last_receive.lock().expect("last_receive mutex poisoned") = Some(Utc::now());
+            *self
+                .last_receive
+                .lock()
+                .expect("last_receive mutex poisoned") = Some(Utc::now());
         }
 
         Ok((messages, new_cursor))
@@ -210,9 +211,16 @@ impl ExternalAdapter for SlackAdapter {
     }
 
     fn status(&self) -> AdapterStatus {
-        let error = self.last_error.lock().expect("last_error mutex poisoned").clone();
+        let error = self
+            .last_error
+            .lock()
+            .expect("last_error mutex poisoned")
+            .clone();
         let last_send = *self.last_send.lock().expect("last_send mutex poisoned");
-        let last_receive = *self.last_receive.lock().expect("last_receive mutex poisoned");
+        let last_receive = *self
+            .last_receive
+            .lock()
+            .expect("last_receive mutex poisoned");
         AdapterStatus {
             adapter_type: AdapterType::Slack,
             name: self.config.name.clone(),
@@ -229,8 +237,10 @@ mod tests {
     use super::*;
 
     fn slack_config_with_webhook() -> AdapterConfig {
-        AdapterConfig::new(AdapterType::Slack, "test-slack")
-            .with_setting("webhook_url", "https://hooks.slack.com/services/T00/B00/xxx")
+        AdapterConfig::new(AdapterType::Slack, "test-slack").with_setting(
+            "webhook_url",
+            "https://hooks.slack.com/services/T00/B00/xxx",
+        )
     }
 
     #[test]
@@ -240,7 +250,10 @@ mod tests {
         let result = SlackAdapter::new(config);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("webhook_url"), "expected webhook_url error, got: {err}");
+        assert!(
+            err.contains("webhook_url"),
+            "expected webhook_url error, got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -282,8 +295,7 @@ mod tests {
 
     #[tokio::test]
     async fn poll_without_channel_id_returns_empty() {
-        let config = slack_config_with_webhook()
-            .with_setting("bot_token", "xoxb-test-token");
+        let config = slack_config_with_webhook().with_setting("bot_token", "xoxb-test-token");
         let adapter = SlackAdapter::new(config).unwrap();
         let (messages, cursor) = adapter.poll(Some("123")).await.unwrap();
         assert!(messages.is_empty());

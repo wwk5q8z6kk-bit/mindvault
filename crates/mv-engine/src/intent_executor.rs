@@ -68,27 +68,32 @@ impl IntentExecutor {
             IntentType::SuggestLink => self.execute_suggest_link(intent).await,
             IntentType::LinkToProject => self.execute_link_to_project(intent).await,
             IntentType::SuggestTag => self.execute_suggest_tag(intent).await,
-            IntentType::Custom(_) => Ok(ExecutionResult::failure("Custom intents not yet supported")),
+            IntentType::Custom(_) => {
+                Ok(ExecutionResult::failure("Custom intents not yet supported"))
+            }
         }
     }
 
     /// Schedule a reminder by setting metadata on the source node
-    async fn execute_schedule_reminder(&self, intent: &CapturedIntent) -> MvResult<ExecutionResult> {
+    async fn execute_schedule_reminder(
+        &self,
+        intent: &CapturedIntent,
+    ) -> MvResult<ExecutionResult> {
         // Get the source node
-        let node = self
-            .engine
-            .get_node(intent.node_id)
-            .await?
-            .ok_or_else(|| MvError::InvalidInput(format!("Node {} not found", intent.node_id)))?;
+        let node =
+            self.engine.get_node(intent.node_id).await?.ok_or_else(|| {
+                MvError::InvalidInput(format!("Node {} not found", intent.node_id))
+            })?;
 
         // Parse the reminder time from parameters
         let reminder_at = self.parse_reminder_time(&intent.parameters)?;
 
         // Update the node with reminder metadata
         let mut updated = node.clone();
-        updated
-            .metadata
-            .insert("reminder_at".to_string(), serde_json::json!(reminder_at.to_rfc3339()));
+        updated.metadata.insert(
+            "reminder_at".to_string(),
+            serde_json::json!(reminder_at.to_rfc3339()),
+        );
         updated
             .metadata
             .insert("reminder_active".to_string(), serde_json::json!(true));
@@ -117,17 +122,18 @@ impl IntentExecutor {
     /// Extract a task from the source node
     async fn execute_extract_task(&self, intent: &CapturedIntent) -> MvResult<ExecutionResult> {
         // Get the source node
-        let node = self
-            .engine
-            .get_node(intent.node_id)
-            .await?
-            .ok_or_else(|| MvError::InvalidInput(format!("Node {} not found", intent.node_id)))?;
+        let node =
+            self.engine.get_node(intent.node_id).await?.ok_or_else(|| {
+                MvError::InvalidInput(format!("Node {} not found", intent.node_id))
+            })?;
 
         // Extract task content from intent or fallback to node content
         let task_content = self.extract_task_content_from_intent(intent, &node);
 
         if task_content.is_empty() {
-            return Ok(ExecutionResult::failure("No task content could be extracted"));
+            return Ok(ExecutionResult::failure(
+                "No task content could be extracted",
+            ));
         }
 
         // Check parameters for deadline/priority info
@@ -148,12 +154,16 @@ impl IntentExecutor {
         // Set task metadata
         task.metadata
             .insert("task_status".to_string(), serde_json::json!("inbox"));
-        task.metadata
-            .insert("source_node_id".to_string(), serde_json::json!(intent.node_id.to_string()));
+        task.metadata.insert(
+            "source_node_id".to_string(),
+            serde_json::json!(intent.node_id.to_string()),
+        );
 
         if let Some(deadline) = deadline {
-            task.metadata
-                .insert("task_due_at".to_string(), serde_json::json!(deadline.to_rfc3339()));
+            task.metadata.insert(
+                "task_due_at".to_string(),
+                serde_json::json!(deadline.to_rfc3339()),
+            );
         }
 
         if let Some(priority) = priority {
@@ -171,23 +181,36 @@ impl IntentExecutor {
         .with_node(stored.id);
         self.engine.log_chronicle(&entry).await?;
 
-        Ok(ExecutionResult::success(format!("Task created: {}", self.extract_task_title(&task_content)))
-            .with_created(stored.id))
+        Ok(ExecutionResult::success(format!(
+            "Task created: {}",
+            self.extract_task_title(&task_content)
+        ))
+        .with_created(stored.id))
     }
 
     /// Extract SVO semantic relations and propose connections
     async fn execute_extract_relation(&self, intent: &CapturedIntent) -> MvResult<ExecutionResult> {
         // Run the proactive linkage pipeline on this node
-        let insights = self.engine.proactive.detect_semantic_relations(intent.node_id).await?;
-        
+        let insights = self
+            .engine
+            .proactive
+            .detect_semantic_relations(intent.node_id)
+            .await?;
+
         if insights.is_empty() {
-            return Ok(ExecutionResult::failure("No semantic relations were found in the text"));
+            return Ok(ExecutionResult::failure(
+                "No semantic relations were found in the text",
+            ));
         }
 
         // Log to chronicle
         let entry = ChronicleEntry::new(
             "intent_executed",
-            format!("Extracted {} semantic relations for note {}", insights.len(), intent.node_id),
+            format!(
+                "Extracted {} semantic relations for note {}",
+                insights.len(),
+                intent.node_id
+            ),
         )
         .with_node(intent.node_id);
         self.engine.log_chronicle(&entry).await?;
@@ -224,7 +247,10 @@ impl IntentExecutor {
 
             Ok(ExecutionResult::success(format!("Linked to '{}'", target)))
         } else {
-            Ok(ExecutionResult::failure(format!("Target node '{}' not found", target)))
+            Ok(ExecutionResult::failure(format!(
+                "Target node '{}' not found",
+                target
+            )))
         }
     }
 
@@ -294,15 +320,21 @@ impl IntentExecutor {
             .ok_or_else(|| MvError::InvalidInput("Missing tag parameter".to_string()))?;
 
         // Get the source node
-        let node = self
-            .engine
-            .get_node(intent.node_id)
-            .await?
-            .ok_or_else(|| MvError::InvalidInput(format!("Node {} not found", intent.node_id)))?;
+        let node =
+            self.engine.get_node(intent.node_id).await?.ok_or_else(|| {
+                MvError::InvalidInput(format!("Node {} not found", intent.node_id))
+            })?;
 
         // Check if tag already exists
-        if node.tags.iter().any(|t: &String| t.to_lowercase() == tag.to_lowercase()) {
-            return Ok(ExecutionResult::success(format!("Tag '{}' already exists", tag)));
+        if node
+            .tags
+            .iter()
+            .any(|t: &String| t.to_lowercase() == tag.to_lowercase())
+        {
+            return Ok(ExecutionResult::success(format!(
+                "Tag '{}' already exists",
+                tag
+            )));
         }
 
         // Add the tag
@@ -337,27 +369,57 @@ impl IntentExecutor {
 
         let now = Utc::now();
         let reminder_at = match relative {
-            "today" => now.date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time"),
-            "tomorrow" => (now + Duration::days(1)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time"),
-            "next_week" => (now + Duration::weeks(1)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time"),
-            "next_month" => (now + Duration::days(30)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time"),
-            "in_2_days" => (now + Duration::days(2)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time"),
-            "in_3_days" => (now + Duration::days(3)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time"),
+            "today" => now
+                .date_naive()
+                .and_hms_opt(9, 0, 0)
+                .expect("09:00:00 is a valid time"),
+            "tomorrow" => (now + Duration::days(1))
+                .date_naive()
+                .and_hms_opt(9, 0, 0)
+                .expect("09:00:00 is a valid time"),
+            "next_week" => (now + Duration::weeks(1))
+                .date_naive()
+                .and_hms_opt(9, 0, 0)
+                .expect("09:00:00 is a valid time"),
+            "next_month" => (now + Duration::days(30))
+                .date_naive()
+                .and_hms_opt(9, 0, 0)
+                .expect("09:00:00 is a valid time"),
+            "in_2_days" => (now + Duration::days(2))
+                .date_naive()
+                .and_hms_opt(9, 0, 0)
+                .expect("09:00:00 is a valid time"),
+            "in_3_days" => (now + Duration::days(3))
+                .date_naive()
+                .and_hms_opt(9, 0, 0)
+                .expect("09:00:00 is a valid time"),
             other => {
                 // Try to parse "in_N_days" pattern
                 if other.starts_with("in_") && other.ends_with("_days") {
                     if let Ok(days) = other[3..other.len() - 5].parse::<i64>() {
-                        (now + Duration::days(days)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time")
+                        (now + Duration::days(days))
+                            .date_naive()
+                            .and_hms_opt(9, 0, 0)
+                            .expect("09:00:00 is a valid time")
                     } else {
-                        (now + Duration::days(1)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time")
+                        (now + Duration::days(1))
+                            .date_naive()
+                            .and_hms_opt(9, 0, 0)
+                            .expect("09:00:00 is a valid time")
                     }
                 } else {
-                    (now + Duration::days(1)).date_naive().and_hms_opt(9, 0, 0).expect("09:00:00 is a valid time")
+                    (now + Duration::days(1))
+                        .date_naive()
+                        .and_hms_opt(9, 0, 0)
+                        .expect("09:00:00 is a valid time")
                 }
             }
         };
 
-        Ok(chrono::DateTime::<Utc>::from_naive_utc_and_offset(reminder_at, Utc))
+        Ok(chrono::DateTime::<Utc>::from_naive_utc_and_offset(
+            reminder_at,
+            Utc,
+        ))
     }
 
     fn extract_task_content_from_intent(
@@ -445,7 +507,10 @@ impl IntentExecutor {
             .to_string()
     }
 
-    fn extract_deadline_from_params(&self, params: &serde_json::Value) -> Option<chrono::DateTime<Utc>> {
+    fn extract_deadline_from_params(
+        &self,
+        params: &serde_json::Value,
+    ) -> Option<chrono::DateTime<Utc>> {
         // Check for explicit deadline
         if let Some(deadline_str) = params.get("deadline").and_then(|v| v.as_str()) {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(deadline_str) {
@@ -458,13 +523,23 @@ impl IntentExecutor {
             let now = Utc::now();
             let deadline = match relative {
                 "today" => now.date_naive().and_hms_opt(23, 59, 59),
-                "tomorrow" => (now + Duration::days(1)).date_naive().and_hms_opt(23, 59, 59),
+                "tomorrow" => (now + Duration::days(1))
+                    .date_naive()
+                    .and_hms_opt(23, 59, 59),
                 "this_week" => {
                     let days_to_friday = 5 - now.weekday().num_days_from_monday() as i64;
-                    let days = if days_to_friday <= 0 { 7 + days_to_friday } else { days_to_friday };
-                    (now + Duration::days(days)).date_naive().and_hms_opt(23, 59, 59)
+                    let days = if days_to_friday <= 0 {
+                        7 + days_to_friday
+                    } else {
+                        days_to_friday
+                    };
+                    (now + Duration::days(days))
+                        .date_naive()
+                        .and_hms_opt(23, 59, 59)
                 }
-                "next_week" => (now + Duration::weeks(1)).date_naive().and_hms_opt(23, 59, 59),
+                "next_week" => (now + Duration::weeks(1))
+                    .date_naive()
+                    .and_hms_opt(23, 59, 59),
                 _ => None,
             };
 

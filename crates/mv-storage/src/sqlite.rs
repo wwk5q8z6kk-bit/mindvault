@@ -677,8 +677,8 @@ impl NodeStore for SqliteNodeStore {
             .conn()
             .lock()
             .map_err(|e| MvError::Storage(e.to_string()))?;
-                let (title, content, source, metadata_json, payload_ciphertext, payload_wrapped_dek) =
-                    self.project_node_for_storage(node)?;
+        let (title, content, source, metadata_json, payload_ciphertext, payload_wrapped_dek) =
+            self.project_node_for_storage(node)?;
 
         let rows = conn
             .execute(
@@ -4871,7 +4871,15 @@ impl ConversationStore for SqliteNodeStore {
         &self,
         conversation_id: Uuid,
         limit: usize,
-    ) -> MvResult<Vec<(Uuid, String, String, Option<String>, chrono::DateTime<chrono::Utc>)>> {
+    ) -> MvResult<
+        Vec<(
+            Uuid,
+            String,
+            String,
+            Option<String>,
+            chrono::DateTime<chrono::Utc>,
+        )>,
+    > {
         let conv_s = conversation_id.to_string();
         self.with_conn(move |conn| {
             let mut stmt = conn
@@ -4970,8 +4978,7 @@ impl ConversationStore for SqliteNodeStore {
 mod tests {
     use super::*;
     use crate::sealed_runtime::{
-        clear_runtime_root_key_for_scope, runtime_scope_from_parent,
-        set_runtime_root_key_for_scope,
+        clear_runtime_root_key_for_scope, runtime_scope_from_parent, set_runtime_root_key_for_scope,
     };
     use tempfile::tempdir;
     use uuid::Uuid;
@@ -4996,7 +5003,9 @@ mod tests {
         if needle.is_empty() || haystack.len() < needle.len() {
             return false;
         }
-        haystack.windows(needle.len()).any(|window| window == needle)
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
     }
 
     #[tokio::test]
@@ -5423,7 +5432,8 @@ mod tests {
             .await
             .unwrap();
 
-        let sources = r#"[{"node_id":"n1","title":"Launch","kind":"fact","score":0.9,"preview":"Ship it"}]"#;
+        let sources =
+            r#"[{"node_id":"n1","title":"Launch","kind":"fact","score":0.9,"preview":"Ship it"}]"#;
         let msg_id = store
             .add_message(conversation_id, "assistant", "Ship it [1].", Some(sources))
             .await

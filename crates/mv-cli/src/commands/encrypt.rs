@@ -158,7 +158,10 @@ pub async fn migrate(dry_run: bool, config_path: &str) -> Result<()> {
     // Find SQLite database
     let db_path = data_dir.join(SQLITE_DB_FILE);
     if !db_path.exists() {
-        println!("No database found at {}. Nothing to migrate.", db_path.display());
+        println!(
+            "No database found at {}. Nothing to migrate.",
+            db_path.display()
+        );
         return Ok(());
     }
 
@@ -540,10 +543,8 @@ mod tests {
 
     #[test]
     fn validate_data_dir_creates_missing_directory() {
-        let dir = std::env::temp_dir().join(format!(
-            "mv_encrypt_test_create_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("mv_encrypt_test_create_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!dir.exists());
 
@@ -556,7 +557,8 @@ mod tests {
 
     #[test]
     fn validate_data_dir_returns_canonical_path() {
-        let dir = std::env::temp_dir().join(format!("mv_encrypt_test_canon_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mv_encrypt_test_canon_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let canonical = validate_data_dir(dir.to_str().unwrap()).unwrap();

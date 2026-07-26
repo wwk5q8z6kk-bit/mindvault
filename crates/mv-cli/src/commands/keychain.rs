@@ -759,10 +759,7 @@ pub async fn alerts(limit: u32, config_path: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<38} {:<22} {:<10} Timestamp",
-        "ID", "Type", "Severity"
-    );
+    println!("{:<38} {:<22} {:<10} Timestamp", "ID", "Type", "Severity");
     println!("{}", "─".repeat(90));
     for a in &alerts {
         println!(

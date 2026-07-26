@@ -177,7 +177,10 @@ async fn import_json(
     let export: JsonExport = serde_json::from_str(&content).context("Failed to parse JSON")?;
 
     if dry_run {
-        println!("DRY RUN: would import {} nodes from JSON", export.nodes.len());
+        println!(
+            "DRY RUN: would import {} nodes from JSON",
+            export.nodes.len()
+        );
         return Ok(());
     }
 

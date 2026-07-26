@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use mv_core::{
-    ChronicleEntry, ContentType, MessageStatus, Proposal, ProposalAction,
-    ProposalSender, ProposalState, RelayMessage, SafeguardStore,
+    ChronicleEntry, ContentType, MessageStatus, Proposal, ProposalAction, ProposalSender,
+    ProposalState, RelayMessage, SafeguardStore,
 };
 use mv_engine::engine::ProposalActionResult;
 
@@ -185,13 +185,25 @@ async fn execute_proposal_action(
 
             // Send WebSocket notifications
             if let Some(id) = result.created_node_id {
-                state.notify_change(&id.to_string(), "create", result.affected_namespace.as_deref());
+                state.notify_change(
+                    &id.to_string(),
+                    "create",
+                    result.affected_namespace.as_deref(),
+                );
             }
             if let Some(id) = result.updated_node_id {
-                state.notify_change(&id.to_string(), "update", result.affected_namespace.as_deref());
+                state.notify_change(
+                    &id.to_string(),
+                    "update",
+                    result.affected_namespace.as_deref(),
+                );
             }
             if let Some(id) = result.deleted_node_id {
-                state.notify_change(&id.to_string(), "delete", result.affected_namespace.as_deref());
+                state.notify_change(
+                    &id.to_string(),
+                    "delete",
+                    result.affected_namespace.as_deref(),
+                );
             }
 
             Ok(result)
@@ -341,8 +353,7 @@ pub async fn submit_proposal(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     authorize_write(&auth)?;
 
-    let (sender, sender_name, allow_auto_approve) =
-        resolve_sender_context(&auth, &req.sender)?;
+    let (sender, sender_name, allow_auto_approve) = resolve_sender_context(&auth, &req.sender)?;
     let action: ProposalAction = req
         .action
         .parse()
@@ -380,7 +391,10 @@ pub async fn submit_proposal(
         if diff.len() > 10_000 {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("diff_preview exceeds maximum of 10,000 characters ({} given)", diff.len()),
+                format!(
+                    "diff_preview exceeds maximum of 10,000 characters ({} given)",
+                    diff.len()
+                ),
             ));
         }
         proposal = proposal.with_diff(diff);
@@ -554,7 +568,10 @@ pub async fn undo_proposal(
     // Log chronicle
     let chronicle = ChronicleEntry::new(
         "exchange.undo",
-        format!("User undid proposal {uuid} (action: {})", undo_result.action),
+        format!(
+            "User undid proposal {uuid} (action: {})",
+            undo_result.action
+        ),
     );
     let _ = state.engine.log_chronicle(&chronicle).await;
 

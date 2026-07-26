@@ -127,3 +127,6 @@ wasmtime-wasi = "27"
 [profile.release]
 lto = "thin"
 strip = true
+
+[patch.crates-io]
+lance = { path = "third_party/lance" }

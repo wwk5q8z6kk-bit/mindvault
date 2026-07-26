@@ -224,146 +224,276 @@ struct FileGoogleCalendarConfig {
 // --- ConfigSection implementations ---
 
 impl ConfigSection for FileServerConfig {
-    fn section_name(&self) -> &'static str { "server" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "server"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
-        &["bind_host", "rest_port", "grpc_port", "socket_path", "cors_allowed_origins"]
+        &[
+            "bind_host",
+            "rest_port",
+            "grpc_port",
+            "socket_path",
+            "cors_allowed_origins",
+        ]
     }
 }
 
 impl ConfigSection for FileStorageConfig {
-    fn section_name(&self) -> &'static str { "storage" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "storage"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
         &["data_dir"]
     }
 }
 
 impl ConfigSection for FileProfileConfig {
-    fn section_name(&self) -> &'static str { "profile" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "profile"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
         &["display_name", "primary_email", "timezone", "signature"]
     }
 }
 
 impl ConfigSection for FileEmbeddingConfig {
-    fn section_name(&self) -> &'static str { "embedding" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "embedding"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
         &["provider", "model", "dimensions", "base_url"]
     }
 }
 
 impl ConfigSection for FileSearchConfig {
-    fn section_name(&self) -> &'static str { "search" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "search"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
-        &["default_limit", "default_strategy", "min_score", "vector_weight", "fulltext_weight", "rrf_k"]
+        &[
+            "default_limit",
+            "default_strategy",
+            "min_score",
+            "vector_weight",
+            "fulltext_weight",
+            "rrf_k",
+        ]
     }
 }
 
 impl ConfigSection for FileGraphConfig {
-    fn section_name(&self) -> &'static str { "graph" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "graph"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
         &["default_traversal_depth", "graph_boost_factor"]
     }
 }
 
 impl ConfigSection for FileAiConfig {
-    fn section_name(&self) -> &'static str { "ai" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "ai"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
         &[
-            "auto_tagging_enabled", "auto_tagging_max_generated_tags",
-            "auto_tagging_max_total_tags", "auto_tagging_similarity_seed_limit",
+            "auto_tagging_enabled",
+            "auto_tagging_max_generated_tags",
+            "auto_tagging_max_total_tags",
+            "auto_tagging_similarity_seed_limit",
             "auto_tagging_min_token_length",
         ]
     }
 }
 
 impl ConfigSection for FileWatcherConfig {
-    fn section_name(&self) -> &'static str { "watcher" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "watcher"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
-        &["enabled", "interval_secs", "lookback_hours", "max_nodes_per_cycle", "expiry_days"]
+        &[
+            "enabled",
+            "interval_secs",
+            "lookback_hours",
+            "max_nodes_per_cycle",
+            "expiry_days",
+        ]
     }
 }
 
 impl ConfigSection for FileAiSidecarConfig {
-    fn section_name(&self) -> &'static str { "ai_sidecar" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "ai_sidecar"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
         &["enabled", "base_url", "timeout_secs"]
     }
 }
 
 impl ConfigSection for FileLinkingConfig {
-    fn section_name(&self) -> &'static str { "linking" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "linking"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
-        &["auto_backlinks_enabled", "auto_backlinks_scan_limit", "auto_backlinks_max_targets"]
+        &[
+            "auto_backlinks_enabled",
+            "auto_backlinks_scan_limit",
+            "auto_backlinks_max_targets",
+        ]
     }
 }
 
 impl ConfigSection for FileDailyNotesConfig {
-    fn section_name(&self) -> &'static str { "daily_notes" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "daily_notes"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
         &[
-            "enabled", "midnight_scheduler_enabled", "namespace",
-            "title_template", "content_template", "default_importance",
+            "enabled",
+            "midnight_scheduler_enabled",
+            "namespace",
+            "title_template",
+            "content_template",
+            "default_importance",
         ]
     }
 }
 
 impl ConfigSection for FileRecurrenceConfig {
-    fn section_name(&self) -> &'static str { "recurrence" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "recurrence"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
-        &["enabled", "scheduler_interval_secs", "max_instances_per_template"]
+        &[
+            "enabled",
+            "scheduler_interval_secs",
+            "max_instances_per_template",
+        ]
     }
 }
 
 impl ConfigSection for FileEncryptionConfig {
-    fn section_name(&self) -> &'static str { "encryption" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "encryption"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
-        &["sealed_mode", "enabled", "argon2_memory_kib", "argon2_iterations", "argon2_parallelism"]
+        &[
+            "sealed_mode",
+            "enabled",
+            "argon2_memory_kib",
+            "argon2_iterations",
+            "argon2_parallelism",
+        ]
     }
 }
 
 impl ConfigSection for FileLlmConfig {
-    fn section_name(&self) -> &'static str { "llm" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "llm"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
-        &["enabled", "base_url", "model", "max_tokens", "temperature", "timeout_secs"]
+        &[
+            "enabled",
+            "base_url",
+            "model",
+            "max_tokens",
+            "temperature",
+            "timeout_secs",
+        ]
     }
 }
 
 impl ConfigSection for FileEmailConfig {
-    fn section_name(&self) -> &'static str { "email" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "email"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
         &[
-            "enabled", "namespace", "poll_interval_secs", "max_fetch",
-            "max_attachment_bytes", "mark_seen",
-            "imap_host", "imap_port", "imap_username", "imap_folder", "imap_starttls",
-            "smtp_host", "smtp_port", "smtp_username", "smtp_from", "smtp_starttls",
+            "enabled",
+            "namespace",
+            "poll_interval_secs",
+            "max_fetch",
+            "max_attachment_bytes",
+            "mark_seen",
+            "imap_host",
+            "imap_port",
+            "imap_username",
+            "imap_folder",
+            "imap_starttls",
+            "smtp_host",
+            "smtp_port",
+            "smtp_username",
+            "smtp_from",
+            "smtp_starttls",
         ]
     }
 }
 
 impl ConfigSection for FileGoogleCalendarConfig {
-    fn section_name(&self) -> &'static str { "google_calendar" }
-    fn validate(&self) -> Result<(), String> { Ok(()) }
+    fn section_name(&self) -> &'static str {
+        "google_calendar"
+    }
+    fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn known_keys(&self) -> &'static [&'static str] {
         &[
-            "enabled", "namespace", "calendar_id", "sync_interval_secs",
-            "lookback_days", "lookahead_days", "max_results",
-            "import_events", "export_events",
-            "client_id", "client_secret", "refresh_token",
+            "enabled",
+            "namespace",
+            "calendar_id",
+            "sync_interval_secs",
+            "lookback_days",
+            "lookahead_days",
+            "max_results",
+            "import_events",
+            "export_events",
+            "client_id",
+            "client_secret",
+            "refresh_token",
         ]
     }
 }
@@ -414,7 +544,11 @@ pub fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
         let registry = build_config_registry(&file_config);
         if let Err(errors) = registry.validate_all() {
             for (section, msg) in &errors {
-                tracing::warn!(section = section, error = msg.as_str(), "config validation error");
+                tracing::warn!(
+                    section = section,
+                    error = msg.as_str(),
+                    "config validation error"
+                );
             }
         }
         // Detect unhandled TOML keys
@@ -434,7 +568,10 @@ pub fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
                 .collect();
             let unhandled = registry.find_unhandled_keys(&toml_keys);
             for key in &unhandled {
-                tracing::warn!(key = key.as_str(), "unhandled config key (no section claims it)");
+                tracing::warn!(
+                    key = key.as_str(),
+                    "unhandled config key (no section claims it)"
+                );
             }
         }
 

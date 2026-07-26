@@ -6,7 +6,9 @@
 
 #[cfg(feature = "wasm-runtime")]
 mod inner {
-    use crate::abi::{HostRequest, HostResponse, HOST_LOG, HOST_READ_NODE, HOST_SEARCH, HOST_WRITE_NODE};
+    use crate::abi::{
+        HostRequest, HostResponse, HOST_LOG, HOST_READ_NODE, HOST_SEARCH, HOST_WRITE_NODE,
+    };
     use crate::sandbox::PermissionGate;
     use std::sync::Arc;
     use wasmtime::*;
@@ -58,10 +60,8 @@ mod inner {
                     // Check permissions
                     let state = caller.data();
                     if let Err(_) = state.gate.check(&request.method) {
-                        let resp = HostResponse::err(format!(
-                            "permission denied: {}",
-                            request.method
-                        ));
+                        let resp =
+                            HostResponse::err(format!("permission denied: {}", request.method));
                         return write_response_to_guest(&mut caller, &resp);
                     }
 
@@ -79,10 +79,7 @@ mod inner {
 
     /// Write a `HostResponse` JSON back into guest memory via `mv_alloc`.
     /// Returns packed `(ptr << 32 | len)` or `0` on failure.
-    fn write_response_to_guest(
-        caller: &mut Caller<'_, HostState>,
-        response: &HostResponse,
-    ) -> i64 {
+    fn write_response_to_guest(caller: &mut Caller<'_, HostState>, response: &HostResponse) -> i64 {
         let json = match serde_json::to_vec(response) {
             Ok(j) => j,
             Err(_) => return 0,

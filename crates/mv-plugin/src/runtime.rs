@@ -94,9 +94,7 @@ impl PluginRuntime {
         wasm_path: &std::path::Path,
         manifest: PluginManifest,
     ) -> Result<(), String> {
-        let wasm_size = std::fs::metadata(wasm_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let wasm_size = std::fs::metadata(wasm_path).map(|m| m.len()).unwrap_or(0);
 
         #[cfg(feature = "wasm-runtime")]
         if let Some(ref engine) = self.engine {

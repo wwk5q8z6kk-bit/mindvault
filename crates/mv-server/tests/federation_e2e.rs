@@ -127,7 +127,9 @@ async fn federation_handshake_query_and_health() {
         hs_status == reqwest::StatusCode::OK || hs_status == reqwest::StatusCode::CREATED,
         "handshake failed with {hs_status}: {hs_body}"
     );
-    let peer_id = hs_body["id"].as_str().expect("handshake should return peer id");
+    let peer_id = hs_body["id"]
+        .as_str()
+        .expect("handshake should return peer id");
 
     // Verify peer is now listed in Vault A
     let peers = engine_a.federation.list_peers().await;
@@ -187,9 +189,7 @@ async fn federation_handshake_query_and_health() {
 
     // --- Step 6: Health-check Vault B from Vault A ---
     let health_resp = client
-        .get(format!(
-            "{base_a}/api/v1/federation/peers/{peer_id}/health"
-        ))
+        .get(format!("{base_a}/api/v1/federation/peers/{peer_id}/health"))
         .send()
         .await
         .unwrap();
@@ -210,9 +210,7 @@ async fn federation_handshake_query_and_health() {
 
     // --- Step 8: Remove peer ---
     let remove_resp = client
-        .delete(format!(
-            "{base_a}/api/v1/federation/peers/{peer_id}"
-        ))
+        .delete(format!("{base_a}/api/v1/federation/peers/{peer_id}"))
         .send()
         .await
         .unwrap();
@@ -222,7 +220,10 @@ async fn federation_handshake_query_and_health() {
         "remove peer should succeed"
     );
     let peers = engine_a.federation.list_peers().await;
-    assert!(peers.is_empty(), "vault A should have 0 peers after removal");
+    assert!(
+        peers.is_empty(),
+        "vault A should have 0 peers after removal"
+    );
 }
 
 /// Verify that handshake fails gracefully when the endpoint is unreachable.

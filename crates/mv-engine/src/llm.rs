@@ -39,14 +39,12 @@ impl ChatMessage {
     }
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CompletionParams {
     pub model: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
 }
-
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
@@ -361,7 +359,9 @@ pub async fn llm_action_items(
         .collect();
 
     if items.is_empty() {
-        Err(LlmError::ParseError("no action items extracted".to_string()))
+        Err(LlmError::ParseError(
+            "no action items extracted".to_string(),
+        ))
     } else {
         Ok(items)
     }
@@ -438,7 +438,9 @@ pub async fn llm_completion_suggestions(
         .collect();
 
     if suggestions.is_empty() {
-        Err(LlmError::ParseError("no completion suggestions extracted".to_string()))
+        Err(LlmError::ParseError(
+            "no completion suggestions extracted".to_string(),
+        ))
     } else {
         Ok(suggestions)
     }
@@ -684,7 +686,6 @@ pub async fn init_llm_provider_with_local(
     }
 }
 
-
 /// Grounded chat answer: cite vault sources with [1], [2], … markers.
 pub async fn llm_chat_answer(
     llm: &dyn LlmProvider,
@@ -712,7 +713,6 @@ pub async fn llm_chat_answer(
 
     llm.complete(&messages, &CompletionParams::default()).await
 }
-
 
 /// Extract context snippets from search results for LLM prompts.
 pub fn extract_context_snippets(results: &[mv_core::SearchResult], limit: usize) -> Vec<String> {

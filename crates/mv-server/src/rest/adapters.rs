@@ -10,9 +10,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use mv_engine::adapters::{
-    AdapterConfig, AdapterOutboundMessage, AdapterStatus, AdapterType,
-};
+use mv_engine::adapters::{AdapterConfig, AdapterOutboundMessage, AdapterStatus, AdapterType};
 
 use crate::auth::{authorize_write, AuthContext};
 use crate::state::AppState;
@@ -109,7 +107,8 @@ pub async fn list_adapters(
     authorize_admin(&auth)?;
 
     let configs = state.engine.adapters.list_configs().await;
-    let response: Vec<AdapterConfigResponse> = configs.iter().map(AdapterConfigResponse::from).collect();
+    let response: Vec<AdapterConfigResponse> =
+        configs.iter().map(AdapterConfigResponse::from).collect();
     Ok(Json(response))
 }
 
@@ -136,15 +135,16 @@ pub async fn register_adapter(
 
     // Create the actual adapter based on type and register it
     let adapter: Arc<dyn mv_engine::adapters::ExternalAdapter> = match adapter_type {
-        AdapterType::Slack => {
-            Arc::new(mv_engine::adapters::slack::SlackAdapter::new(config.clone()).map_err(map_mv_error)?)
-        }
-        AdapterType::Discord => {
-            Arc::new(mv_engine::adapters::discord::DiscordAdapter::new(config.clone()).map_err(map_mv_error)?)
-        }
-        AdapterType::Email => {
-            Arc::new(mv_engine::adapters::email::EmailAdapter::new(config.clone()).map_err(map_mv_error)?)
-        }
+        AdapterType::Slack => Arc::new(
+            mv_engine::adapters::slack::SlackAdapter::new(config.clone()).map_err(map_mv_error)?,
+        ),
+        AdapterType::Discord => Arc::new(
+            mv_engine::adapters::discord::DiscordAdapter::new(config.clone())
+                .map_err(map_mv_error)?,
+        ),
+        AdapterType::Email => Arc::new(
+            mv_engine::adapters::email::EmailAdapter::new(config.clone()).map_err(map_mv_error)?,
+        ),
     };
 
     state.engine.adapters.register(config, adapter).await;
@@ -160,8 +160,8 @@ pub async fn get_adapter_status(
 ) -> Result<Json<AdapterStatusResponse>, (StatusCode, String)> {
     authorize_admin(&auth)?;
 
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid uuid".to_string()))?;
+    let uuid =
+        Uuid::parse_str(&id).map_err(|_| (StatusCode::BAD_REQUEST, "invalid uuid".to_string()))?;
 
     let adapter = state
         .engine
@@ -181,8 +181,8 @@ pub async fn remove_adapter(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     authorize_admin(&auth)?;
 
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid uuid".to_string()))?;
+    let uuid =
+        Uuid::parse_str(&id).map_err(|_| (StatusCode::BAD_REQUEST, "invalid uuid".to_string()))?;
 
     let removed = state.engine.adapters.remove(uuid).await;
     if !removed {
@@ -201,8 +201,8 @@ pub async fn send_message(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     authorize_write(&auth)?;
 
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid uuid".to_string()))?;
+    let uuid =
+        Uuid::parse_str(&id).map_err(|_| (StatusCode::BAD_REQUEST, "invalid uuid".to_string()))?;
 
     let message = AdapterOutboundMessage {
         channel: req.channel,
@@ -229,8 +229,8 @@ pub async fn health_check(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     authorize_admin(&auth)?;
 
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid uuid".to_string()))?;
+    let uuid =
+        Uuid::parse_str(&id).map_err(|_| (StatusCode::BAD_REQUEST, "invalid uuid".to_string()))?;
 
     let adapter = state
         .engine
@@ -255,6 +255,9 @@ pub async fn list_statuses(
     authorize_admin(&auth)?;
 
     let statuses = state.engine.adapters.list_statuses().await;
-    let response: Vec<AdapterStatusResponse> = statuses.into_iter().map(AdapterStatusResponse::from).collect();
+    let response: Vec<AdapterStatusResponse> = statuses
+        .into_iter()
+        .map(AdapterStatusResponse::from)
+        .collect();
     Ok(Json(response))
 }

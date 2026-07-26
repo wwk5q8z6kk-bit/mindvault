@@ -109,7 +109,10 @@ pub async fn federation_identity(
     if vault_id.is_none() {
         let generated = Uuid::now_v7().to_string();
         let mut metadata = profile.metadata.clone();
-        metadata.insert("vault_id".to_string(), serde_json::Value::String(generated.clone()));
+        metadata.insert(
+            "vault_id".to_string(),
+            serde_json::Value::String(generated.clone()),
+        );
 
         profile = state
             .engine

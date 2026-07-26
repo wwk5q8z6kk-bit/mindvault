@@ -8,8 +8,8 @@ use mv_core::{KnowledgeNode, MvError, MvResult};
 use std::process::Command;
 
 use super::{
-    check_file_size, run_command_with_timeout, ModalityProcessor, ModalityStatus,
-    ProcessingResult, DEFAULT_COMMAND_TIMEOUT,
+    check_file_size, run_command_with_timeout, ModalityProcessor, ModalityStatus, ProcessingResult,
+    DEFAULT_COMMAND_TIMEOUT,
 };
 
 /// PDF processor that extracts text content using `pdftotext` CLI.
@@ -27,20 +27,11 @@ impl Default for PdfProcessor {
 
 impl PdfProcessor {
     pub fn new() -> Self {
-        let pdftotext_available = Command::new("pdftotext")
-            .arg("-v")
-            .output()
-            .is_ok();
+        let pdftotext_available = Command::new("pdftotext").arg("-v").output().is_ok();
 
-        let tesseract_available = Command::new("tesseract")
-            .arg("--version")
-            .output()
-            .is_ok();
+        let tesseract_available = Command::new("tesseract").arg("--version").output().is_ok();
 
-        let ghostscript_available = Command::new("gs")
-            .arg("--version")
-            .output()
-            .is_ok();
+        let ghostscript_available = Command::new("gs").arg("--version").output().is_ok();
 
         if pdftotext_available {
             tracing::info!("pdftotext available for PDF text extraction");
@@ -80,10 +71,7 @@ impl PdfProcessor {
 
     /// Get page count using pdfinfo CLI.
     fn get_page_count(&self, file_path: &str) -> Option<u32> {
-        let output = Command::new("pdfinfo")
-            .arg(file_path)
-            .output()
-            .ok()?;
+        let output = Command::new("pdfinfo").arg(file_path).output().ok()?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
@@ -146,9 +134,18 @@ impl ModalityProcessor for PdfProcessor {
     fn status(&self) -> ModalityStatus {
         let available = self.pdftotext_available || self.tesseract_available;
         let mut status = ModalityStatus::new(self.name(), available, self.handles())
-            .with_detail("pdftotext_available", serde_json::json!(self.pdftotext_available))
-            .with_detail("tesseract_available", serde_json::json!(self.tesseract_available))
-            .with_detail("ghostscript_available", serde_json::json!(self.ghostscript_available));
+            .with_detail(
+                "pdftotext_available",
+                serde_json::json!(self.pdftotext_available),
+            )
+            .with_detail(
+                "tesseract_available",
+                serde_json::json!(self.tesseract_available),
+            )
+            .with_detail(
+                "ghostscript_available",
+                serde_json::json!(self.ghostscript_available),
+            );
 
         if !available {
             status = status.with_note("No PDF extraction backend available");
@@ -162,8 +159,7 @@ impl ModalityProcessor for PdfProcessor {
     async fn process(&self, file_path: &str, _node: &KnowledgeNode) -> MvResult<ProcessingResult> {
         tracing::info!(file_path, "Processing PDF file");
 
-        let file_size = check_file_size(file_path)
-            .map_err(MvError::Storage)?;
+        let file_size = check_file_size(file_path).map_err(MvError::Storage)?;
 
         let page_count = self.get_page_count(file_path);
 
@@ -231,7 +227,9 @@ mod tests {
         let processor = PdfProcessor::new();
         let status = processor.status();
         assert_eq!(status.name, "pdf");
-        assert!(status.supported_types.contains(&"application/pdf".to_string()));
+        assert!(status
+            .supported_types
+            .contains(&"application/pdf".to_string()));
         assert!(status.details.contains_key("pdftotext_available"));
         assert!(status.details.contains_key("tesseract_available"));
         assert!(status.details.contains_key("ghostscript_available"));
@@ -275,9 +273,7 @@ mod tests {
         let processor = PdfProcessor::new();
         let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
         // Empty file should fail the file size or extraction gracefully
-        let result = processor
-            .process(path.to_str().unwrap(), &node)
-            .await;
+        let result = processor.process(path.to_str().unwrap(), &node).await;
         // Either error or placeholder text — shouldn't panic
         if let Ok(r) = result {
             assert!(!r.suggested_tags.is_empty()); // always gets "pdf" tag
@@ -293,9 +289,7 @@ mod tests {
 
         let processor = PdfProcessor::new();
         let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
-        let result = processor
-            .process(path.to_str().unwrap(), &node)
-            .await;
+        let result = processor.process(path.to_str().unwrap(), &node).await;
         if let Ok(r) = result {
             assert!(r.metadata.contains_key("file_size"));
             assert_eq!(r.metadata["file_size"], serde_json::json!(21));

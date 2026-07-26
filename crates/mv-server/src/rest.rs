@@ -3002,7 +3002,8 @@ fn normalize_saved_search_filter_tags(
 
 fn normalize_saved_search_limit(limit: Option<usize>) -> Result<usize, (StatusCode, String)> {
     let normalized_limit = limit.unwrap_or(DEFAULT_SAVED_SEARCH_LIMIT);
-    validate_recall_limit(normalized_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_recall_limit(normalized_limit)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     Ok(normalized_limit)
 }
 
@@ -3987,17 +3988,15 @@ fn merge_template_payload(
         }
     }
 
-    if (overwrite || updated.content.trim().is_empty())
-        && !payload.content.trim().is_empty() {
-            updated.content = payload.content.clone();
-            record_template_field(&mut summary, "content", overwrite);
-        }
+    if (overwrite || updated.content.trim().is_empty()) && !payload.content.trim().is_empty() {
+        updated.content = payload.content.clone();
+        record_template_field(&mut summary, "content", overwrite);
+    }
 
-    if (overwrite || updated.tags.is_empty())
-        && !payload.tags.is_empty() {
-            updated.tags = payload.tags.clone();
-            record_template_field(&mut summary, "tags", overwrite);
-        }
+    if (overwrite || updated.tags.is_empty()) && !payload.tags.is_empty() {
+        updated.tags = payload.tags.clone();
+        record_template_field(&mut summary, "tags", overwrite);
+    }
 
     let source_empty = updated
         .source
@@ -4011,11 +4010,10 @@ fn merge_template_payload(
         }
     }
 
-    if overwrite
-        && (updated.importance - payload.importance).abs() > f64::EPSILON {
-            updated.importance = payload.importance;
-            record_template_field(&mut summary, "importance", true);
-        }
+    if overwrite && (updated.importance - payload.importance).abs() > f64::EPSILON {
+        updated.importance = payload.importance;
+        record_template_field(&mut summary, "importance", true);
+    }
 
     for (key, value) in payload.metadata.iter() {
         let should_set = overwrite
@@ -4143,7 +4141,8 @@ fn parse_saved_view_query(raw: Option<String>) -> Result<Option<String>, (Status
     if trimmed.is_empty() {
         return Ok(None);
     }
-    validate_query_text("query", trimmed).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_query_text("query", trimmed)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     Ok(Some(trimmed.to_string()))
 }
 
@@ -5451,12 +5450,13 @@ async fn list_config_sections(
 ) -> Result<Json<ConfigSectionsResponse>, (StatusCode, String)> {
     authorize_read(&auth)?;
     let sections = match params.scope.as_deref() {
-        Some("ai") => {
-            mv_core::ConfigRegistry::builtin_section_catalog_scoped(&["ai", "search", "embedding", "llm"])
-        }
-        Some("email") => {
-            mv_core::ConfigRegistry::builtin_section_catalog_scoped(&["email"])
-        }
+        Some("ai") => mv_core::ConfigRegistry::builtin_section_catalog_scoped(&[
+            "ai",
+            "search",
+            "embedding",
+            "llm",
+        ]),
+        Some("email") => mv_core::ConfigRegistry::builtin_section_catalog_scoped(&["email"]),
         Some("storage") => {
             mv_core::ConfigRegistry::builtin_section_catalog_scoped(&["storage", "encryption"])
         }
@@ -5540,10 +5540,12 @@ async fn assist_completion(
             ),
         )
     })?;
-    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_query_text("text", &req.text)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let requested_limit = req.limit.unwrap_or(4);
-    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_recall_limit(requested_limit)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let suggestion_limit = requested_limit.clamp(1, 8);
     let recall_limit = (suggestion_limit * 5).clamp(10, 40);
 
@@ -5635,10 +5637,12 @@ async fn assist_autocomplete(
             ),
         )
     })?;
-    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_query_text("text", &req.text)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let requested_limit = req.limit.unwrap_or(5);
-    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_recall_limit(requested_limit)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let completion_limit = requested_limit.clamp(1, 8);
     let recall_limit = (completion_limit * 5).clamp(10, 40);
 
@@ -5680,10 +5684,12 @@ async fn assist_links(
             ),
         )
     })?;
-    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_query_text("text", &req.text)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let requested_limit = req.limit.unwrap_or(6);
-    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_recall_limit(requested_limit)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let suggestion_limit = requested_limit.clamp(1, 10);
     let recall_limit = (suggestion_limit * 6).clamp(24, 80);
     let exclude_node_id = match req.exclude_node_id.take() {
@@ -5744,11 +5750,13 @@ async fn assist_transform(
             ),
         )
     })?;
-    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_query_text("text", &req.text)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let mode = AssistTransformMode::parse(req.mode.as_deref())?;
     let requested_limit = req.limit.unwrap_or(4);
-    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_recall_limit(requested_limit)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let transform_limit = requested_limit.clamp(1, 8);
     let recall_limit = (transform_limit * 6).clamp(20, 64);
 
@@ -5966,7 +5974,8 @@ async fn list_calendar_items(
 ) -> Result<Json<CalendarItemsResponse>, (StatusCode, String)> {
     authorize_read(&auth)?;
     let requested_limit = params.limit.unwrap_or(200);
-    validate_list_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_list_limit(requested_limit)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let include_tasks = params.include_tasks.unwrap_or(true);
     let include_completed = params.include_completed.unwrap_or(false);
     let namespace = scoped_namespace(&auth, params.namespace.take())?;
@@ -6006,7 +6015,8 @@ async fn export_calendar_ical(
 ) -> Result<Response, (StatusCode, String)> {
     authorize_read(&auth)?;
     let requested_limit = params.limit.unwrap_or(500);
-    validate_list_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_list_limit(requested_limit)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let include_tasks = params.include_tasks.unwrap_or(true);
     let include_completed = params.include_completed.unwrap_or(false);
     let namespace = scoped_namespace(&auth, params.namespace.take())?;
@@ -7104,7 +7114,8 @@ async fn prioritize_tasks(
     }
 
     let requested_limit = req.limit.unwrap_or(20);
-    validate_recall_limit(requested_limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_recall_limit(requested_limit)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let limit = requested_limit.clamp(1, 200);
     let namespace = scoped_namespace(&auth, req.namespace.take())?;
     let now = parse_optional_rfc3339_datetime(req.now.take(), "now")?.unwrap_or_else(Utc::now);
@@ -10700,7 +10711,8 @@ async fn recall(
     Json(mut req): Json<RecallRequest>,
 ) -> Result<Json<Vec<SearchResultDto>>, (StatusCode, String)> {
     authorize_read(&auth)?;
-    validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_query_text("text", &req.text)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let strategy = req
         .strategy
@@ -10748,7 +10760,8 @@ async fn search(
     Query(params): Query<SearchQuery>,
 ) -> Result<Json<Vec<SearchResultDto>>, (StatusCode, String)> {
     authorize_read(&auth)?;
-    validate_query_text("q", &params.q).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_query_text("q", &params.q)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let limit = params.limit.unwrap_or(10);
     validate_recall_limit(limit).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
@@ -11018,7 +11031,8 @@ async fn create_saved_search(
     authorize_write(&auth)?;
 
     let name = normalize_saved_search_name(&req.name)?;
-    validate_query_text("query", &req.query).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_query_text("query", &req.query)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let query = req.query.trim().to_string();
     let description = normalize_saved_search_description(req.description)?;
     let strategy = parse_saved_search_strategy(req.search_type, SearchStrategy::Hybrid)?;
@@ -11112,7 +11126,8 @@ async fn update_saved_search(
     };
     let query = match req.query {
         Some(raw) => {
-            validate_query_text("query", &raw).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+            validate_query_text("query", &raw)
+                .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
             raw.trim().to_string()
         }
         None => existing_definition.query,
@@ -12265,8 +12280,7 @@ mod tests {
             .iter()
             .any(|source| source.title.contains("Hybrid Search")));
         assert!(
-            response.provider == "native-rag-heuristic"
-                || response.provider == "native-rag-llm"
+            response.provider == "native-rag-heuristic" || response.provider == "native-rag-llm"
         );
     }
 
@@ -12290,7 +12304,10 @@ mod tests {
         assert_eq!(response.mode, "native");
         assert!(!response.grounded);
         assert!(response.sources.is_empty());
-        assert!(response.answer.to_ascii_lowercase().contains("could not find"));
+        assert!(response
+            .answer
+            .to_ascii_lowercase()
+            .contains("could not find"));
     }
 
     fn scoped_reader(namespace: &str) -> AuthContext {
@@ -12447,7 +12464,9 @@ mod tests {
         )
         .await
         .expect("scoped recall");
-        assert!(results.iter().any(|r| r.node.title.as_deref() == Some("Orion Team A Note")));
+        assert!(results
+            .iter()
+            .any(|r| r.node.title.as_deref() == Some("Orion Team A Note")));
         assert!(results
             .iter()
             .all(|r| r.node.title.as_deref() != Some("Orion Team B Note")));

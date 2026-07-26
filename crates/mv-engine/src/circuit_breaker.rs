@@ -110,7 +110,11 @@ impl CircuitBreaker {
             State::Open => {
                 let retry_after = inner
                     .last_failure_time
-                    .map(|t| self.config.reset_timeout.saturating_sub(now.duration_since(t)))
+                    .map(|t| {
+                        self.config
+                            .reset_timeout
+                            .saturating_sub(now.duration_since(t))
+                    })
                     .unwrap_or(self.config.reset_timeout);
                 Err(CircuitOpen { retry_after })
             }
@@ -122,7 +126,9 @@ impl CircuitBreaker {
                     let retry_after = inner
                         .last_failure_time
                         .map(|t| {
-                            self.config.reset_timeout.saturating_sub(now.duration_since(t))
+                            self.config
+                                .reset_timeout
+                                .saturating_sub(now.duration_since(t))
                         })
                         .unwrap_or(self.config.reset_timeout);
                     Err(CircuitOpen { retry_after })
@@ -221,7 +227,7 @@ mod tests {
         // After reset_timeout, should be half-open
         let after_timeout = now + Duration::from_secs(13); // 2 + 10 = 12, so 13 is past it
         assert!(cb.check_at(after_timeout).is_ok()); // First trial allowed
-        // State is now half-open
+                                                     // State is now half-open
     }
 
     #[test]
@@ -272,7 +278,9 @@ mod tests {
 
         let after_timeout = now + Duration::from_secs(13);
         assert!(cb.check_at(after_timeout).is_ok()); // 1 allowed
-        assert!(cb.check_at(after_timeout + Duration::from_millis(1)).is_err()); // 2nd rejected
+        assert!(cb
+            .check_at(after_timeout + Duration::from_millis(1))
+            .is_err()); // 2nd rejected
     }
 
     #[test]

@@ -76,10 +76,8 @@ impl ConceptExtractor {
             match self.llm_extract(llm, text).await {
                 Ok(entities) => {
                     // Merge LLM results, deduplicating against RAKE results
-                    let existing: HashSet<String> = concepts
-                        .iter()
-                        .map(|c| c.text.to_lowercase())
-                        .collect();
+                    let existing: HashSet<String> =
+                        concepts.iter().map(|c| c.text.to_lowercase()).collect();
                     for entity in entities {
                         if !existing.contains(&entity.text.to_lowercase()) {
                             concepts.push(entity);
@@ -93,7 +91,11 @@ impl ConceptExtractor {
         }
 
         // Sort by score descending
-        concepts.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        concepts.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Limit to top 20 concepts
         concepts.truncate(20);
@@ -111,11 +113,10 @@ impl ConceptExtractor {
     /// and punctuation as delimiters, then score phrases by word degree/frequency.
     fn rake_extract(&self, text: &str) -> Vec<ExtractedConcept> {
         // Tokenize: split on non-alphanumeric (keeping hyphens within words)
-        let words: Vec<&str> = text.split(|c: char| {
-            !c.is_alphanumeric() && c != '-' && c != '\''
-        })
-        .filter(|w| !w.is_empty())
-        .collect();
+        let words: Vec<&str> = text
+            .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '\'')
+            .filter(|w| !w.is_empty())
+            .collect();
 
         // Build candidate phrases: sequences of non-stop-words
         let mut phrases: Vec<Vec<String>> = Vec::new();
@@ -264,24 +265,155 @@ impl ConceptExtractor {
     /// Default English stop words for RAKE.
     fn default_stop_words() -> HashSet<&'static str> {
         [
-            "a", "about", "above", "after", "again", "against", "all", "am", "an",
-            "and", "any", "are", "aren't", "as", "at", "be", "because", "been",
-            "before", "being", "below", "between", "both", "but", "by", "can",
-            "can't", "cannot", "could", "couldn't", "did", "didn't", "do", "does",
-            "doesn't", "doing", "don't", "down", "during", "each", "few", "for",
-            "from", "further", "get", "got", "had", "hadn't", "has", "hasn't",
-            "have", "haven't", "having", "he", "her", "here", "hers", "herself",
-            "him", "himself", "his", "how", "i", "if", "in", "into", "is", "isn't",
-            "it", "its", "itself", "just", "let", "like", "may", "me", "might",
-            "more", "most", "must", "mustn't", "my", "myself", "no", "nor", "not",
-            "of", "off", "on", "once", "only", "or", "other", "our", "ours",
-            "ourselves", "out", "over", "own", "same", "she", "should", "shouldn't",
-            "so", "some", "such", "than", "that", "the", "their", "theirs", "them",
-            "themselves", "then", "there", "these", "they", "this", "those",
-            "through", "to", "too", "under", "until", "up", "very", "was",
-            "wasn't", "we", "were", "weren't", "what", "when", "where", "which",
-            "while", "who", "whom", "why", "will", "with", "won't", "would",
-            "wouldn't", "you", "your", "yours", "yourself", "yourselves",
+            "a",
+            "about",
+            "above",
+            "after",
+            "again",
+            "against",
+            "all",
+            "am",
+            "an",
+            "and",
+            "any",
+            "are",
+            "aren't",
+            "as",
+            "at",
+            "be",
+            "because",
+            "been",
+            "before",
+            "being",
+            "below",
+            "between",
+            "both",
+            "but",
+            "by",
+            "can",
+            "can't",
+            "cannot",
+            "could",
+            "couldn't",
+            "did",
+            "didn't",
+            "do",
+            "does",
+            "doesn't",
+            "doing",
+            "don't",
+            "down",
+            "during",
+            "each",
+            "few",
+            "for",
+            "from",
+            "further",
+            "get",
+            "got",
+            "had",
+            "hadn't",
+            "has",
+            "hasn't",
+            "have",
+            "haven't",
+            "having",
+            "he",
+            "her",
+            "here",
+            "hers",
+            "herself",
+            "him",
+            "himself",
+            "his",
+            "how",
+            "i",
+            "if",
+            "in",
+            "into",
+            "is",
+            "isn't",
+            "it",
+            "its",
+            "itself",
+            "just",
+            "let",
+            "like",
+            "may",
+            "me",
+            "might",
+            "more",
+            "most",
+            "must",
+            "mustn't",
+            "my",
+            "myself",
+            "no",
+            "nor",
+            "not",
+            "of",
+            "off",
+            "on",
+            "once",
+            "only",
+            "or",
+            "other",
+            "our",
+            "ours",
+            "ourselves",
+            "out",
+            "over",
+            "own",
+            "same",
+            "she",
+            "should",
+            "shouldn't",
+            "so",
+            "some",
+            "such",
+            "than",
+            "that",
+            "the",
+            "their",
+            "theirs",
+            "them",
+            "themselves",
+            "then",
+            "there",
+            "these",
+            "they",
+            "this",
+            "those",
+            "through",
+            "to",
+            "too",
+            "under",
+            "until",
+            "up",
+            "very",
+            "was",
+            "wasn't",
+            "we",
+            "were",
+            "weren't",
+            "what",
+            "when",
+            "where",
+            "which",
+            "while",
+            "who",
+            "whom",
+            "why",
+            "will",
+            "with",
+            "won't",
+            "would",
+            "wouldn't",
+            "you",
+            "your",
+            "yours",
+            "yourself",
+            "yourselves",
         ]
         .into_iter()
         .collect()
@@ -312,7 +444,9 @@ mod tests {
         // Should extract multi-word phrases
         let texts: Vec<&str> = concepts.iter().map(|c| c.text.as_str()).collect();
         assert!(
-            texts.iter().any(|t| t.contains("rust") || t.contains("programming")),
+            texts
+                .iter()
+                .any(|t| t.contains("rust") || t.contains("programming")),
             "expected 'rust' or 'programming' in {:?}",
             texts
         );
@@ -359,6 +493,10 @@ mod tests {
         assert!(!concepts.is_empty());
         // Multi-word phrases should score higher due to RAKE's degree/frequency ratio
         let top = &concepts[0];
-        assert!(top.score > 1.0, "top score should be > 1.0, got {}", top.score);
+        assert!(
+            top.score > 1.0,
+            "top score should be > 1.0, got {}",
+            top.score
+        );
     }
 }

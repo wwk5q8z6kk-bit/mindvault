@@ -4,17 +4,16 @@ use uuid::Uuid;
 
 use crate::daily_notes::{daily_note_day_tag, daily_note_weekday_tag, render_daily_note_template};
 use crate::recurrence::{
-    collect_due_occurrences, parse_optional_metadata_datetime,
-    parse_optional_metadata_u64, parse_task_recurrence_rule, previous_due_at,
-    RECURRING_DUE_AT_METADATA_KEY, RECURRING_INSTANCE_METADATA_KEY,
-    RECURRING_PARENT_ID_METADATA_KEY, TASK_DUE_AT_METADATA_KEY,
+    collect_due_occurrences, parse_optional_metadata_datetime, parse_optional_metadata_u64,
+    parse_task_recurrence_rule, previous_due_at, RECURRING_DUE_AT_METADATA_KEY,
+    RECURRING_INSTANCE_METADATA_KEY, RECURRING_PARENT_ID_METADATA_KEY, TASK_DUE_AT_METADATA_KEY,
     TASK_RECURRENCE_GENERATED_COUNT_METADATA_KEY, TASK_RECURRENCE_LAST_GENERATED_AT_METADATA_KEY,
     TASK_RECURRENCE_METADATA_KEY,
 };
 
 use super::{
-    is_recurring_instance, MindVaultEngine, TaskRecurrenceRollforwardStats,
-    DAILY_NOTE_TAG, PROFILE_OWNER_CONTACT_NOTES, PROFILE_RELAY_CONTACT_ID_KEY,
+    is_recurring_instance, MindVaultEngine, TaskRecurrenceRollforwardStats, DAILY_NOTE_TAG,
+    PROFILE_OWNER_CONTACT_NOTES, PROFILE_RELAY_CONTACT_ID_KEY,
 };
 
 impl MindVaultEngine {
@@ -29,7 +28,10 @@ impl MindVaultEngine {
         self.sync_owner_relay_contact(profile).await
     }
 
-    pub(crate) async fn sync_owner_relay_contact(&self, profile: OwnerProfile) -> MvResult<OwnerProfile> {
+    pub(crate) async fn sync_owner_relay_contact(
+        &self,
+        profile: OwnerProfile,
+    ) -> MvResult<OwnerProfile> {
         let display_name = profile.display_name.trim();
         let display_name = if display_name.is_empty() {
             "MindVault Owner"

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use axum::{extract::State, Extension, Json};
 use axum::http::StatusCode;
+use axum::{extract::State, Extension, Json};
 use mv_core::{MemoryQuery, QueryFilters, SearchResult, SearchStrategy};
 use mv_engine::llm;
 use serde::{Deserialize, Serialize};
@@ -188,14 +188,7 @@ pub async fn chat(
     let context = numbered_context(&results, limit);
 
     if let Some(ref llm_provider) = state.engine.llm {
-        match llm::llm_chat_answer(
-            llm_provider.as_ref(),
-            &req.message,
-            &history,
-            &context,
-        )
-        .await
-        {
+        match llm::llm_chat_answer(llm_provider.as_ref(), &req.message, &history, &context).await {
             Ok(answer) => {
                 return Ok(Json(ChatResponse {
                     answer,

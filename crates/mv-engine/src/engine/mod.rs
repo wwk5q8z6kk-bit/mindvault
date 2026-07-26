@@ -232,9 +232,12 @@ impl MindVaultEngine {
         let selection = select_embedding_provider(&config, &credential_store);
 
         // Initialize unified store
-        let mut store =
-            UnifiedStore::open_with_mode(&data_dir, selection.vector_dimensions, config.sealed_mode)
-                .await?;
+        let mut store = UnifiedStore::open_with_mode(
+            &data_dir,
+            selection.vector_dimensions,
+            config.sealed_mode,
+        )
+        .await?;
         if let Some(embedder) = selection.embedder {
             store = store.with_embedder(embedder);
         }
@@ -1069,13 +1072,13 @@ async fn google_export_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{NaiveDate, TimeZone, Utc};
     use crate::recurrence::{
         RECURRING_INSTANCE_METADATA_KEY, RECURRING_PARENT_ID_METADATA_KEY,
         TASK_COMPLETED_METADATA_KEY, TASK_DUE_AT_METADATA_KEY,
         TASK_RECURRENCE_LAST_GENERATED_AT_METADATA_KEY, TASK_RECURRENCE_METADATA_KEY,
         TASK_REMINDER_SENT_AT_METADATA_KEY,
     };
+    use chrono::{NaiveDate, TimeZone, Utc};
     use mv_core::{
         ConflictAlert, ConflictType, ContactIdentity, GraphStore, IdentityType, InsightType,
         KnowledgeNode, MessageStatus, NodeKind, ProactiveInsight, ProposalAction, ProposalState,

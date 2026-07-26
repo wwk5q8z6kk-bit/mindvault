@@ -115,10 +115,7 @@ impl InsightEngine {
         // Deduplicate against existing insights
         let deduped = self.deduplicate_and_persist(all_insights).await?;
 
-        tracing::info!(
-            count = deduped.len(),
-            "insight full scan complete"
-        );
+        tracing::info!(count = deduped.len(), "insight full scan complete");
 
         Ok(deduped)
     }
@@ -221,10 +218,7 @@ impl InsightEngine {
                     .collect();
 
                 let insight = ProactiveInsight::new(
-                    format!(
-                        "Unlinked cluster of {} nodes",
-                        cluster_nodes.len()
-                    ),
+                    format!("Unlinked cluster of {} nodes", cluster_nodes.len()),
                     format!(
                         "{} semantically similar nodes have no shared tags or links. \
                          Examples: {}. Suggested tag: '{}'.",
@@ -261,9 +255,7 @@ impl InsightEngine {
         };
 
         // Get a sample of nodes to discover namespaces
-        let nodes = engine
-            .list_nodes(&QueryFilters::default(), 200, 0)
-            .await?;
+        let nodes = engine.list_nodes(&QueryFilters::default(), 200, 0).await?;
 
         let namespaces: Vec<String> = nodes
             .iter()
@@ -278,11 +270,7 @@ impl InsightEngine {
 
         engine
             .proactive
-            .detect_cross_domain_connections(
-                &namespaces,
-                self.config.cross_domain_threshold,
-                10,
-            )
+            .detect_cross_domain_connections(&namespaces, self.config.cross_domain_threshold, 10)
             .await
     }
 
@@ -292,9 +280,7 @@ impl InsightEngine {
 
     /// Start a background task that runs `full_scan` periodically.
     /// Returns a `JoinHandle` that can be used to cancel the task.
-    pub fn start_background_scanner(
-        self: &Arc<Self>,
-    ) -> Option<tokio::task::JoinHandle<()>> {
+    pub fn start_background_scanner(self: &Arc<Self>) -> Option<tokio::task::JoinHandle<()>> {
         let interval_secs = self.config.scan_interval_secs;
         if interval_secs == 0 {
             tracing::info!("insight background scanner disabled (interval=0)");
@@ -303,8 +289,7 @@ impl InsightEngine {
 
         let this = Arc::clone(self);
         let handle = tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             // Skip the first immediate tick
             interval.tick().await;
 
@@ -327,10 +312,7 @@ impl InsightEngine {
             }
         });
 
-        tracing::info!(
-            interval_secs,
-            "insight background scanner started"
-        );
+        tracing::info!(interval_secs, "insight background scanner started");
         Some(handle)
     }
 
@@ -339,11 +321,7 @@ impl InsightEngine {
     // -----------------------------------------------------------------------
 
     /// Check if any pair of nodes in the list are linked in the graph.
-    async fn any_linked(
-        &self,
-        engine: &MindVaultEngine,
-        node_ids: &[Uuid],
-    ) -> MvResult<bool> {
+    async fn any_linked(&self, engine: &MindVaultEngine, node_ids: &[Uuid]) -> MvResult<bool> {
         for (i, &id) in node_ids.iter().enumerate() {
             let neighbors = engine.get_neighbors(id, 1).await?;
             let neighbor_set: HashSet<Uuid> = neighbors.into_iter().collect();

@@ -696,14 +696,20 @@ mod tests {
     #[test]
     fn test_determine_kind_task() {
         let mut fm = HashMap::new();
-        fm.insert("type".to_string(), serde_json::Value::String("task".to_string()));
+        fm.insert(
+            "type".to_string(),
+            serde_json::Value::String("task".to_string()),
+        );
         assert_eq!(determine_kind(&fm), NodeKind::Task);
     }
 
     #[test]
     fn test_determine_kind_todo() {
         let mut fm = HashMap::new();
-        fm.insert("type".to_string(), serde_json::Value::String("todo".to_string()));
+        fm.insert(
+            "type".to_string(),
+            serde_json::Value::String("todo".to_string()),
+        );
         assert_eq!(determine_kind(&fm), NodeKind::Task);
     }
 

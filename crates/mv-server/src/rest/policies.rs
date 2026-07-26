@@ -93,11 +93,7 @@ pub async fn set_policy(
     Json(req): Json<SetPolicyRequest>,
 ) -> impl IntoResponse {
     if let Err(err) = authorize_write(&auth) {
-        return (
-            err.0,
-            Json(ErrorBody { error: err.1 }),
-        )
-            .into_response();
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
     }
 
     if req.secret_key.trim().is_empty() || req.consumer.trim().is_empty() {
@@ -143,19 +139,12 @@ pub async fn list_policies(
     Query(query): Query<PolicyListQuery>,
 ) -> impl IntoResponse {
     if let Err(err) = authorize_read(&auth) {
-        return (
-            err.0,
-            Json(ErrorBody { error: err.1 }),
-        )
-            .into_response();
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
     }
 
     match state
         .engine
-        .list_policies(
-            query.secret_key.as_deref(),
-            query.consumer.as_deref(),
-        )
+        .list_policies(query.secret_key.as_deref(), query.consumer.as_deref())
         .await
     {
         Ok(policies) => {
@@ -179,11 +168,7 @@ pub async fn policy_matrix(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     if let Err(err) = authorize_read(&auth) {
-        return (
-            err.0,
-            Json(ErrorBody { error: err.1 }),
-        )
-            .into_response();
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
     }
 
     match state.engine.list_policies(None, None).await {
@@ -237,11 +222,7 @@ pub async fn my_access(
         }
     };
 
-    match state
-        .engine
-        .list_policies(None, Some(&consumer_name))
-        .await
-    {
+    match state.engine.list_policies(None, Some(&consumer_name)).await {
         Ok(policies) => {
             let accessible: Vec<String> = policies
                 .into_iter()
@@ -267,11 +248,7 @@ pub async fn delete_policy(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     if let Err(err) = authorize_write(&auth) {
-        return (
-            err.0,
-            Json(ErrorBody { error: err.1 }),
-        )
-            .into_response();
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
     }
 
     match state.engine.delete_policy(id).await {

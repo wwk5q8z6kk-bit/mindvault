@@ -460,7 +460,8 @@ impl MindVaultService for MindVaultGrpc {
         ensure_vault_unsealed(&self.state)?;
 
         let req = request.into_inner();
-        validate_query_text("text", &req.text).map_err(|e| Status::invalid_argument(e.to_string()))?;
+        validate_query_text("text", &req.text)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let strategy: SearchStrategy = if req.strategy.is_empty() {
             SearchStrategy::Hybrid
@@ -470,7 +471,8 @@ impl MindVaultService for MindVaultGrpc {
                 .map_err(|e: String| Status::invalid_argument(e))?
         };
 
-        let kinds = parse_kind_list(&req.kinds).map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let kinds =
+            parse_kind_list(&req.kinds).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let requested_namespace = req.namespace.filter(|ns| !ns.is_empty());
         let namespace = scoped_namespace_grpc(&auth, requested_namespace)?;
@@ -529,7 +531,8 @@ impl MindVaultService for MindVaultGrpc {
 
         let req = request.into_inner();
 
-        let kinds = parse_kind_list(&req.kinds).map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let kinds =
+            parse_kind_list(&req.kinds).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let requested_namespace = req.namespace.filter(|ns| !ns.is_empty());
         let namespace = scoped_namespace_grpc(&auth, requested_namespace)?;

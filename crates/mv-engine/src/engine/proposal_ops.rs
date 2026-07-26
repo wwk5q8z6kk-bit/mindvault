@@ -2,7 +2,10 @@ use chrono::{DateTime, Utc};
 use mv_core::*;
 use uuid::Uuid;
 
-use super::{glob_match_simple, proposal_node_payload, MindVaultEngine, ProposalActionResult, UndoActionResult};
+use super::{
+    glob_match_simple, proposal_node_payload, MindVaultEngine, ProposalActionResult,
+    UndoActionResult,
+};
 
 impl MindVaultEngine {
     // ── Exchange Inbox ───────────────────────────────────────────────
@@ -116,9 +119,9 @@ impl MindVaultEngine {
                 result.affected_namespace = Some(stored.namespace);
             }
             ProposalAction::UpdateNode | ProposalAction::SuggestTag => {
-                let target_id = proposal
-                    .target_node_id
-                    .ok_or_else(|| MvError::InvalidInput("proposal missing target_node_id".into()))?;
+                let target_id = proposal.target_node_id.ok_or_else(|| {
+                    MvError::InvalidInput("proposal missing target_node_id".into())
+                })?;
                 let existing = self
                     .get_node(target_id)
                     .await?
@@ -128,9 +131,7 @@ impl MindVaultEngine {
 
                 let mut updated = existing.clone();
                 if let Some(kind) = payload.kind {
-                    updated.kind = kind
-                        .parse()
-                        .map_err(|e: String| MvError::InvalidInput(e))?;
+                    updated.kind = kind.parse().map_err(|e: String| MvError::InvalidInput(e))?;
                 }
                 if let Some(content) = payload.content {
                     updated.content = content;
@@ -150,9 +151,7 @@ impl MindVaultEngine {
                             tags.push(tag.to_string());
                         }
                     } else {
-                        return Err(MvError::InvalidInput(
-                            "proposal payload missing tag".into(),
-                        ));
+                        return Err(MvError::InvalidInput("proposal payload missing tag".into()));
                     }
                 } else if let Some(new_tags) = payload.tags {
                     tags = new_tags;
@@ -174,9 +173,9 @@ impl MindVaultEngine {
                 result.affected_namespace = Some(saved.namespace);
             }
             ProposalAction::DeleteNode => {
-                let target_id = proposal
-                    .target_node_id
-                    .ok_or_else(|| MvError::InvalidInput("proposal missing target_node_id".into()))?;
+                let target_id = proposal.target_node_id.ok_or_else(|| {
+                    MvError::InvalidInput("proposal missing target_node_id".into())
+                })?;
                 let existing = self
                     .get_node(target_id)
                     .await?
@@ -208,9 +207,7 @@ impl MindVaultEngine {
         proposal: &Proposal,
     ) -> MvResult<Option<serde_json::Value>> {
         match proposal.action {
-            ProposalAction::CreateNode => {
-                Ok(Some(serde_json::json!({ "action": "create_node" })))
-            }
+            ProposalAction::CreateNode => Ok(Some(serde_json::json!({ "action": "create_node" }))),
             ProposalAction::UpdateNode | ProposalAction::SuggestTag => {
                 let target_id = proposal
                     .target_node_id
@@ -264,10 +261,7 @@ impl MindVaultEngine {
     }
 
     /// Apply an undo snapshot, reversing the original proposal action.
-    pub async fn apply_undo_snapshot(
-        &self,
-        proposal_id: Uuid,
-    ) -> MvResult<UndoActionResult> {
+    pub async fn apply_undo_snapshot(&self, proposal_id: Uuid) -> MvResult<UndoActionResult> {
         let snapshot = self
             .store
             .nodes
@@ -294,8 +288,10 @@ impl MindVaultEngine {
 
         match action.as_str() {
             "create_node" => {
-                if let Some(node_id_str) =
-                    snapshot.snapshot_data.get("node_id").and_then(|v| v.as_str())
+                if let Some(node_id_str) = snapshot
+                    .snapshot_data
+                    .get("node_id")
+                    .and_then(|v| v.as_str())
                 {
                     if let Ok(node_id) = Uuid::parse_str(node_id_str) {
                         self.delete_node(node_id).await?;
@@ -304,15 +300,19 @@ impl MindVaultEngine {
             }
             "update_node" => {
                 if let Some(previous) = snapshot.snapshot_data.get("previous") {
-                    let node: KnowledgeNode = serde_json::from_value(previous.clone())
-                        .map_err(|e| MvError::Internal(format!("failed to deserialize previous node: {e}")))?;
+                    let node: KnowledgeNode =
+                        serde_json::from_value(previous.clone()).map_err(|e| {
+                            MvError::Internal(format!("failed to deserialize previous node: {e}"))
+                        })?;
                     self.update_node(node).await?;
                 }
             }
             "delete_node" => {
                 if let Some(node_data) = snapshot.snapshot_data.get("node") {
-                    let node: KnowledgeNode = serde_json::from_value(node_data.clone())
-                        .map_err(|e| MvError::Internal(format!("failed to deserialize deleted node: {e}")))?;
+                    let node: KnowledgeNode =
+                        serde_json::from_value(node_data.clone()).map_err(|e| {
+                            MvError::Internal(format!("failed to deserialize deleted node: {e}"))
+                        })?;
                     self.store_node(node).await?;
                 }
             }

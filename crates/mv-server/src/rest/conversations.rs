@@ -130,7 +130,9 @@ pub(crate) fn normalize_sources(
         });
     }
 
-    serde_json::to_string(&normalized).map(Some).map_err(|err| err.to_string())
+    serde_json::to_string(&normalized)
+        .map(Some)
+        .map_err(|err| err.to_string())
 }
 
 pub(crate) fn parse_sources_json(raw: Option<&str>) -> Option<Vec<ConversationSourceDto>> {

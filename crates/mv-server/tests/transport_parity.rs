@@ -1,8 +1,8 @@
 //! Transport parity smoke tests (REST vs in-process gRPC).
 //!
-//! Covers health, cross-transport store/get, recall, namespace quota deny codes,
-//! namespace-scoped shared-token deny/allow, and JWT role/namespace claim parity
-//! on both transports.
+//! Covers health, cross-transport store/get, recall, list, relationships,
+//! namespace quota deny codes, namespace-scoped shared-token deny/allow, and JWT
+//! role/namespace claim parity on both transports.
 //!
 //! Run with: cargo test -p mv-server --test transport_parity -- --test-threads=1
 
@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
+use axum::http::{Method, Request, StatusCode};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::Serialize;
-use axum::http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tonic::Code;
@@ -21,7 +21,10 @@ use tower::ServiceExt;
 use mv_engine::config::EngineConfig;
 use mv_engine::engine::MindVaultEngine;
 use mv_server::grpc::proto::mind_vault_service_server::MindVaultService;
-use mv_server::grpc::proto::{GetNodeRequest, HealthRequest, RecallRequest, StoreNodeRequest};
+use mv_server::grpc::proto::{
+    AddRelationshipRequest, GetNeighborsRequest, GetNodeRequest, HealthRequest, ListNodesRequest,
+    RecallRequest, StoreNodeRequest,
+};
 use mv_server::grpc::MindVaultGrpc;
 use mv_server::rest::create_router;
 use mv_server::state::AppState;
@@ -143,7 +146,6 @@ fn response_text(body: &Value) -> String {
         .unwrap_or_default()
         .to_string()
 }
-
 
 #[derive(Debug, Serialize)]
 struct JwtTestClaims {
@@ -885,3 +887,172 @@ async fn jwt_read_role_claim_write_deny_matches_across_rest_and_grpc() {
     );
 }
 
+#[tokio::test]
+async fn list_and_relationship_parity_matches_across_rest_and_grpc() {
+    let (_state, router, grpc, _tmp) = setup().await;
+
+    let namespace = "parity-list-rel";
+    let mut created_ids = Vec::new();
+    for (title, content) in [
+        ("List A", "parity list node alpha"),
+        ("List B", "parity list node beta"),
+        ("List C", "parity list node gamma"),
+    ] {
+        let create = router
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/nodes",
+                Some(json!({
+                    "kind": "fact",
+                    "content": content,
+                    "title": title,
+                    "namespace": namespace,
+                    "tags": ["parity-list"]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::CREATED);
+        let id = body_json(create).await["id"]
+            .as_str()
+            .expect("id")
+            .to_string();
+        created_ids.push(id);
+    }
+    created_ids.sort();
+
+    let rest_list = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/nodes?namespace={namespace}&limit=50&offset=0"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(rest_list.status(), StatusCode::OK);
+    let rest_nodes = body_json(rest_list).await;
+    let rest_arr = rest_nodes.as_array().expect("rest list array");
+    let mut rest_ids: Vec<String> = rest_arr
+        .iter()
+        .filter_map(|n| n["id"].as_str().map(str::to_string))
+        .collect();
+    rest_ids.sort();
+    assert_eq!(
+        rest_ids, created_ids,
+        "REST list should return all created nodes"
+    );
+
+    let grpc_list = grpc
+        .list_nodes(tonic::Request::new(ListNodesRequest {
+            namespace: Some(namespace.to_string()),
+            kinds: vec![],
+            limit: 50,
+            offset: 0,
+        }))
+        .await
+        .expect("grpc list")
+        .into_inner();
+    let mut grpc_ids: Vec<String> = grpc_list.nodes.iter().map(|n| n.id.clone()).collect();
+    grpc_ids.sort();
+    assert_eq!(
+        grpc_ids, created_ids,
+        "gRPC list should return the same node ids as REST"
+    );
+    assert!(
+        grpc_list.total as usize >= created_ids.len(),
+        "gRPC total should cover listed nodes"
+    );
+
+    // Relationship: REST create → visible via gRPC neighbors; gRPC create → REST overview.
+    let from_id = &created_ids[0];
+    let to_id = &created_ids[1];
+    let rest_rel = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/graph/relationships",
+            Some(json!({
+                "from_node": from_id,
+                "to_node": to_id,
+                "kind": "references",
+                "weight": 0.75
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(rest_rel.status(), StatusCode::CREATED);
+    let rest_rel_id = body_json(rest_rel).await["id"]
+        .as_str()
+        .expect("relationship id")
+        .to_string();
+
+    let grpc_neighbors = grpc
+        .get_neighbors(tonic::Request::new(GetNeighborsRequest {
+            node_id: from_id.clone(),
+            depth: 1,
+        }))
+        .await
+        .expect("grpc neighbors after REST relationship")
+        .into_inner();
+    assert!(
+        grpc_neighbors.neighbor_ids.contains(to_id),
+        "gRPC neighbors should include REST-linked target: {:?}",
+        grpc_neighbors.neighbor_ids
+    );
+
+    let rest_neighbors = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/graph/neighbors/{from_id}?depth=1"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(rest_neighbors.status(), StatusCode::OK);
+    let rest_neighbor_ids = body_json(rest_neighbors).await;
+    let rest_neighbor_arr = rest_neighbor_ids.as_array().expect("neighbors array");
+    assert!(
+        rest_neighbor_arr
+            .iter()
+            .any(|id| id.as_str() == Some(to_id.as_str())),
+        "REST neighbors should include linked target: {rest_neighbor_ids}"
+    );
+
+    let grpc_rel = grpc
+        .add_relationship(tonic::Request::new(AddRelationshipRequest {
+            from_node: created_ids[1].clone(),
+            to_node: created_ids[2].clone(),
+            kind: "relates_to".into(),
+            weight: 0.5,
+        }))
+        .await
+        .expect("grpc add relationship")
+        .into_inner();
+    assert!(!grpc_rel.id.is_empty());
+
+    let overview = router
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/graph/relationships/{}", created_ids[1]),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(overview.status(), StatusCode::OK);
+    let overview_body = body_json(overview).await;
+    let outgoing = overview_body["outgoing"]
+        .as_array()
+        .expect("outgoing edges");
+    assert!(
+        outgoing.iter().any(|edge| {
+            edge["related_node_id"].as_str() == Some(created_ids[2].as_str())
+                && edge["relation_kind"].as_str() == Some("relates_to")
+        }),
+        "REST relationship overview should show gRPC-created edge: {overview_body}"
+    );
+    // Keep REST-created relationship id referenced so regressions surface clearly.
+    assert!(!rest_rel_id.is_empty());
+}

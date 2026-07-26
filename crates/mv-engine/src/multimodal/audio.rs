@@ -10,8 +10,8 @@ use std::path::Path;
 use std::process::Command;
 
 use super::{
-    check_file_size, run_command_with_timeout, ModalityProcessor, ModalityStatus,
-    ProcessingResult, DEFAULT_COMMAND_TIMEOUT,
+    check_file_size, run_command_with_timeout, ModalityProcessor, ModalityStatus, ProcessingResult,
+    DEFAULT_COMMAND_TIMEOUT,
 };
 
 /// Audio processor that transcribes audio files using Whisper.
@@ -31,27 +31,26 @@ impl Default for AudioProcessor {
 
 impl AudioProcessor {
     pub fn new() -> Self {
-        let whisper_bin = std::env::var("MINDVAULT_WHISPER_BIN")
-            .unwrap_or_else(|_| "whisper".to_string());
+        let whisper_bin =
+            std::env::var("MINDVAULT_WHISPER_BIN").unwrap_or_else(|_| "whisper".to_string());
 
-        let whisper_model = std::env::var("MINDVAULT_WHISPER_MODEL")
-            .unwrap_or_else(|_| "base".to_string());
+        let whisper_model =
+            std::env::var("MINDVAULT_WHISPER_MODEL").unwrap_or_else(|_| "base".to_string());
 
         let language = std::env::var("MINDVAULT_WHISPER_LANG").ok();
 
         let api_key = std::env::var("OPENAI_API_KEY").ok();
 
-        let local_available = Command::new(&whisper_bin)
-            .arg("--help")
-            .output()
-            .is_ok();
+        let local_available = Command::new(&whisper_bin).arg("--help").output().is_ok();
 
         if local_available {
             tracing::info!(bin = %whisper_bin, model = %whisper_model, "Local Whisper available for audio processing");
         } else if api_key.is_some() {
             tracing::info!("Whisper API fallback available for audio processing");
         } else {
-            tracing::warn!("No Whisper backend available — audio processing will produce placeholder text");
+            tracing::warn!(
+                "No Whisper backend available — audio processing will produce placeholder text"
+            );
         }
 
         Self {
@@ -106,8 +105,8 @@ impl AudioProcessor {
             .as_deref()
             .ok_or("no OpenAI API key configured")?;
 
-        let file_bytes = std::fs::read(file_path)
-            .map_err(|e| format!("failed to read audio file: {e}"))?;
+        let file_bytes =
+            std::fs::read(file_path).map_err(|e| format!("failed to read audio file: {e}"))?;
 
         let file_name = Path::new(file_path)
             .file_name()
@@ -140,10 +139,8 @@ impl AudioProcessor {
         // File field
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
         body.extend_from_slice(
-            format!(
-                "Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n"
-            )
-            .as_bytes(),
+            format!("Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n")
+                .as_bytes(),
         );
         body.extend_from_slice(format!("Content-Type: {mime}\r\n\r\n").as_bytes());
         body.extend_from_slice(&file_bytes);
@@ -208,7 +205,10 @@ impl ModalityProcessor for AudioProcessor {
             .with_detail("whisper_bin", serde_json::json!(self.whisper_bin))
             .with_detail("whisper_model", serde_json::json!(self.whisper_model))
             .with_detail("local_available", serde_json::json!(self.local_available))
-            .with_detail("api_fallback_available", serde_json::json!(self.api_key.is_some()));
+            .with_detail(
+                "api_fallback_available",
+                serde_json::json!(self.api_key.is_some()),
+            );
 
         if let Some(lang) = &self.language {
             status = status.with_detail("language", serde_json::json!(lang));
@@ -224,8 +224,7 @@ impl ModalityProcessor for AudioProcessor {
     async fn process(&self, file_path: &str, _node: &KnowledgeNode) -> MvResult<ProcessingResult> {
         tracing::info!(file_path, "Processing audio file");
 
-        check_file_size(file_path)
-            .map_err(mv_core::MvError::Storage)?;
+        check_file_size(file_path).map_err(mv_core::MvError::Storage)?;
 
         // Try local Whisper first, then API fallback
         let transcript = if self.local_available {
@@ -233,21 +232,17 @@ impl ModalityProcessor for AudioProcessor {
                 Ok(text) => text,
                 Err(e) => {
                     tracing::warn!(error = %e, "Local Whisper failed, trying API fallback");
-                    self.transcribe_api(file_path)
-                        .await
-                        .unwrap_or_else(|e2| {
-                            tracing::warn!(error = %e2, "API fallback also failed");
-                            format!("[Audio file: {} - transcription failed]", file_path)
-                        })
+                    self.transcribe_api(file_path).await.unwrap_or_else(|e2| {
+                        tracing::warn!(error = %e2, "API fallback also failed");
+                        format!("[Audio file: {} - transcription failed]", file_path)
+                    })
                 }
             }
         } else if self.api_key.is_some() {
-            self.transcribe_api(file_path)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "Whisper API transcription failed");
-                    format!("[Audio file: {} - transcription failed]", file_path)
-                })
+            self.transcribe_api(file_path).await.unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Whisper API transcription failed");
+                format!("[Audio file: {} - transcription failed]", file_path)
+            })
         } else {
             format!("[Audio file: {} - no Whisper backend available]", file_path)
         };
@@ -255,8 +250,7 @@ impl ModalityProcessor for AudioProcessor {
         let is_transcribed = !transcript.starts_with("[Audio file:");
         let word_count = transcript.split_whitespace().count();
 
-        let mut result = ProcessingResult::new(transcript)
-            .with_tag("audio".to_string());
+        let mut result = ProcessingResult::new(transcript).with_tag("audio".to_string());
 
         if is_transcribed {
             result = result.with_tag("transcribed".to_string());
@@ -363,9 +357,7 @@ mod tests {
     async fn process_rejects_missing_file() {
         let processor = AudioProcessor::new();
         let node = KnowledgeNode::new(NodeKind::Fact, "test".to_string());
-        let result = processor
-            .process("/nonexistent/audio.wav", &node)
-            .await;
+        let result = processor.process("/nonexistent/audio.wav", &node).await;
         assert!(result.is_err());
     }
 
@@ -414,9 +406,7 @@ mod tests {
             .await
             .unwrap();
 
-        let duration = result.metadata["estimated_duration_secs"]
-            .as_u64()
-            .unwrap();
+        let duration = result.metadata["estimated_duration_secs"].as_u64().unwrap();
         assert_eq!(duration, 10);
     }
 

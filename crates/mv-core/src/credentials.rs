@@ -283,8 +283,8 @@ impl Default for Argon2Params {
 struct EncryptedFileEnvelope {
     version: u8,
     argon2: Argon2Params,
-    salt: String,   // base64
-    data: String,   // base64 of [0x01 || nonce(12) || AES-256-GCM(json_map)]
+    salt: String, // base64
+    data: String, // base64 of [0x01 || nonce(12) || AES-256-GCM(json_map)]
 }
 
 enum FileBackendState {
@@ -336,9 +336,8 @@ impl EncryptedFileBackend {
 
         // Create parent directory if needed
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                CredentialError::EncryptedFile(format!("create directory: {e}"))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CredentialError::EncryptedFile(format!("create directory: {e}")))?;
         }
 
         let mut salt = [0u8; SALT_SIZE];
@@ -371,9 +370,8 @@ impl EncryptedFileBackend {
             CredentialError::EncryptedFile(format!("read {}: {e}", self.path.display()))
         })?;
 
-        let envelope: EncryptedFileEnvelope = serde_json::from_slice(&file_data).map_err(|e| {
-            CredentialError::EncryptedFile(format!("parse envelope: {e}"))
-        })?;
+        let envelope: EncryptedFileEnvelope = serde_json::from_slice(&file_data)
+            .map_err(|e| CredentialError::EncryptedFile(format!("parse envelope: {e}")))?;
 
         if envelope.version != FILE_VERSION {
             return Err(CredentialError::EncryptedFile(format!(
@@ -382,9 +380,9 @@ impl EncryptedFileBackend {
             )));
         }
 
-        let salt_bytes = BASE64.decode(&envelope.salt).map_err(|e| {
-            CredentialError::EncryptedFile(format!("decode salt: {e}"))
-        })?;
+        let salt_bytes = BASE64
+            .decode(&envelope.salt)
+            .map_err(|e| CredentialError::EncryptedFile(format!("decode salt: {e}")))?;
         if salt_bytes.len() != SALT_SIZE {
             return Err(CredentialError::EncryptedFile("invalid salt length".into()));
         }
@@ -393,9 +391,9 @@ impl EncryptedFileBackend {
 
         let key = derive_key(password, &salt, &envelope.argon2)?;
 
-        let blob = BASE64.decode(&envelope.data).map_err(|e| {
-            CredentialError::EncryptedFile(format!("decode data: {e}"))
-        })?;
+        let blob = BASE64
+            .decode(&envelope.data)
+            .map_err(|e| CredentialError::EncryptedFile(format!("decode data: {e}")))?;
 
         let plaintext = decrypt_blob(&key, &blob)?;
 
@@ -405,9 +403,10 @@ impl EncryptedFileBackend {
             ))
         })?;
 
-        let mut state = self.state.lock().map_err(|e| {
-            CredentialError::EncryptedFile(format!("lock poisoned: {e}"))
-        })?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|e| CredentialError::EncryptedFile(format!("lock poisoned: {e}")))?;
         *state = FileBackendState::Unlocked {
             derived_key: key,
             secrets,
@@ -420,9 +419,10 @@ impl EncryptedFileBackend {
 
     /// Zeroize the key and secrets, returning to `Locked` state.
     pub fn lock(&self) -> Result<(), CredentialError> {
-        let mut state = self.state.lock().map_err(|e| {
-            CredentialError::EncryptedFile(format!("lock poisoned: {e}"))
-        })?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|e| CredentialError::EncryptedFile(format!("lock poisoned: {e}")))?;
         *state = FileBackendState::Locked;
         Ok(())
     }
@@ -474,9 +474,10 @@ impl CredentialBackend for EncryptedFileBackend {
     }
 
     fn get(&self, key: &str) -> Result<Option<String>, CredentialError> {
-        let state = self.state.lock().map_err(|e| {
-            CredentialError::EncryptedFile(format!("lock poisoned: {e}"))
-        })?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|e| CredentialError::EncryptedFile(format!("lock poisoned: {e}")))?;
         match &*state {
             FileBackendState::Locked => Ok(None), // silently skip
             FileBackendState::Unlocked { secrets, .. } => Ok(secrets.get(key).cloned()),
@@ -484,9 +485,10 @@ impl CredentialBackend for EncryptedFileBackend {
     }
 
     fn set(&self, key: &str, value: &str) -> Result<(), CredentialError> {
-        let mut state = self.state.lock().map_err(|e| {
-            CredentialError::EncryptedFile(format!("lock poisoned: {e}"))
-        })?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|e| CredentialError::EncryptedFile(format!("lock poisoned: {e}")))?;
         match &mut *state {
             FileBackendState::Locked => Err(CredentialError::EncryptedFile(
                 "encrypted file backend is locked — unlock first".into(),
@@ -504,9 +506,10 @@ impl CredentialBackend for EncryptedFileBackend {
     }
 
     fn delete(&self, key: &str) -> Result<(), CredentialError> {
-        let mut state = self.state.lock().map_err(|e| {
-            CredentialError::EncryptedFile(format!("lock poisoned: {e}"))
-        })?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|e| CredentialError::EncryptedFile(format!("lock poisoned: {e}")))?;
         match &mut *state {
             FileBackendState::Locked => Err(CredentialError::EncryptedFile(
                 "encrypted file backend is locked — unlock first".into(),
@@ -524,9 +527,10 @@ impl CredentialBackend for EncryptedFileBackend {
     }
 
     fn list_keys(&self) -> Result<Vec<String>, CredentialError> {
-        let state = self.state.lock().map_err(|e| {
-            CredentialError::EncryptedFile(format!("lock poisoned: {e}"))
-        })?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|e| CredentialError::EncryptedFile(format!("lock poisoned: {e}")))?;
         match &*state {
             FileBackendState::Locked => Ok(Vec::new()),
             FileBackendState::Unlocked { secrets, .. } => {
@@ -554,8 +558,13 @@ fn derive_key(
     let argon2 = argon2::Argon2::new(
         argon2::Algorithm::Argon2id,
         argon2::Version::V0x13,
-        argon2::Params::new(params.memory_kib, params.iterations, params.parallelism, Some(KEY_SIZE))
-            .map_err(|e| CredentialError::EncryptedFile(format!("argon2 params: {e}")))?,
+        argon2::Params::new(
+            params.memory_kib,
+            params.iterations,
+            params.parallelism,
+            Some(KEY_SIZE),
+        )
+        .map_err(|e| CredentialError::EncryptedFile(format!("argon2 params: {e}")))?,
     );
     let mut key = Zeroizing::new([0u8; KEY_SIZE]);
     argon2
@@ -587,7 +596,9 @@ fn encrypt_blob(key: &[u8; KEY_SIZE], plaintext: &[u8]) -> Result<Vec<u8>, Crede
 /// Decrypt: expects `[0x01 || nonce(12) || ciphertext+tag]`
 fn decrypt_blob(key: &[u8; KEY_SIZE], data: &[u8]) -> Result<Vec<u8>, CredentialError> {
     if data.len() < 1 + NONCE_SIZE + 16 {
-        return Err(CredentialError::EncryptedFile("encrypted data too short".into()));
+        return Err(CredentialError::EncryptedFile(
+            "encrypted data too short".into(),
+        ));
     }
     if data[0] != 0x01 {
         return Err(CredentialError::EncryptedFile(format!(
@@ -611,12 +622,10 @@ fn decrypt_blob(key: &[u8; KEY_SIZE], data: &[u8]) -> Result<Vec<u8>, Credential
 /// Atomic write: write to a temp file, then rename.
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), CredentialError> {
     let tmp_path = path.with_extension("tmp");
-    std::fs::write(&tmp_path, data).map_err(|e| {
-        CredentialError::EncryptedFile(format!("write temp file: {e}"))
-    })?;
-    std::fs::rename(&tmp_path, path).map_err(|e| {
-        CredentialError::EncryptedFile(format!("rename: {e}"))
-    })?;
+    std::fs::write(&tmp_path, data)
+        .map_err(|e| CredentialError::EncryptedFile(format!("write temp file: {e}")))?;
+    std::fs::rename(&tmp_path, path)
+        .map_err(|e| CredentialError::EncryptedFile(format!("rename: {e}")))?;
     Ok(())
 }
 
@@ -882,11 +891,7 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let mut path = std::env::temp_dir();
-        path.push(format!(
-            "mv_test_secrets_{}_{}.enc",
-            std::process::id(),
-            id,
-        ));
+        path.push(format!("mv_test_secrets_{}_{}.enc", std::process::id(), id,));
         // Clean up any leftover from a previous test run
         let _ = std::fs::remove_file(&path);
         path
@@ -1039,7 +1044,9 @@ mod tests {
 
         let backend = EncryptedFileBackend::new(path.clone());
         backend.unlock("pw").unwrap();
-        backend.set("MY_SECRET_KEY", "super_secret_value_12345").unwrap();
+        backend
+            .set("MY_SECRET_KEY", "super_secret_value_12345")
+            .unwrap();
 
         let file_contents = std::fs::read_to_string(&path).unwrap();
         assert!(!file_contents.contains("super_secret_value_12345"));

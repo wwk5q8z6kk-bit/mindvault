@@ -13,10 +13,10 @@ clear file-level anchors.
   - Files: `web/src/admin.js`
   - Done when: backend-down smoke run has zero uncaught page errors and expected console warnings only.
 
-- [~] Add transport parity integration checks for representative REST and gRPC flows.
+- [x] Add transport parity integration checks for representative REST and gRPC flows.
   - Files: `crates/mv-server/tests/transport_parity.rs`, `crates/mv-server/src/grpc.rs`, `crates/mv-server/src/rest.rs`, `.github/workflows/ci.yml`
   - Done when: parity suite runs in CI and validates equivalent auth + payload behavior.
-  - Shipped: health, cross-transport store/get, recall, quota deny, shared-token + JWT role/namespace claim deny/allow, read-role write deny; CI step `Transport Parity REST/gRPC` (`--test-threads=1`). Remaining: relationship/list parity.
+  - Shipped: health, cross-transport store/get, recall, list, relationships (REST↔gRPC neighbors/overview), quota deny, shared-token + JWT role/namespace claim deny/allow, read-role write deny; CI step `Transport Parity REST/gRPC` (`--test-threads=1`).
 
 ## P1: Security and Observability Depth
 

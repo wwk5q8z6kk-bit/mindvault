@@ -1572,7 +1572,11 @@ async fn namespace_node_quota_blocks_extra_creates_and_isolates_namespaces() {
         ))
         .await
         .unwrap();
-    assert_eq!(first.status(), StatusCode::CREATED, "first node in quota-a should succeed");
+    assert_eq!(
+        first.status(),
+        StatusCode::CREATED,
+        "first node in quota-a should succeed"
+    );
 
     let blocked = router
         .clone()
@@ -1665,4 +1669,3 @@ async fn namespace_node_quota_allows_update_when_at_limit() {
     );
     assert_eq!(body["content"], "updated while at quota");
 }
-

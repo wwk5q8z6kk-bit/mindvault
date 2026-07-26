@@ -4,7 +4,11 @@ use anyhow::Result;
 use mv_mcp::auth::McpContext;
 use mv_mcp::server::McpServer;
 
-pub async fn run(config_path: &str, access_key: Option<String>, allow_unscoped: bool) -> Result<()> {
+pub async fn run(
+    config_path: &str,
+    access_key: Option<String>,
+    allow_unscoped: bool,
+) -> Result<()> {
     let engine = super::load_engine(config_path).await?;
     let engine = Arc::new(engine);
     let access_key = access_key.or_else(|| std::env::var("MINDVAULT_MCP_ACCESS_KEY").ok());

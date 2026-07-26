@@ -253,7 +253,9 @@ pub async fn call_tool(
         "mindvault_list_recent" | "mindvault_list_nodes" => {
             tool_list_recent(engine, ctx, params).await
         }
-        "mindvault_propose_node" | "mindvault_store" => tool_propose_node(engine, ctx, params).await,
+        "mindvault_propose_node" | "mindvault_store" => {
+            tool_propose_node(engine, ctx, params).await
+        }
         "mindvault_propose_tag" => tool_propose_tag(engine, ctx, params).await,
         "mindvault_propose_update" | "mindvault_update_node" => {
             tool_propose_update(engine, ctx, params).await
@@ -358,7 +360,11 @@ async fn tool_search_vault(
     }
 }
 
-async fn tool_get_node(engine: &Arc<MindVaultEngine>, ctx: &McpContext, params: Value) -> ToolResult {
+async fn tool_get_node(
+    engine: &Arc<MindVaultEngine>,
+    ctx: &McpContext,
+    params: Value,
+) -> ToolResult {
     if let Err(e) = ctx.scope().ensure_action("mcp.read") {
         return ToolResult::error(e);
     }
@@ -514,15 +520,18 @@ async fn tool_propose_node(
     if let Some(importance) = params.get("importance").and_then(|v| v.as_f64()) {
         payload.insert(
             "importance".into(),
-            Value::Number(serde_json::Number::from_f64(importance).unwrap_or_else(|| serde_json::Number::from(0u64))),
+            Value::Number(
+                serde_json::Number::from_f64(importance)
+                    .unwrap_or_else(|| serde_json::Number::from(0u64)),
+            ),
         );
     }
     if let Some(metadata) = params.get("metadata").and_then(|v| v.as_object()) {
         payload.insert("metadata".into(), Value::Object(metadata.clone()));
     }
 
-    let mut proposal = Proposal::new(ProposalSender::Mcp, ProposalAction::CreateNode)
-        .with_payload(payload);
+    let mut proposal =
+        Proposal::new(ProposalSender::Mcp, ProposalAction::CreateNode).with_payload(payload);
 
     if let Some(confidence) = params.get("confidence").and_then(|v| v.as_f64()) {
         if !(0.0..=1.0).contains(&confidence) {
@@ -645,7 +654,10 @@ async fn tool_propose_update(
     if let Some(importance) = params.get("importance").and_then(|v| v.as_f64()) {
         payload.insert(
             "importance".into(),
-            Value::Number(serde_json::Number::from_f64(importance).unwrap_or_else(|| serde_json::Number::from(0u64))),
+            Value::Number(
+                serde_json::Number::from_f64(importance)
+                    .unwrap_or_else(|| serde_json::Number::from(0u64)),
+            ),
         );
     }
     if let Some(metadata) = params.get("metadata").and_then(|v| v.as_object()) {

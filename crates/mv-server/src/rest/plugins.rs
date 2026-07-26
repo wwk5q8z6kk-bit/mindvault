@@ -82,15 +82,17 @@ pub async fn list_plugins(
     match tokio::task::spawn_blocking(move || mgr.discover()).await {
         Ok(Ok(discovered)) => {
             for (name, _path, manifest) in discovered {
-                let entry = plugins.entry(manifest.id.clone()).or_insert_with(|| PluginSummary {
-                    id: manifest.id.clone(),
-                    name: manifest.name.clone(),
-                    version: manifest.version.clone(),
-                    description: manifest.description.clone(),
-                    author: manifest.author.clone(),
-                    hooks: manifest.hooks.clone(),
-                    status: "installed".to_string(),
-                });
+                let entry = plugins
+                    .entry(manifest.id.clone())
+                    .or_insert_with(|| PluginSummary {
+                        id: manifest.id.clone(),
+                        name: manifest.name.clone(),
+                        version: manifest.version.clone(),
+                        description: manifest.description.clone(),
+                        author: manifest.author.clone(),
+                        hooks: manifest.hooks.clone(),
+                        status: "installed".to_string(),
+                    });
                 if entry.status != "loaded" {
                     entry.name = manifest.name.clone();
                     entry.version = manifest.version.clone();
@@ -198,13 +200,17 @@ pub async fn install_plugin(
         }
     }
 
-    let manifest_bytes = manifest_bytes
-        .ok_or((StatusCode::BAD_REQUEST, "missing 'manifest' field".into()))?;
-    let wasm_bytes =
-        wasm_bytes.ok_or((StatusCode::BAD_REQUEST, "missing 'wasm' field".into()))?;
+    let manifest_bytes =
+        manifest_bytes.ok_or((StatusCode::BAD_REQUEST, "missing 'manifest' field".into()))?;
+    let wasm_bytes = wasm_bytes.ok_or((StatusCode::BAD_REQUEST, "missing 'wasm' field".into()))?;
 
-    let manifest: mv_plugin::PluginManifest = serde_json::from_slice(&manifest_bytes)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid manifest JSON: {e}")))?;
+    let manifest: mv_plugin::PluginManifest =
+        serde_json::from_slice(&manifest_bytes).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("invalid manifest JSON: {e}"),
+            )
+        })?;
 
     let plugin_name = manifest.id.clone();
     validate_plugin_name(&plugin_name)?;
@@ -213,12 +219,16 @@ pub async fn install_plugin(
     let manifest_clone = manifest.clone();
     let wasm_clone = wasm_bytes.clone();
     let name_clone = plugin_name.clone();
-    let id = tokio::task::spawn_blocking(move || {
-        mgr.install(&name_clone, &wasm_clone, &manifest_clone)
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("install task failed: {e}")))?
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let id =
+        tokio::task::spawn_blocking(move || mgr.install(&name_clone, &wasm_clone, &manifest_clone))
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("install task failed: {e}"),
+                )
+            })?
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok((
         StatusCode::CREATED,
@@ -243,7 +253,12 @@ pub async fn uninstall_plugin(
     let name_clone = name.clone();
     tokio::task::spawn_blocking(move || mgr.uninstall(&name_clone))
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("uninstall task failed: {e}")))?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("uninstall task failed: {e}"),
+            )
+        })?
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(Json(serde_json::json!({
@@ -264,11 +279,7 @@ pub async fn reload_plugins(
         .scan_and_load()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    let plugins: Vec<String> = runtime
-        .list_plugins()
-        .into_iter()
-        .map(|p| p.name)
-        .collect();
+    let plugins: Vec<String> = runtime.list_plugins().into_iter().map(|p| p.name).collect();
 
     Ok(Json(serde_json::json!({
         "status": "reloaded",

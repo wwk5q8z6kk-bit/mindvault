@@ -41,9 +41,7 @@ impl std::fmt::Display for ProxyError {
 impl std::error::Error for ProxyError {}
 
 /// Default commands allowed in exec proxy.
-const DEFAULT_EXEC_ALLOWLIST: &[&str] = &[
-    "gh", "git", "curl", "aws", "gcloud", "npm", "cargo",
-];
+const DEFAULT_EXEC_ALLOWLIST: &[&str] = &["gh", "git", "curl", "aws", "gcloud", "npm", "cargo"];
 
 /// Constitutional deny patterns checked before any policy evaluation.
 /// These patterns are always blocked regardless of policy.
@@ -62,7 +60,7 @@ fn is_private_ip(addr: IpAddr) -> bool {
             v4.is_loopback()           // 127.0.0.0/8
             || v4.is_private()         // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
             || v4.is_link_local()      // 169.254.0.0/16
-            || v4.is_unspecified()     // 0.0.0.0
+            || v4.is_unspecified() // 0.0.0.0
         }
         IpAddr::V6(v6) => {
             v6.is_loopback()           // ::1
@@ -188,7 +186,10 @@ fn scope_matches(required: &str, allowed: &str) -> bool {
     }
     // Wildcard: allowed "exec:*" covers required "exec:git"
     if let Some(prefix) = allowed.strip_suffix(":*") {
-        if required == prefix || (required.starts_with(prefix) && required.as_bytes().get(prefix.len()) == Some(&b':')) {
+        if required == prefix
+            || (required.starts_with(prefix)
+                && required.as_bytes().get(prefix.len()) == Some(&b':'))
+        {
             return true;
         }
     }
@@ -254,7 +255,11 @@ impl ProxyEngine {
             .map_err(|e| ProxyError::Failed(format!("policy check failed: {e}")))?;
 
         // 3a. Handle RequiresApproval
-        if let PolicyDecision::RequiresApproval { ttl_seconds, ref scopes } = decision {
+        if let PolicyDecision::RequiresApproval {
+            ttl_seconds,
+            ref scopes,
+        } = decision
+        {
             // Check if there's an existing approved approval
             let existing = engine
                 .find_active_approval(consumer, &req.secret_ref)
@@ -357,8 +362,8 @@ impl ProxyEngine {
                 request_builder.header(name.as_str(), secret_str.as_str())
             }
             SecretInjection::QueryParam { name } => {
-                let mut url =
-                    url::Url::parse(&req.url).map_err(|e| ProxyError::Failed(format!("invalid URL: {e}")))?;
+                let mut url = url::Url::parse(&req.url)
+                    .map_err(|e| ProxyError::Failed(format!("invalid URL: {e}")))?;
                 url.query_pairs_mut().append_pair(name, &secret_str);
                 // Rebuild the request with the modified URL
                 let mut rebuilt = client.request(method, url.as_str());
@@ -453,7 +458,11 @@ impl ProxyEngine {
             let llm_result = intent_check::check_intent_llm(
                 &req.intent,
                 &format!("{} {}", req.command, req.args.join(" ")),
-                &req.env_inject.values().map(|s| s.as_str()).collect::<Vec<_>>().join(","),
+                &req.env_inject
+                    .values()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
                 llm.as_ref(),
             )
             .await;
@@ -482,10 +491,16 @@ impl ProxyEngine {
             let decision = engine
                 .check_policy(secret_key, consumer)
                 .await
-                .map_err(|e| ProxyError::Failed(format!("policy check failed for '{secret_key}': {e}")))?;
+                .map_err(|e| {
+                    ProxyError::Failed(format!("policy check failed for '{secret_key}': {e}"))
+                })?;
 
             // Handle RequiresApproval
-            if let PolicyDecision::RequiresApproval { ttl_seconds, ref scopes } = decision {
+            if let PolicyDecision::RequiresApproval {
+                ttl_seconds,
+                ref scopes,
+            } = decision
+            {
                 let existing = engine
                     .find_active_approval(consumer, secret_key)
                     .await
@@ -535,10 +550,15 @@ impl ProxyEngine {
             let secret_value = engine
                 .credential_store
                 .get(secret_key)
-                .map_err(|e| ProxyError::Failed(format!("credential lookup failed for '{secret_key}': {e}")))?
+                .map_err(|e| {
+                    ProxyError::Failed(format!("credential lookup failed for '{secret_key}': {e}"))
+                })?
                 .ok_or_else(|| ProxyError::Failed(format!("secret '{secret_key}' not found")))?;
 
-            resolved_secrets.push((env_var.clone(), Zeroizing::new(secret_value.expose().to_string())));
+            resolved_secrets.push((
+                env_var.clone(),
+                Zeroizing::new(secret_value.expose().to_string()),
+            ));
         }
 
         // Build secret ref string for audit
@@ -577,9 +597,9 @@ impl ProxyEngine {
 
         let timeout = Duration::from_secs(req.timeout_seconds);
 
-        let child = cmd
-            .spawn()
-            .map_err(|e| ProxyError::Failed(format!("failed to spawn command '{}': {e}", req.command)))?;
+        let child = cmd.spawn().map_err(|e| {
+            ProxyError::Failed(format!("failed to spawn command '{}': {e}", req.command))
+        })?;
 
         let output = tokio::time::timeout(timeout, child.wait_with_output())
             .await

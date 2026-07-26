@@ -752,10 +752,7 @@ impl ProactiveEngine {
                         }
 
                         let insight = ProactiveInsight::new(
-                            format!(
-                                "Cross-domain connection: {} ↔ {}",
-                                ns_a, ns_b,
-                            ),
+                            format!("Cross-domain connection: {} ↔ {}", ns_a, ns_b,),
                             format!(
                                 "'{}' ({}) is semantically similar to '{}' ({}) with score {:.2}",
                                 node_a.title.as_deref().unwrap_or("untitled"),
@@ -881,7 +878,7 @@ impl ProactiveEngine {
     // -----------------------------------------------------------------------
 
     /// Analyzes the node content for explicit Subject-Verb-Object semantic relationships
-    /// using the python `relations:default` AI pipeline. Unlinked "Object" nodes that match 
+    /// using the python `relations:default` AI pipeline. Unlinked "Object" nodes that match
     /// the extracted string will be proposed as new graph edges.
     pub async fn detect_semantic_relations(
         &self,
@@ -902,9 +899,9 @@ impl ProactiveEngine {
         // Call the new python relations pipeline
         let mut params = CompletionParams::default();
         params.model = Some("relations:default".to_string());
-        
+
         let messages = vec![ChatMessage::user(node.content.clone())];
-        
+
         let response_text = match llm.complete(&messages, &params).await {
             Ok(res) => res,
             Err(e) => {
@@ -918,7 +915,7 @@ impl ProactiveEngine {
         struct PipelineResponse {
             relations: Vec<ExtractedRelation>,
         }
-        
+
         #[derive(serde::Deserialize)]
         struct ExtractedRelation {
             subject: String,
@@ -935,7 +932,11 @@ impl ProactiveEngine {
             }
         };
 
-        let current_neighbors: HashSet<Uuid> = engine.get_neighbors(node.id, 1).await?.into_iter().collect();
+        let current_neighbors: HashSet<Uuid> = engine
+            .get_neighbors(node.id, 1)
+            .await?
+            .into_iter()
+            .collect();
         let mut insights = Vec::new();
 
         for rel in parsed.relations {
@@ -944,7 +945,7 @@ impl ProactiveEngine {
                 .with_namespace(node.namespace.clone())
                 .with_limit(3)
                 .with_min_score(0.75); // Needs high confidence
-                
+
             let results = match engine.recall(&query).await {
                 Ok(r) => r,
                 Err(_) => continue,
@@ -955,8 +956,11 @@ impl ProactiveEngine {
                 if target.id == node.id || current_neighbors.contains(&target.id) {
                     continue; // Skip self or already linked
                 }
-                
-                let kind_enum = rel.kind.parse::<mv_core::RelationKind>().unwrap_or(mv_core::RelationKind::RelatesTo);
+
+                let kind_enum = rel
+                    .kind
+                    .parse::<mv_core::RelationKind>()
+                    .unwrap_or(mv_core::RelationKind::RelatesTo);
 
                 let insight = ProactiveInsight::new(
                     "Semantic Link Proposal",
@@ -968,11 +972,14 @@ impl ProactiveEngine {
                 )
                 .with_related_nodes(vec![node.id, target.id])
                 .with_importance(0.8);
-                
+
                 // Add the explicit relation kind to the metadata
                 let mut insight = insight;
-                insight.metadata.insert("proposed_relation".to_string(), serde_json::json!(kind_enum));
-                
+                insight.metadata.insert(
+                    "proposed_relation".to_string(),
+                    serde_json::json!(kind_enum),
+                );
+
                 insights.push(insight);
                 break; // Just take the best target match for this relation
             }

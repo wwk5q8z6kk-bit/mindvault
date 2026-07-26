@@ -19,11 +19,7 @@ fn bench_sizes(default: &[usize]) -> Vec<usize> {
     }
 
     let mut sizes = default.to_vec();
-    if std::env::var("MINDVAULT_BENCH_LARGE")
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
+    if std::env::var("MINDVAULT_BENCH_LARGE").ok().as_deref() == Some("1") {
         sizes.extend([10_000, 100_000, 1_000_000]);
     }
     sizes.sort_unstable();
@@ -43,7 +39,9 @@ fn bench_vector_upsert(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let dimensions = 384;
-    let store = rt.block_on(create_temp_store(dir.path(), dimensions)).unwrap();
+    let store = rt
+        .block_on(create_temp_store(dir.path(), dimensions))
+        .unwrap();
 
     c.bench_function("vector_upsert_single", |b| {
         b.iter(|| {
@@ -63,13 +61,17 @@ fn bench_vector_search(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let dimensions = 384;
-    let store = rt.block_on(create_temp_store(dir.path(), dimensions)).unwrap();
+    let store = rt
+        .block_on(create_temp_store(dir.path(), dimensions))
+        .unwrap();
 
     // Pre-populate with 100 vectors
     rt.block_on(async {
         for i in 0..100 {
             let id = Uuid::now_v7();
-            let embedding: Vec<f32> = (0..dimensions).map(|j| ((i * dimensions + j) as f32) * 0.001).collect();
+            let embedding: Vec<f32> = (0..dimensions)
+                .map(|j| ((i * dimensions + j) as f32) * 0.001)
+                .collect();
             store
                 .upsert(id, embedding, &format!("content {i}"), None)
                 .await
@@ -98,14 +100,17 @@ fn bench_vector_batch_upsert(c: &mut Criterion) {
             let rt = Runtime::new().unwrap();
             let dir = tempfile::tempdir().unwrap();
             let dimensions = 384;
-            let store = rt.block_on(create_temp_store(dir.path(), dimensions)).unwrap();
+            let store = rt
+                .block_on(create_temp_store(dir.path(), dimensions))
+                .unwrap();
 
             b.iter(|| {
                 rt.block_on(async {
                     for i in 0..size {
                         let id = Uuid::now_v7();
-                        let embedding: Vec<f32> =
-                            (0..dimensions).map(|j| ((i * dimensions + j) as f32) * 0.001).collect();
+                        let embedding: Vec<f32> = (0..dimensions)
+                            .map(|j| ((i * dimensions + j) as f32) * 0.001)
+                            .collect();
                         store
                             .upsert(id, embedding, &format!("batch content {i}"), None)
                             .await
@@ -126,13 +131,16 @@ fn bench_vector_search_1000(c: &mut Criterion) {
         let rt = Runtime::new().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let dimensions = 384;
-        let store = rt.block_on(create_temp_store(dir.path(), dimensions)).unwrap();
+        let store = rt
+            .block_on(create_temp_store(dir.path(), dimensions))
+            .unwrap();
 
         rt.block_on(async {
             for i in 0..size {
                 let id = Uuid::now_v7();
-                let embedding: Vec<f32> =
-                    (0..dimensions).map(|j| ((i * dimensions + j) as f32) * 0.001).collect();
+                let embedding: Vec<f32> = (0..dimensions)
+                    .map(|j| ((i * dimensions + j) as f32) * 0.001)
+                    .collect();
                 store
                     .upsert(id, embedding, &format!("content {i}"), None)
                     .await
@@ -145,35 +153,27 @@ fn bench_vector_search_1000(c: &mut Criterion) {
 
         let query_vec: Vec<f32> = (0..dimensions).map(|i| (i as f32) * 0.002).collect();
 
-        group.bench_with_input(
-            BenchmarkId::new("search_top10", size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        store
-                            .search(query_vec.clone(), 10, 0.0, None)
-                            .await
-                            .unwrap();
-                    });
+        group.bench_with_input(BenchmarkId::new("search_top10", size), &size, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    store
+                        .search(query_vec.clone(), 10, 0.0, None)
+                        .await
+                        .unwrap();
                 });
-            },
-        );
+            });
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("search_top50", size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        store
-                            .search(query_vec.clone(), 50, 0.0, None)
-                            .await
-                            .unwrap();
-                    });
+        group.bench_with_input(BenchmarkId::new("search_top50", size), &size, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    store
+                        .search(query_vec.clone(), 50, 0.0, None)
+                        .await
+                        .unwrap();
                 });
-            },
-        );
+            });
+        });
     }
 
     group.finish();

@@ -1,11 +1,11 @@
-use chrono::{Datelike, Utc, Weekday};
 use crate::llm::{ChatMessage, CompletionParams, LlmProvider};
+use chrono::{Datelike, Utc, Weekday};
 use mv_core::*;
 use mv_storage::unified::UnifiedStore;
+use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use serde::Deserialize;
 
 /// The IntentEngine analyzes knowledge nodes to suggest autonomous actions.
 #[derive(Clone)]
@@ -44,7 +44,10 @@ impl IntentEngine {
         detected.extend(self.detect_tag_intents(node));
 
         let has_primary_intent = detected.iter().any(|intent| {
-            matches!(intent.intent_type, IntentType::ScheduleReminder | IntentType::ExtractTask)
+            matches!(
+                intent.intent_type,
+                IntentType::ScheduleReminder | IntentType::ExtractTask
+            )
         });
 
         if !has_primary_intent {
@@ -59,8 +62,7 @@ impl IntentEngine {
             let type_str = intent.intent_type.to_string();
             if let Ok(Some(override_)) = self.store.nodes.get_confidence_override(&type_str).await {
                 // Adjust confidence based on feedback history
-                intent.confidence =
-                    (intent.confidence + override_.base_adjustment).clamp(0.0, 1.0);
+                intent.confidence = (intent.confidence + override_.base_adjustment).clamp(0.0, 1.0);
 
                 // Suppress intents below the learned floor
                 if intent.confidence < override_.suppress_below {
@@ -232,7 +234,10 @@ impl IntentEngine {
 
                             let mut params = serde_json::Map::new();
                             params.insert("target".to_string(), target.into());
-                            params.insert("link_type".to_string(), serde_json::Value::String("wikilink".to_string()));
+                            params.insert(
+                                "link_type".to_string(),
+                                serde_json::Value::String("wikilink".to_string()),
+                            );
                             intent.parameters = serde_json::Value::Object(params);
 
                             intents.push(intent);
@@ -261,7 +266,10 @@ impl IntentEngine {
 
                     let mut params = serde_json::Map::new();
                     params.insert("target".to_string(), mention.to_string().into());
-                    params.insert("link_type".to_string(), serde_json::Value::String("mention".to_string()));
+                    params.insert(
+                        "link_type".to_string(),
+                        serde_json::Value::String("mention".to_string()),
+                    );
                     intent.parameters = serde_json::Value::Object(params);
 
                     intents.push(intent);
@@ -359,17 +367,20 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
             ..CompletionParams::default()
         };
 
-        let response = match tokio::time::timeout(Duration::from_secs(8), llm.complete(&messages, &params)).await {
-            Ok(Ok(response)) => response,
-            Ok(Err(err)) => {
-                tracing::warn!(error = %err, node_id = %node.id, "LLM intent detection failed");
-                return Vec::new();
-            }
-            Err(_) => {
-                tracing::warn!(node_id = %node.id, "LLM intent detection timed out");
-                return Vec::new();
-            }
-        };
+        let response =
+            match tokio::time::timeout(Duration::from_secs(8), llm.complete(&messages, &params))
+                .await
+            {
+                Ok(Ok(response)) => response,
+                Ok(Err(err)) => {
+                    tracing::warn!(error = %err, node_id = %node.id, "LLM intent detection failed");
+                    return Vec::new();
+                }
+                Err(_) => {
+                    tracing::warn!(node_id = %node.id, "LLM intent detection timed out");
+                    return Vec::new();
+                }
+            };
 
         #[derive(Deserialize)]
         struct LlmIntentResponse {
@@ -411,7 +422,10 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
                 Err(_) => continue,
             };
 
-            if !matches!(intent_type, IntentType::ExtractTask | IntentType::ScheduleReminder) {
+            if !matches!(
+                intent_type,
+                IntentType::ExtractTask | IntentType::ScheduleReminder
+            ) {
                 continue;
             }
 
@@ -425,7 +439,8 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
 
             match intent_type {
                 IntentType::ScheduleReminder => {
-                    if !params.contains_key("relative_time") && !params.contains_key("reminder_at") {
+                    if !params.contains_key("relative_time") && !params.contains_key("reminder_at")
+                    {
                         if let Some(relative) = self.parse_relative_date(&content_lower) {
                             params.insert("relative_time".to_string(), relative.into());
                         }
@@ -443,7 +458,8 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
                             params.insert("priority_label".to_string(), label.into());
                         }
                     }
-                    if !params.contains_key("deadline_relative") && !params.contains_key("deadline") {
+                    if !params.contains_key("deadline_relative") && !params.contains_key("deadline")
+                    {
                         if let Some(deadline) = self.detect_deadline(&content_lower) {
                             params.insert("deadline_relative".to_string(), deadline.into());
                         }
@@ -488,7 +504,11 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
                 - now.weekday().num_days_from_monday() as i64
                 + 7)
                 % 7;
-            let days = if days_to_saturday == 0 { 7 } else { days_to_saturday };
+            let days = if days_to_saturday == 0 {
+                7
+            } else {
+                days_to_saturday
+            };
             return Some(format!("in_{}_days", days));
         }
 
@@ -545,7 +565,11 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
                 - now.weekday().num_days_from_monday() as i64
                 + 7)
                 % 7;
-            let days = if days_to_friday == 0 { 7 } else { days_to_friday };
+            let days = if days_to_friday == 0 {
+                7
+            } else {
+                days_to_friday
+            };
             return Some(format!("in_{}_days", days));
         }
         if content.contains("end of month") || content.contains("eom") {
@@ -577,7 +601,12 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
     /// Extract the subject of a reminder ("remind me to ...")
     fn extract_reminder_subject(&self, content: &str) -> Option<String> {
         // Try "remind me to ..."
-        for prefix in &["remind me to ", "don't forget to ", "dont forget to ", "remember to "] {
+        for prefix in &[
+            "remind me to ",
+            "don't forget to ",
+            "dont forget to ",
+            "remember to ",
+        ] {
             if let Some(pos) = content.find(prefix) {
                 let rest = &content[pos + prefix.len()..];
                 let subject = rest
@@ -628,7 +657,10 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
         if content.contains("p2") || content.contains("high priority") {
             return Some((1, "high".to_string()));
         }
-        if content.contains("low priority") || content.contains("p3") || content.contains("when possible") {
+        if content.contains("low priority")
+            || content.contains("p3")
+            || content.contains("when possible")
+        {
             return Some((3, "low".to_string()));
         }
 
@@ -647,7 +679,14 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
     /// Detect deadline expressions. Returns a relative key like "tomorrow", "this_week".
     fn detect_deadline(&self, content: &str) -> Option<String> {
         // Explicit deadline markers
-        for prefix in &["due by ", "deadline: ", "deadline ", "due: ", "due date: ", "before "] {
+        for prefix in &[
+            "due by ",
+            "deadline: ",
+            "deadline ",
+            "due: ",
+            "due date: ",
+            "before ",
+        ] {
             if let Some(pos) = content.find(prefix) {
                 let rest = &content[pos + prefix.len()..];
                 let fragment = rest.split(['.', ',', '\n']).next().unwrap_or("");
@@ -676,7 +715,12 @@ If none, return {{\"intents\":[]}}.\n\nNote:\n{truncated}"
 
     /// Detect dependency hints like "after X", "depends on Y", "blocked by Z"
     fn detect_dependency(&self, content: &str) -> Option<String> {
-        for prefix in &["depends on ", "blocked by ", "waiting on ", "after completing "] {
+        for prefix in &[
+            "depends on ",
+            "blocked by ",
+            "waiting on ",
+            "after completing ",
+        ] {
             if let Some(pos) = content.find(prefix) {
                 let rest = &content[pos + prefix.len()..];
                 let dep = rest
@@ -846,9 +890,7 @@ mod tests {
             .find(|i| matches!(i.intent_type, IntentType::ExtractTask))
             .unwrap();
         assert_eq!(
-            task.parameters
-                .get("depends_on")
-                .and_then(|v| v.as_str()),
+            task.parameters.get("depends_on").and_then(|v| v.as_str()),
             Some("code review")
         );
     }

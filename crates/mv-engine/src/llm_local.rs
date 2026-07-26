@@ -43,9 +43,7 @@ mod inner {
                 )));
             }
 
-            let file_size = std::fs::metadata(&model_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let file_size = std::fs::metadata(&model_path).map(|m| m.len()).unwrap_or(0);
             if file_size > config.max_ram_bytes {
                 return Err(LlmError::RequestFailed(format!(
                     "model file ({:.1} GB) exceeds max_ram_bytes ({:.1} GB)",
@@ -175,9 +173,7 @@ mod inner {
                 let piece = self
                     .model
                     .token_to_str(token, Special::Tokenize)
-                    .map_err(|e| {
-                        LlmError::RequestFailed(format!("token to string failed: {e}"))
-                    })?;
+                    .map_err(|e| LlmError::RequestFailed(format!("token to string failed: {e}")))?;
 
                 // Stop on ChatML end token
                 if piece.contains("<|im_end|>") || piece.contains("<|endoftext|>") {
@@ -235,11 +231,9 @@ mod inner {
                     .with_n_threads(config.threads)
                     .with_n_threads_batch(config.threads);
 
-                let mut ctx = model
-                    .new_context(&backend, ctx_params)
-                    .map_err(|e| {
-                        LlmError::RequestFailed(format!("context creation failed: {e}"))
-                    })?;
+                let mut ctx = model.new_context(&backend, ctx_params).map_err(|e| {
+                    LlmError::RequestFailed(format!("context creation failed: {e}"))
+                })?;
 
                 let tokens = model
                     .str_to_token(&prompt_clone, AddBos::Always)
@@ -262,9 +256,7 @@ mod inner {
                     let is_last = i == n_tokens - 1;
                     batch
                         .add(token, i as i32, &[0], is_last)
-                        .map_err(|e| {
-                            LlmError::RequestFailed(format!("batch add failed: {e}"))
-                        })?;
+                        .map_err(|e| LlmError::RequestFailed(format!("batch add failed: {e}")))?;
                 }
 
                 ctx.decode(&mut batch)
@@ -290,11 +282,9 @@ mod inner {
                         break;
                     }
 
-                    let piece = model
-                        .token_to_str(token, Special::Tokenize)
-                        .map_err(|e| {
-                            LlmError::RequestFailed(format!("token to string failed: {e}"))
-                        })?;
+                    let piece = model.token_to_str(token, Special::Tokenize).map_err(|e| {
+                        LlmError::RequestFailed(format!("token to string failed: {e}"))
+                    })?;
 
                     if piece.contains("<|im_end|>") || piece.contains("<|endoftext|>") {
                         break;
@@ -305,20 +295,11 @@ mod inner {
 
                     batch.clear();
                     batch
-                        .add(
-                            token,
-                            (n_tokens + n_decoded as usize) as i32,
-                            &[0],
-                            true,
-                        )
-                        .map_err(|e| {
-                            LlmError::RequestFailed(format!("batch add failed: {e}"))
-                        })?;
+                        .add(token, (n_tokens + n_decoded as usize) as i32, &[0], true)
+                        .map_err(|e| LlmError::RequestFailed(format!("batch add failed: {e}")))?;
 
                     ctx.decode(&mut batch)
-                        .map_err(|e| {
-                            LlmError::RequestFailed(format!("decode failed: {e}"))
-                        })?;
+                        .map_err(|e| LlmError::RequestFailed(format!("decode failed: {e}")))?;
                 }
 
                 Ok(output.trim().to_string())
@@ -338,9 +319,7 @@ mod inner {
 
     /// Try to initialize a local LlamaCpp provider from config.
     /// Returns None if disabled or no model is available.
-    pub fn init_local_provider(
-        config: &LocalLlmConfig,
-    ) -> Option<Arc<dyn LlmProvider>> {
+    pub fn init_local_provider(config: &LocalLlmConfig) -> Option<Arc<dyn LlmProvider>> {
         if !config.enabled {
             return None;
         }
@@ -372,7 +351,10 @@ mod inner {
             // Scan models_dir for any .gguf file
             let dir = PathBuf::from(&config.models_dir);
             if !dir.exists() {
-                info!("local LLM models directory does not exist: {}", dir.display());
+                info!(
+                    "local LLM models directory does not exist: {}",
+                    dir.display()
+                );
                 return None;
             }
             match find_first_gguf(&dir) {
@@ -402,11 +384,7 @@ mod inner {
         let mut gguf_files: Vec<PathBuf> = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| {
-                p.extension()
-                    .map(|ext| ext == "gguf")
-                    .unwrap_or(false)
-            })
+            .filter(|p| p.extension().map(|ext| ext == "gguf").unwrap_or(false))
             .collect();
         // Sort by name for deterministic selection
         gguf_files.sort();
@@ -424,7 +402,9 @@ pub fn init_local_provider(
     _config: &crate::config::LocalLlmConfig,
 ) -> Option<std::sync::Arc<dyn crate::llm::LlmProvider>> {
     if _config.enabled {
-        tracing::warn!("local-llm feature is not enabled at compile time; ignoring local_llm.enabled=true");
+        tracing::warn!(
+            "local-llm feature is not enabled at compile time; ignoring local_llm.enabled=true"
+        );
     }
     None
 }

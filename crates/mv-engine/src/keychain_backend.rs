@@ -37,7 +37,10 @@ impl KeychainBackend {
     fn resolve_domain(&self) -> Result<Option<Uuid>, CredentialError> {
         // Fast path: check cache
         {
-            let cached = self.api_keys_domain.lock().expect("api_keys_domain mutex poisoned");
+            let cached = self
+                .api_keys_domain
+                .lock()
+                .expect("api_keys_domain mutex poisoned");
             if let Some(id) = *cached {
                 return Ok(Some(id));
             }
@@ -57,7 +60,10 @@ impl KeychainBackend {
 
         // Cache it
         {
-            let mut cached = self.api_keys_domain.lock().expect("api_keys_domain mutex poisoned");
+            let mut cached = self
+                .api_keys_domain
+                .lock()
+                .expect("api_keys_domain mutex poisoned");
             *cached = Some(domain_id);
         }
 
@@ -108,7 +114,9 @@ impl CredentialBackend for KeychainBackend {
 
     fn set(&self, key: &str, value: &str) -> Result<(), CredentialError> {
         if !self.keychain.is_unsealed_sync() {
-            return Err(CredentialError::EncryptedFile("vault is sealed".to_string()));
+            return Err(CredentialError::EncryptedFile(
+                "vault is sealed".to_string(),
+            ));
         }
 
         let domain_id = self
@@ -138,7 +146,9 @@ impl CredentialBackend for KeychainBackend {
 
     fn delete(&self, key: &str) -> Result<(), CredentialError> {
         if !self.keychain.is_unsealed_sync() {
-            return Err(CredentialError::EncryptedFile("vault is sealed".to_string()));
+            return Err(CredentialError::EncryptedFile(
+                "vault is sealed".to_string(),
+            ));
         }
 
         let domain_id = match self.resolve_domain()? {
@@ -183,8 +193,13 @@ impl CredentialBackend for KeychainBackend {
         let creds = self
             .runtime
             .block_on(async move {
-                kc.list_credentials(Some(domain_id), Some(mv_core::model::keychain::CredentialState::Active), 1000, 0)
-                    .await
+                kc.list_credentials(
+                    Some(domain_id),
+                    Some(mv_core::model::keychain::CredentialState::Active),
+                    1000,
+                    0,
+                )
+                .await
             })
             .map_err(|e| CredentialError::EncryptedFile(e.to_string()))?;
 

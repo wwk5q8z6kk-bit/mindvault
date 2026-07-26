@@ -11,9 +11,7 @@ fn store() -> CredentialStore {
 /// Convention: `GIT_CREDENTIAL_{HOST}` where dots become underscores and the name is uppercased.
 /// Example: `github.com` -> `GIT_CREDENTIAL_GITHUB_COM`
 fn host_to_secret_key(host: &str) -> String {
-    let normalized = host
-        .to_ascii_uppercase()
-        .replace(['.', '-'], "_");
+    let normalized = host.to_ascii_uppercase().replace(['.', '-'], "_");
     format!("GIT_CREDENTIAL_{normalized}")
 }
 

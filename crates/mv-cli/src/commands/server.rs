@@ -91,14 +91,14 @@ pub async fn preflight(config_path: &str) -> Result<()> {
     }
     if sealed_result.is_err() {
         println!("  3) Run `mv keychain doctor` to inspect plaintext artifacts");
-        println!(
-            "  4) Run `mv keychain migrate-sealed --passphrase <pw>` to encrypt legacy data"
-        );
+        println!("  4) Run `mv keychain migrate-sealed --passphrase <pw>` to encrypt legacy data");
     }
     Err(anyhow::anyhow!("preflight failed"))
 }
 
-fn evaluate_sealed_storage_preflight(config: &mv_engine::config::EngineConfig) -> Result<(), String> {
+fn evaluate_sealed_storage_preflight(
+    config: &mv_engine::config::EngineConfig,
+) -> Result<(), String> {
     let report = mv_server::scan_sealed_storage(config).map_err(|err| err.to_string())?;
     if report.is_clean() {
         return Ok(());
@@ -329,10 +329,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "mindvault-{prefix}-{}-{nanos}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("mindvault-{prefix}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create test dir");
         dir
     }

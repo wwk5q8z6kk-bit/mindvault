@@ -20,11 +20,7 @@ fn bench_sizes(default: &[usize]) -> Vec<usize> {
     }
 
     let mut sizes = default.to_vec();
-    if std::env::var("MINDVAULT_BENCH_LARGE")
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
+    if std::env::var("MINDVAULT_BENCH_LARGE").ok().as_deref() == Some("1") {
         sizes.extend([10_000, 100_000, 1_000_000]);
     }
     sizes.sort_unstable();
@@ -116,23 +112,18 @@ fn bench_engine_store_1000(c: &mut Criterion) {
     for size in sizes {
         let sample_size = if size >= 10_000 { 5 } else { 10 };
         group.sample_size(sample_size);
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &size,
-            |b, &size| {
-                let rt = Runtime::new().unwrap();
-                b.iter(|| {
-                    let (engine, _tmp) = create_engine(&rt);
-                    rt.block_on(async {
-                        for i in 0..size {
-                            let node =
-                                KnowledgeNode::new(NodeKind::Fact, format!("Batch content {i}"));
-                            engine.store_node(node).await.unwrap();
-                        }
-                    });
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
+            let rt = Runtime::new().unwrap();
+            b.iter(|| {
+                let (engine, _tmp) = create_engine(&rt);
+                rt.block_on(async {
+                    for i in 0..size {
+                        let node = KnowledgeNode::new(NodeKind::Fact, format!("Batch content {i}"));
+                        engine.store_node(node).await.unwrap();
+                    }
                 });
-            },
-        );
+            });
+        });
     }
     group.finish();
 }

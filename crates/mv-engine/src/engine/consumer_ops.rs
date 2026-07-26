@@ -111,7 +111,11 @@ impl MindVaultEngine {
     ///
     /// Returns `PolicyDecision::Allow` with TTL/scopes or `PolicyDecision::Deny` with reason.
     /// Default deny: no matching policy means deny.
-    pub(crate) async fn check_policy(&self, secret_key: &str, consumer: &str) -> MvResult<PolicyDecision> {
+    pub(crate) async fn check_policy(
+        &self,
+        secret_key: &str,
+        consumer: &str,
+    ) -> MvResult<PolicyDecision> {
         let policy = self
             .store
             .nodes

@@ -228,9 +228,7 @@ impl Planner {
 
         let mut steps = Vec::new();
         for (i, raw) in raw_steps.iter().enumerate().take(self.config.max_steps) {
-            let action_str = raw["action"]
-                .as_str()
-                .unwrap_or("recall");
+            let action_str = raw["action"].as_str().unwrap_or("recall");
             let action = match action_str {
                 "recall" => StepAction::Recall,
                 "store" => StepAction::Store,
@@ -350,10 +348,7 @@ impl Planner {
 
         match step.action {
             StepAction::Recall => {
-                let query = step.input["query"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
+                let query = step.input["query"].as_str().unwrap_or("").to_string();
                 result.output = Some(serde_json::json!({
                     "status": "requires_engine_execution",
                     "action": "recall",
@@ -422,13 +417,12 @@ impl Planner {
             }
         }
 
-        result.completed_at = if result.status == StepStatus::Completed
-            || result.status == StepStatus::Failed
-        {
-            Some(Utc::now().to_rfc3339())
-        } else {
-            None
-        };
+        result.completed_at =
+            if result.status == StepStatus::Completed || result.status == StepStatus::Failed {
+                Some(Utc::now().to_rfc3339())
+            } else {
+                None
+            };
 
         result
     }

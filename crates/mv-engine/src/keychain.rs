@@ -20,9 +20,8 @@ use mv_core::model::keychain::*;
 use mv_core::traits::KeychainStore;
 use mv_storage::crypto::EncryptionConfig;
 use mv_storage::sealed_runtime::{
-    clear_runtime_root_key_for_scope, runtime_is_degraded_security,
-    runtime_root_key_for_scope, runtime_scope_from_parent,
-    set_runtime_root_key_for_scope,
+    clear_runtime_root_key_for_scope, runtime_is_degraded_security, runtime_root_key_for_scope,
+    runtime_scope_from_parent, set_runtime_root_key_for_scope,
 };
 use mv_storage::vault_crypto::{
     validate_argon2_params, ShamirShare, VaultCrypto, VaultCryptoError,
@@ -567,9 +566,7 @@ impl KeychainEngine {
         let password = self
             .cred_store
             .get_secret_string("MINDVAULT_VAULT_KEY")
-            .ok_or_else(|| {
-                MvError::KeychainNotFound("vault key in OS secure storage".into())
-            })?;
+            .ok_or_else(|| MvError::KeychainNotFound("vault key in OS secure storage".into()))?;
         self.unseal(&password, subject).await?;
         self.refresh_runtime_storage_key(false).await?;
         Ok(())
@@ -2270,7 +2267,10 @@ impl KeychainEngine {
                 // Prune expired epoch rows that have completed re-encryption
                 match engine.store.delete_expired_epochs().await {
                     Ok(n) if n > 0 => {
-                        tracing::info!(deleted = n, "lifecycle scheduler: pruned expired key epochs");
+                        tracing::info!(
+                            deleted = n,
+                            "lifecycle scheduler: pruned expired key epochs"
+                        );
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "lifecycle scheduler: epoch pruning failed");
@@ -2410,10 +2410,7 @@ impl KeychainEngine {
                 let mut crypto = self.crypto.write().await;
                 crypto.remove_grace_key(epoch_entry.epoch);
             }
-            tracing::info!(
-                epoch = epoch_entry.epoch,
-                "resumed re-encryption complete"
-            );
+            tracing::info!(epoch = epoch_entry.epoch, "resumed re-encryption complete");
         }
 
         Ok(())
@@ -2473,8 +2470,8 @@ impl KeychainEngine {
 
         // Wrap old master key with new master key
         let wrapped_old_key = {
-            let encrypted = VaultCrypto::aes_gcm_encrypt_pub(&new_key, &*old_master)
-                .map_err(map_crypto_err)?;
+            let encrypted =
+                VaultCrypto::aes_gcm_encrypt_pub(&new_key, &*old_master).map_err(map_crypto_err)?;
             BASE64.encode(encrypted)
         };
 

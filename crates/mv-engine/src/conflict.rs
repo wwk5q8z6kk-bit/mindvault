@@ -2,7 +2,6 @@ use mv_core::*;
 use mv_storage::unified::UnifiedStore;
 use std::sync::Arc;
 
-
 /// Heuristic conflict detection: finds contradictions between knowledge nodes.
 pub struct ConflictDetector;
 
@@ -101,8 +100,7 @@ impl ConflictDetector {
 
         // Check for temporal supersession: same topic, newer date
         if similarity > 0.85 && new_node.temporal.created_at > existing.temporal.created_at {
-            let age_days = (new_node.temporal.created_at - existing.temporal.created_at)
-                .num_days();
+            let age_days = (new_node.temporal.created_at - existing.temporal.created_at).num_days();
             if age_days > 30 {
                 let explanation = format!(
                     "Node '{}' may supersede '{}' (same topic, {} days newer)",
@@ -110,7 +108,11 @@ impl ConflictDetector {
                     existing.title.as_deref().unwrap_or("untitled"),
                     age_days,
                 );
-                return (ConflictType::Supersession, 0.7 + (similarity - 0.85) * 2.0, explanation);
+                return (
+                    ConflictType::Supersession,
+                    0.7 + (similarity - 0.85) * 2.0,
+                    explanation,
+                );
             }
         }
 
@@ -120,8 +122,7 @@ impl ConflictDetector {
         // Check for opposition keyword pairs
         let opposition_score = Self::opposition_score(&new_lower, &existing_lower);
 
-        let combined = (negation_score * 0.5 + opposition_score * 0.3 + similarity * 0.2)
-            .min(1.0);
+        let combined = (negation_score * 0.5 + opposition_score * 0.3 + similarity * 0.2).min(1.0);
 
         if negation_score > 0.3 || opposition_score > 0.3 {
             let explanation = format!(
@@ -148,15 +149,28 @@ impl ConflictDetector {
 
     /// Detect negation patterns (e.g., "X is good" vs "X is not good").
     fn negation_score(a: &str, b: &str) -> f64 {
-        let negation_words = ["not", "no", "never", "don't", "doesn't", "isn't", "aren't",
-            "won't", "can't", "shouldn't", "cannot", "neither", "nor"];
+        let negation_words = [
+            "not",
+            "no",
+            "never",
+            "don't",
+            "doesn't",
+            "isn't",
+            "aren't",
+            "won't",
+            "can't",
+            "shouldn't",
+            "cannot",
+            "neither",
+            "nor",
+        ];
 
-        let a_has_negation = negation_words.iter().any(|w| {
-            a.split_whitespace().any(|word| word == *w)
-        });
-        let b_has_negation = negation_words.iter().any(|w| {
-            b.split_whitespace().any(|word| word == *w)
-        });
+        let a_has_negation = negation_words
+            .iter()
+            .any(|w| a.split_whitespace().any(|word| word == *w));
+        let b_has_negation = negation_words
+            .iter()
+            .any(|w| b.split_whitespace().any(|word| word == *w));
 
         // One has negation, other doesn't → likely contradiction
         if a_has_negation != b_has_negation {
@@ -173,10 +187,18 @@ impl ConflictDetector {
 
         let mut matches = 0;
         for (w1, w2) in OPPOSITION_PAIRS {
-            let a_has_w1 = a_words.iter().any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *w1);
-            let b_has_w2 = b_words.iter().any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *w2);
-            let a_has_w2 = a_words.iter().any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *w2);
-            let b_has_w1 = b_words.iter().any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *w1);
+            let a_has_w1 = a_words
+                .iter()
+                .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *w1);
+            let b_has_w2 = b_words
+                .iter()
+                .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *w2);
+            let a_has_w2 = a_words
+                .iter()
+                .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *w2);
+            let b_has_w1 = b_words
+                .iter()
+                .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *w1);
 
             if (a_has_w1 && b_has_w2) || (a_has_w2 && b_has_w1) {
                 matches += 1;

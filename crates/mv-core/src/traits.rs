@@ -156,7 +156,11 @@ pub trait KeychainStore: Send + Sync {
     // --- Domain ACLs ---
     async fn insert_acl(&self, acl: &DomainAcl) -> MvResult<()>;
     async fn get_acls_for_domain(&self, domain_id: Uuid) -> MvResult<Vec<DomainAcl>>;
-    async fn get_acl_for_subject(&self, domain_id: Uuid, subject: &str) -> MvResult<Option<DomainAcl>>;
+    async fn get_acl_for_subject(
+        &self,
+        domain_id: Uuid,
+        subject: &str,
+    ) -> MvResult<Option<DomainAcl>>;
     async fn delete_acl(&self, id: Uuid) -> MvResult<()>;
 }
 
@@ -350,8 +354,8 @@ fn _assert_contact_identity_store_object_safe(_: &dyn ContactIdentityStore) {}
 /// Storage for owner profile.
 #[async_trait]
 pub trait ProfileStore: Send + Sync {
-	async fn get_profile(&self) -> MvResult<OwnerProfile>;
-	async fn update_profile(&self, req: &UpdateProfileRequest) -> MvResult<OwnerProfile>;
+    async fn get_profile(&self) -> MvResult<OwnerProfile>;
+    async fn update_profile(&self, req: &UpdateProfileRequest) -> MvResult<OwnerProfile>;
 }
 
 fn _assert_profile_store_object_safe(_: &dyn ProfileStore) {}
@@ -362,7 +366,10 @@ pub trait ConsumerStore: Send + Sync {
     async fn create_consumer(&self, profile: &ConsumerProfile) -> MvResult<()>;
     async fn get_consumer(&self, id: Uuid) -> MvResult<Option<ConsumerProfile>>;
     async fn get_consumer_by_name(&self, name: &str) -> MvResult<Option<ConsumerProfile>>;
-    async fn get_consumer_by_token_hash(&self, token_hash: &str) -> MvResult<Option<ConsumerProfile>>;
+    async fn get_consumer_by_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> MvResult<Option<ConsumerProfile>>;
     async fn list_consumers(&self) -> MvResult<Vec<ConsumerProfile>>;
     async fn revoke_consumer(&self, id: Uuid) -> MvResult<bool>;
     async fn touch_consumer(&self, id: Uuid) -> MvResult<()>;
@@ -375,7 +382,11 @@ fn _assert_consumer_store_object_safe(_: &dyn ConsumerStore) {}
 pub trait PolicyStore: Send + Sync {
     async fn set_policy(&self, policy: &AccessPolicy) -> MvResult<()>;
     async fn get_policy(&self, id: Uuid) -> MvResult<Option<AccessPolicy>>;
-    async fn get_policy_for(&self, secret_key: &str, consumer: &str) -> MvResult<Option<AccessPolicy>>;
+    async fn get_policy_for(
+        &self,
+        secret_key: &str,
+        consumer: &str,
+    ) -> MvResult<Option<AccessPolicy>>;
     async fn list_policies(
         &self,
         secret_key: Option<&str>,
@@ -463,7 +474,10 @@ fn _assert_proxy_audit_store_object_safe(_: &dyn ProxyAuditStore) {}
 pub trait ApprovalStore: Send + Sync {
     async fn create_approval(&self, request: &ApprovalRequest) -> MvResult<()>;
     async fn get_approval(&self, id: Uuid) -> MvResult<Option<ApprovalRequest>>;
-    async fn list_pending_approvals(&self, consumer: Option<&str>) -> MvResult<Vec<ApprovalRequest>>;
+    async fn list_pending_approvals(
+        &self,
+        consumer: Option<&str>,
+    ) -> MvResult<Vec<ApprovalRequest>>;
     async fn decide_approval(
         &self,
         id: Uuid,
@@ -489,11 +503,7 @@ fn _assert_approval_store_object_safe(_: &dyn ApprovalStore) {}
 #[async_trait]
 pub trait Reranker: Send + Sync {
     /// Score each (query, document) pair. Returns scores in the same order as documents.
-    async fn rerank(
-        &self,
-        query: &str,
-        documents: &[String],
-    ) -> MvResult<Vec<f64>>;
+    async fn rerank(&self, query: &str, documents: &[String]) -> MvResult<Vec<f64>>;
 
     /// Name of the reranker for logging/diagnostics.
     fn name(&self) -> &str;
@@ -508,19 +518,10 @@ fn _assert_reranker_object_safe(_: &dyn Reranker) {}
 #[async_trait]
 pub trait SessionStore: Send + Sync {
     /// Record a query+result turn in the session.
-    async fn add_turn(
-        &self,
-        session_id: &str,
-        query: &str,
-        result_summary: &str,
-    ) -> MvResult<()>;
+    async fn add_turn(&self, session_id: &str, query: &str, result_summary: &str) -> MvResult<()>;
 
     /// Get recent turns for a session.
-    async fn get_turns(
-        &self,
-        session_id: &str,
-        limit: usize,
-    ) -> MvResult<Vec<(String, String)>>;
+    async fn get_turns(&self, session_id: &str, limit: usize) -> MvResult<Vec<(String, String)>>;
 
     /// Clear a session.
     async fn clear_session(&self, session_id: &str) -> MvResult<()>;
@@ -534,11 +535,7 @@ fn _assert_session_store_object_safe(_: &dyn SessionStore) {}
 /// Conversation store for persistent multi-turn dialogues.
 #[async_trait]
 pub trait ConversationStore: Send + Sync {
-    async fn create_conversation(
-        &self,
-        id: Uuid,
-        title: Option<&str>,
-    ) -> MvResult<()>;
+    async fn create_conversation(&self, id: Uuid, title: Option<&str>) -> MvResult<()>;
 
     async fn add_message(
         &self,

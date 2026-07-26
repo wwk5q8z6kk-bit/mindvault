@@ -22,9 +22,7 @@ pub struct AccessPolicy {
 
 impl AccessPolicy {
     pub fn is_expired(&self) -> bool {
-        self.expires_at
-            .map(|exp| Utc::now() > exp)
-            .unwrap_or(false)
+        self.expires_at.map(|exp| Utc::now() > exp).unwrap_or(false)
     }
 
     pub fn is_effective(&self) -> bool {
