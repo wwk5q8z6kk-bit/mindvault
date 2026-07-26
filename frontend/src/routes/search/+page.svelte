@@ -9,6 +9,13 @@
 		type SavedSearch,
 		type SearchMode
 	} from '$lib/api/search';
+	import {
+		emptySearchHint,
+		parseSearchMode,
+		persistSearchMode,
+		readStoredSearchMode,
+		toApiSearchType
+	} from '$lib/search/mode';
 	import type { SearchResultDto, ProactiveInsight } from '$lib/api/types';
 	import { assistAutocomplete } from '$lib/api/assist';
 	import { getEmbeddingClusters } from '$lib/api/insights';
@@ -20,12 +27,13 @@
 	import { kindLabel, kindBadgeClass, ALL_NODE_KINDS } from '$lib/utils/kind-helpers';
 	import { recentItems } from '$lib/stores/recent';
 	import { createVirtualizer } from '@tanstack/svelte-virtual';
+	import EmptyState from '$lib/components/EmptyState.svelte';
 
 	type SortOption = 'relevance' | 'date_desc' | 'date_asc' | 'title';
 	type ViewMode = 'results' | 'clusters';
 
 	let query = '';
-	let searchType: SearchMode = 'fulltext';
+	let searchType: SearchMode = readStoredSearchMode();
 	let selectedKinds: Set<string> = new Set();
 	let showKindDropdown = false;
 	let tagFilter: string = '';
@@ -324,16 +332,17 @@
 
 	function applySavedSearch(search: SavedSearch) {
 		query = search.query;
-		if (search.search_type === 'hybrid') {
-			searchType = 'hybrid';
-		} else if (search.search_type === 'vector') {
-			searchType = 'semantic';
-		} else {
-			searchType = 'fulltext';
-		}
+		searchType = parseSearchMode(search.search_type) ?? 'fulltext';
+		persistSearchMode(searchType);
 		selectedKinds = new Set(search.kinds);
 		selectedSavedSearchId = search.id;
 		savedSearchName = search.name;
+	}
+
+	function setSearchType(mode: SearchMode) {
+		searchType = mode;
+		persistSearchMode(mode);
+		void doSearch();
 	}
 
 	async function refreshSavedSearches() {
@@ -365,7 +374,7 @@
 		const payload = {
 			name: savedSearchName.trim() || autoSavedSearchName(),
 			query: trimmed,
-			search_type: searchType === 'semantic' ? 'vector' : searchType,
+			search_type: toApiSearchType(searchType),
 			limit: 50,
 			kinds: parseKindsFilter()
 		};
@@ -448,6 +457,11 @@
 	}
 
 	onMount(() => {
+		const urlMode = parseSearchMode($page.url.searchParams.get('mode'));
+		if (urlMode) {
+			searchType = urlMode;
+			persistSearchMode(urlMode);
+		}
 		const urlQuery = $page.url.searchParams.get('q');
 		if (urlQuery) {
 			query = urlQuery;
@@ -524,31 +538,28 @@
 			</div>
 
 			<div class="mt-3 flex flex-wrap items-center gap-3">
-				<div class="flex rounded-lg border border-[rgb(var(--mv-border))] text-[10px]">
-					<button
-						class={`px-3 py-1 transition ${searchType === 'fulltext' ? 'bg-[rgb(var(--mv-panel-strong))]/80 text-[rgb(var(--mv-text))]' : 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]'}`}
-						on:click={() => {
-							searchType = 'fulltext';
-							void doSearch();
-						}}
-					>
-						Fulltext
-					</button>
+				<div class="flex rounded-lg border border-[rgb(var(--mv-border))] text-[10px]" role="group" aria-label="Search mode">
 					<button
 						class={`px-3 py-1 transition ${searchType === 'hybrid' ? 'bg-[rgb(var(--mv-panel-strong))]/80 text-[rgb(var(--mv-text))]' : 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]'}`}
-						on:click={() => {
-							searchType = 'hybrid';
-							void doSearch();
-						}}
+						aria-pressed={searchType === 'hybrid'}
+						title="Combine keyword and semantic matching (recommended)"
+						on:click={() => setSearchType('hybrid')}
 					>
 						Hybrid
 					</button>
 					<button
+						class={`px-3 py-1 transition ${searchType === 'fulltext' ? 'bg-[rgb(var(--mv-panel-strong))]/80 text-[rgb(var(--mv-text))]' : 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]'}`}
+						aria-pressed={searchType === 'fulltext'}
+						title="Exact keyword / BM25 matching"
+						on:click={() => setSearchType('fulltext')}
+					>
+						Fulltext
+					</button>
+					<button
 						class={`px-3 py-1 transition ${searchType === 'semantic' ? 'bg-[rgb(var(--mv-panel-strong))]/80 text-[rgb(var(--mv-text))]' : 'text-[rgb(var(--mv-muted))] hover:text-[rgb(var(--mv-text))]'}`}
-						on:click={() => {
-							searchType = 'semantic';
-							void doSearch();
-						}}
+						aria-pressed={searchType === 'semantic'}
+						title="Vector / meaning-based matching only"
+						on:click={() => setSearchType('semantic')}
 					>
 						Semantic
 					</button>
@@ -788,38 +799,32 @@
 				</div>
 			</div>
 		{:else if query.trim() && !loading}
-			<div class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-8 text-center">
-				<div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-[rgb(var(--mv-panel-strong))] text-sm text-[rgb(var(--mv-muted))]/60">
-					?
-				</div>
-				<p class="text-sm text-[rgb(var(--mv-muted))]">No results found for "{query}"</p>
-				<p class="mt-2 text-xs text-[rgb(var(--mv-muted))]/40">Try different keywords or use hybrid search for semantic matching</p>
-			</div>
+			<EmptyState
+				icon="search"
+				tone="slate"
+				title={`No results for "${query}"`}
+				description={emptySearchHint(searchType)}
+			/>
 		{:else if !query.trim() && !loading}
-			<div class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-8 text-center">
-				<div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-sky-500/20 text-sm text-sky-300">
-					<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-					</svg>
-				</div>
-				<h3 class="text-sm font-medium text-[rgb(var(--mv-text))]">Search your vault</h3>
-				<p class="mt-1 text-xs text-[rgb(var(--mv-muted))]/60">Find notes, tasks, and more with instant search</p>
-				<div class="mx-auto mt-4 max-w-xs space-y-1.5 text-left">
-					<p class="text-[10px] text-[rgb(var(--mv-muted))]/40">Try searching for:</p>
-					<button
-						class="w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/40 px-3 py-2 text-left text-xs text-[rgb(var(--mv-muted))] hover:border-[rgb(var(--mv-border))]"
-						on:click={() => { query = 'project ideas'; void doSearch(); }}
-					>
-						"project ideas"
-					</button>
-					<button
-						class="w-full rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/40 px-3 py-2 text-left text-xs text-[rgb(var(--mv-muted))] hover:border-[rgb(var(--mv-border))]"
-						on:click={() => { query = 'meeting notes'; void doSearch(); }}
-					>
-						"meeting notes"
-					</button>
-				</div>
-			</div>
+			<EmptyState
+				icon="search"
+				tone="sky"
+				title="Search your vault"
+				description="Hybrid search finds both exact keywords and related meaning across your vault"
+			>
+				<button
+					class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/40 px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:border-sky-500/40"
+					on:click={() => { query = 'project ideas'; void doSearch(); }}
+				>
+					"project ideas"
+				</button>
+				<button
+					class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/40 px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:border-sky-500/40"
+					on:click={() => { query = 'meeting notes'; void doSearch(); }}
+				>
+					"meeting notes"
+				</button>
+			</EmptyState>
 		{/if}
 	</section>
 

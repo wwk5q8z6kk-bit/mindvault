@@ -3,6 +3,7 @@
 	import { fade, scale } from 'svelte/transition';
 	import { goto } from '$app/navigation';
 	import { searchFts, searchHybrid, type SearchResultDto } from '$lib/api/search';
+	import { persistSearchMode, readStoredSearchMode } from '$lib/search/mode';
 	import { kindLabel, kindBadgeClass } from '$lib/utils/kind-helpers';
 	import { recentItems, recentNotes, recentTasks, recentSearches, type RecentItem } from '$lib/stores/recent';
 
@@ -13,7 +14,8 @@
 	let selectedIndex = 0;
 	let inputEl: HTMLInputElement | null = null;
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-	let searchMode: 'fulltext' | 'hybrid' = 'fulltext';
+	let searchMode: 'fulltext' | 'hybrid' =
+		readStoredSearchMode() === 'fulltext' ? 'fulltext' : 'hybrid';
 
 	// Recent items for empty state
 	$: showRecent = !query.trim() && !loading;
@@ -56,6 +58,7 @@
 			case 'Tab':
 				event.preventDefault();
 				searchMode = searchMode === 'fulltext' ? 'hybrid' : 'fulltext';
+				persistSearchMode(searchMode);
 				void doSearch();
 				break;
 		}
@@ -187,22 +190,34 @@
 					bind:value={query}
 					on:input={onInput}
 				/>
-				<div class="flex items-center gap-2">
-					<button
-						class="rounded px-2 py-0.5 text-[10px] transition {searchMode === 'fulltext'
-							? 'bg-slate-700 text-white'
-							: 'text-slate-500 hover:text-white'}"
-						on:click|stopPropagation={() => { searchMode = 'fulltext'; void doSearch(); }}
-					>
-						Text
-					</button>
+				<div class="flex items-center gap-2" role="group" aria-label="Search mode">
 					<button
 						class="rounded px-2 py-0.5 text-[10px] transition {searchMode === 'hybrid'
 							? 'bg-slate-700 text-white'
 							: 'text-slate-500 hover:text-white'}"
-						on:click|stopPropagation={() => { searchMode = 'hybrid'; void doSearch(); }}
+						aria-pressed={searchMode === 'hybrid'}
+						title="Hybrid (keyword + semantic)"
+						on:click|stopPropagation={() => {
+							searchMode = 'hybrid';
+							persistSearchMode('hybrid');
+							void doSearch();
+						}}
 					>
-						Semantic
+						Hybrid
+					</button>
+					<button
+						class="rounded px-2 py-0.5 text-[10px] transition {searchMode === 'fulltext'
+							? 'bg-slate-700 text-white'
+							: 'text-slate-500 hover:text-white'}"
+						aria-pressed={searchMode === 'fulltext'}
+						title="Full-text keyword matching"
+						on:click|stopPropagation={() => {
+							searchMode = 'fulltext';
+							persistSearchMode('fulltext');
+							void doSearch();
+						}}
+					>
+						Text
 					</button>
 				</div>
 				{#if loading}
@@ -213,7 +228,12 @@
 			<div class="max-h-[50vh] overflow-y-auto p-2">
 				{#if results.length === 0 && query.trim() && !loading}
 					<div class="py-8 text-center text-sm text-slate-500">
-						No results for "{query}"
+						<p>No results for "{query}"</p>
+						<p class="mt-1 text-[11px] text-slate-600">
+							{searchMode === 'fulltext'
+								? 'Press Tab for Hybrid search'
+								: 'Try different keywords or switch to Text mode'}
+						</p>
 					</div>
 				{:else if showRecent && recentCombined.length > 0}
 					<div class="pb-2">
