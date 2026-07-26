@@ -33,6 +33,11 @@
 		toggleSidebarGroup,
 		isSidebarGroupCollapsed
 	} from '$lib/stores/view-preferences';
+	import {
+		isSidebarNavigationItemActive,
+		sidebarNavigationGroups,
+		sidebarNavigationHref
+	} from '$lib/navigation/sidebar';
 
 	let online = true;
 	$: connectionStatus = deriveConnectionStatus({
@@ -45,81 +50,6 @@
 
 	function closeMobileMenu() {
 		mobileMenuOpen = false;
-	}
-
-	const navGroups: Array<{
-		label?: string;
-		preferenceKey?: string;
-		collapsible: boolean;
-		items: Array<{ label: string; href: string }>;
-	}> = [
-		{
-			collapsible: false,
-			items: [
-				{ label: 'Dashboard', href: '/' },
-				{ label: 'Inbox', href: '/inbox' },
-				{ label: 'Daily', href: '/focus' },
-				{ label: 'Search', href: '/search' }
-			]
-		},
-		{
-			label: 'Vault',
-			preferenceKey: 'Knowledge Base',
-			collapsible: true,
-			items: [
-				{ label: 'Notes', href: '/notes' },
-				{ label: 'Resources', href: '/bookmarks' }
-			]
-		},
-		{
-			label: 'Work',
-			preferenceKey: 'Productivity',
-			collapsible: true,
-			items: [
-				{ label: 'Tasks', href: '/tasks' },
-				{ label: 'Goals', href: '/goals' }
-			]
-		},
-		{
-			label: 'Relay',
-			preferenceKey: 'Connections',
-			collapsible: true,
-			items: [
-				{ label: 'Chat', href: '/chat' },
-				{ label: 'Relay', href: '/relay' }
-			]
-		},
-		{
-			label: 'Control',
-			preferenceKey: 'System',
-			collapsible: true,
-			items: [
-				{ label: 'Review', href: '/review' },
-				{ label: 'Sync', href: '/sync' },
-				{ label: 'Plugins', href: '/plugins' },
-				{ label: 'Autonomy', href: '/autonomy' },
-				{ label: 'Settings', href: '/settings' }
-			]
-		}
-	];
-
-	/**
-	 * Build an href that includes the user's stored view preference as a ?view= param.
-	 * Returns the bare href if the preference is the default for that page.
-	 */
-	function viewAwareHref(href: string, prefs: typeof $viewPreferences): string {
-		switch (href) {
-			case '/tasks':
-				return prefs.tasks !== 'list' ? `/tasks?view=${prefs.tasks}` : href;
-			case '/notes':
-				return prefs.notes !== 'list' ? `/notes?view=${prefs.notes}` : href;
-			case '/review':
-				return prefs.review !== 'digest' ? `/review?view=${prefs.review}` : href;
-			case '/bookmarks':
-				return prefs.resources !== 'bookmarks' ? `/bookmarks?view=${prefs.resources}` : href;
-			default:
-				return href;
-		}
 	}
 
 	const routeMeta: Array<{ href: string; title: string; subtitle: string }> = [
@@ -405,7 +335,7 @@
 			</div>
 
 			<nav class="flex-1 overflow-y-auto pr-2 space-y-6">
-				{#each navGroups as group}
+				{#each sidebarNavigationGroups as group}
 					{@const preferenceKey = group.preferenceKey ?? group.label}
 					{@const collapsed =
 						group.collapsible && preferenceKey
@@ -446,11 +376,9 @@
 						{#if !collapsed}
 							<div class="space-y-0.5" transition:slide={{ duration: 200 }}>
 								{#each group.items as item (item.href)}
-									{@const isActive =
-										$page.url.pathname === item.href ||
-										($page.url.pathname.startsWith(item.href) && item.href !== '/')}
+									{@const isActive = isSidebarNavigationItemActive(item, $page.url)}
 									<a
-										href={viewAwareHref(item.href, $viewPreferences)}
+										href={sidebarNavigationHref(item, $viewPreferences)}
 										class={`group relative flex items-center gap-3 rounded-xl px-4 py-2.5 text-sm font-medium transition-all duration-300 ${
 											isActive
 												? 'bg-gradient-to-r from-[rgb(var(--mv-accent))]/10 to-transparent text-[rgb(var(--mv-text))] shadow-[inset_3px_0_0_0_rgb(var(--mv-accent-strong))]'
@@ -615,7 +543,7 @@
 						</div>
 					</div>
 					<div class="flex-1 overflow-y-auto space-y-6 pr-2">
-						{#each navGroups as group}
+						{#each sidebarNavigationGroups as group}
 							{@const mobilePreferenceKey = group.preferenceKey ?? group.label}
 							{@const mobileCollapsed =
 								group.collapsible && mobilePreferenceKey
@@ -657,11 +585,9 @@
 								{#if !mobileCollapsed}
 									<div class="space-y-0.5" transition:slide={{ duration: 200 }}>
 										{#each group.items as item (item.href)}
-											{@const mobileActive =
-												$page.url.pathname === item.href ||
-												($page.url.pathname.startsWith(item.href) && item.href !== '/')}
+											{@const mobileActive = isSidebarNavigationItemActive(item, $page.url)}
 											<a
-												href={viewAwareHref(item.href, $viewPreferences)}
+												href={sidebarNavigationHref(item, $viewPreferences)}
 												class={`block rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
 													mobileActive
 														? 'bg-[rgb(var(--mv-accent))]/10 text-[rgb(var(--mv-accent-strong))]'

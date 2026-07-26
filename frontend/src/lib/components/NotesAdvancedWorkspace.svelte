@@ -24,6 +24,7 @@
 	import { markdownToHTML } from '$lib/editor';
 	import ViewToggle from '$lib/components/ViewToggle.svelte';
 	import DistillPanel from '$lib/components/DistillPanel.svelte';
+	import ContextBoundary from '$lib/components/ContextBoundary.svelte';
 	import { createViewMode, setViewMode } from '$lib/utils/view-mode';
 	import {
 		setViewPreference,
@@ -818,8 +819,11 @@
 			Notes
 		</h2>
 		<p class="mt-1 text-sm font-medium text-[rgb(var(--mv-muted))]/80">
-			Your sovereign second brain.
+			Explore connections inside your private Personal Vault.
 		</p>
+		<div class="mt-3">
+			<ContextBoundary compact detail="Local-first" />
+		</div>
 	</div>
 
 	<div class="relative z-10 flex items-center gap-3">

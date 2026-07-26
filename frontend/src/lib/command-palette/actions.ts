@@ -377,7 +377,7 @@ export function registerBuiltInActions() {
 			title: 'Open Knowledge Graph',
 			subtitle: 'Visual node connections',
 			keywords: ['graph', 'knowledge graph', 'connections', 'visualization'],
-			handler: (ctx) => ctx.navigate('/graph')
+			handler: (ctx) => ctx.navigate('/notes?view=graph')
 		},
 		{
 			id: 'open-canvas',
