@@ -357,16 +357,13 @@ pub async fn unseal_vault(
         }
         #[cfg(not(target_os = "macos"))]
         {
-            if let Err(rate_limited) = log_and_record_unseal_failure(
+            log_and_record_unseal_failure(
                 &state,
                 subject,
                 method,
                 "secure_enclave_requires_macos",
             )
-            .await
-            {
-                return Err(rate_limited);
-            }
+            .await?;
             return Err((
                 StatusCode::BAD_REQUEST,
                 "Secure Enclave only available on macOS".into(),
