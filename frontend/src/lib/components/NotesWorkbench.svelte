@@ -12,12 +12,12 @@
 		ChevronDown,
 		Command,
 		Expand,
-		FilePlus2,
 		FileText,
 		History,
 		Inbox,
 		LayoutDashboard,
 		Link2,
+		Minimize2,
 		Network,
 		Pin,
 		Plus,
@@ -26,7 +26,8 @@
 		SlidersHorizontal,
 		SquareCheckBig,
 		Target,
-		Trash2
+		Trash2,
+		X
 	} from '@lucide/svelte';
 	import FocusedNoteEditor from '$lib/components/FocusedNoteEditor.svelte';
 	import { createNote, deleteNote, updateNote, type Note } from '$lib/api/notes';
@@ -97,9 +98,11 @@
 	let tagDraft = '';
 	let filtersExpanded = false;
 	let mobilePane: 'list' | 'editor' = 'editor';
+	let focusMode = false;
 	let savedStatus: SaveStatus = 'saved';
 	let savedAt = new Date();
 	let searchInput: HTMLInputElement;
+	let titleInput: HTMLTextAreaElement;
 	let tagInput: HTMLInputElement;
 	let saveTimer: ReturnType<typeof setTimeout> | null = null;
 	let saveInFlight = false;
@@ -270,7 +273,7 @@
 		if (first) {
 			selectNote(first, false);
 		} else {
-			newNote();
+			void newNote(false);
 			mobilePane = 'list';
 		}
 	}
@@ -288,7 +291,7 @@
 		if (moveToEditor) mobilePane = 'editor';
 	}
 
-	function newNote() {
+	async function newNote(focusTitle = true) {
 		if (saveTimer) clearTimeout(saveTimer);
 		selectedNote = null;
 		title = '';
@@ -298,6 +301,10 @@
 		tagEditorOpen = false;
 		toolsOpen = false;
 		mobilePane = 'editor';
+		if (focusTitle) {
+			await tick();
+			titleInput?.focus();
+		}
 	}
 
 	function scheduleSave() {
@@ -440,7 +447,7 @@
 		toolsOpen = false;
 		const next = notes[0];
 		if (next) selectNote(next, false);
-		else newNote();
+		else void newNote(false);
 
 		if (!demoMode && !deleting.id.startsWith('local-')) {
 			try {
@@ -462,10 +469,29 @@
 		return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
 	}
 
+	async function focusSearch() {
+		mobilePane = 'list';
+		await tick();
+		searchInput?.focus();
+		searchInput?.select();
+	}
+
 	function handleKeyboard(event: KeyboardEvent) {
 		if (event.key === 'Escape') {
+			if (focusMode) {
+				focusMode = false;
+				return;
+			}
+			if (document.activeElement === searchInput) {
+				if (searchQuery) searchQuery = '';
+				else searchInput.blur();
+			}
 			toolsOpen = false;
 			tagEditorOpen = false;
+		}
+		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+			event.preventDefault();
+			void focusSearch();
 		}
 		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
 			event.preventDefault();
@@ -474,7 +500,11 @@
 		}
 		if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'n') {
 			event.preventDefault();
-			newNote();
+			void newNote();
+		}
+		if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
+			event.preventDefault();
+			focusMode = !focusMode;
 		}
 	}
 </script>
@@ -489,7 +519,7 @@
 	/>
 </svelte:head>
 
-<div class="workbench">
+<div class="workbench" class:focus-mode={focusMode}>
 	<aside class="primary-sidebar" aria-label="Primary navigation">
 		<div class="brand">
 			<div class="brand-mark" aria-hidden="true">MV</div>
@@ -547,20 +577,45 @@
 			</div>
 
 			<div class="new-note-row">
-				<button class="new-note" on:click={newNote}>
+				<button
+					class="new-note"
+					on:click={() => void newNote()}
+					aria-keyshortcuts="Meta+Shift+N Control+Shift+N"
+				>
 					<Plus size={19} strokeWidth={2} />
 					<span>New note</span>
 				</button>
-				<button class="new-note-icon" aria-label="New note" title="New note" on:click={newNote}>
-					<FilePlus2 size={18} strokeWidth={1.8} />
-				</button>
 			</div>
 
-			<label class="note-search">
+			<div class="note-search" role="search">
 				<Search size={17} strokeWidth={1.8} aria-hidden="true" />
-				<input bind:this={searchInput} bind:value={searchQuery} placeholder="Search notes…" />
-				<span><Command size={12} strokeWidth={2} />K</span>
-			</label>
+				<input
+					bind:this={searchInput}
+					bind:value={searchQuery}
+					type="search"
+					placeholder="Search notes…"
+					aria-label="Search notes"
+					aria-keyshortcuts="Meta+K Control+K"
+					autocomplete="off"
+				/>
+				{#if searchQuery}
+					<button
+						class="clear-search"
+						aria-label="Clear note search"
+						title="Clear search"
+						on:click={() => {
+							searchQuery = '';
+							searchInput?.focus();
+						}}
+					>
+						<X size={15} strokeWidth={2} />
+					</button>
+				{:else}
+					<span class="search-shortcut" aria-hidden="true"
+						><Command size={12} strokeWidth={2} />K</span
+					>
+				{/if}
+			</div>
 
 			<div class="list-tabs" role="tablist" aria-label="Note filters">
 				<button
@@ -708,6 +763,7 @@
 			<article class="document">
 				<textarea
 					class="document-title"
+					bind:this={titleInput}
 					bind:value={title}
 					on:input={scheduleSave}
 					placeholder="Untitled note"
@@ -764,10 +820,21 @@
 				<span>{wordCount} words</span>
 				<span>{characterCount.toLocaleString()} characters</span>
 				<i></i>
-				<button aria-label="Text style">H2 <ChevronDown size={13} strokeWidth={1.8} /></button>
-				<button aria-label="Focus editor" title="Focus editor"
-					><Expand size={17} strokeWidth={1.8} /></button
+				<button
+					class="focus-toggle"
+					class:active={focusMode}
+					aria-label={focusMode ? 'Exit focus mode' : 'Enter focus mode'}
+					title={focusMode ? 'Exit focus mode (Esc)' : 'Enter focus mode (⌘⇧F)'}
+					aria-pressed={focusMode}
+					aria-keyshortcuts="Meta+Shift+F Control+Shift+F"
+					on:click={() => (focusMode = !focusMode)}
 				>
+					{#if focusMode}
+						<Minimize2 size={17} strokeWidth={1.8} />
+					{:else}
+						<Expand size={17} strokeWidth={1.8} />
+					{/if}
+				</button>
 			</div>
 		</footer>
 	</main>
@@ -797,6 +864,19 @@
 		background: radial-gradient(circle at 85% 12%, rgb(38 35 58 / 10%), transparent 35%), #0c0c0f;
 		color: #f4f4f6;
 		font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+	}
+
+	.workbench.focus-mode {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.workbench.focus-mode .primary-sidebar,
+	.workbench.focus-mode .notes-panel {
+		display: none;
+	}
+
+	.workbench.focus-mode .editor-panel {
+		grid-column: 1;
 	}
 
 	button,
@@ -1025,8 +1105,7 @@
 		letter-spacing: -0.55px;
 	}
 
-	.panel-title button,
-	.new-note-icon {
+	.panel-title button {
 		display: grid;
 		width: 42px;
 		height: 42px;
@@ -1038,21 +1117,19 @@
 		cursor: pointer;
 	}
 
-	.panel-title button:hover,
-	.new-note-icon:hover {
+	.panel-title button:hover {
 		border-color: #32323a;
 		background: #18181d;
 		color: white;
 	}
 
 	.new-note-row {
-		display: grid;
-		grid-template-columns: 1fr 43px;
-		gap: 12px;
+		display: block;
 	}
 
 	.new-note {
 		display: flex;
+		width: 100%;
 		height: 43px;
 		align-items: center;
 		justify-content: center;
@@ -1075,11 +1152,6 @@
 	.new-note:hover {
 		filter: brightness(1.08);
 		transform: translateY(-1px);
-	}
-
-	.new-note-icon {
-		border-color: #303037;
-		background: #111116;
 	}
 
 	.note-search {
@@ -1111,16 +1183,37 @@
 		font-size: 13px;
 	}
 
+	.note-search input::-webkit-search-cancel-button {
+		display: none;
+	}
+
 	.note-search input::placeholder {
 		color: #6e6e79;
 	}
 
-	.note-search > span {
+	.search-shortcut {
 		display: flex;
 		align-items: center;
 		gap: 2px;
 		color: #676772;
 		font-size: 11px;
+	}
+
+	.clear-search {
+		display: grid;
+		width: 28px;
+		height: 28px;
+		place-items: center;
+		border: 0;
+		border-radius: 6px;
+		background: transparent;
+		color: #777782;
+		cursor: pointer;
+	}
+
+	.clear-search:hover {
+		background: #1c1c22;
+		color: #f4f4f6;
 	}
 
 	.list-tabs {
@@ -1620,6 +1713,19 @@
 		color: #9a9aa5;
 		font-size: 11px;
 		cursor: pointer;
+	}
+
+	.focus-toggle {
+		width: 32px;
+		height: 32px;
+		justify-content: center;
+		border-radius: 7px !important;
+	}
+
+	.focus-toggle:hover,
+	.focus-toggle.active {
+		background: #202028;
+		color: #f4f4f6;
 	}
 
 	@media (max-width: 1180px) {
