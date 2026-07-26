@@ -14,6 +14,8 @@
 	class="rounded-lg border border-slate-700 bg-slate-800/60 px-2 py-1 text-[10px] text-slate-300 outline-none"
 	value={$activeNamespace ?? ''}
 	on:change={handleChange}
+	aria-label="Namespace filter"
+	title="Filter records by namespace"
 >
 	<option value="">All namespaces</option>
 	{#each $availableNamespaces as ns (ns)}

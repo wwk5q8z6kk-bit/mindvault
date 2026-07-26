@@ -21,6 +21,7 @@
 	import { startWebSocket, stopWebSocket, wsStatus } from '$lib/stores/websocket';
 	import { handleUndoKeyboard } from '$lib/stores/undo';
 	import NamespaceSelector from '$lib/components/NamespaceSelector.svelte';
+	import ContextBoundary from '$lib/components/ContextBoundary.svelte';
 	import { loadAvailableNamespaces } from '$lib/stores/namespace';
 	import { connectAgentStream, disconnectAgentStream } from '$lib/api/agent';
 	import { keychainStore, pollVaultStatus } from '$lib/stores/keychain';
@@ -48,6 +49,7 @@
 
 	const navGroups: Array<{
 		label?: string;
+		preferenceKey?: string;
 		collapsible: boolean;
 		items: Array<{ label: string; href: string }>;
 	}> = [
@@ -61,7 +63,8 @@
 			]
 		},
 		{
-			label: 'Knowledge Base',
+			label: 'Vault',
+			preferenceKey: 'Knowledge Base',
 			collapsible: true,
 			items: [
 				{ label: 'Notes', href: '/notes' },
@@ -69,7 +72,8 @@
 			]
 		},
 		{
-			label: 'Productivity',
+			label: 'Work',
+			preferenceKey: 'Productivity',
 			collapsible: true,
 			items: [
 				{ label: 'Tasks', href: '/tasks' },
@@ -77,7 +81,8 @@
 			]
 		},
 		{
-			label: 'Connections',
+			label: 'Relay',
+			preferenceKey: 'Connections',
 			collapsible: true,
 			items: [
 				{ label: 'Chat', href: '/chat' },
@@ -85,7 +90,8 @@
 			]
 		},
 		{
-			label: 'System',
+			label: 'Control',
+			preferenceKey: 'System',
 			collapsible: true,
 			items: [
 				{ label: 'Review', href: '/review' },
@@ -118,6 +124,11 @@
 
 	const routeMeta: Array<{ href: string; title: string; subtitle: string }> = [
 		{
+			href: '/onboarding',
+			title: 'Welcome to MindVault',
+			subtitle: 'Set up your private, local-first Personal Vault.'
+		},
+		{
 			href: '/plan',
 			title: 'Smart Daily Planner',
 			subtitle: 'AI-powered daily planning with priorities and focus blocks.'
@@ -144,8 +155,8 @@
 		},
 		{
 			href: '/notes',
-			title: 'Notes Workspace',
-			subtitle: 'Capture and refine ideas with backlinks and rich editing.'
+			title: 'Notes',
+			subtitle: 'Capture and refine ideas in your private, local-first vault.'
 		},
 		{
 			href: '/chat',
@@ -300,11 +311,12 @@
 	];
 
 	function resolveRouteMeta(pathname: string) {
+		const defaultMeta = routeMeta.find((item) => item.href === '/') ?? routeMeta[0];
 		if (pathname === '/') {
-			return routeMeta.find((item) => item.href === '/') ?? routeMeta[0];
+			return defaultMeta;
 		}
 		return (
-			routeMeta.find((item) => item.href !== '/' && pathname.startsWith(item.href)) ?? routeMeta[0]
+			routeMeta.find((item) => item.href !== '/' && pathname.startsWith(item.href)) ?? defaultMeta
 		);
 	}
 
@@ -387,23 +399,24 @@
 					<span class="font-bold text-lg leading-tight tracking-tight">MindVault</span>
 					<span
 						class="text-[10px] uppercase tracking-wider font-semibold text-[rgb(var(--mv-muted))] opacity-80"
-						>Workspace</span
+						>Personal Vault</span
 					>
 				</div>
 			</div>
 
 			<nav class="flex-1 overflow-y-auto pr-2 space-y-6">
 				{#each navGroups as group}
+					{@const preferenceKey = group.preferenceKey ?? group.label}
 					{@const collapsed =
-						group.collapsible && group.label
-							? isSidebarGroupCollapsed($viewPreferences.sidebarCollapsed, group.label)
+						group.collapsible && preferenceKey
+							? isSidebarGroupCollapsed($viewPreferences.sidebarCollapsed, preferenceKey)
 							: false}
 					<div>
 						{#if group.label}
 							{#if group.collapsible}
 								<button
 									class="flex w-full items-center justify-between mb-2 px-3 text-[11px] font-bold uppercase tracking-widest text-[rgb(var(--mv-muted))]/70 hover:text-[rgb(var(--mv-muted))] transition-colors duration-150"
-									on:click={() => group.label && toggleSidebarGroup(group.label)}
+									on:click={() => preferenceKey && toggleSidebarGroup(preferenceKey)}
 									aria-expanded={!collapsed}
 								>
 									{group.label}
@@ -460,12 +473,7 @@
 			</nav>
 
 			<div class="mt-4 pt-4 border-t border-[rgb(var(--mv-border))]">
-				<div
-					class="flex items-center gap-2 px-3 py-2 text-xs font-medium text-[rgb(var(--mv-muted))] rounded-lg hover:bg-[rgb(var(--mv-panel-strong))]/50 transition-colors cursor-pointer"
-				>
-					<div class="h-2 w-2 rounded-full bg-emerald-500"></div>
-					<span>System Operational</span>
-				</div>
+				<ContextBoundary detail="Local-first" />
 			</div>
 		</aside>
 	{/if}
@@ -598,20 +606,28 @@
 						>
 							<span class="font-bold">MV</span>
 						</div>
-						<span class="font-bold text-lg">MindVault</span>
+						<div class="flex flex-col">
+							<span class="font-bold text-lg leading-tight">MindVault</span>
+							<span
+								class="text-[10px] uppercase tracking-wider font-semibold text-[rgb(var(--mv-muted))]"
+								>Personal Vault</span
+							>
+						</div>
 					</div>
 					<div class="flex-1 overflow-y-auto space-y-6 pr-2">
 						{#each navGroups as group}
+							{@const mobilePreferenceKey = group.preferenceKey ?? group.label}
 							{@const mobileCollapsed =
-								group.collapsible && group.label
-									? isSidebarGroupCollapsed($viewPreferences.sidebarCollapsed, group.label)
+								group.collapsible && mobilePreferenceKey
+									? isSidebarGroupCollapsed($viewPreferences.sidebarCollapsed, mobilePreferenceKey)
 									: false}
 							<div>
 								{#if group.label}
 									{#if group.collapsible}
 										<button
 											class="flex w-full items-center justify-between mb-2 px-3 text-[11px] font-bold uppercase tracking-widest text-[rgb(var(--mv-muted))]/70 hover:text-[rgb(var(--mv-muted))] transition-colors duration-150"
-											on:click={() => group.label && toggleSidebarGroup(group.label)}
+											on:click={() =>
+												mobilePreferenceKey && toggleSidebarGroup(mobilePreferenceKey)}
 											aria-expanded={!mobileCollapsed}
 										>
 											{group.label}

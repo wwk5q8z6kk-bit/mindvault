@@ -29,6 +29,7 @@
 		Trash2,
 		X
 	} from '@lucide/svelte';
+	import ContextBoundary from '$lib/components/ContextBoundary.svelte';
 	import FocusedNoteEditor from '$lib/components/FocusedNoteEditor.svelte';
 	import { createNote, deleteNote, updateNote, type Note } from '$lib/api/notes';
 	import { listNodes } from '$lib/api/nodes';
@@ -62,21 +63,21 @@
 			]
 		},
 		{
-			label: 'Knowledge Base',
+			label: 'Vault',
 			items: [
 				{ label: 'Notes', href: '/notes', icon: FileText },
 				{ label: 'Resources', href: '/bookmarks', icon: Bookmark }
 			]
 		},
 		{
-			label: 'Productivity',
+			label: 'Work',
 			items: [
 				{ label: 'Tasks', href: '/tasks', icon: SquareCheckBig },
 				{ label: 'Goals', href: '/goals', icon: Target }
 			]
 		},
 		{
-			label: 'Connections',
+			label: 'Knowledge',
 			items: [
 				{ label: 'Backlinks', href: '/graph', icon: Link2 },
 				{ label: 'Graph', href: '/notes', query: '?view=graph', icon: Network }
@@ -557,7 +558,7 @@
 			<div class="brand-mark" aria-hidden="true">MV</div>
 			<div class="brand-copy">
 				<strong>MindVault</strong>
-				<span>Workspace</span>
+				<span>Personal Vault</span>
 			</div>
 		</div>
 
@@ -582,13 +583,7 @@
 		</nav>
 
 		<div class="sync-footer">
-			<div class="sync-state">
-				<span class="sync-dot" aria-hidden="true"></span>
-				<div>
-					<strong>{demoMode ? 'Local workspace' : 'All synced'}</strong>
-					<span>{demoMode ? 'Private preview' : 'Local-first · just now'}</span>
-				</div>
-			</div>
+			<ContextBoundary detail={demoMode ? 'Demo session' : 'Local-first'} />
 			<a href={resolve('/settings')} aria-label="Settings" title="Settings">
 				<Settings2 size={19} strokeWidth={1.8} />
 			</a>
@@ -754,8 +749,10 @@
 				>
 					<ArrowLeft size={19} strokeWidth={1.8} />
 				</button>
+				<ContextBoundary compact />
+				<span class="context-divider" aria-hidden="true"></span>
 				<FileText size={19} strokeWidth={1.7} aria-hidden="true" />
-				<span>{title.trim() || 'Untitled note'}</span>
+				<span class="note-context-title">{title.trim() || 'Untitled note'}</span>
 				<div class="save-state" class:saving={savedStatus === 'saving'}>
 					{#if savedStatus === 'saving'}
 						<span class="saving-pulse" aria-hidden="true"></span>
@@ -1097,38 +1094,6 @@
 		justify-content: space-between;
 		padding-top: 22px;
 		border-top: 1px solid #24242a;
-	}
-
-	.sync-state {
-		display: flex;
-		align-items: flex-start;
-		gap: 10px;
-	}
-
-	.sync-dot {
-		width: 8px;
-		height: 8px;
-		margin-top: 5px;
-		border-radius: 50%;
-		background: #43d393;
-		box-shadow: 0 0 10px rgb(67 211 147 / 30%);
-	}
-
-	.sync-state div {
-		display: flex;
-		flex-direction: column;
-	}
-
-	.sync-state strong {
-		color: #bebec7;
-		font-size: 12px;
-		font-weight: 600;
-	}
-
-	.sync-state span {
-		margin-top: 3px;
-		color: #656570;
-		font-size: 11px;
 	}
 
 	.sync-footer > a {
@@ -1599,14 +1564,25 @@
 	.editor-context {
 		display: flex;
 		min-width: 0;
+		flex: 1 1 auto;
 		align-items: center;
 		gap: 12px;
+		overflow: hidden;
 		color: #9a9aa5;
 	}
 
-	.editor-context > span:first-of-type {
+	.context-divider {
+		width: 1px;
+		height: 20px;
+		flex: 0 0 1px;
+		background: #303038;
+	}
+
+	.note-context-title {
 		overflow: hidden;
-		max-width: 390px;
+		min-width: 60px;
+		max-width: 190px;
+		flex: 1 1 120px;
 		color: #c7c7cf;
 		font-size: 13px;
 		text-overflow: ellipsis;
@@ -1615,6 +1591,7 @@
 
 	.save-state {
 		display: flex;
+		flex: 0 0 auto;
 		align-items: center;
 		gap: 5px;
 		color: #666671;
@@ -1940,7 +1917,7 @@
 		.nav-group p,
 		.nav-group a span,
 		.nav-group a.active i,
-		.sync-state,
+		.sync-footer :global(.context-boundary),
 		.sync-footer > a {
 			display: none;
 		}
@@ -1963,8 +1940,8 @@
 			padding-left: 36px;
 		}
 
-		.editor-context > span:first-of-type {
-			max-width: 240px;
+		.note-context-title {
+			max-width: 300px;
 		}
 	}
 
@@ -2011,7 +1988,8 @@
 		}
 
 		.editor-context > :global(svg):not(.mobile-back :global(svg)),
-		.editor-context > span:first-of-type,
+		.note-context-title,
+		.context-divider,
 		.footer-local {
 			display: none;
 		}
