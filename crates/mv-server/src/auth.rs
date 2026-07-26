@@ -714,6 +714,53 @@ mod tests {
     }
 
     #[test]
+    fn rbac_and_namespace_deny_allow_matrix() {
+        let reader = AuthContext {
+            subject: Some("reader".into()),
+            role: AuthRole::Read,
+            namespace: Some("team-a".into()),
+            consumer_name: None,
+        };
+        let writer = AuthContext {
+            subject: Some("writer".into()),
+            role: AuthRole::Write,
+            namespace: Some("team-a".into()),
+            consumer_name: None,
+        };
+        let admin = AuthContext::system_admin();
+
+        assert!(authorize_read(&reader).is_ok());
+        assert!(authorize_read(&writer).is_ok());
+        assert!(authorize_write(&reader).is_err());
+        assert!(authorize_write(&writer).is_ok());
+        assert!(authorize_write(&admin).is_ok());
+
+        assert!(authorize_namespace(&reader, "team-a").is_ok());
+        assert!(authorize_namespace(&reader, "team-b").is_err());
+        assert!(authorize_namespace(&admin, "team-b").is_ok());
+
+        assert_eq!(
+            scoped_namespace(&reader, None).expect("default scope"),
+            Some("team-a".into())
+        );
+        assert!(scoped_namespace(&reader, Some("team-b".into())).is_err());
+        assert_eq!(
+            scoped_namespace(&admin, Some("team-b".into())).expect("admin override"),
+            Some("team-b".into())
+        );
+
+        assert_eq!(
+            namespace_for_create(&writer, None, "default").expect("create scope"),
+            "team-a"
+        );
+        assert!(namespace_for_create(&writer, Some("team-b".into()), "default").is_err());
+        assert_eq!(
+            namespace_for_create(&admin, Some("team-b".into()), "default").expect("admin create"),
+            "team-b"
+        );
+    }
+
+    #[test]
     fn jwt_accepts_reasonable_iat() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

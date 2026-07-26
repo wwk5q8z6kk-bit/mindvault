@@ -130,7 +130,8 @@ use crate::auth::{
     namespace_for_create, scoped_namespace, AuthContext,
 };
 use crate::limits::{
-    enforce_namespace_quota, enforce_rate_limit, NamespaceQuotaError, RateLimitStatus,
+    enforce_ai_rate_limit, enforce_namespace_quota, enforce_rate_limit, NamespaceQuotaError,
+    RateLimitStatus,
 };
 use crate::metrics::{get_metrics, init_metrics, metrics_handler, metrics_middleware};
 use crate::openapi::swagger_ui;
@@ -993,6 +994,7 @@ struct SearchQuery {
     limit: Option<usize>,
     #[serde(rename = "type")]
     search_type: Option<String>,
+    namespace: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -5526,6 +5528,15 @@ async fn assist_completion(
     Json(mut req): Json<AssistCompletionRequest>,
 ) -> Result<Json<AssistCompletionResponse>, (StatusCode, String)> {
     authorize_read(&auth)?;
+    enforce_ai_rate_limit(&auth).map_err(|err| {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "AI rate limit exceeded; retry after {} seconds (limit {} per {}s)",
+                err.retry_after_secs, err.max_requests, err.window_secs
+            ),
+        )
+    })?;
     validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let requested_limit = req.limit.unwrap_or(4);
@@ -5612,6 +5623,15 @@ async fn assist_autocomplete(
     Json(mut req): Json<AssistAutocompleteRequest>,
 ) -> Result<Json<AssistAutocompleteResponse>, (StatusCode, String)> {
     authorize_read(&auth)?;
+    enforce_ai_rate_limit(&auth).map_err(|err| {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "AI rate limit exceeded; retry after {} seconds (limit {} per {}s)",
+                err.retry_after_secs, err.max_requests, err.window_secs
+            ),
+        )
+    })?;
     validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let requested_limit = req.limit.unwrap_or(5);
@@ -5648,6 +5668,15 @@ async fn assist_links(
     Json(mut req): Json<AssistLinkSuggestionsRequest>,
 ) -> Result<Json<AssistLinkSuggestionsResponse>, (StatusCode, String)> {
     authorize_read(&auth)?;
+    enforce_ai_rate_limit(&auth).map_err(|err| {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "AI rate limit exceeded; retry after {} seconds (limit {} per {}s)",
+                err.retry_after_secs, err.max_requests, err.window_secs
+            ),
+        )
+    })?;
     validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let requested_limit = req.limit.unwrap_or(6);
@@ -5703,6 +5732,15 @@ async fn assist_transform(
     Json(mut req): Json<AssistTransformRequest>,
 ) -> Result<Json<AssistTransformResponse>, (StatusCode, String)> {
     authorize_read(&auth)?;
+    enforce_ai_rate_limit(&auth).map_err(|err| {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "AI rate limit exceeded; retry after {} seconds (limit {} per {}s)",
+                err.retry_after_secs, err.max_requests, err.window_secs
+            ),
+        )
+    })?;
     validate_query_text("text", &req.text).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let mode = AssistTransformMode::parse(req.mode.as_deref())?;
@@ -10721,7 +10759,7 @@ async fn search(
     let query = MemoryQuery::new(params.q)
         .with_strategy(strategy)
         .with_limit(limit);
-    let query = if let Some(namespace) = scoped_namespace(&auth, None)? {
+    let query = if let Some(namespace) = scoped_namespace(&auth, params.namespace)? {
         query.with_namespace(namespace)
     } else {
         query
@@ -12183,6 +12221,157 @@ mod tests {
             .sources
             .iter()
             .all(|source| !source.node_id.is_empty() && !source.title.is_empty()));
+    }
+
+    fn scoped_reader(namespace: &str) -> AuthContext {
+        AuthContext {
+            subject: Some(format!("reader@{namespace}")),
+            role: crate::auth::AuthRole::Read,
+            namespace: Some(namespace.to_string()),
+            consumer_name: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn recall_and_assist_respect_namespace_scope() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        state
+            .engine
+            .store_node(
+                KnowledgeNode::new(
+                    NodeKind::Fact,
+                    "Namespace isolation fixture for Orion recall checks.".to_string(),
+                )
+                .with_title("Orion Team A Note")
+                .with_namespace("team-a"),
+            )
+            .await
+            .expect("team-a node");
+        state
+            .engine
+            .store_node(
+                KnowledgeNode::new(
+                    NodeKind::Fact,
+                    "Namespace isolation fixture for Orion recall checks.".to_string(),
+                )
+                .with_title("Orion Team B Note")
+                .with_namespace("team-b"),
+            )
+            .await
+            .expect("team-b node");
+
+        let auth = scoped_reader("team-a");
+
+        let denied = recall(
+            Extension(auth.clone()),
+            State(Arc::clone(&state)),
+            Json(RecallRequest {
+                text: "Orion recall checks".to_string(),
+                strategy: Some("fulltext".to_string()),
+                limit: Some(8),
+                min_score: None,
+                namespace: Some("team-b".to_string()),
+                kinds: None,
+                tags: None,
+            }),
+        )
+        .await;
+        match denied {
+            Err((status, message)) => {
+                assert_eq!(status, StatusCode::FORBIDDEN);
+                assert!(message.contains("not permitted"));
+            }
+            Ok(_) => panic!("cross-ns recall must fail"),
+        }
+
+        let Json(results) = recall(
+            Extension(auth.clone()),
+            State(Arc::clone(&state)),
+            Json(RecallRequest {
+                text: "Orion recall checks".to_string(),
+                strategy: Some("fulltext".to_string()),
+                limit: Some(8),
+                min_score: None,
+                namespace: None,
+                kinds: None,
+                tags: None,
+            }),
+        )
+        .await
+        .expect("scoped recall");
+        assert!(results.iter().any(|r| r.node.title.as_deref() == Some("Orion Team A Note")));
+        assert!(results
+            .iter()
+            .all(|r| r.node.title.as_deref() != Some("Orion Team B Note")));
+
+        let denied_assist = assist_transform(
+            Extension(auth.clone()),
+            State(Arc::clone(&state)),
+            Json(AssistTransformRequest {
+                text: "Orion recall checks".to_string(),
+                mode: Some("summarize".to_string()),
+                limit: Some(4),
+                namespace: Some("team-b".to_string()),
+            }),
+        )
+        .await;
+        match denied_assist {
+            Err((status, message)) => {
+                assert_eq!(status, StatusCode::FORBIDDEN);
+                assert!(message.contains("not permitted"));
+            }
+            Ok(_) => panic!("cross-ns assist must fail"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_role_cannot_store_nodes_across_namespaces() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let reader = scoped_reader("team-a");
+
+        let denied_write = store_node(
+            Extension(reader.clone()),
+            State(Arc::clone(&state)),
+            Json(StoreNodeRequest {
+                kind: "fact".to_string(),
+                content: "Should not be writable by read role.".to_string(),
+                title: Some("Blocked Write".to_string()),
+                source: None,
+                namespace: Some("team-a".to_string()),
+                tags: None,
+                importance: None,
+                metadata: None,
+            }),
+        )
+        .await;
+        let (status, message) = denied_write.expect_err("read cannot write");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(message.contains("write permission"));
+
+        let writer = AuthContext {
+            subject: Some("writer@team-a".into()),
+            role: crate::auth::AuthRole::Write,
+            namespace: Some("team-a".into()),
+            consumer_name: None,
+        };
+        let denied_ns = store_node(
+            Extension(writer),
+            State(Arc::clone(&state)),
+            Json(StoreNodeRequest {
+                kind: "fact".to_string(),
+                content: "Writer must not escape namespace.".to_string(),
+                title: Some("Escape Attempt".to_string()),
+                source: None,
+                namespace: Some("team-b".to_string()),
+                tags: None,
+                importance: None,
+                metadata: None,
+            }),
+        )
+        .await;
+        let (status, message) = denied_ns.expect_err("writer cannot create in other ns");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(message.contains("not permitted"));
     }
 
     #[test]

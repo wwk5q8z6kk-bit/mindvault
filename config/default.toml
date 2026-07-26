@@ -197,6 +197,8 @@ enabled = false
 # - MINDVAULT_ALLOW_INSECURE_BIND (set true to allow non-local bind without auth)
 # - MINDVAULT_RATE_LIMIT_REQUESTS (requests per window, default 120; 0 disables)
 # - MINDVAULT_RATE_LIMIT_WINDOW_SECS (window size, default 60)
+# - MINDVAULT_AI_RATE_LIMIT_REQUESTS (chat/assist per subject, default 60; 0 disables)
+# - MINDVAULT_AI_RATE_LIMIT_WINDOW_SECS (AI window size, default 60)
 # - MINDVAULT_NAMESPACE_NODE_QUOTA (max nodes per namespace, optional)
 
 [logging]

@@ -41,6 +41,7 @@ async fn setup() -> (axum::Router, TempDir) {
         "MINDVAULT_JWT_SECRET",
         "MINDVAULT_JWT_ISSUER",
         "MINDVAULT_JWT_AUDIENCE",
+        "MINDVAULT_NAMESPACE_NODE_QUOTA",
     ] {
         std::env::remove_var(key);
     }
@@ -1547,3 +1548,121 @@ async fn sealed_mode_lifecycle_survives_restart() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Namespace node quota
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn namespace_node_quota_blocks_extra_creates_and_isolates_namespaces() {
+    let (router, _tmp) = setup().await;
+    let _quota = ScopedEnvVar::set("MINDVAULT_NAMESPACE_NODE_QUOTA", "1");
+
+    let first = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({
+                "kind": "fact",
+                "content": "quota-a-1",
+                "namespace": "quota-a",
+                "tags": []
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::CREATED, "first node in quota-a should succeed");
+
+    let blocked = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({
+                "kind": "fact",
+                "content": "quota-a-2",
+                "namespace": "quota-a",
+                "tags": []
+            })),
+        ))
+        .await
+        .unwrap();
+    let blocked_status = blocked.status();
+    let blocked_body = body_json(blocked).await;
+    assert_eq!(
+        blocked_status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "second node in same namespace should hit quota; body={blocked_body}"
+    );
+    let err = blocked_body["error"]
+        .as_str()
+        .or_else(|| blocked_body.as_str())
+        .unwrap_or_default();
+    assert!(
+        err.contains("quota exceeded") && err.contains("quota-a"),
+        "unexpected quota error: {err} (body={blocked_body})"
+    );
+
+    let other = router
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({
+                "kind": "fact",
+                "content": "quota-b-1",
+                "namespace": "quota-b",
+                "tags": []
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        other.status(),
+        StatusCode::CREATED,
+        "different namespace should have its own quota"
+    );
+}
+
+#[tokio::test]
+async fn namespace_node_quota_allows_update_when_at_limit() {
+    let (router, _tmp) = setup().await;
+    let _quota = ScopedEnvVar::set("MINDVAULT_NAMESPACE_NODE_QUOTA", "1");
+
+    let create = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({
+                "kind": "fact",
+                "content": "original quota node",
+                "namespace": "quota-update",
+                "tags": []
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let mut node = body_json(create).await;
+    let id = node["id"].as_str().unwrap().to_string();
+    node["content"] = json!("updated while at quota");
+
+    let update = router
+        .oneshot(json_request(
+            Method::PUT,
+            &format!("/api/v1/nodes/{id}"),
+            Some(node),
+        ))
+        .await
+        .unwrap();
+    let status = update.status();
+    let body = body_json(update).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "updates must not consume quota slots; body={body}"
+    );
+    assert_eq!(body["content"], "updated while at quota");
+}
+
