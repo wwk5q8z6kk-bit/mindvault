@@ -29,7 +29,9 @@ jobs:
 
       - name: Test
         run: |
-          cargo test --workspace --exclude mv-server
+          cargo test --workspace --exclude mv-server --exclude mv-index
+          # Sealed tantivy runtime keys can race under parallel lib tests.
+          cargo test -p mv-index --lib -- --test-threads=1
           cargo test -p mv-server --lib
           # Integration tests mutate process env (auth/quota/sealed failpoints);
           # serialize them to avoid cross-test leakage under cargo's default parallelism.
