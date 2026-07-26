@@ -20,3 +20,19 @@ describe('normalizeViewPreferences', () => {
 		expect(prefs.sidebarCollapsed).toEqual(['System', 'Tasks']);
 	});
 });
+
+	it('defaults notes list sidebar prefs', () => {
+		const prefs = normalizeViewPreferences({});
+		expect(prefs.notesListCollapsed).toBe(false);
+		expect(prefs.notesListTab).toBe('all');
+	});
+
+	it('preserves notes list collapse and tab', () => {
+		const prefs = normalizeViewPreferences({
+			notesListCollapsed: true,
+			notesListTab: 'pinned'
+		});
+		expect(prefs.notesListCollapsed).toBe(true);
+		expect(prefs.notesListTab).toBe('pinned');
+	});
+

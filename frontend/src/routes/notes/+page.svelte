@@ -15,6 +15,7 @@
 	import { kindLabel, kindBadgeClass } from '$lib/utils/kind-helpers';
 	import type { NodeKind } from '$lib/api/types';
 	import { assistAutoTag, assistTransform } from '$lib/api/assist';
+	import EmptyState from '$lib/components/EmptyState.svelte';
 	import { createTaskOptimistic } from '$lib/stores/tasks';
 	import { buildTaskPayloadsFromActionItems, parseActionItems } from '$lib/tasks/action-items';
 	import type { NodeAttachment } from '$lib/api/files';
@@ -23,7 +24,14 @@
 	import ViewToggle from '$lib/components/ViewToggle.svelte';
 	import DistillPanel from '$lib/components/DistillPanel.svelte';
 	import { createViewMode, setViewMode } from '$lib/utils/view-mode';
-	import { setViewPreference } from '$lib/stores/view-preferences';
+	import {
+		setViewPreference,
+		setNotesListCollapsed,
+		setNotesListTab,
+		toggleNotesListCollapsed,
+		viewPreferences
+	} from '$lib/stores/view-preferences';
+	import { filterNotesForSidebar, normalizeNotesListTab } from '$lib/notes/sidebar';
 	import NotesGraphView from '$lib/components/NotesGraphView.svelte';
 	import NotesCanvasView from '$lib/components/NotesCanvasView.svelte';
 	import NotesPdfView from '$lib/components/NotesPdfView.svelte';
@@ -68,7 +76,6 @@
 	let showVersionHistory = false;
 	let searchQuery = '';
 	let tagFilter = '';
-	let kindFilter: NodeKind | 'all' = 'all';
 	let autoTagging = false;
 
 	// Note-like kinds that should appear in the notes view
@@ -112,22 +119,20 @@
 		displayedNotes.length > 0 && displayedNotes.every((n) => selectedNoteIds.has(n.id));
 
 	$: allTags = [...new Set(notes.flatMap((n) => n.tags ?? []))].sort();
-	$: displayedNotes = notes.filter((n) => {
-		// Kind filter
-		if (kindFilter !== 'all' && n.kind !== kindFilter) return false;
-		// Search filter
-		if (searchQuery.trim()) {
-			const q = searchQuery.toLowerCase();
-			const matchTitle = (n.title ?? '').toLowerCase().includes(q);
-			const matchContent = (n.markdown ?? '').toLowerCase().includes(q);
-			if (!matchTitle && !matchContent) return false;
-		}
-		// Tag filter
-		if (tagFilter && !(n.tags ?? []).includes(tagFilter)) return false;
-		return true;
-	});
-	// Get unique kinds from loaded notes for the filter dropdown
+	// Get unique kinds from loaded notes for filter tabs
 	$: availableKinds = [...new Set(notes.map((n) => n.kind))].sort();
+	$: notesListCollapsed = $viewPreferences.notesListCollapsed;
+	$: notesListTab = normalizeNotesListTab($viewPreferences.notesListTab, availableKinds);
+	$: displayedNotes = filterNotesForSidebar(notes, {
+		tab: notesListTab,
+		searchQuery,
+		tagFilter
+	});
+	$: pinnedCount = notes.filter((n) => n.pinned).length;
+
+	function selectListTab(tab: string) {
+		setNotesListTab(normalizeNotesListTab(tab, availableKinds));
+	}
 
 	// Reset focused index when displayed notes change
 	$: if (displayedNotes.length > 0 && focusedIndex >= displayedNotes.length) {
@@ -141,7 +146,13 @@
 			return;
 		}
 
-		if (displayedNotes.length === 0) return;
+		if (event.key === '[') {
+			event.preventDefault();
+			toggleNotesListCollapsed();
+			return;
+		}
+
+		if (displayedNotes.length === 0 || notesListCollapsed) return;
 
 		switch (event.key) {
 			case 'j':
@@ -860,9 +871,28 @@
 </div>
 
 {#if $currentView === 'list'}
-	<div class="mt-4 grid gap-6 lg:grid-cols-12">
-		<section class="lg:col-span-4">
-			<div class="mt-4 flex items-center justify-between">
+	<div class="mt-4 grid gap-4 lg:grid-cols-12 lg:gap-6">
+		{#if notesListCollapsed}
+			<aside class="order-2 flex items-center gap-2 lg:order-1 lg:col-span-1 lg:flex-col lg:items-stretch">
+				<button
+					class="inline-flex items-center justify-center gap-2 rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))] hover:text-[rgb(var(--mv-text))]"
+					on:click={() => setNotesListCollapsed(false)}
+					title="Show notes list ([)"
+					aria-label="Show notes list"
+					aria-expanded="false"
+				>
+					<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h10M4 18h14" />
+					</svg>
+					<span class="lg:hidden">Notes ({notes.length})</span>
+				</button>
+				<p class="hidden text-center text-[10px] text-[rgb(var(--mv-muted))]/50 lg:block">
+					{notes.length}
+				</p>
+			</aside>
+		{:else}
+		<section class="order-1 lg:order-1 lg:col-span-4" aria-label="Notes list">
+			<div class="mt-1 flex items-center justify-between gap-2">
 				<p class="text-xs text-[rgb(var(--mv-muted))]/60">
 					{#if bulkMode && selectedCount > 0}
 						{selectedCount} selected
@@ -872,15 +902,74 @@
 							: ''} notes
 					{/if}
 				</p>
-				<p class="text-[10px] text-[rgb(var(--mv-muted))]/30">
-					<kbd
-						class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1"
-						>j</kbd
-					>/<kbd
-						class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1"
-						>k</kbd
-					> navigate
-				</p>
+				<div class="flex items-center gap-2">
+					<p class="hidden text-[10px] text-[rgb(var(--mv-muted))]/30 sm:block">
+						<kbd
+							class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1"
+							>j</kbd
+						>/<kbd
+							class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1"
+							>k</kbd
+						>
+						<span class="ml-1">navigate</span>
+					</p>
+					<button
+						class="rounded-lg border border-[rgb(var(--mv-border))] px-2 py-1 text-[11px] text-[rgb(var(--mv-muted))] transition hover:bg-[rgb(var(--mv-panel-strong))] hover:text-[rgb(var(--mv-text))]"
+						on:click={() => setNotesListCollapsed(true)}
+						title="Collapse notes list ([)"
+						aria-label="Collapse notes list"
+						aria-expanded="true"
+					>
+						Hide
+					</button>
+				</div>
+			</div>
+
+			<div
+				class="mt-3 flex gap-1 overflow-x-auto pb-1"
+				role="tablist"
+				aria-label="Notes list filters"
+			>
+				<button
+					role="tab"
+					aria-selected={notesListTab === 'all'}
+					class={`shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-medium transition ${
+						notesListTab === 'all'
+							? 'bg-sky-500/20 text-sky-200'
+							: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]'
+					}`}
+					on:click={() => selectListTab('all')}
+				>
+					All
+					<span class="ml-1 text-[10px] opacity-60">{notes.length}</span>
+				</button>
+				<button
+					role="tab"
+					aria-selected={notesListTab === 'pinned'}
+					class={`shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-medium transition ${
+						notesListTab === 'pinned'
+							? 'bg-amber-500/20 text-amber-200'
+							: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]'
+					}`}
+					on:click={() => selectListTab('pinned')}
+				>
+					Pinned
+					<span class="ml-1 text-[10px] opacity-60">{pinnedCount}</span>
+				</button>
+				{#each availableKinds as kind}
+					<button
+						role="tab"
+						aria-selected={notesListTab === kind}
+						class={`shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-medium transition ${
+							notesListTab === kind
+								? 'bg-sky-500/20 text-sky-200'
+								: 'text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]'
+						}`}
+						on:click={() => selectListTab(kind)}
+					>
+						{kindLabel(kind)}
+					</button>
+				{/each}
 			</div>
 
 			<div class="mt-3 flex flex-wrap gap-2">
@@ -890,16 +979,6 @@
 					bind:value={searchQuery}
 					aria-label="Search notes"
 				/>
-				<select
-					class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1.5 text-xs text-[rgb(var(--mv-text))]"
-					bind:value={kindFilter}
-					aria-label="Filter by kind"
-				>
-					<option value="all">All kinds</option>
-					{#each availableKinds as kind}
-						<option value={kind}>{kindLabel(kind)}</option>
-					{/each}
-				</select>
 				{#if allTags.length > 0}
 					<select
 						class="rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))] px-2 py-1.5 text-xs text-[rgb(var(--mv-text))]"
@@ -988,37 +1067,30 @@
 						Loading notes...
 					</div>
 				{:else if notes.length === 0}
-					<div
-						class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel))]/20 p-6 text-center"
+					<EmptyState
+						compact
+						icon="generic"
+						tone="sky"
+						title="No notes yet"
+						description="Start building your knowledge base."
+						actionLabel="Create your first note"
+						onAction={newNote}
 					>
-						<div
-							class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-sky-500/20 text-sm text-sky-300"
-						>
-							N
-						</div>
-						<h3 class="text-sm font-medium text-[rgb(var(--mv-text))]">No notes yet</h3>
-						<p class="mt-1 text-[11px] text-[rgb(var(--mv-muted))]/40">
-							Start building your knowledge base.
-						</p>
-						<button
-							class="mt-3 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-[rgb(var(--mv-text))] hover:bg-sky-400"
-							on:click={newNote}
-						>
-							Create your first note
-						</button>
-						<p class="mt-2 text-[10px] text-[rgb(var(--mv-muted))]/30">
+						<svelte:fragment slot="footer">
 							<kbd
 								class="rounded border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))] px-1 py-0.5"
 								>Cmd+Shift+N</kbd
 							> for quick capture
-						</p>
-					</div>
+						</svelte:fragment>
+					</EmptyState>
 				{:else if displayedNotes.length === 0}
-					<div
-						class="rounded-lg border border-dashed border-[rgb(var(--mv-border))] p-4 text-xs text-[rgb(var(--mv-muted))]/60"
-					>
-						No notes match your search.
-					</div>
+					<EmptyState
+						compact
+						icon="search"
+						tone="slate"
+						title="No notes match your search"
+						description="Try a different query or clear filters."
+					/>
 				{:else}
 					<div bind:this={notesListParentRef} style="max-height: 70vh; overflow-y: auto;">
 						<div
@@ -1090,8 +1162,9 @@
 				{/if}
 			</div>
 		</section>
+		{/if}
 
-		<section class="lg:col-span-8">
+		<section class={notesListCollapsed ? 'order-1 lg:order-2 lg:col-span-11' : 'order-2 lg:order-2 lg:col-span-8'}>
 			<div class="flex items-center justify-between">
 				<div>
 					<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">
@@ -1100,6 +1173,15 @@
 					<p class="text-xs text-[rgb(var(--mv-muted))]/60">Markdown remains canonical.</p>
 				</div>
 				<div class="flex items-center gap-2">
+					{#if notesListCollapsed}
+						<button
+							class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-2 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
+							on:click={() => setNotesListCollapsed(false)}
+							title="Show notes list ([)"
+						>
+							Show list
+						</button>
+					{/if}
 					<TemplatePicker
 						kind="fact"
 						namespace={selectedNote?.namespace ?? undefined}
