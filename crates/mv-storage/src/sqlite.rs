@@ -246,6 +246,10 @@ impl SqliteNodeStore {
                 28,
                 include_str!("../../../migrations/028_sealed_node_payloads.sql"),
             ),
+            (
+                30,
+                include_str!("../../../migrations/030_conversation_turn_sources.sql"),
+            ),
         ];
 
         // Migration 001 must always run first to create schema_version table.
@@ -4838,24 +4842,24 @@ impl ConversationStore for SqliteNodeStore {
         conversation_id: Uuid,
         role: &str,
         content: &str,
+        sources_json: Option<&str>,
     ) -> MvResult<Uuid> {
         let msg_id = Uuid::now_v7();
         let conv_s = conversation_id.to_string();
         let msg_s = msg_id.to_string();
         let role_s = role.to_string();
         let content_s = content.to_string();
+        let sources_s = sources_json.map(|value| value.to_string());
         let token_count = (content_s.len() / 4) as i64; // rough estimate
         self.with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO conversation_turns (id, conversation_id, role, content, token_count) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![msg_s, conv_s, role_s, content_s, token_count],
+                "INSERT INTO conversation_turns (id, conversation_id, role, content, token_count, sources_json)                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![msg_s, conv_s, role_s, content_s, token_count, sources_s],
             )
             .map_err(|e| MvError::Storage(e.to_string()))?;
             // Update conversation's updated_at
             conn.execute(
-                "UPDATE conversations SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?1",
+                "UPDATE conversations SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')                  WHERE id = ?1",
                 params![conv_s],
             )
             .map_err(|e| MvError::Storage(e.to_string()))?;
@@ -4867,13 +4871,12 @@ impl ConversationStore for SqliteNodeStore {
         &self,
         conversation_id: Uuid,
         limit: usize,
-    ) -> MvResult<Vec<(Uuid, String, String, chrono::DateTime<chrono::Utc>)>> {
+    ) -> MvResult<Vec<(Uuid, String, String, Option<String>, chrono::DateTime<chrono::Utc>)>> {
         let conv_s = conversation_id.to_string();
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, role, content, created_at FROM conversation_turns \
-                     WHERE conversation_id = ?1 ORDER BY created_at ASC LIMIT ?2",
+                    "SELECT id, role, content, sources_json, created_at FROM conversation_turns                      WHERE conversation_id = ?1 ORDER BY created_at ASC LIMIT ?2",
                 )
                 .map_err(|e| MvError::Storage(e.to_string()))?;
             let rows = stmt
@@ -4882,21 +4885,22 @@ impl ConversationStore for SqliteNodeStore {
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
                     ))
                 })
                 .map_err(|e| MvError::Storage(e.to_string()))?;
 
             let mut messages = Vec::new();
             for row in rows {
-                let (id_str, role, content, ts_str) =
+                let (id_str, role, content, sources_json, ts_str) =
                     row.map_err(|e| MvError::Storage(e.to_string()))?;
                 let id = Uuid::parse_str(&id_str)
                     .map_err(|e| MvError::Storage(format!("invalid uuid: {e}")))?;
                 let ts = chrono::DateTime::parse_from_rfc3339(&ts_str)
                     .map_err(|e| MvError::Storage(format!("invalid timestamp: {e}")))?
                     .with_timezone(&chrono::Utc);
-                messages.push((id, role, content, ts));
+                messages.push((id, role, content, sources_json, ts));
             }
             Ok(messages)
         })
@@ -5406,6 +5410,40 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn conversation_messages_persist_sources_json() {
+        use mv_core::traits::ConversationStore;
+
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let conversation_id = Uuid::now_v7();
+        store
+            .create_conversation(conversation_id, Some("Grounded chat"))
+            .await
+            .unwrap();
+
+        let sources = r#"[{"node_id":"n1","title":"Launch","kind":"fact","score":0.9,"preview":"Ship it"}]"#;
+        let msg_id = store
+            .add_message(conversation_id, "assistant", "Ship it [1].", Some(sources))
+            .await
+            .unwrap();
+
+        let messages = store.get_messages(conversation_id, 20).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].0, msg_id);
+        assert_eq!(messages[0].1, "assistant");
+        assert_eq!(messages[0].2, "Ship it [1].");
+        assert_eq!(messages[0].3.as_deref(), Some(sources));
+
+        let plain_id = store
+            .add_message(conversation_id, "user", "thanks", None)
+            .await
+            .unwrap();
+        let messages = store.get_messages(conversation_id, 20).await.unwrap();
+        assert_eq!(messages.len(), 2);
+        let plain = messages.iter().find(|m| m.0 == plain_id).unwrap();
+        assert!(plain.3.is_none());
     }
 
     #[tokio::test]

@@ -30,6 +30,13 @@ impl ChatMessage {
             content: content.into(),
         }
     }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -676,6 +683,36 @@ pub async fn init_llm_provider_with_local(
         _ => Some(Arc::new(FallbackLlmProvider::new(providers))),
     }
 }
+
+
+/// Grounded chat answer: cite vault sources with [1], [2], … markers.
+pub async fn llm_chat_answer(
+    llm: &dyn LlmProvider,
+    question: &str,
+    history: &[(String, String)],
+    numbered_context: &str,
+) -> Result<String, LlmError> {
+    let mut messages = vec![ChatMessage::system(
+        "You are MindVault, a local-first personal knowledge assistant. Answer using ONLY the numbered context sources. Cite evidence with [1], [2], etc. matching the source numbers. If the context is insufficient, say so clearly and avoid inventing facts. Keep answers concise and actionable.",
+    )];
+
+    let start = history.len().saturating_sub(6);
+    for (role, content) in &history[start..] {
+        let normalized = role.trim().to_ascii_lowercase();
+        if normalized == "assistant" {
+            messages.push(ChatMessage::assistant(content.clone()));
+        } else if normalized == "user" {
+            messages.push(ChatMessage::user(content.clone()));
+        }
+    }
+
+    messages.push(ChatMessage::user(format!(
+        "Context sources:\n{numbered_context}\n\nQuestion: {question}"
+    )));
+
+    llm.complete(&messages, &CompletionParams::default()).await
+}
+
 
 /// Extract context snippets from search results for LLM prompts.
 pub fn extract_context_snippets(results: &[mv_core::SearchResult], limit: usize) -> Vec<String> {

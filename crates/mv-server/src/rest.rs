@@ -34,6 +34,8 @@ use mv_storage::vault_crypto::VaultCrypto;
 
 #[path = "rest/assist.rs"]
 mod assist;
+#[path = "rest/chat.rs"]
+mod chat;
 use assist::{
     collect_completion_sources, generate_action_items_transform, generate_autocomplete_completions,
     generate_completion_suggestions, generate_link_suggestions, generate_meeting_notes_transform,
@@ -168,6 +170,7 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route("/api/v1/assist/autocomplete", post(assist_autocomplete))
         .route("/api/v1/assist/links", post(assist_links))
         .route("/api/v1/assist/transform", post(assist_transform))
+        .route("/api/v1/chat", post(chat::chat))
         .route("/api/v1/daily-notes", get(list_daily_notes))
         .route("/api/v1/daily-notes/ensure", post(ensure_daily_note))
         .route("/api/v1/calendar/items", get(list_calendar_items))
@@ -12223,6 +12226,73 @@ mod tests {
             .all(|source| !source.node_id.is_empty() && !source.title.is_empty()));
     }
 
+    #[tokio::test]
+    async fn chat_returns_grounded_heuristic_answer() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        state
+            .engine
+            .store_node(
+                KnowledgeNode::new(
+                    NodeKind::Fact,
+                    "Ship hybrid search defaults across search and command palette.".to_string(),
+                )
+                .with_title("Hybrid Search Defaults")
+                .with_namespace("ops"),
+            )
+            .await
+            .expect("node should store");
+
+        let Json(response) = chat::chat(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Json(chat::ChatRequest {
+                message: "What search defaults should we ship?".to_string(),
+                history: None,
+                limit: Some(4),
+                strategy: Some("hybrid".to_string()),
+                namespace: Some("ops".to_string()),
+            }),
+        )
+        .await
+        .expect("chat should succeed");
+
+        assert_eq!(response.mode, "native");
+        assert!(response.grounded);
+        assert!(!response.sources.is_empty());
+        assert!(response.answer.contains("[1]"));
+        assert!(response
+            .sources
+            .iter()
+            .any(|source| source.title.contains("Hybrid Search")));
+        assert!(
+            response.provider == "native-rag-heuristic"
+                || response.provider == "native-rag-llm"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_empty_vault_is_ungrounded() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let Json(response) = chat::chat(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            Json(chat::ChatRequest {
+                message: "totally obscure xyzzy topic that will never match".to_string(),
+                history: None,
+                limit: Some(4),
+                strategy: Some("hybrid".to_string()),
+                namespace: None,
+            }),
+        )
+        .await
+        .expect("chat should succeed");
+
+        assert_eq!(response.mode, "native");
+        assert!(!response.grounded);
+        assert!(response.sources.is_empty());
+        assert!(response.answer.to_ascii_lowercase().contains("could not find"));
+    }
+
     fn scoped_reader(namespace: &str) -> AuthContext {
         AuthContext {
             subject: Some(format!("reader@{namespace}")),
@@ -12230,6 +12300,84 @@ mod tests {
             namespace: Some(namespace.to_string()),
             consumer_name: None,
         }
+    }
+
+    #[tokio::test]
+    async fn chat_denies_cross_namespace_and_isolates_sources() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        state
+            .engine
+            .store_node(
+                KnowledgeNode::new(
+                    NodeKind::Fact,
+                    "Alpha namespace secret launch codes for Project Helios.".to_string(),
+                )
+                .with_title("Helios Alpha Secret")
+                .with_namespace("team-a"),
+            )
+            .await
+            .expect("team-a node");
+        state
+            .engine
+            .store_node(
+                KnowledgeNode::new(
+                    NodeKind::Fact,
+                    "Beta namespace secret launch codes for Project Helios.".to_string(),
+                )
+                .with_title("Helios Beta Secret")
+                .with_namespace("team-b"),
+            )
+            .await
+            .expect("team-b node");
+
+        let auth = scoped_reader("team-a");
+        let denied = chat::chat(
+            Extension(auth.clone()),
+            State(Arc::clone(&state)),
+            Json(chat::ChatRequest {
+                message: "Project Helios launch codes".to_string(),
+                history: None,
+                limit: Some(8),
+                strategy: Some("fulltext".to_string()),
+                namespace: Some("team-b".to_string()),
+            }),
+        )
+        .await;
+        let (status, message) = denied.expect_err("cross-namespace chat must fail");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(message.contains("not permitted"));
+
+        let Json(response) = chat::chat(
+            Extension(auth),
+            State(Arc::clone(&state)),
+            Json(chat::ChatRequest {
+                message: "Project Helios launch codes".to_string(),
+                history: None,
+                limit: Some(8),
+                strategy: Some("fulltext".to_string()),
+                namespace: None,
+            }),
+        )
+        .await
+        .expect("scoped chat should succeed");
+
+        assert!(response.grounded);
+        assert!(
+            response
+                .sources
+                .iter()
+                .any(|source| source.title.contains("Helios Alpha")),
+            "expected team-a source, got {:?}",
+            response.sources
+        );
+        assert!(
+            response
+                .sources
+                .iter()
+                .all(|source| !source.title.contains("Helios Beta")),
+            "team-b source leaked into scoped chat: {:?}",
+            response.sources
+        );
     }
 
     #[tokio::test]

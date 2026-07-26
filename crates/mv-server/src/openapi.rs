@@ -29,6 +29,7 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "files", description = "File attachments"),
         (name = "voice", description = "Voice notes and transcription"),
         (name = "assist", description = "AI writing assistance"),
+        (name = "chat", description = "Grounded RAG chat over vault memory"),
         (name = "export-import", description = "Data export and import"),
         (name = "audit", description = "Audit logging"),
         (name = "metrics", description = "Prometheus metrics"),
@@ -133,6 +134,7 @@ use utoipa_swagger_ui::SwaggerUi;
         assist_autocomplete,
         assist_links,
         assist_transform,
+        chat,
         // Export/Import
         export_bundle,
         import_bundle,
@@ -748,6 +750,9 @@ async fn assist_links() {}
 
 #[utoipa::path(post, path = "/api/v1/assist/transform", tag = "assist", responses((status = 200)))]
 async fn assist_transform() {}
+
+#[utoipa::path(post, path = "/api/v1/chat", tag = "chat", responses((status = 200)))]
+async fn chat() {}
 
 #[utoipa::path(get, path = "/api/v1/export", tag = "export-import", responses((status = 200)))]
 async fn export_bundle() {}

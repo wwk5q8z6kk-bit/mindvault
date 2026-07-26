@@ -545,13 +545,15 @@ pub trait ConversationStore: Send + Sync {
         conversation_id: Uuid,
         role: &str,
         content: &str,
+        sources_json: Option<&str>,
     ) -> MvResult<Uuid>;
 
+    /// Returns `(id, role, content, sources_json, created_at)`.
     async fn get_messages(
         &self,
         conversation_id: Uuid,
         limit: usize,
-    ) -> MvResult<Vec<(Uuid, String, String, DateTime<Utc>)>>;
+    ) -> MvResult<Vec<(Uuid, String, String, Option<String>, DateTime<Utc>)>>;
 
     async fn delete_conversation(&self, id: Uuid) -> MvResult<bool>;
 

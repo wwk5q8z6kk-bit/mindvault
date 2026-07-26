@@ -328,6 +328,7 @@ fn extract_action(method: &str, path: &str) -> String {
         ("POST", ["api", "v1", "assist", "autocomplete"]) => "assist_autocomplete".into(),
         ("POST", ["api", "v1", "assist", "links"]) => "assist_links".into(),
         ("POST", ["api", "v1", "assist", "transform"]) => "assist_transform".into(),
+        ("POST", ["api", "v1", "chat"]) => "chat".into(),
 
         // Export/Import
         ("GET", ["api", "v1", "export"]) => "export_bundle".into(),
