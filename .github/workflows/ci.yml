@@ -28,7 +28,12 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --workspace
+        run: |
+          cargo test --workspace --exclude mv-server
+          cargo test -p mv-server --lib
+          # Integration tests mutate process env (auth/quota/sealed failpoints);
+          # serialize them to avoid cross-test leakage under cargo's default parallelism.
+          cargo test -p mv-server --tests -- --test-threads=1
 
   sealed-gates:
     runs-on: ubuntu-latest
