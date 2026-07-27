@@ -661,8 +661,21 @@ pub async fn init_llm_provider_with_local(
         }
     }
 
-    // 4. Add OpenAI as fallback if API key present and not already the primary
-    if let Some(key) = api_key {
+    // 4. Add OpenAI as fallback if cloud fallback is opted into, an API key is
+    //    present, and OpenAI is not already the configured primary.
+    //
+    //    The opt-in gate matters because `api_key` is resolved through the
+    //    credential store, whose backend chain ends in environment variables. An
+    //    ambient OPENAI_API_KEY would otherwise route vault content to a remote
+    //    service on a vault whose config has `llm.enabled = false`.
+    if !config.allow_cloud_fallback {
+        if api_key.is_some() {
+            info!(
+                "Ignoring discovered LLM API key: llm.allow_cloud_fallback is false. \
+                 Set it to true to opt into a remote provider."
+            );
+        }
+    } else if let Some(key) = api_key {
         if !config.enabled || config.base_url != "https://api.openai.com/v1" {
             let openai_config = LlmConfig {
                 enabled: true,
