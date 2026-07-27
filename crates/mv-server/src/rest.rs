@@ -110,6 +110,8 @@ mod distill;
 mod federation;
 #[path = "rest/google_calendar.rs"]
 mod google_calendar;
+#[path = "rest/interoperability.rs"]
+mod interoperability;
 #[path = "rest/models.rs"]
 mod models;
 #[path = "rest/plans.rs"]
