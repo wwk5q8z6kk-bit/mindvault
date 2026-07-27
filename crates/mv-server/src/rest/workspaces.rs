@@ -217,6 +217,11 @@ async fn authorized_workspace(
         .await
         .map_err(map_workspace_error)?;
     authorize_namespace(auth, &workspace.namespace)?;
+    let descriptor = decode_workspace_descriptor(&workspace).map_err(map_workspace_error)?;
+    state
+        .workspace_root_policy
+        .authorize(std::path::Path::new(&descriptor.root_path))
+        .map_err(|message| (StatusCode::FORBIDDEN, message))?;
     Ok(workspace)
 }
 

@@ -2256,10 +2256,7 @@ async fn a_run_can_be_started_and_approved_entirely_over_http() {
         .oneshot(json_request(
             Method::POST,
             &format!("/api/v1/work-orders/{work_order_id}/nodes/{node_id}/runs"),
-            Some(json!({
-                "actor": "mindvault://schemas/http-agent",
-                "confidence": 0.99
-            })),
+            Some(json!({})),
         ))
         .await
         .unwrap();
@@ -2327,6 +2324,59 @@ async fn a_run_can_be_started_and_approved_entirely_over_http() {
 /// execution producing a verified artifact. It was previously impossible over
 /// the API twice over: no route created a run, and no route recorded an
 /// artifact, so gate G2 could never have content to verify.
+
+#[tokio::test]
+async fn client_asserted_g0_pass_is_forbidden() {
+    let (router, _tmp) = setup().await;
+
+    let mut body = work_order_body(vec![], "wo-http-g0-forbid");
+    body["nodes"][0]["risk_tier"] = json!("low");
+    let response = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/work-orders",
+            Some(body),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created: Value = body_json(response).await;
+    let work_order_id = created["work_order"]["work_order_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let node_id = created["nodes"][0]["node_id"].as_str().unwrap().to_string();
+
+    let response = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/work-orders/{work_order_id}/nodes/{node_id}/runs"),
+            Some(json!({})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let started: Value = body_json(response).await;
+    let run_id = started["run"]["run_id"].as_str().unwrap().to_string();
+
+    let response = router
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/work-orders/{work_order_id}/runs/{run_id}/gates"),
+            Some(json!({
+                "gate": "g0",
+                "outcome": "pass",
+                "evaluator_actor": "mindvault://schemas/forged-evaluator",
+                "evidence_digest": "0".repeat(64)
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
 #[tokio::test]
 async fn a_run_produces_a_verified_artifact_and_completes_over_http() {
     let (router, _tmp) = setup().await;
@@ -2354,7 +2404,7 @@ async fn a_run_produces_a_verified_artifact_and_completes_over_http() {
         .oneshot(json_request(
             Method::POST,
             &format!("/api/v1/work-orders/{work_order_id}/nodes/{node_id}/runs"),
-            Some(json!({ "actor": "mindvault://schemas/http-agent" })),
+            Some(json!({})),
         ))
         .await
         .unwrap();

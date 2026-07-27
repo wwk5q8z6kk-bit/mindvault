@@ -213,7 +213,21 @@ async fn refresh_known_workspaces(
                 continue;
             }
         };
-        let root = PathBuf::from(descriptor.root_path);
+        let root = match state
+            .workspace_root_policy
+            .authorize(Path::new(&descriptor.root_path))
+        {
+            Ok(root) => root,
+            Err(message) => {
+                tracing::warn!(
+                    workspace_id = %workspace.id,
+                    root_path = %descriptor.root_path,
+                    reason = %message,
+                    "skipping filesystem watch for workspace root outside allowlist"
+                );
+                continue;
+            }
+        };
         let mut entry = match previous.remove(&workspace.id) {
             Some(existing) if existing.root == root => KnownWorkspace {
                 namespace: workspace.namespace,

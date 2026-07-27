@@ -464,10 +464,51 @@ impl MindVaultEngine {
         Ok(RunReadiness::Ready)
     }
 
+    async fn ensure_live_write_authority(
+        &self,
+        actor: &StableUri,
+        contract: &WorkOrderNode,
+        sensitivity: Sensitivity,
+        retention: RetentionClass,
+        at: chrono::DateTime<Utc>,
+    ) -> MvResult<()> {
+        if contract.write_scope.is_empty() {
+            return Ok(());
+        }
+        let mut missing = Vec::new();
+        for target in &contract.write_scope {
+            let grant = self
+                .store
+                .nodes
+                .find_authorizing_grant(GrantQuery {
+                    grantee: actor,
+                    kind: AuthorityGrantKind::Tool,
+                    target,
+                    capability: ContextCapability::Command,
+                    sensitivity,
+                    retention,
+                    at,
+                })
+                .await?;
+            if grant.is_none() {
+                missing.push(target.as_str().to_string());
+            }
+        }
+        if !missing.is_empty() {
+            return Err(MvError::AccessDenied(format!(
+                "gate G0: no effective Tool Grant covers write scope [{}];                  re-authorize locally before starting a run",
+                missing.join(", ")
+            )));
+        }
+        Ok(())
+    }
+
     /// Acquire the write leases a run needs in order to execute.
     ///
     /// All-or-nothing: a partial claim would let a run write part of its scope
-    /// while another run holds the rest.
+    /// while another run holds the rest. Gate G0 is re-checked here so a
+    /// restored or revoked contract cannot hold exclusive targets without a
+    /// live Tool Grant.
     pub async fn acquire_run_leases(&self, run_id: Uuid) -> MvResult<Vec<WriteLease>> {
         let run = self
             .store
@@ -475,6 +516,12 @@ impl MindVaultEngine {
             .get_agent_run(run_id)
             .await?
             .ok_or_else(|| MvError::NotFound("agent run not found".into()))?;
+        let work_order = self
+            .store
+            .nodes
+            .get_work_order(run.work_order_id)
+            .await?
+            .ok_or_else(|| MvError::NotFound("work order not found".into()))?;
         let nodes = self
             .store
             .nodes
@@ -486,6 +533,15 @@ impl MindVaultEngine {
             .ok_or_else(|| MvError::NotFound("node contract not found".into()))?;
 
         let now = Utc::now();
+        self.ensure_live_write_authority(
+            &run.actor,
+            contract,
+            work_order.sensitivity,
+            work_order.retention,
+            now,
+        )
+        .await?;
+
         self.store
             .nodes
             .claim_write_leases(
@@ -1025,6 +1081,131 @@ impl MindVaultEngine {
             gate_results: export.gate_results.len(),
             artifacts: export.artifacts.len(),
         })
+    }
+
+    pub async fn ensure_structural_gates(
+        &self,
+        run_id: Uuid,
+        evaluator: &StableUri,
+    ) -> MvResult<Vec<GateResult>> {
+        let run = self
+            .store
+            .nodes
+            .get_agent_run(run_id)
+            .await?
+            .ok_or_else(|| MvError::NotFound("agent run not found".into()))?;
+        let work_order = self
+            .store
+            .nodes
+            .get_work_order(run.work_order_id)
+            .await?
+            .ok_or_else(|| MvError::NotFound("work order not found".into()))?;
+        let nodes = self
+            .store
+            .nodes
+            .list_work_order_nodes(run.work_order_id)
+            .await?;
+        let contract = nodes
+            .iter()
+            .find(|node| node.node_id == run.node_id)
+            .ok_or_else(|| MvError::NotFound("node contract not found".into()))?;
+
+        let existing = self.store.nodes.list_gate_results(run_id).await?;
+        let has = |gate: GateId| existing.iter().any(|result| result.gate == gate);
+
+        let mut recorded = Vec::new();
+
+        if !has(GateId::G0) {
+            let digests = contract.write_target_digests();
+            let evidence_digest = canonical_json_sha256(&serde_json::json!({
+                "gate": "g0",
+                "run_id": run_id,
+                "write_target_digests": digests,
+            }));
+            let (outcome, detail) = match self
+                .ensure_live_write_authority(
+                    &run.actor,
+                    contract,
+                    work_order.sensitivity,
+                    work_order.retention,
+                    Utc::now(),
+                )
+                .await
+            {
+                Ok(()) => (GateOutcome::Pass, None),
+                Err(err) => (GateOutcome::Fail, Some(err.to_string())),
+            };
+            recorded.push(
+                self.record_run_gate(
+                    run_id,
+                    GateId::G0,
+                    outcome,
+                    evaluator,
+                    evidence_digest,
+                    detail,
+                )
+                .await?,
+            );
+        }
+
+        if !has(GateId::G1) {
+            let evidence_digest = canonical_json_sha256(&serde_json::json!({
+                "gate": "g1",
+                "run_id": run_id,
+                "run_uri": run.run_uri.as_str(),
+            }));
+            recorded.push(
+                self.record_run_gate(
+                    run_id,
+                    GateId::G1,
+                    GateOutcome::Pass,
+                    evaluator,
+                    evidence_digest,
+                    Some("agent-run-started schema admission already recorded".into()),
+                )
+                .await?,
+            );
+        }
+
+        if !has(GateId::G6) {
+            let remaining = &work_order.remaining;
+            let budget = &work_order.budget;
+            let within = remaining.wall_clock_secs <= budget.wall_clock_secs
+                && remaining.run_attempts <= budget.run_attempts
+                && remaining.model_tokens <= budget.model_tokens
+                && remaining.effect_actions <= budget.effect_actions;
+            let evidence_digest = canonical_json_sha256(&serde_json::json!({
+                "gate": "g6",
+                "run_id": run_id,
+                "remaining": {
+                    "wall_clock_secs": remaining.wall_clock_secs,
+                    "run_attempts": remaining.run_attempts,
+                    "model_tokens": remaining.model_tokens,
+                    "effect_actions": remaining.effect_actions,
+                },
+            }));
+            let (outcome, detail) = if within {
+                (GateOutcome::Pass, None)
+            } else {
+                (
+                    GateOutcome::Fail,
+                    Some("remaining budget exceeds declared ceiling".into()),
+                )
+            };
+            recorded.push(
+                self.record_run_gate(
+                    run_id,
+                    GateId::G6,
+                    outcome,
+                    evaluator,
+                    evidence_digest,
+                    detail,
+                )
+                .await?,
+            );
+        }
+
+        Ok(recorded)
     }
 
     /// Complete a run, refusing while any required gate is outstanding.

@@ -19,7 +19,8 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use mv_core::{
-    AgentRun, EdgeKind, ExecutorKind, GateId, GateOutcome, InteroperabilityStore,
+    canonical_json_sha256, AgentRun, EdgeKind, ExecutorKind, GateId, GateOutcome,
+    InteroperabilityStore,
     ProvenanceReference, ProvenanceRelation, RetentionClass, RiskTier, RunArtifact,
     RunFailureClass, Sensitivity, StableUri, WorkOrder, WorkOrderBudget, WorkOrderExport,
     WorkOrderStatus,
@@ -32,6 +33,13 @@ use uuid::Uuid;
 
 use crate::auth::{authorize_read, authorize_write, AuthContext};
 use crate::state::{AgentNotification, AppState};
+
+/// Decoded artifact payload ceiling.
+pub(crate) const MAX_RUN_ARTIFACT_BYTES: usize = 5 * 1024 * 1024;
+
+/// HTTP body ceiling for POST artifacts.
+pub(crate) const MAX_RUN_ARTIFACT_REQUEST_BYTES: usize =
+    MAX_RUN_ARTIFACT_BYTES.saturating_mul(4).div_ceil(3).saturating_add(64 * 1024);
 
 // ---------------------------------------------------------------------------
 // Requests
@@ -91,23 +99,22 @@ pub(crate) struct EdgeRequest {
 #[derive(Debug, Deserialize)]
 pub(crate) struct RecordGateRequest {
     gate: String,
-    outcome: String,
-    evaluator_actor: String,
-    evidence_digest: String,
+    #[serde(default)]
+    outcome: Option<String>,
+    #[serde(default)]
+    evaluator_actor: Option<String>,
+    #[serde(default)]
+    evidence_digest: Option<String>,
     #[serde(default)]
     detail: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct StartRunRequest {
-    /// Acting principal. Attribution is required, never inferred: gate G5 turns
-    /// on a run's actor differing from its reviewer.
-    actor: String,
-    /// Confidence the caller claims for this attempt, evaluated by the autonomy
-    /// gate. Absent, it is treated as zero — the value least likely to clear an
-    /// auto-apply threshold, so an omitted field cannot buy autonomy.
     #[serde(default)]
-    confidence: f32,
+    actor: Option<String>,
+    #[serde(default)]
+    confidence: Option<f32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -324,11 +331,21 @@ pub(crate) async fn start_run(
     Json(request): Json<StartRunRequest>,
 ) -> Result<(StatusCode, Json<StartRunResponse>), (StatusCode, String)> {
     authorize_write(&auth)?;
-    let actor = StableUri::parse(&request.actor).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    require_work_order_access(&auth, &state, work_order_id).await?;
+    let actor = authenticated_principal(&auth, &state).await?;
+    if let Some(claimed) = request.actor.as_deref() {
+        let claimed = StableUri::parse(claimed).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+        if claimed != actor {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "actor must match the authenticated principal".into(),
+            ));
+        }
+    }
 
     let started = state
         .engine
-        .start_run(work_order_id, node_id, &actor, request.confidence)
+        .start_run(work_order_id, node_id, &actor, 0.0)
         .await
         .map_err(crate::rest::map_mv_error)?;
 
@@ -356,10 +373,29 @@ pub(crate) async fn start_run(
 pub(crate) async fn record_artifact(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
-    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+    Path((work_order_id, run_id)): Path<(Uuid, Uuid)>,
     Json(request): Json<RecordArtifactRequest>,
 ) -> Result<(StatusCode, Json<ArtifactView>), (StatusCode, String)> {
     authorize_write(&auth)?;
+    require_work_order_access(&auth, &state, work_order_id).await?;
+    require_run_for_work_order(&state, work_order_id, run_id).await?;
+
+    let max_base64_chars = MAX_RUN_ARTIFACT_BYTES
+        .saturating_mul(4)
+        .div_ceil(3)
+        .saturating_add(4);
+    if request.content_base64.len() > max_base64_chars {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("artifact content exceeds {MAX_RUN_ARTIFACT_BYTES} bytes"),
+        ));
+    }
+    if request.provenance.len() > 64 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "an artifact may cite at most 64 provenance references".into(),
+        ));
+    }
 
     let payload = BASE64_STANDARD
         .decode(&request.content_base64)
@@ -369,6 +405,12 @@ pub(crate) async fn record_artifact(
                 format!("content is not valid base64: {err}"),
             )
         })?;
+    if payload.len() > MAX_RUN_ARTIFACT_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("artifact content exceeds {MAX_RUN_ARTIFACT_BYTES} bytes"),
+        ));
+    }
 
     let mut provenance = Vec::with_capacity(request.provenance.len());
     for reference in &request.provenance {
@@ -415,21 +457,18 @@ pub(crate) async fn record_artifact(
 pub(crate) async fn record_gate(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
-    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+    Path((work_order_id, run_id)): Path<(Uuid, Uuid)>,
     Json(request): Json<RecordGateRequest>,
 ) -> Result<(StatusCode, Json<GateResultView>), (StatusCode, String)> {
     authorize_write(&auth)?;
+    let run = require_run_for_work_order(&state, work_order_id, run_id).await?;
+    let _ = require_work_order_access(&auth, &state, work_order_id).await?;
+    let evaluator = authenticated_principal(&auth, &state).await?;
 
     let gate: GateId = request
         .gate
         .parse()
         .map_err(|err: String| (StatusCode::BAD_REQUEST, err))?;
-    let outcome: GateOutcome = request
-        .outcome
-        .parse()
-        .map_err(|err: String| (StatusCode::BAD_REQUEST, err))?;
-    let evaluator =
-        StableUri::parse(&request.evaluator_actor).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
 
     let result = if gate == GateId::G2 {
         state
@@ -437,25 +476,57 @@ pub(crate) async fn record_gate(
             .verify_run_artifacts(run_id, &evaluator)
             .await
             .map_err(crate::rest::map_mv_error)?
-    } else {
+    } else if gate == GateId::G5 {
+        if !auth.is_admin() {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "gate g5 requires an authenticated administrator".into(),
+            ));
+        }
+        if evaluator == run.actor {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "gate g5 requires an evaluator distinct from the run actor".into(),
+            ));
+        }
+        let outcome = match request.outcome.as_deref() {
+            None | Some("pass") => GateOutcome::Pass,
+            Some(other) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("gate g5 over HTTP only accepts outcome pass, not {other}"),
+                ));
+            }
+        };
+        let evidence_digest = canonical_json_sha256(&serde_json::json!({
+            "gate": "g5",
+            "run_id": run_id,
+            "evaluator": evaluator.as_str(),
+        }));
         state
             .engine
             .record_run_gate(
                 run_id,
-                gate,
+                GateId::G5,
                 outcome,
                 &evaluator,
-                request.evidence_digest,
+                evidence_digest,
                 request.detail,
             )
             .await
             .map_err(crate::rest::map_mv_error)?
+    } else {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "gate {} cannot be client-asserted; structural gates are recorded by the engine",
+                gate.as_str()
+            ),
+        ));
     };
 
     state.notify_agent(AgentNotification::gate_recorded(&result));
 
-    // 201, matching this route's OpenAPI declaration and the artifact route:
-    // recording evidence creates an immutable resource.
     Ok((
         StatusCode::CREATED,
         Json(GateResultView {
@@ -477,14 +548,48 @@ pub(crate) async fn record_gate(
 pub(crate) async fn approve_run(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
-    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+    Path((work_order_id, run_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<RunView>, (StatusCode, String)> {
     authorize_write(&auth)?;
+    require_work_order_access(&auth, &state, work_order_id).await?;
+    require_run_for_work_order(&state, work_order_id, run_id).await?;
     let run = state
         .engine
         .resume_approved_run(run_id)
         .await
         .map_err(crate::rest::map_mv_error)?;
+
+    let existing = state
+        .engine
+        .store
+        .nodes
+        .list_gate_results(run_id)
+        .await
+        .map_err(crate::rest::map_mv_error)?;
+    if !existing
+        .iter()
+        .any(|result| result.gate == GateId::G7 && result.outcome == GateOutcome::Pass)
+    {
+        let evaluator = authenticated_principal(&auth, &state).await?;
+        let evidence_digest = canonical_json_sha256(&serde_json::json!({
+            "gate": "g7",
+            "run_id": run_id,
+            "evaluator": evaluator.as_str(),
+        }));
+        let _ = state
+            .engine
+            .record_run_gate(
+                run_id,
+                GateId::G7,
+                GateOutcome::Pass,
+                &evaluator,
+                evidence_digest,
+                Some("owner approval recorded via approve endpoint".into()),
+            )
+            .await
+            .map_err(crate::rest::map_mv_error)?;
+    }
+
     state.notify_agent(AgentNotification::run_transitioned(&run));
     Ok(Json(run_view(&run)))
 }
@@ -493,9 +598,17 @@ pub(crate) async fn approve_run(
 pub(crate) async fn complete_run(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
-    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+    Path((work_order_id, run_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<CompleteRunResponse>, (StatusCode, String)> {
     authorize_write(&auth)?;
+    require_work_order_access(&auth, &state, work_order_id).await?;
+    require_run_for_work_order(&state, work_order_id, run_id).await?;
+    let evaluator = authenticated_principal(&auth, &state).await?;
+    state
+        .engine
+        .ensure_structural_gates(run_id, &evaluator)
+        .await
+        .map_err(crate::rest::map_mv_error)?;
     match state
         .engine
         .complete_run(run_id)
@@ -527,10 +640,12 @@ pub(crate) async fn complete_run(
 pub(crate) async fn fail_run(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
-    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+    Path((work_order_id, run_id)): Path<(Uuid, Uuid)>,
     Json(request): Json<FailRunRequest>,
 ) -> Result<Json<RunView>, (StatusCode, String)> {
     authorize_write(&auth)?;
+    require_work_order_access(&auth, &state, work_order_id).await?;
+    require_run_for_work_order(&state, work_order_id, run_id).await?;
     let class: RunFailureClass = request
         .failure_class
         .parse()
@@ -563,13 +678,17 @@ pub(crate) async fn list_work_orders(
         .map_err(|err: String| (StatusCode::BAD_REQUEST, err))?;
     let limit = query.limit.unwrap_or(50).clamp(1, 1000);
 
-    let work_orders = state
+    let mut work_orders = state
         .engine
         .store
         .nodes
         .list_work_orders(status, limit)
         .await
         .map_err(crate::rest::map_mv_error)?;
+    if !auth.is_admin() {
+        let principal = authenticated_principal(&auth, &state).await?;
+        work_orders.retain(|work_order| work_order.principal == principal);
+    }
     Ok(Json(work_orders.iter().map(work_order_summary).collect()))
 }
 
@@ -580,14 +699,7 @@ pub(crate) async fn get_work_order(
     Path(work_order_id): Path<Uuid>,
 ) -> Result<Json<WorkOrderDetail>, (StatusCode, String)> {
     authorize_read(&auth)?;
-    let work_order = state
-        .engine
-        .store
-        .nodes
-        .get_work_order(work_order_id)
-        .await
-        .map_err(crate::rest::map_mv_error)?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "work order not found".to_string()))?;
+    let work_order = require_work_order_access(&auth, &state, work_order_id).await?;
     Ok(Json(load_detail(&state, &work_order).await?))
 }
 
@@ -598,6 +710,7 @@ pub(crate) async fn list_runs(
     Path(work_order_id): Path<Uuid>,
 ) -> Result<Json<Vec<RunView>>, (StatusCode, String)> {
     authorize_read(&auth)?;
+    require_work_order_access(&auth, &state, work_order_id).await?;
     let runs = state
         .engine
         .store
@@ -659,6 +772,7 @@ pub(crate) async fn list_artifacts(
     Path(work_order_id): Path<Uuid>,
 ) -> Result<Json<Vec<ArtifactView>>, (StatusCode, String)> {
     authorize_read(&auth)?;
+    require_work_order_access(&auth, &state, work_order_id).await?;
     let artifacts = state
         .engine
         .store
@@ -684,6 +798,7 @@ pub(crate) async fn read_artifact_content(
     Path((work_order_id, artifact_id)): Path<(Uuid, Uuid)>,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
     authorize_read(&auth)?;
+    require_work_order_access(&auth, &state, work_order_id).await?;
     let artifact = state
         .engine
         .store
@@ -746,6 +861,7 @@ pub(crate) async fn export_work_order(
     Path(work_order_id): Path<Uuid>,
 ) -> Result<Json<WorkOrderExport>, (StatusCode, String)> {
     authorize_read(&auth)?;
+    require_work_order_access(&auth, &state, work_order_id).await?;
     let export = state
         .engine
         .export_work_order(work_order_id)
@@ -881,6 +997,67 @@ fn build_proposal(
         nodes,
         edges,
     })
+}
+
+
+async fn authenticated_principal(
+    auth: &AuthContext,
+    state: &AppState,
+) -> Result<StableUri, (StatusCode, String)> {
+    let local_node_id = state
+        .engine
+        .store
+        .nodes
+        .local_context_node_id()
+        .await
+        .map_err(crate::rest::map_mv_error)?;
+    let subject = auth.subject.as_deref().unwrap_or("owner");
+    Ok(StableUri::principal(
+        local_node_id,
+        Uuid::new_v5(&local_node_id, subject.as_bytes()),
+    ))
+}
+
+async fn require_work_order_access(
+    auth: &AuthContext,
+    state: &AppState,
+    work_order_id: Uuid,
+) -> Result<WorkOrder, (StatusCode, String)> {
+    let work_order = state
+        .engine
+        .store
+        .nodes
+        .get_work_order(work_order_id)
+        .await
+        .map_err(crate::rest::map_mv_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "work order not found".to_string()))?;
+    if auth.is_admin() {
+        return Ok(work_order);
+    }
+    let principal = authenticated_principal(auth, state).await?;
+    if work_order.principal != principal {
+        return Err((StatusCode::NOT_FOUND, "work order not found".to_string()));
+    }
+    Ok(work_order)
+}
+
+async fn require_run_for_work_order(
+    state: &AppState,
+    work_order_id: Uuid,
+    run_id: Uuid,
+) -> Result<AgentRun, (StatusCode, String)> {
+    let run = state
+        .engine
+        .store
+        .nodes
+        .get_agent_run(run_id)
+        .await
+        .map_err(crate::rest::map_mv_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "agent run not found".to_string()))?;
+    if run.work_order_id != work_order_id {
+        return Err((StatusCode::NOT_FOUND, "agent run not found".to_string()));
+    }
+    Ok(run)
 }
 
 /// An over-scoped contract is a governed refusal, not a server fault. The
