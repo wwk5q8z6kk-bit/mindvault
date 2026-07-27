@@ -98,7 +98,7 @@ work, or its citations are unanchored from the first day.
 |---|---|---|---|
 | DOC — documentation corrections | 9 | 5 | 0 |
 | PROG — program governance | 4 | 3 | 0 |
-| IK — interoperability kernel | 22 | 7 | 0 |
+| IK — interoperability kernel | 25 | 9 | 1 |
 | EXT — extension runtime & gateway | 9 | 0 | 0 |
 | PROTO — protocol adapters | 9 | 0 | 0 |
 | SRC — source authority & connectors | 8 | 0 | 0 |
@@ -109,8 +109,8 @@ work, or its citations are unanchored from the first day.
 | SPACE — collaborative spaces | 8 | 4 | 0 |
 | PARK — explicitly deferred | 6 | 0 | 0 |
 | AGENT — governed agent execution graph | 8 | 1 | 0 |
-| HYG — engineering hygiene | 5 | 1 | 2 |
-| **Total** | **134** | **37** | **2** |
+| HYG — engineering hygiene | 6 | 1 | 3 |
+| **Total** | **138** | **39** | **4** |
 
 ---
 
@@ -263,13 +263,44 @@ interoperability kernel."
 
 #### IK-001 — Wire the grant resolver into public command admission
 - **priority:** P0 — named as the immediate next slice
-- **status:** not_started
-- **mandate:** `docs/architecture/interoperability-kernel-v1.md:283-284` — "The next gated kernel slice should wire action-envelope and grant admission ahead of any live provider publisher"; also `:254` — "the new grant resolver is not yet wired to public command admission"
+- **status:** **verified** (2026-07-27, node-create command path)
+- **mandate:** `docs/architecture/interoperability-kernel-v1.md:283-284` — "The next gated kernel slice should wire action-envelope and grant admission ahead of any live provider publisher"
 - **governing_authority:** Law 7 (`INTEROPERABILITY_CONSTITUTION.md:60`), Law 8 (`:62`)
 - **blocked_by:** none
-- **files:** `crates/mv-server/src/auth.rs`, `crates/mv-server/src/rest.rs`, `crates/mv-core/src/traits.rs` (`find_authorizing_grant`)
-- **acceptance:** `cargo test -p mv-server -- grant_admission` — a read command without an effective Context Grant returns 403; a mutating command without an effective Tool Grant returns 403; ancestor revocation denies within the same request
+- **files:** `crates/mv-core/src/model/interoperability.rs`, `crates/mv-engine/src/engine/interoperability_ops.rs`, `crates/mv-server/src/rest/interoperability.rs`, `crates/mv-server/src/state.rs`, `crates/mv-server/src/rest.rs`, `config/default.toml`
+- **acceptance:** `cargo test -p mv-core -p mv-engine` and `cargo test -p mv-server --tests -- --test-threads=1`
+- **evidence:** Shipped in four commits behind `MINDVAULT_COMMAND_ADMISSION_MODE` (`off` default / `observe` / `enforce`). `auth.rs` and `traits.rs` were **not** modified: `AuthContext` has 21 struct literals across five crates and extending it would have broken all of them for no functional gain, so `CommandIdentity` carries the identity instead. Admission is additive and sits after the idempotent-replay lookup and before the quota check. Denials return 403 with a stable `command_admission_denied` code and never the bounded reason, which would be a probing oracle. Observed: 86 mv-core + 393 mv-engine + 249 mv-server lib + 33 api_integration + 2 federation_e2e + 9 transport_parity + 14 work_order_conformance passed; clippy exit 0; fmt clean.
+- **scope note:** covers `POST /api/v1/nodes` only. Other mutating endpoints are `IK-002`/`IK-017`.
+
+#### IK-001a — Governed command for local Context Node registration
+- **priority:** P0 — a hard prerequisite for running `enforce` on a real vault
+- **status:** not_started
+- **mandate:** `crates/mv-storage/src/sqlite.rs` — `commit_authority_grant_with_event` refuses a grant whose governing node has no Active registered descriptor
+- **governing_authority:** feature-completeness §2 (`INTEROPERABILITY_CONSTITUTION.md:116`)
+- **blocked_by:** none
+- **files:** `crates/mv-engine/src/engine/interoperability_ops.rs`, `crates/mv-server/src/rest/interoperability.rs`
+- **acceptance:** a fresh vault can register its local Context Node through a governed command, so a Tool Grant can then be issued
+- **evidence:** today only test fixtures register it, which is why `enforce` is a test and staging mode
+
+#### IK-001b — Admin-only grant issuance and lifecycle endpoints
+- **priority:** P0 — the second prerequisite for `enforce`
+- **status:** not_started
+- **mandate:** `docs/architecture/AUTHORITY_GRANT_MODEL.md` — "public grant APIs ... remain later integration gates"
+- **governing_authority:** Law 2 (`INTEROPERABILITY_CONSTITUTION.md:46`), feature-completeness §2-§3
+- **blocked_by:** IK-001a
+- **files:** `crates/mv-server/src/rest/interoperability.rs`, `crates/mv-server/src/rest.rs`, `crates/mv-server/src/openapi.rs`
+- **acceptance:** an owner can issue, suspend and revoke a Tool Grant over the API; lifting the deferral is recorded in an ADR note rather than done silently
 - **evidence:** —
+
+#### IK-001c — Durable command-admission decisions
+- **priority:** P1 — makes denials durable and is the first brick of the Trust Ledger
+- **status:** not_started
+- **mandate:** `docs/architecture/ACTION_RECEIPT_MODEL.md` § "Command admission does not write an action receipt"
+- **governing_authority:** Law 15 (`INTEROPERABILITY_CONSTITUTION.md:77`), ADR 010:149-152
+- **blocked_by:** none
+- **files:** new `migrations/039_command_admission_decisions.sql`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`
+- **acceptance:** a denied command leaves an immutable, idempotent record keyed on `(principal_uri, idempotency_key)`
+- **evidence:** deferred from IK-001 because it needs a migration — the one change class that is not trivially reversible on a running vault. Admitted decisions currently ride in the event envelope; denials reach only the audit trail and metrics.
 
 #### IK-002 — Versioned action envelope on every public command
 - **priority:** P0 — named as the immediate next slice alongside IK-001
@@ -1547,6 +1578,16 @@ document, but each one either hides real defects or makes verification lie.
 - **files:** `.github/workflows/ci.yml`
 - **acceptance:** CI runs `pnpm check`, `pnpm lint` and `pnpm exec vitest run`
 - **evidence:** `.github/workflows/ci.yml` has three jobs — `rust`, `sealed-gates`, `connectors`. None runs vitest, svelte-check, eslint, prettier or playwright, so ~509 frontend test cases across 62 files and all Svelte type-checking are ungated. The `frontend/src/lib/stores/websocket.ts` change in this branch exports new types with no CI coverage.
+
+#### HYG-006 — The integration suite shares one process-global rate-limit bucket
+- **priority:** P2
+- **status:** **verified** (mitigated 2026-07-27)
+- **mandate:** —
+- **governing_authority:** —
+- **blocked_by:** none
+- **files:** `crates/mv-server/src/limits.rs`, `crates/mv-server/tests/api_integration.rs`
+- **acceptance:** `cargo test -p mv-server --test api_integration -- --test-threads=1`
+- **evidence:** `RATE_LIMITER` is a `OnceLock` (`limits.rs:167`) holding one bucket for the whole process, defaulting to 120 requests per 60 seconds. The suite runs serially in a single process and completes in ~39s, so the entire run sat just under the ceiling — and *adding two tests* pushed an unrelated later test (`workspace_projections_are_searchable_...`) to fail with 429. Failure was a function of total test count, not of the test that failed. Mitigated by raising the ceiling in `setup_with_config` before the lock initializes; the two suite tests that assert 429 exercise the namespace node quota, not the rate limiter, so no assertion is weakened. The underlying design — production-sized global limiter shared by a test suite — is unchanged and will bite again if the suite is parallelized.
 
 #### HYG-005 — `scripts/verify_all.sh` and `CONTRIBUTING.md` prescribe a command that fails
 - **priority:** P2
