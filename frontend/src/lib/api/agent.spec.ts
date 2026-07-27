@@ -72,4 +72,53 @@ describe('agent api client', () => {
 		});
 		expect(fetchJsonMock).toHaveBeenCalledWith('/api/v1/agent/models');
 	});
+
+	it('dispatches agent run transitions onto the observation store', () => {
+		const seen: unknown[] = [];
+		const unsub = agentApi.agentRunObservations.subscribe((value) => {
+			if (value) seen.push(value);
+		});
+
+		agentApi.dispatchAgentNotification({
+			type: 'agent_run_transitioned',
+			run_id: 'run-1',
+			work_order_id: 'wo-1',
+			status: 'awaiting_approval',
+			failure_class: null
+		});
+		agentApi.dispatchAgentNotification({
+			type: 'agent_run_gate_recorded',
+			run_id: 'run-1',
+			work_order_id: 'wo-1',
+			gate: 'g2',
+			outcome: 'pass'
+		});
+		// Malformed payloads must not poison the store.
+		agentApi.dispatchAgentNotification({ type: 'agent_run_transitioned' });
+
+		unsub();
+
+		expect(seen).toHaveLength(2);
+		expect(seen[0]).toMatchObject({
+			seq: 1,
+			event: {
+				kind: 'transition',
+				run_id: 'run-1',
+				work_order_id: 'wo-1',
+				status: 'awaiting_approval',
+				failure_class: null
+			}
+		});
+		expect(seen[1]).toMatchObject({
+			seq: 2,
+			event: {
+				kind: 'gate',
+				run_id: 'run-1',
+				work_order_id: 'wo-1',
+				gate: 'g2',
+				outcome: 'pass'
+			}
+		});
+	});
+
 });
