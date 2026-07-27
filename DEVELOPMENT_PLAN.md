@@ -546,7 +546,8 @@ Backend:
 - [x] Build autonomy gate (rules, quiet hours, rate limiting)
 - [x] Build reflection engine (feedback, confidence adjustment)
 - [x] Build sync engine (vector clocks, snapshot export/import)
-- [x] Build federation engine (peer management)
+- [~] Build federation engine (peer management) — code present; peers are held in
+      process memory and production federation is gated (`FED-000`)
 - [x] Build metrics collector
 - [x] Build encrypted backup/restore
 - [x] Add migration tools (Markdown/Obsidian/CSV) with dry-run
