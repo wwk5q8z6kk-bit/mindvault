@@ -35,8 +35,14 @@ Public share links provide read-only access to a single node:
 
 ### What is encrypted
 
-MindVault encrypts all persisted vault artifacts at rest in sealed mode.
-Plaintext exists only transiently in process memory while the vault is unsealed.
+MindVault encrypts persisted content-bearing vault artifacts that it manages in
+its data directory while sealed mode is active. Structural identifiers and
+operational state required to locate encrypted payloads may remain visible in
+SQLite. Decrypted managed content exists only transiently in process memory
+while the vault is unsealed.
+
+This boundary does not include arbitrary user-selected files outside the
+MindVault data directory.
 
 | Data | Encrypted at rest? | Notes |
 |------|--------------------|-------|
@@ -46,6 +52,28 @@ Plaintext exists only transiently in process memory while the vault is unsealed.
 | Blob attachments + derived extraction text | Yes | Envelope format with wrapped DEK (`MVB1` prefix) |
 | Keychain credentials | Yes | Domain-scoped encryption + audit controls |
 | API responses | Runtime only | Decrypted only while process is unsealed |
+
+### Planned file-first Library boundary
+
+The file-first Library architecture is accepted but is not part of the current
+runtime. Its portable workspace mode deliberately stores canonical documents as
+ordinary Markdown so Obsidian and other editors can read them.
+
+Future workspace setup and security views must use copy equivalent to:
+
+> **Portable Markdown workspace:** Files in this workspace are ordinary
+> Markdown and are not encrypted by MindVault. Protect the folder with your
+> operating system, encrypted volume, or trusted sync provider.
+
+> **Sealed MindVault data:** While MindVault is sealed, its managed manifest,
+> indexes, version snapshots, structured records, and sensitive operation
+> details are encrypted or unavailable. Portable Markdown files remain readable
+> to applications that can access their folder.
+
+The manifest contract stores sensitive descriptors, paths, hashes, diagnostics,
+and journal details in payload envelopes. In sealed mode those envelopes must
+use authenticated encryption; non-sensitive IDs, state enums, and timestamps
+may remain visible for storage integrity and lifecycle management.
 
 ### Sealed mode lifecycle
 

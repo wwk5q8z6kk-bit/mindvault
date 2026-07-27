@@ -1,0 +1,35 @@
+{
+  "contract_version": 1,
+  "policy_version": "portable-v1",
+  "source_namespace": "default",
+  "items": [
+    {
+      "source_node_id": "11111111-1111-4111-8111-111111111111",
+      "source_node_version": 3,
+      "original_title": "Project Alpha",
+      "target_relative_path": "Projects/Project Alpha.md",
+      "expected_content_sha256": "e9b5f6d502d9d339d34266180ea7ba99d996ba8975c5eab35383066526ee5859",
+      "warnings": []
+    },
+    {
+      "source_node_id": "22222222-2222-4222-8222-222222222222",
+      "source_node_version": 1,
+      "original_title": "Project Alpha",
+      "target_relative_path": "Projects/Project Alpha--22222222.md",
+      "expected_content_sha256": "128e36a75b05b9dc2b960d7a0a5cd9c434a318dae2f3ae0a2c3a255963bf0d37",
+      "warnings": [
+        "duplicate title/path resolved with stable source ID suffix"
+      ]
+    },
+    {
+      "source_node_id": "33333333-3333-4333-8333-333333333333",
+      "source_node_version": 2,
+      "original_title": "CON",
+      "target_relative_path": "Decisions/_CON.md",
+      "expected_content_sha256": "9dd2fd25acb5d1ca97a2ecf85f174a8417981fcdb6977cd65c2fe142d8a0433a",
+      "warnings": [
+        "reserved device name prefixed with underscore"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mindvault.local/schemas/knowledge-workspace-migration-report-v1.json",
+  "title": "MindVault Knowledge Workspace Migration Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "migration_id",
+    "plan_sha256",
+    "state",
+    "counts",
+    "items",
+    "warnings",
+    "errors"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": 1
+    },
+    "migration_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "plan_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "state": {
+      "enum": [
+        "planned",
+        "staged",
+        "verified",
+        "committed",
+        "rolled_back",
+        "failed"
+      ]
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "verified", "failed", "skipped", "warnings"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 0},
+        "verified": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0},
+        "warnings": {"type": "integer", "minimum": 0}
+      }
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_node_id",
+          "source_node_version",
+          "target_relative_path",
+          "expected_content_sha256",
+          "actual_content_sha256",
+          "state",
+          "warnings",
+          "errors"
+        ],
+        "properties": {
+          "source_node_id": {"type": "string", "format": "uuid"},
+          "source_node_version": {"type": "integer", "minimum": 1},
+          "target_relative_path": {"type": "string", "minLength": 1},
+          "expected_content_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "actual_content_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "state": {
+            "enum": [
+              "planned",
+              "staged",
+              "verified",
+              "committed",
+              "rolled_back",
+              "failed",
+              "skipped"
+            ]
+          },
+          "warnings": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "errors": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "errors": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}
