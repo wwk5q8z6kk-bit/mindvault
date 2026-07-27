@@ -2237,6 +2237,182 @@ pub fn canonical_json_sha256(value: &serde_json::Value) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+// ---------------------------------------------------------------------------
+// Command admission
+//
+// Vocabulary for wiring the grant resolver into public command admission, the
+// slice named by `docs/architecture/interoperability-kernel-v1.md:283-284`.
+// Constitutional law 7 requires an explicit grant for context access; law 8
+// requires action authority to be a separate axis, so reading never implies
+// authority to mutate, execute, transmit, or spend.
+//
+// Deliberately NOT named `ActionEnvelope`. ADR 010:136-152 defines that record
+// as carrying Space and work-order identity, approval references and budgets,
+// none of which exist yet, and states that "none is a substitute until it
+// carries the complete envelope and is durable by default". That name stays
+// reserved for the complete Trust Ledger record rather than being claimed here
+// by a partial one.
+// ---------------------------------------------------------------------------
+
+/// One authorization question, asked before a public command mutates anything.
+///
+/// `resource` is the exact grant target and is deliberately distinct from
+/// `subject`, the resource the command affects. For a create the two differ
+/// necessarily: grant targets are exact stable-URI matches with no wildcards or
+/// prefixes (`docs/architecture/AUTHORITY_GRANT_MODEL.md:44-45`), while a
+/// created resource's identifier is minted microseconds before admission, so no
+/// pre-existing grant could name it. The only satisfiable target for a create is
+/// therefore the governing node URI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandAdmissionRequest {
+    pub request_id: Uuid,
+    pub correlation_id: Uuid,
+    pub causation_id: Option<Uuid>,
+    /// The accountable identity.
+    pub principal: StableUri,
+    /// The acting identity, and the grantee the resolver looks up.
+    pub actor: StableUri,
+    pub governing_node: StableUri,
+    /// Exact grant target.
+    pub resource: StableUri,
+    /// The resource this command affects or creates.
+    pub subject: StableUri,
+    pub operation: ContextCapability,
+    pub required_grant_kind: AuthorityGrantKind,
+    pub idempotency_key: IdempotencyKey,
+    pub sensitivity: Sensitivity,
+    pub retention: RetentionClass,
+    pub requested_at: DateTime<Utc>,
+}
+
+impl CommandAdmissionRequest {
+    /// Reject incoherent requests before any storage lookup happens.
+    ///
+    /// The load-bearing check is the law-8 one: Context and Tool Grants carry
+    /// disjoint capability sets, so pairing a Context Grant with an effectful
+    /// capability is a construction error, not an authorization failure.
+    pub fn validate(&self) -> Result<(), String> {
+        let observational = Self::is_context_capability(self.operation);
+        match self.required_grant_kind {
+            AuthorityGrantKind::Context if !observational => {
+                return Err(format!(
+                    "capability {} is effectful and cannot be authorized by a Context Grant; \
+                     context access never implies action authority",
+                    self.operation.as_str()
+                ));
+            }
+            AuthorityGrantKind::Tool if observational => {
+                return Err(format!(
+                    "capability {} is observational and belongs to a Context Grant",
+                    self.operation.as_str()
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Capabilities that only observe. Everything else can cause an effect.
+    const fn is_context_capability(capability: ContextCapability) -> bool {
+        matches!(
+            capability,
+            ContextCapability::Discover
+                | ContextCapability::Query
+                | ContextCapability::Read
+                | ContextCapability::Subscribe
+                | ContextCapability::Health
+        )
+    }
+
+    /// Stable digest of the admission question, for correlating a recorded
+    /// decision with the request that produced it.
+    pub fn admission_digest(&self) -> String {
+        canonical_json_sha256(&serde_json::json!({
+            "actor": self.actor.as_str(),
+            "capability": self.operation.as_str(),
+            "grant_kind": self.required_grant_kind.as_str(),
+            "principal": self.principal.as_str(),
+            "resource": self.resource.as_str(),
+            "retention": self.retention.as_str(),
+            "sensitivity": self.sensitivity.as_str(),
+            "subject": self.subject.as_str(),
+        }))
+    }
+}
+
+interoperability_string_enum! {
+    /// Why admission was refused.
+    ///
+    /// Recorded in the audit trail, never returned to the caller: the
+    /// distinction between "you hold no grant" and "your grant expired" is a
+    /// probing oracle. Law 15 requires a denial be recorded, not disclosed.
+    pub enum AdmissionDenialReason {
+        NoEffectiveGrant => "no_effective_grant",
+        GrantKindMismatch => "grant_kind_mismatch",
+        CapabilityNotGranted => "capability_not_granted",
+        TargetNotGranted => "target_not_granted",
+        GrantNotEffective => "grant_not_effective",
+        SensitivityCeilingExceeded => "sensitivity_ceiling_exceeded",
+        RetentionCeilingExceeded => "retention_ceiling_exceeded",
+        DelegationChainIneffective => "delegation_chain_ineffective",
+        ResolverUnavailable => "resolver_unavailable",
+    }
+}
+
+/// The resolver's answer. Fail-closed: anything but `Admitted` denies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "snake_case")]
+pub enum AdmissionDecision {
+    Admitted {
+        grant_id: Uuid,
+        grant_uri: StableUri,
+        grant_kind: AuthorityGrantKind,
+        capability: ContextCapability,
+        delegation_depth_remaining: u8,
+        decided_at: DateTime<Utc>,
+    },
+    Denied {
+        reason: AdmissionDenialReason,
+        decided_at: DateTime<Utc>,
+    },
+}
+
+impl AdmissionDecision {
+    pub fn is_admitted(&self) -> bool {
+        matches!(self, Self::Admitted { .. })
+    }
+
+    /// Policy metadata safe to embed in a durable event.
+    ///
+    /// Carries stable identities and enum tokens only. Grant terms — purpose,
+    /// target list, grantor, grantee — stay out: the event records that a
+    /// decision was reached and under which grant, never what the grant permits.
+    pub fn policy_metadata(&self) -> serde_json::Value {
+        match self {
+            Self::Admitted {
+                grant_uri,
+                grant_kind,
+                capability,
+                delegation_depth_remaining,
+                decided_at,
+                ..
+            } => serde_json::json!({
+                "decision": "admitted",
+                "grant_uri": grant_uri.as_str(),
+                "grant_kind": grant_kind.as_str(),
+                "capability": capability.as_str(),
+                "delegation_depth_remaining": delegation_depth_remaining,
+                "decided_at": decided_at.to_rfc3339(),
+            }),
+            Self::Denied { reason, decided_at } => serde_json::json!({
+                "decision": "denied",
+                "reason": reason.as_str(),
+                "decided_at": decided_at.to_rfc3339(),
+            }),
+        }
+    }
+}
+
 fn validate_sha256(value: &str, label: &str) -> Result<(), String> {
     if value.len() != 64
         || !value
