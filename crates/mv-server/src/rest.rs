@@ -228,6 +228,27 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
                 .post(interoperability::register_local_context_node),
         )
         .route(
+            "/api/v1/authority-grants",
+            get(interoperability::list_authority_grants)
+                .post(interoperability::issue_authority_grant),
+        )
+        .route(
+            "/api/v1/authority-grants/:id",
+            get(interoperability::get_authority_grant),
+        )
+        .route(
+            "/api/v1/authority-grants/:id/suspend",
+            post(interoperability::suspend_authority_grant),
+        )
+        .route(
+            "/api/v1/authority-grants/:id/revoke",
+            post(interoperability::revoke_authority_grant),
+        )
+        .route(
+            "/api/v1/authority-grants/:id/resume",
+            post(interoperability::resume_authority_grant),
+        )
+        .route(
             "/api/v1/work-orders/:id/runs/:run_id/readiness",
             get(work_orders::get_run_readiness),
         )

@@ -114,8 +114,10 @@ An authorization lookup fails closed unless all of the following hold:
 4. requested sensitivity and retention are at or below their grant ceilings;
 5. every parent exists, is effective, and still contains the child terms.
 
-External tool execution, public grant APIs, and signatures remain later
-integration gates. Immutable outbox publication-attempt receipts now exist, but
+External tool execution, non-admin public grant APIs, and signatures remain
+later integration gates. Admin-only grant issuance and lifecycle
+(`POST/GET /api/v1/authority-grants`, suspend/revoke/resume) are implemented
+(IK-001b, ADR 013). Immutable outbox publication-attempt receipts now exist, but
 they do not themselves authorize an external side effect. No external side
 effect is authorized by this storage slice alone.
 
@@ -142,9 +144,10 @@ denial be recorded rather than disclosed. A sealed vault yields `503`. A
 resolver that cannot reach an answer denies and never falls through to a
 successful mutation.
 
-Enforcement is not yet usable on a fresh vault: it requires a registered local
-Context Node and an issued Tool Grant, and grant issuance is still gated above.
-`observe` exists so an operator can watch denials fall to zero first.
+Enforcement is usable on a fresh vault after registering the local Context
+Node (`POST /api/v1/context-nodes/local`) and issuing a Tool Grant
+(`POST /api/v1/authority-grants`). `observe` remains the recommended rollout
+position so an operator can watch denials fall to zero first.
 
 ## Conformance gates
 

@@ -2583,3 +2583,163 @@ async fn local_context_node_registers_idempotently_over_http() {
     assert_eq!(body["status"], "active");
 }
 
+/// IK-001b — issue a Tool Grant over HTTP, then enforce admits a node create.
+///
+/// Registers the local Context Node, grants `local-system` (the default admin
+/// principal) a node-scoped Tool/`command` grant, creates under `enforce`, then
+/// suspends and revokes the grant so later creates fail closed again.
+#[tokio::test]
+async fn authority_grant_lifecycle_enables_enforced_node_create() {
+    let _mode = ScopedEnvVar::set("MINDVAULT_COMMAND_ADMISSION_MODE", "enforce");
+    let tmp = TempDir::new().expect("tempdir");
+    let config = test_config(&tmp.path().to_string_lossy());
+    let (router, _tmp) = setup_with_config(config, tmp).await;
+
+    let registered = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/context-nodes/local",
+            Some(json!({ "display_name": "Grant Vault" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(registered.status(), StatusCode::CREATED);
+
+    let refused = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({
+                "kind": "fact",
+                "content": "no grant yet",
+                "title": "Denied",
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+    let issued = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/authority-grants",
+            Some(json!({
+                "grantee_subject": "local-system",
+                "purpose": "admit node creates for the vault admin",
+                "idempotency_key": "issue-admin-tool-grant",
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(issued.status(), StatusCode::CREATED);
+    let grant = body_json(issued).await;
+    assert_eq!(grant["newly_issued"], true);
+    assert_eq!(grant["status"], "active");
+    assert_eq!(grant["kind"], "tool");
+    assert!(
+        grant["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "command"),
+        "capabilities: {grant}"
+    );
+    let grant_id = grant["grant_id"].as_str().unwrap().to_string();
+
+    let replay = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/authority-grants",
+            Some(json!({
+                "grantee_subject": "local-system",
+                "purpose": "admit node creates for the vault admin",
+                "idempotency_key": "issue-admin-tool-grant",
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    let again = body_json(replay).await;
+    assert_eq!(again["newly_issued"], false);
+    assert_eq!(again["grant_id"], grant_id);
+
+    let created = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({
+                "kind": "fact",
+                "content": "granted create",
+                "title": "Admitted",
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+
+    let suspended = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/authority-grants/{grant_id}/suspend"),
+            Some(json!({
+                "reason": "operator review",
+                "idempotency_key": "suspend-admin-tool-grant",
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(suspended.status(), StatusCode::OK);
+    assert_eq!(body_json(suspended).await["status"], "suspended");
+
+    let blocked = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({
+                "kind": "fact",
+                "content": "suspended grant",
+                "title": "Blocked",
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), StatusCode::FORBIDDEN);
+
+    let revoked = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/authority-grants/{grant_id}/revoke"),
+            Some(json!({
+                "reason": "no longer needed",
+                "idempotency_key": "revoke-admin-tool-grant",
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), StatusCode::OK);
+    assert_eq!(body_json(revoked).await["status"], "revoked");
+
+    let listed = router
+        .oneshot(json_request(Method::GET, "/api/v1/authority-grants", None))
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let grants = body_json(listed).await;
+    assert!(
+        grants
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["grant_id"] == grant_id && g["status"] == "revoked"),
+        "grants: {grants}"
+    );
+}
+

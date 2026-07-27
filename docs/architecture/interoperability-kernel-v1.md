@@ -288,11 +288,11 @@ Grant admission is now wired to public command admission on `POST /api/v1/nodes`
 required. It ships `off` by default and is additive to the existing role,
 namespace, and quota checks.
 
-One prerequisite remains before an operator can run `enforce` on a real vault:
-admin-only grant issuance (`IK-001b`). Local Context Node registration is now a
-governed command at `POST /api/v1/context-nodes/local` (`IK-001a`). Until grant
-issuance exists, `enforce` is a test and staging mode, and `observe` is the
-operator's rollout position.
+Local Context Node registration (`IK-001a`) and admin grant issuance
+(`IK-001b`, `POST /api/v1/authority-grants`) are both available. An operator can
+run `enforce` on a real vault after registering the local node and issuing a
+Tool Grant to the acting principal. `observe` remains the recommended rollout
+position.
 
 The next gated slice is the outbox dispatcher and its first authenticated
 publisher. End-to-end completion may be claimed only when authenticated delivery

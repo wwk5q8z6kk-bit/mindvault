@@ -21,6 +21,7 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "health", description = "Health check endpoints"),
         (name = "workspaces", description = "Allowlisted local Markdown workspace access"),
         (name = "context-nodes", description = "Local Context Node bootstrap and registry"),
+        (name = "authority-grants", description = "Authority Grant issuance and lifecycle"),
         (name = "nodes", description = "Knowledge node CRUD operations"),
         (name = "recall", description = "Semantic recall and search"),
         (name = "graph", description = "Relationship graph operations"),
@@ -295,6 +296,12 @@ use utoipa_swagger_ui::SwaggerUi;
         work_order_run_fail,
         context_nodes_local_get,
         context_nodes_local_register,
+        authority_grants_list,
+        authority_grants_issue,
+        authority_grants_get,
+        authority_grants_suspend,
+        authority_grants_revoke,
+        authority_grants_resume,
         // Proactive
         proactive_list_insights,
         proactive_generate,
@@ -1337,6 +1344,40 @@ async fn context_nodes_local_get() {}
     )
 )]
 async fn context_nodes_local_register() {}
+
+
+#[utoipa::path(get, path = "/api/v1/authority-grants", tag = "authority-grants",
+    responses((status = 200, description = "Grant list"), (status = 403, description = "Admin required")))]
+async fn authority_grants_list() {}
+
+#[utoipa::path(post, path = "/api/v1/authority-grants", tag = "authority-grants",
+    responses(
+        (status = 201, description = "Grant issued"),
+        (status = 200, description = "Idempotent replay"),
+        (status = 403, description = "Admin required")
+    ))]
+async fn authority_grants_issue() {}
+
+#[utoipa::path(get, path = "/api/v1/authority-grants/{id}", tag = "authority-grants",
+    params(("id" = String, Path)),
+    responses((status = 200, description = "Grant"), (status = 404, description = "Not found")))]
+async fn authority_grants_get() {}
+
+#[utoipa::path(post, path = "/api/v1/authority-grants/{id}/suspend", tag = "authority-grants",
+    params(("id" = String, Path)),
+    responses((status = 200, description = "Suspended"), (status = 400, description = "Invalid transition")))]
+async fn authority_grants_suspend() {}
+
+#[utoipa::path(post, path = "/api/v1/authority-grants/{id}/revoke", tag = "authority-grants",
+    params(("id" = String, Path)),
+    responses((status = 200, description = "Revoked"), (status = 400, description = "Invalid transition")))]
+async fn authority_grants_revoke() {}
+
+#[utoipa::path(post, path = "/api/v1/authority-grants/{id}/resume", tag = "authority-grants",
+    params(("id" = String, Path)),
+    responses((status = 200, description = "Resumed"), (status = 400, description = "Invalid transition")))]
+async fn authority_grants_resume() {}
+
 
 // --- Agent ---
 #[utoipa::path(get, path = "/api/v1/agent/context", tag = "agent", responses((status = 200)))]
