@@ -17,10 +17,138 @@
 
 use chrono::Utc;
 use mv_core::*;
+use uuid::Uuid;
 
 use super::MindVaultEngine;
 
+/// Capabilities the local node declares as a Context Node.
+///
+/// Deliberately narrow, and narrower than what the REST API can do. A
+/// capability manifest is a public claim about what this node offers *through
+/// governed Context Node contracts*, not an inventory of every handler. Query
+/// and Read are absent because the governed query transport is still gated
+/// (`interoperability-kernel-v1.md`); declaring them would over-claim exactly
+/// the way the constitution's "no UI-only capability" law exists to prevent.
+///
+/// Expand this list when a governed contract for the capability actually ships,
+/// and expect the manifest revision and digest to change with it.
+const LOCAL_NODE_CAPABILITIES: [ContextCapability; 3] = [
+    ContextCapability::Discover,
+    ContextCapability::Health,
+    ContextCapability::Command,
+];
+
 impl MindVaultEngine {
+    /// Register this vault's own Context Node descriptor, idempotently.
+    ///
+    /// Bootstrapping problem this solves: `commit_authority_grant_with_event`
+    /// refuses a grant whose governing node has no active registered
+    /// descriptor, and `ensure_local_context_node` only allocates the identity
+    /// UUID — not the descriptor. So a fresh vault cannot be issued any grant,
+    /// which in turn makes command admission unusable in `enforce`.
+    ///
+    /// Registering the self-governed local node directly as active is sanctioned
+    /// by `docs/architecture/CONTEXT_NODE_MODEL.md`: "Initial local bootstrap
+    /// may register the self-governed local node directly as active". That
+    /// exemption is for *this* node only. Every remote node still requires
+    /// discovery, key proof, and signature verification, which remain gated.
+    ///
+    /// Returns the existing descriptor unchanged when one is already present,
+    /// so this is safe to call on every startup or from an operator command.
+    pub async fn register_local_context_node(
+        &self,
+        display_name: &str,
+    ) -> MvResult<ContextNodeRecord> {
+        self.ensure_unsealed_for_node_io().await?;
+        let local_node_id = self.store.nodes.local_context_node_id().await?;
+
+        if let Some(existing) = self.store.nodes.get_context_node(local_node_id).await? {
+            return Ok(existing);
+        }
+
+        let manifest = ContextCapabilityManifest::new(
+            LOCAL_NODE_CAPABILITIES.to_vec(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .map_err(MvError::InvalidInput)?;
+
+        let owner = self.local_owner_principal(local_node_id);
+        let mut record = ContextNodeRecord::discovered(
+            local_node_id,
+            ContextNodeType::Personal,
+            owner.clone(),
+            StableUri::node(local_node_id),
+            display_name,
+            manifest,
+        )
+        .map_err(MvError::InvalidInput)?;
+        record.trust_class = ContextNodeTrustClass::local();
+        record.status = ContextNodeStatus::Active;
+
+        let data = serde_json::json!({
+            "node_id": record.node_id,
+            "node_type": record.node_type.as_str(),
+            "status": record.status.as_str(),
+            "record_digest": record.semantic_digest(),
+            "capability_digest": record.capability_manifest.content_digest,
+        });
+        let mut event = EventEnvelope::new(NewEventEnvelope {
+            event_type: CONTEXT_NODE_REGISTERED_V1.into(),
+            source: StableUri::node(local_node_id),
+            subject: record.node_uri.clone(),
+            schema: SchemaReference::new(
+                StableUri::schema("context-node-registered").map_err(MvError::InvalidInput)?,
+                "1.0.0",
+            )
+            .map_err(MvError::InvalidInput)?,
+            principal: owner.clone(),
+            actor: owner,
+            correlation_id: Uuid::now_v7(),
+            causation_id: None,
+            // Scoped to the node identity, so a concurrent second call collapses
+            // onto the same registration rather than creating a rival one.
+            idempotency_key: IdempotencyKey::parse(format!("register-local-node-{local_node_id}"))
+                .map_err(MvError::InvalidInput)?,
+            payload_digest: canonical_json_sha256(&data),
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Durable,
+            provenance: vec![ProvenanceReference {
+                resource: record.node_uri.clone(),
+                relation: ProvenanceRelation::PrimarySource,
+            }],
+            data,
+        })
+        .map_err(MvError::InvalidInput)?;
+        event.payload_digest = record.semantic_digest();
+
+        self.store
+            .nodes
+            .commit_context_node_with_event(&record, &event)
+            .await?;
+        Ok(record)
+    }
+
+    /// Read the local Context Node descriptor, if it has been registered.
+    pub async fn local_context_node(&self) -> MvResult<Option<ContextNodeRecord>> {
+        self.ensure_unsealed_for_node_io().await?;
+        let local_node_id = self.store.nodes.local_context_node_id().await?;
+        self.store.nodes.get_context_node(local_node_id).await
+    }
+
+    /// The owner principal this vault attributes its own governance acts to.
+    ///
+    /// Derived rather than stored so it is stable across restarts without a
+    /// migration. It is the same shape the REST layer derives for an
+    /// authenticated caller, and it must stay stable: grants reference it as
+    /// grantor, and changing the derivation would orphan them.
+    fn local_owner_principal(&self, local_node_id: Uuid) -> StableUri {
+        StableUri::principal(
+            local_node_id,
+            Uuid::new_v5(&local_node_id, b"local-context-owner"),
+        )
+    }
+
     /// Resolve whether one command is authorized by an effective grant.
     ///
     /// Returns `Denied` rather than an error when authorization simply fails —
