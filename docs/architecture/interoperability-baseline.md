@@ -109,8 +109,10 @@ freshness, or provenance.
 ## Phase 0 completion gate
 
 Phase 0 architecture approval is complete. ADR 011 and the constitution are
-ratified, the six supporting contracts are present, and implementation may
-proceed incrementally behind their release gates.
+ratified, every supporting contract registered in
+`INTEROPERABILITY_CONSTITUTION.md` is present, and implementation may proceed
+incrementally behind their release gates. Remaining obligations are tracked
+item-by-item in `IMPLEMENTATION_BACKLOG.md`.
 
 The following implementation-program obligations remain active:
 
