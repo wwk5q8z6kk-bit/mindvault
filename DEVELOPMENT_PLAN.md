@@ -484,8 +484,21 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 | 021 | Shamir rotation                                 | Ready   |
 | 022 | Adapter poll state                              | Ready   |
 | 023 | Conversations                                   | Ready   |
-| 024 | Plans                                           | Ready   |
+| 024 | Plans (superseded by 038 per ADR 012)           | Ready   |
 | 025 | Public shares                                   | Ready   |
+| 026 | Node comments                                   | Ready   |
+| 027 | MCP connectors                                  | Ready   |
+| 028 | Sealed node payloads                            | Ready   |
+| 029 | Key epoch re-encryption                         | Ready   |
+| 030 | Conversation turn sources                       | Ready   |
+| 031 | Knowledge workspace manifest                    | Ready   |
+| 032 | Interoperability kernel (outbox, local identity) | Ready  |
+| 033 | Governed interoperability registries            | Ready   |
+| 034 | Context Node registry                           | Ready   |
+| 035 | Authority grants                                | Ready   |
+| 036 | Outbox dispatch and action receipts             | Ready   |
+| 037 | Consumer inbox and checkpoints                  | Ready   |
+| 038 | Work Orders and Agent Runs                      | Ready   |
 
 ### Frontend Components (SvelteKit + Tauri)
 
