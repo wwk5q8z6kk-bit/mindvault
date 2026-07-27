@@ -300,7 +300,9 @@ action/correlation IDs, principal, acting actor, resource, operation, grant IDs,
 and the policy decision. Space, work-order, budget, and outcome fields from
 ADR 010 remain deferred to the Trust Ledger slice.
 
-The next gated slice is the outbox dispatcher and its first authenticated
-publisher. End-to-end completion may be claimed only when authenticated delivery
-can be joined to the independently queryable consumer application receipt and
+The outbox dispatcher runtime (`IK-004`) claims under a lease, completes through
+the existing receipt binding, and ships a local-ack publisher so pending events
+are no longer inert. Authenticated live transport publishers remain `IK-005`.
+End-to-end completion may be claimed only when authenticated delivery can be
+joined to the independently queryable consumer application receipt and
 checkpoint.

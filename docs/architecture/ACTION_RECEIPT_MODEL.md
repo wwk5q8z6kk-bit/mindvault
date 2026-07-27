@@ -58,11 +58,13 @@ the status keeps only the bounded error code needed for operations.
 
 ## Explicit non-claims
 
-This slice does not run a dispatcher, contact a provider, verify a remote
-signature, or itself prove consumer application. Public action-envelope
-admission must resolve an effective Tool Grant and policy decision before any
-live publisher is enabled. Consumer application is represented separately by
-the durable inbox, application receipt, and checkpoint contract.
+The storage contract itself does not contact a provider, verify a remote
+signature, or prove consumer application. IK-004 adds the dispatcher runtime
+that drives claim/complete with a local-ack publisher; authenticated live
+publishers remain gated (IK-005). Public action-envelope admission must resolve
+an effective Tool Grant and policy decision before any live publisher is
+enabled. Consumer application is represented separately by the durable inbox,
+application receipt, and checkpoint contract.
 
 ### Command admission does not write an action receipt
 

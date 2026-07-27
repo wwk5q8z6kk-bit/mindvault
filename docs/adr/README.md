@@ -50,3 +50,7 @@ under `docs/adr/`.
 15. **015-durable-command-admission-decisions** — Append-only admission
     decision records for Law 15 denials (IK-001c)
     `docs/adr/015-durable-command-admission-decisions.md`
+
+16. **016-outbox-dispatcher-runtime** — Claim/lease/complete outbox worker with
+    local-ack publisher (IK-004)
+    `docs/adr/016-outbox-dispatcher-runtime.md`

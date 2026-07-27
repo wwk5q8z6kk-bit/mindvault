@@ -6,6 +6,7 @@ pub mod grpc;
 pub mod limits;
 pub mod metrics;
 pub mod openapi;
+pub mod outbox_dispatch;
 pub mod rest;
 pub mod state;
 pub mod validation;
@@ -165,6 +166,7 @@ pub async fn start_server(
     spawn_recurrence_and_reminder_scheduler(Arc::clone(&state));
     spawn_google_calendar_sync(Arc::clone(&state.engine), shutdown_tx.subscribe());
     adapter_poll::spawn_adapter_polling(Arc::clone(&state), shutdown_tx.subscribe());
+    outbox_dispatch::spawn_outbox_dispatching(Arc::clone(&state), shutdown_tx.subscribe());
     email::spawn_email_adapter(Arc::clone(&state), shutdown_tx.subscribe());
     workspace_watch::spawn_workspace_watcher(Arc::clone(&state), shutdown_tx.subscribe());
 

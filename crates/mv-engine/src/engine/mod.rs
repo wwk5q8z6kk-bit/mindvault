@@ -5,6 +5,7 @@ mod intent_ops;
 mod interoperability_ops;
 mod mcp_ops;
 mod node_ops;
+mod outbox_dispatch;
 mod profile_ops;
 mod proposal_ops;
 mod relay_ops;
@@ -25,6 +26,10 @@ pub use interoperability_ops::{
 };
 pub use workspace_ops::WorkspaceMountResult;
 pub use workspace_projection_ops::WorkspaceProjectionOutcome;
+pub use outbox_dispatch::{
+    spawn_outbox_dispatcher, LocalAckPublisher, OutboxDispatchTick, OutboxDispatcherConfig,
+    OutboxPublisher,
+};
 
 use std::path::PathBuf;
 use std::sync::Arc;

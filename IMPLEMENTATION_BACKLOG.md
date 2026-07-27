@@ -324,13 +324,13 @@ interoperability kernel."
 
 #### IK-004 — Outbox dispatcher worker
 - **priority:** P0 — the outbox has no runtime; events accumulate as pending forever
-- **status:** not_started
+- **status:** **verified** (2026-07-27)
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:199-201` — "it does not run a background worker or implement an HTTP, Slack, email, MCP, or A2A publisher"; `ACTION_RECEIPT_MODEL.md:61` — "This slice does not run a dispatcher"
 - **governing_authority:** Law 4 (`:52`)
 - **blocked_by:** IK-001, IK-002 (declared — "ahead of any live provider publisher")
-- **files:** new `crates/mv-engine/src/engine/outbox_dispatch.rs`, `crates/mv-server/src/lib.rs`
+- **files:** `crates/mv-engine/src/engine/outbox_dispatch.rs`, `crates/mv-server/src/outbox_dispatch.rs`, `crates/mv-server/src/lib.rs`
 - **acceptance:** `cargo test -p mv-engine -- outbox_dispatcher` — the worker claims under a lease, honours `next_attempt_at`, advances attempt counters exactly once on reclaim, and writes exactly one immutable receipt per completion
-- **evidence:** —
+- **evidence:** `OutboxPublisher` trait + `LocalAckPublisher`; `dispatch_outbox_once` claims/publishes/completes via storage APIs only. Env-gated server spawn (`MINDVAULT_OUTBOX_DISPATCH_ENABLED`, default off). Observed: claim+one receipt, `next_attempt_at` gate, reclaim attempt+1, idle second tick. Live HTTP publisher remains IK-005.
 
 #### IK-005 — Authenticated live transport publisher (first destination)
 - **priority:** P0 — named gated work
