@@ -554,7 +554,9 @@ Backend:
 - [x] Implement multi-modal audio backend (Whisper transcription)
 - [x] Implement multi-modal image backend (metadata extraction + dimension parsing)
 - [x] Implement multi-modal PDF text extraction (pdftotext + OCR)
-- [x] Complete federation query transport (REST-based, parallel peer queries)
+- [~] Complete federation query transport (REST-based, parallel peer queries) —
+      code present; lacks signed descriptors, replay defense and SSRF controls
+      (`FED-001`..`FED-005`)
 - [x] Email adapter (IMAP inbound + SMTP outbound + attachment ingest)
 - [x] Slack adapter (webhook outbound + bot inbound + unit/integration tests)
 - [x] Discord adapter (webhook outbound + bot inbound + unit/integration tests)
