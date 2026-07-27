@@ -217,8 +217,16 @@ impl CommandAdmissionPolicy {
     /// namespace and quota checks remain fully in force either way. Silently
     /// enforcing on a typo would refuse every write on a running vault.
     pub fn from_env() -> Self {
-        let mode = match std::env::var("MINDVAULT_COMMAND_ADMISSION_MODE") {
-            Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+        Self {
+            mode: Self::parse_mode(std::env::var("MINDVAULT_COMMAND_ADMISSION_MODE").ok().as_deref()),
+        }
+    }
+
+    /// Pure so its behaviour is testable without process-global environment.
+    fn parse_mode(value: Option<&str>) -> CommandAdmissionMode {
+        match value {
+            None => CommandAdmissionMode::Off,
+            Some(value) => match value.trim().to_ascii_lowercase().as_str() {
                 "" | "off" => CommandAdmissionMode::Off,
                 "observe" => CommandAdmissionMode::Observe,
                 "enforce" => CommandAdmissionMode::Enforce,
@@ -231,9 +239,7 @@ impl CommandAdmissionPolicy {
                     CommandAdmissionMode::Off
                 }
             },
-            Err(_) => CommandAdmissionMode::Off,
-        };
-        Self { mode }
+        }
     }
 
     pub fn new(mode: CommandAdmissionMode) -> Self {
