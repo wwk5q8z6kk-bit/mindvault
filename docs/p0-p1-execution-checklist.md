@@ -20,9 +20,10 @@ clear file-level anchors.
 
 ## P1: Security and Observability Depth
 
-- [ ] Add at-rest encryption key lifecycle test matrix (boot, rotate, restore, failure paths).
-  - Files: `crates/mv-storage/src/crypto.rs`, `crates/mv-storage/tests/`
+- [x] Add at-rest encryption key lifecycle test matrix (boot, rotate, restore, failure paths).
+  - Files: `crates/mv-storage/src/crypto.rs`, `crates/mv-storage/src/vault_crypto.rs`, `crates/mv-storage/tests/encryption_key_lifecycle.rs`
   - Done when: automated tests cover key rotation and corrupted key material handling.
+  - Shipped: KeyManager env boot / restore / rotate / corruption matrix + VaultCrypto grace-epoch rotate/re-encrypt/restore-wrapped-key / wrong-password / grace-cap eviction (`cargo test -p mv-storage --test encryption_key_lifecycle`).
 
 - [ ] Expand metrics from counters/gauges to latency histograms for critical endpoints.
   - Files: `crates/mv-server/src/metrics.rs`, `crates/mv-server/src/rest.rs`

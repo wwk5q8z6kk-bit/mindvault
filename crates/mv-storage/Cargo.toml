@@ -40,9 +40,11 @@ base64 = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+base64 = { workspace = true }
 criterion = { version = "0.5", features = ["async_tokio"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
+zeroize = { workspace = true }
 
 [[bench]]
 name = "sqlite_bench"
