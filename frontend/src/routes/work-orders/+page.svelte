@@ -11,6 +11,8 @@
 		listGates,
 		listRuns,
 		listWorkOrders,
+		recordArtifact,
+		recordGate,
 		AWAITING_APPROVAL,
 		GATE_LABELS,
 		type AgentRunView,
@@ -132,6 +134,71 @@
 		}
 	}
 
+	/**
+	 * Base64 without blowing the call stack.
+	 *
+	 * `String.fromCharCode(...bytes)` throws on large inputs, and an artifact
+	 * may be a diff or a binary rather than a short note.
+	 */
+	function toBase64(bytes: Uint8Array): string {
+		let binary = '';
+		const chunk = 0x8000;
+		for (let i = 0; i < bytes.length; i += chunk) {
+			binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+		}
+		return btoa(binary);
+	}
+
+	async function handleAttach(run: AgentRunView, event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file || !selected) return;
+		busyRunId = run.run_id;
+		try {
+			const bytes = new Uint8Array(await file.arrayBuffer());
+			await recordArtifact(selected.work_order_id, run.run_id, {
+				artifact_kind: file.type || 'application/octet-stream',
+				content_base64: toBase64(bytes),
+				// The run generated it. The server derives the digest from the
+				// bytes, so there is nothing for the operator to attest to here.
+				provenance: [{ relation: 'WasGeneratedBy', resource: run.run_uri }]
+			});
+			pushToast(`Attached ${file.name}`, 'success');
+			await refreshSelected();
+		} catch {
+			pushToast('Failed to attach output', 'danger');
+		} finally {
+			busyRunId = '';
+			input.value = '';
+		}
+	}
+
+	async function handleVerifyOutputs(run: AgentRunView) {
+		if (!selected) return;
+		busyRunId = run.run_id;
+		try {
+			// The server evaluates G2 against stored content and records its own
+			// verdict; the values sent here are placeholders it discards.
+			const result = await recordGate(selected.work_order_id, run.run_id, {
+				gate: 'g2',
+				outcome: 'fail',
+				evaluator_actor: run.actor,
+				evidence_digest: '0'.repeat(64)
+			});
+			pushToast(
+				result.outcome === 'pass'
+					? 'Outputs verified against stored content'
+					: `G2 failed: ${result.detail ?? 'no artifacts to verify'}`,
+				result.outcome === 'pass' ? 'success' : 'warning'
+			);
+			await refreshSelected();
+		} catch {
+			pushToast('Failed to verify outputs', 'danger');
+		} finally {
+			busyRunId = '';
+		}
+	}
+
 	async function handleComplete(run: AgentRunView) {
 		if (!selected) return;
 		busyRunId = run.run_id;
@@ -153,6 +220,11 @@
 		} finally {
 			busyRunId = '';
 		}
+	}
+
+	/** Terminal runs accept no further evidence; the server refuses it too. */
+	function isTerminal(status: string): boolean {
+		return ['completed', 'failed', 'cancelled', 'budget_exhausted'].includes(status);
 	}
 
 	function runBadge(status: string): string {
@@ -325,6 +397,27 @@
 											<span class="rounded-md bg-red-500/10 px-2 py-0.5 text-[11px] text-red-300">
 												{run.failure_class}
 											</span>
+										{/if}
+										{#if !isTerminal(run.status)}
+											<label
+												class="cursor-pointer rounded-md border border-[rgb(var(--mv-border))] px-2 py-0.5 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
+											>
+												Attach output
+												<input
+													type="file"
+													class="sr-only"
+													disabled={busyRunId === run.run_id}
+													on:change={(event) => handleAttach(run, event)}
+												/>
+											</label>
+											<button
+												class="rounded-md border border-[rgb(var(--mv-border))] px-2 py-0.5 text-[11px] text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))] disabled:opacity-50"
+												disabled={busyRunId === run.run_id}
+												on:click={() => handleVerifyOutputs(run)}
+												title="Gate G2 is evaluated by the server against stored content"
+											>
+												Verify outputs
+											</button>
 										{/if}
 										{#if run.status === 'gated' || run.status === 'verified'}
 											<button
