@@ -13,14 +13,20 @@
 //! constitutional law 8 makes grants an additional axis rather than a
 //! substitute for role-based access.
 
-use axum::http::StatusCode;
+use axum::{
+    extract::State,
+    http::StatusCode,
+    Extension, Json,
+};
 use mv_core::{
     AdmissionDecision, AuthorityGrantKind, CommandAdmissionRequest, ContextCapability,
-    IdempotencyKey, MvError, RetentionClass, Sensitivity, StableUri,
+    ContextNodeRecord, IdempotencyKey, MvError, RetentionClass, Sensitivity, StableUri,
 };
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::auth::AuthContext;
+use crate::auth::{authorize_read, authorize_write, AuthContext};
 use crate::state::AppState;
 
 /// Stable code returned to a caller whose command was refused.
@@ -224,4 +230,139 @@ mod tests {
         assert_eq!(request.retention, RetentionClass::Durable);
         request.validate().expect("request should be coherent");
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// Local Context Node registration (IK-001a)
+// ---------------------------------------------------------------------------
+
+/// Operator-facing view of the local Context Node descriptor.
+///
+/// Carries identity, status, and advertised capabilities — enough to confirm
+/// the bootstrap prerequisite for grant issuance — without endpoints or public
+/// keys, which this bootstrap slice never populates and which belong behind a
+/// fuller registry transport (IK-009).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LocalContextNodeView {
+    pub node_id: Uuid,
+    pub revision: u64,
+    pub node_uri: String,
+    pub node_type: String,
+    pub display_name: String,
+    pub status: String,
+    pub trust_class: String,
+    pub capabilities: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub newly_registered: bool,
+}
+
+impl LocalContextNodeView {
+    fn from_record(record: &ContextNodeRecord, newly_registered: bool) -> Self {
+        Self {
+            node_id: record.node_id,
+            revision: record.revision,
+            node_uri: record.node_uri.as_str().to_string(),
+            node_type: record.node_type.as_str().to_string(),
+            display_name: record.display_name.clone(),
+            status: record.status.as_str().to_string(),
+            trust_class: record.trust_class.as_str().to_string(),
+            capabilities: record
+                .capability_manifest
+                .capabilities
+                .iter()
+                .map(|capability| capability.as_str().to_string())
+                .collect(),
+            created_at: record.created_at.to_rfc3339(),
+            updated_at: record.updated_at.to_rfc3339(),
+            newly_registered,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct RegisterLocalContextNodeRequest {
+    /// Optional display name. Defaults to "Personal Vault". Ignored when the
+    /// descriptor already exists — registration is idempotent on identity, not
+    /// a rename command.
+    pub display_name: Option<String>,
+}
+
+fn require_admin(auth: &AuthContext) -> Result<(), (StatusCode, String)> {
+    authorize_write(auth)?;
+    if !auth.is_admin() {
+        return Err((StatusCode::FORBIDDEN, "admin access required".into()));
+    }
+    Ok(())
+}
+
+fn map_context_node_error(err: MvError) -> (StatusCode, String) {
+    match &err {
+        MvError::VaultSealed => (StatusCode::LOCKED, err.to_string()),
+        MvError::InvalidInput(_) => (StatusCode::BAD_REQUEST, err.to_string()),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+/// `POST /api/v1/context-nodes/local` — register this vault's Context Node.
+///
+/// Admin-only. Idempotent: a second call returns the existing descriptor with
+/// `newly_registered: false` and HTTP 200. A first call returns 201.
+pub(crate) async fn register_local_context_node(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<RegisterLocalContextNodeRequest>,
+) -> Result<(StatusCode, Json<LocalContextNodeView>), (StatusCode, String)> {
+    require_admin(&auth)?;
+
+    let display_name = body
+        .display_name
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Personal Vault".into());
+
+    let registration = state
+        .engine
+        .register_local_context_node(&display_name)
+        .await
+        .map_err(map_context_node_error)?;
+
+    let status = if registration.newly_registered {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((
+        status,
+        Json(LocalContextNodeView::from_record(
+            &registration.record,
+            registration.newly_registered,
+        )),
+    ))
+}
+
+/// `GET /api/v1/context-nodes/local` — read the local Context Node, if registered.
+///
+/// Readable by any authenticated reader: knowing whether the bootstrap
+/// prerequisite exists is not a privileged secret, and grant issuance (IK-001b)
+/// will still be admin-gated.
+pub(crate) async fn get_local_context_node(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<LocalContextNodeView>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+
+    let record = state
+        .engine
+        .local_context_node()
+        .await
+        .map_err(map_context_node_error)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                "local Context Node is not registered".into(),
+            )
+        })?;
+
+    Ok(Json(LocalContextNodeView::from_record(&record, false)))
 }

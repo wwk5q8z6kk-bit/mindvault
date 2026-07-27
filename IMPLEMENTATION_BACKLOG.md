@@ -274,13 +274,13 @@ interoperability kernel."
 
 #### IK-001a — Governed command for local Context Node registration
 - **priority:** P0 — a hard prerequisite for running `enforce` on a real vault
-- **status:** not_started
+- **status:** **verified** (2026-07-27)
 - **mandate:** `crates/mv-storage/src/sqlite.rs` — `commit_authority_grant_with_event` refuses a grant whose governing node has no Active registered descriptor
 - **governing_authority:** feature-completeness §2 (`INTEROPERABILITY_CONSTITUTION.md:116`)
 - **blocked_by:** none
-- **files:** `crates/mv-engine/src/engine/interoperability_ops.rs`, `crates/mv-server/src/rest/interoperability.rs`
+- **files:** `crates/mv-engine/src/engine/interoperability_ops.rs`, `crates/mv-server/src/rest/interoperability.rs`, `crates/mv-server/src/rest.rs`, `crates/mv-server/src/openapi.rs`
 - **acceptance:** a fresh vault can register its local Context Node through a governed command, so a Tool Grant can then be issued
-- **evidence:** today only test fixtures register it, which is why `enforce` is a test and staging mode
+- **evidence:** `POST/GET /api/v1/context-nodes/local` (admin write / authenticated read). Engine command is idempotent and registers the self-governed node directly as `active` per `CONTEXT_NODE_MODEL.md`. Observed: engine registration tests + `local_context_node_registers_idempotently_over_http`.
 
 #### IK-001b — Admin-only grant issuance and lifecycle endpoints
 - **priority:** P0 — the second prerequisite for `enforce`

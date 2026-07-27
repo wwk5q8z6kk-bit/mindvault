@@ -223,6 +223,11 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(work_orders::restore_work_order),
         )
         .route(
+            "/api/v1/context-nodes/local",
+            get(interoperability::get_local_context_node)
+                .post(interoperability::register_local_context_node),
+        )
+        .route(
             "/api/v1/work-orders/:id/runs/:run_id/readiness",
             get(work_orders::get_run_readiness),
         )

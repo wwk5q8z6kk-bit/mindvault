@@ -2517,3 +2517,69 @@ async fn node_create_fails_closed_under_enforced_command_admission() {
         "a refused create must not persist a node: {listed}"
     );
 }
+
+/// IK-001a — a fresh vault can register its local Context Node over HTTP.
+///
+/// This is the bootstrap prerequisite for issuing Tool Grants, which is itself
+/// the prerequisite for running command admission in `enforce` on a real vault.
+#[tokio::test]
+async fn local_context_node_registers_idempotently_over_http() {
+    let (router, _tmp) = setup().await;
+
+    let missing = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/context-nodes/local", None))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    let created = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/context-nodes/local",
+            Some(json!({ "display_name": "Personal Vault" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let body = body_json(created).await;
+    assert_eq!(body["newly_registered"], true);
+    assert_eq!(body["status"], "active");
+    assert_eq!(body["display_name"], "Personal Vault");
+    assert_eq!(body["trust_class"], "local");
+    assert!(
+        body["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "command"),
+        "capabilities: {body}"
+    );
+    let node_id = body["node_id"].as_str().unwrap().to_string();
+
+    let again = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/context-nodes/local",
+            Some(json!({ "display_name": "Must Be Ignored" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(again.status(), StatusCode::OK);
+    let body = body_json(again).await;
+    assert_eq!(body["newly_registered"], false);
+    assert_eq!(body["node_id"], node_id);
+    assert_eq!(body["display_name"], "Personal Vault");
+
+    let fetched = router
+        .oneshot(json_request(Method::GET, "/api/v1/context-nodes/local", None))
+        .await
+        .unwrap();
+    assert_eq!(fetched.status(), StatusCode::OK);
+    let body = body_json(fetched).await;
+    assert_eq!(body["node_id"], node_id);
+    assert_eq!(body["status"], "active");
+}
+
