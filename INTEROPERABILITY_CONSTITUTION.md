@@ -175,3 +175,18 @@ connector quantity do not unlock this slice. Contract conformance does.
 - `docs/architecture/FEDERATION_THREAT_MODEL.md`
 - `docs/architecture/DATA_PORTABILITY_CONTRACT.md`
 - `docs/architecture/interoperability-baseline.md`
+- `docs/architecture/interoperability-kernel-v1.md`
+- `docs/architecture/AUTHORITY_GRANT_MODEL.md`
+- `docs/architecture/ACTION_RECEIPT_MODEL.md`
+- `docs/architecture/CONSUMER_INBOX_MODEL.md`
+- `docs/architecture/WORK_ORDER_MODEL.md`
+- `docs/architecture/EXECUTION_ISOLATION_MODEL.md`
+
+## Execution tracking
+
+`IMPLEMENTATION_BACKLOG.md` is the authoritative record of every deferred,
+gated, or blocked item mandated by this constitution and its supporting
+contracts. It supersedes `DEVELOPMENT_PLAN.md` for execution tracking. An
+obligation stated in a contract but absent from the backlog is a defect in the
+backlog; an item marked complete without a runnable verification command is not
+complete.
