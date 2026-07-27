@@ -334,12 +334,18 @@ This section is the operational source of truth for day-to-day execution.
   landed, an `AgentRun` could only be created from Rust, so every downstream
   route had no subject it could act on.
 
-  **Operator surface is poll-based.** `AgentRunTransitioned` and
-  `AgentRunGateRecorded` are emitted on the agent WebSocket, but nothing
-  subscribes to them yet: the `/work-orders` page loads on mount and on
-  Refresh. The events are in place for a future live consumer. They also carry
-  no namespace, so the socket's scope filter drops them for namespace-scoped
-  clients — see the note on `AgentNotification::run_transitioned`.
+  **Operator surface is live, and degrades to polling by design.**
+  `AgentRunTransitioned` and `AgentRunGateRecorded` are emitted on the agent
+  WebSocket and consumed by `/work-orders`, which coalesces bursts into one
+  detail reload and raises a toast when a run parks for approval.
+
+  A namespace-scoped session receives none of these events and must poll: the
+  execution graph is not namespace-partitioned, so a scoped token — which may
+  belong to a delegate rather than the owner, per System Principle 8 — would
+  otherwise be handed vault-wide governance signal it did not ask for. The rule
+  is `AgentNotification::deliverable_to`, pinned by
+  `execution_graph_events_are_withheld_from_namespace_scoped_sessions` so it
+  cannot be undone by accident. Refresh stays available for those clients.
 
   **What this does not prove.** No external dispatcher, no provider contact, no
   third-party agent execution, and no outbound side effect is authorized by this
@@ -400,7 +406,22 @@ This section is the operational source of truth for day-to-day execution.
 
 ## Implementation Status (as of Feb 2026)
 
-Note: “Complete” here means code is present in the repository. Operational validation is tracked in the A→Z Program Map and gap register above.
+> **Superseded for execution tracking (2026-07-27).** `IMPLEMENTATION_BACKLOG.md`
+> is the authoritative record of remaining work. The checklists in this section
+> and in the A→Z Program Map predate the Interoperability Constitution and mark
+> items complete under the weaker definition below. Do not plan from them.
+
+Note: “Complete” in the tables below means **only that code is present in the
+repository**. It does not mean the capability is governed, reachable,
+conformance-tested, or safe to enable. That weaker definition is why several
+rows read "Complete" for subsystems whose own contracts still gate them — most
+visibly Federation, which `docs/architecture/FEDERATION_THREAT_MODEL.md:22`
+requires to stay disabled in production until its release gates pass.
+
+A capability is complete only when it satisfies the ten-point feature
+completeness contract in `INTEROPERABILITY_CONSTITUTION.md:112-128` and its
+backlog item carries a verification command whose output was observed.
+Operational validation is tracked in `IMPLEMENTATION_BACKLOG.md`.
 
 ### Architecture Summary
 
