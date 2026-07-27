@@ -1849,8 +1849,6 @@ impl SqliteNodeStore {
             .map_err(|err| MvError::Storage(format!("load authority-grant revision: {err}")))
     }
 
-
-
     fn admission_decisions_match(left: &AdmissionDecision, right: &AdmissionDecision) -> bool {
         match (left, right) {
             (
@@ -1879,10 +1877,12 @@ impl SqliteNodeStore {
             }
             (
                 AdmissionDecision::Denied {
-                    reason: left_reason, ..
+                    reason: left_reason,
+                    ..
                 },
                 AdmissionDecision::Denied {
-                    reason: right_reason, ..
+                    reason: right_reason,
+                    ..
                 },
             ) => left_reason == right_reason,
             _ => false,
@@ -2092,20 +2092,21 @@ impl SqliteNodeStore {
                         .ok_or_else(|| MvError::Storage("admitted row missing grant_id".into()))?,
                 )
                 .map_err(|err| MvError::Storage(format!("invalid grant_id: {err}")))?,
-                grant_uri: StableUri::parse(grant_uri.ok_or_else(|| {
-                    MvError::Storage("admitted row missing grant_uri".into())
-                })?)
+                grant_uri: StableUri::parse(
+                    grant_uri
+                        .ok_or_else(|| MvError::Storage("admitted row missing grant_uri".into()))?,
+                )
                 .map_err(MvError::InvalidInput)?,
                 grant_kind: AuthorityGrantKind::from_str(
-                    grant_kind
-                        .as_deref()
-                        .ok_or_else(|| MvError::Storage("admitted row missing grant_kind".into()))?,
+                    grant_kind.as_deref().ok_or_else(|| {
+                        MvError::Storage("admitted row missing grant_kind".into())
+                    })?,
                 )
                 .map_err(MvError::InvalidInput)?,
                 capability: ContextCapability::from_str(
-                    capability
-                        .as_deref()
-                        .ok_or_else(|| MvError::Storage("admitted row missing capability".into()))?,
+                    capability.as_deref().ok_or_else(|| {
+                        MvError::Storage("admitted row missing capability".into())
+                    })?,
                 )
                 .map_err(MvError::InvalidInput)?,
                 delegation_depth_remaining: u8::try_from(delegation_depth_remaining.ok_or_else(
@@ -2114,15 +2115,15 @@ impl SqliteNodeStore {
                 .map_err(|err| MvError::Storage(format!("delegation_depth_remaining: {err}")))?,
                 decided_at,
             },
-            "denied" => AdmissionDecision::Denied {
-                reason: AdmissionDenialReason::from_str(
-                    denial_reason.as_deref().ok_or_else(|| {
-                        MvError::Storage("denied row missing denial_reason".into())
-                    })?,
-                )
-                .map_err(MvError::InvalidInput)?,
-                decided_at,
-            },
+            "denied" => {
+                AdmissionDecision::Denied {
+                    reason: AdmissionDenialReason::from_str(denial_reason.as_deref().ok_or_else(
+                        || MvError::Storage("denied row missing denial_reason".into()),
+                    )?)
+                    .map_err(MvError::InvalidInput)?,
+                    decided_at,
+                }
+            }
             other => {
                 return Err(MvError::Storage(format!(
                     "unknown admission decision token: {other}"
@@ -3426,9 +3427,7 @@ impl InteroperabilityStore for SqliteNodeStore {
             .map_err(|err| MvError::Storage(err.to_string()))?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|err| {
-                MvError::Storage(format!("begin admission-decision commit: {err}"))
-            })?;
+            .map_err(|err| MvError::Storage(format!("begin admission-decision commit: {err}")))?;
 
         if let Some(existing) = Self::load_command_admission_decision(
             &*transaction,

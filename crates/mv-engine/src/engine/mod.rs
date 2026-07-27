@@ -17,19 +17,19 @@ mod work_order_ops;
 mod workspace_ops;
 mod workspace_projection_ops;
 
-pub use work_order_ops::{
-    AdmissionRefusal, ProposedEdge, ProposedNode, ProposedWorkOrder, RunReadiness,
-};
 pub use interoperability_ops::{
     AuthorityGrantIssuance, AuthorityGrantTransition, IssueAuthorityGrantRequest,
     LocalContextNodeRegistration,
 };
-pub use workspace_ops::WorkspaceMountResult;
-pub use workspace_projection_ops::WorkspaceProjectionOutcome;
 pub use outbox_dispatch::{
     spawn_outbox_dispatcher, LocalAckPublisher, OutboxDispatchTick, OutboxDispatcherConfig,
     OutboxPublisher,
 };
+pub use work_order_ops::{
+    AdmissionRefusal, ProposedEdge, ProposedNode, ProposedWorkOrder, RunReadiness,
+};
+pub use workspace_ops::WorkspaceMountResult;
+pub use workspace_projection_ops::WorkspaceProjectionOutcome;
 
 use std::path::PathBuf;
 use std::sync::Arc;

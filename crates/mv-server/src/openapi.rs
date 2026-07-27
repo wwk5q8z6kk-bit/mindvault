@@ -1345,7 +1345,6 @@ async fn context_nodes_local_get() {}
 )]
 async fn context_nodes_local_register() {}
 
-
 #[utoipa::path(get, path = "/api/v1/authority-grants", tag = "authority-grants",
     responses((status = 200, description = "Grant list"), (status = 403, description = "Admin required")))]
 async fn authority_grants_list() {}
@@ -1377,7 +1376,6 @@ async fn authority_grants_revoke() {}
     params(("id" = String, Path)),
     responses((status = 200, description = "Resumed"), (status = 400, description = "Invalid transition")))]
 async fn authority_grants_resume() {}
-
 
 // --- Agent ---
 #[utoipa::path(get, path = "/api/v1/agent/context", tag = "agent", responses((status = 200)))]

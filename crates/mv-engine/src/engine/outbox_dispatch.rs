@@ -252,8 +252,8 @@ mod tests {
         OutboxDeliveryState, ProvenanceReference, ProvenanceRelation, RetentionClass,
         SchemaReference, Sensitivity, KNOWLEDGE_NODE_CREATED_V1,
     };
-    use tokio::sync::Mutex;
     use tempfile::TempDir;
+    use tokio::sync::Mutex;
 
     async fn test_engine() -> (MindVaultEngine, TempDir) {
         let temp_dir = TempDir::new().unwrap();

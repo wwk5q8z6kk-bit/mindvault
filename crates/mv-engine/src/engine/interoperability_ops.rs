@@ -32,7 +32,6 @@ pub struct LocalContextNodeRegistration {
     pub newly_registered: bool,
 }
 
-
 /// Outcome of [`MindVaultEngine::issue_authority_grant`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorityGrantIssuance {
@@ -65,7 +64,6 @@ pub struct IssueAuthorityGrantRequest {
     pub retention_ceiling: RetentionClass,
     pub idempotency_key: IdempotencyKey,
 }
-
 
 /// Capabilities the local node declares as a Context Node.
 ///
@@ -203,7 +201,6 @@ impl MindVaultEngine {
             Uuid::new_v5(&local_node_id, b"local-context-owner"),
         )
     }
-
 
     /// Issue one Context or Tool Grant governed by this vault's local node.
     ///
@@ -405,9 +402,11 @@ impl MindVaultEngine {
     /// `CommandIdentity::derive` for a given auth subject without the caller
     /// reconstructing the v5 scheme.
     pub fn principal_for_subject(&self, local_node_id: Uuid, subject: &str) -> StableUri {
-        StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, subject.as_bytes()))
+        StableUri::principal(
+            local_node_id,
+            Uuid::new_v5(&local_node_id, subject.as_bytes()),
+        )
     }
-
 
     /// Resolve whether one command is authorized by an effective grant.
     ///
@@ -1033,10 +1032,7 @@ mod tests {
             ContextCapability::Command,
         );
 
-        let first = engine
-            .resolve_command_admission(&request)
-            .await
-            .unwrap();
+        let first = engine.resolve_command_admission(&request).await.unwrap();
         assert!(!first.is_admitted());
 
         let stored = engine
@@ -1050,10 +1046,7 @@ mod tests {
         assert_eq!(stored.admission_digest, request.admission_digest());
         assert_eq!(stored.principal, request.principal);
 
-        let second = engine
-            .resolve_command_admission(&request)
-            .await
-            .unwrap();
+        let second = engine.resolve_command_admission(&request).await.unwrap();
         assert!(!second.is_admitted());
         let again = engine
             .store
@@ -1078,10 +1071,7 @@ mod tests {
             AuthorityGrantKind::Tool,
             ContextCapability::Command,
         );
-        engine
-            .resolve_command_admission(&request)
-            .await
-            .unwrap();
+        engine.resolve_command_admission(&request).await.unwrap();
 
         // Same principal + idempotency key, different subject → different digest.
         request.subject = StableUri::knowledge_node(local_node_id, Uuid::now_v7());
@@ -1123,10 +1113,7 @@ mod tests {
             AuthorityGrantKind::Tool,
             ContextCapability::Command,
         );
-        let decision = engine
-            .resolve_command_admission(&request)
-            .await
-            .unwrap();
+        let decision = engine.resolve_command_admission(&request).await.unwrap();
         assert!(decision.is_admitted());
         let stored = engine
             .store
@@ -1138,5 +1125,4 @@ mod tests {
         assert!(!stored.is_denied());
         assert!(stored.decision.is_admitted());
     }
-
 }

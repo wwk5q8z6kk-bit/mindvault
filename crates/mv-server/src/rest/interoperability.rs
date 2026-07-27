@@ -111,7 +111,6 @@ pub(crate) fn node_command_admission_request(
     }
 }
 
-
 /// Backward-compatible name for create admission (same shape as update/delete).
 pub(crate) fn node_create_admission_request(
     identity: &CommandIdentity,
@@ -266,7 +265,6 @@ mod tests {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Local Context Node registration (IK-001a)
 // ---------------------------------------------------------------------------
@@ -401,7 +399,6 @@ pub(crate) async fn get_local_context_node(
     Ok(Json(LocalContextNodeView::from_record(&record, false)))
 }
 
-
 // ---------------------------------------------------------------------------
 // Authority Grant issuance and lifecycle (IK-001b)
 // ---------------------------------------------------------------------------
@@ -440,7 +437,11 @@ impl AuthorityGrantView {
             grantor: grant.grantor.as_str().to_string(),
             grantee: grant.grantee.as_str().to_string(),
             governing_node: grant.governing_node.as_str().to_string(),
-            targets: grant.targets.iter().map(|t| t.as_str().to_string()).collect(),
+            targets: grant
+                .targets
+                .iter()
+                .map(|t| t.as_str().to_string())
+                .collect(),
             capabilities: grant
                 .capabilities
                 .iter()
@@ -517,8 +518,7 @@ fn map_grant_error(err: MvError) -> (StatusCode, String) {
 }
 
 fn parse_kind(value: &str) -> Result<AuthorityGrantKind, (StatusCode, String)> {
-    AuthorityGrantKind::from_str(value)
-        .map_err(|err| (StatusCode::BAD_REQUEST, err))
+    AuthorityGrantKind::from_str(value).map_err(|err| (StatusCode::BAD_REQUEST, err))
 }
 
 fn parse_capability(value: &str) -> Result<ContextCapability, (StatusCode, String)> {
@@ -548,7 +548,10 @@ pub(crate) async fn issue_authority_grant(
         (Some(uri), None) => StableUri::parse(uri).map_err(|err| (StatusCode::BAD_REQUEST, err))?,
         (None, Some(subject)) => {
             if subject.trim().is_empty() {
-                return Err((StatusCode::BAD_REQUEST, "grantee_subject must not be empty".into()));
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "grantee_subject must not be empty".into(),
+                ));
             }
             state.engine.principal_for_subject(local_node_id, subject)
         }
@@ -656,8 +659,7 @@ pub(crate) async fn list_authority_grants(
     };
     let status = match query.status {
         Some(value) => Some(
-            AuthorityGrantStatus::from_str(&value)
-                .map_err(|err| (StatusCode::BAD_REQUEST, err))?,
+            AuthorityGrantStatus::from_str(&value).map_err(|err| (StatusCode::BAD_REQUEST, err))?,
         ),
         None => None,
     };
@@ -721,7 +723,14 @@ pub(crate) async fn suspend_authority_grant(
     Path(grant_id): Path<Uuid>,
     Json(body): Json<TransitionAuthorityGrantBody>,
 ) -> Result<Json<AuthorityGrantView>, (StatusCode, String)> {
-    transition_grant(&auth, &state, grant_id, AuthorityGrantStatus::Suspended, body).await
+    transition_grant(
+        &auth,
+        &state,
+        grant_id,
+        AuthorityGrantStatus::Suspended,
+        body,
+    )
+    .await
 }
 
 /// `POST /api/v1/authority-grants/:id/revoke`

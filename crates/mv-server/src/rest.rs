@@ -16721,7 +16721,10 @@ mod tests {
             .data
             .get("action_envelope")
             .expect("observe mode constructs an action envelope");
-        assert_eq!(action_envelope["envelope_version"], "mindvault.action-envelope/v1");
+        assert_eq!(
+            action_envelope["envelope_version"],
+            "mindvault.action-envelope/v1"
+        );
         assert!(action_envelope.get("action_id").is_some());
         assert!(action_envelope.get("correlation_id").is_some());
         assert_eq!(action_envelope["policy_decision"]["decision"], "denied");

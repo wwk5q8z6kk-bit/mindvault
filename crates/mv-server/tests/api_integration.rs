@@ -2528,7 +2528,11 @@ async fn local_context_node_registers_idempotently_over_http() {
 
     let missing = router
         .clone()
-        .oneshot(json_request(Method::GET, "/api/v1/context-nodes/local", None))
+        .oneshot(json_request(
+            Method::GET,
+            "/api/v1/context-nodes/local",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
@@ -2574,7 +2578,11 @@ async fn local_context_node_registers_idempotently_over_http() {
     assert_eq!(body["display_name"], "Personal Vault");
 
     let fetched = router
-        .oneshot(json_request(Method::GET, "/api/v1/context-nodes/local", None))
+        .oneshot(json_request(
+            Method::GET,
+            "/api/v1/context-nodes/local",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(fetched.status(), StatusCode::OK);
@@ -2742,4 +2750,3 @@ async fn authority_grant_lifecycle_enables_enforced_node_create() {
         "grants: {grants}"
     );
 }
-
