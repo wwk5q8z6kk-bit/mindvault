@@ -2354,7 +2354,7 @@ async fn a_run_produces_a_verified_artifact_and_completes_over_http() {
         .oneshot(json_request(
             Method::POST,
             &format!("/api/v1/work-orders/{work_order_id}/nodes/{node_id}/runs"),
-            Some(json!({ "actor": "mindvault://schemas/http-agent" })),
+            Some(json!({})),
         ))
         .await
         .unwrap();
@@ -2447,6 +2447,226 @@ async fn a_run_produces_a_verified_artifact_and_completes_over_http() {
         "the server records its own evidence digest"
     );
 }
+
+/// Path work-order id must own the run. Guessing a run id under another order's
+/// URL must not record evidence — same IDOR class as artifact content GET.
+#[tokio::test]
+async fn recording_an_artifact_under_the_wrong_work_order_is_not_found() {
+    let (router, _tmp) = setup().await;
+
+    async fn create_approved_run(
+        router: &axum::Router,
+        key: &str,
+    ) -> (String, String) {
+        let mut body = work_order_body(vec![], key);
+        body["nodes"][0]["risk_tier"] = json!("low");
+        let response = router
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/work-orders",
+                Some(body),
+            ))
+            .await
+            .unwrap();
+        let created: Value = body_json(response).await;
+        let work_order_id = created["work_order"]["work_order_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let node_id = created["nodes"][0]["node_id"].as_str().unwrap().to_string();
+
+        let response = router
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                &format!("/api/v1/work-orders/{work_order_id}/nodes/{node_id}/runs"),
+                Some(json!({})),
+            ))
+            .await
+            .unwrap();
+        let started: Value = body_json(response).await;
+        let run_id = started["run"]["run_id"].as_str().unwrap().to_string();
+
+        router
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                &format!("/api/v1/work-orders/{work_order_id}/runs/{run_id}/approve"),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        (work_order_id, run_id)
+    }
+
+    let (wo_a, run_a) = create_approved_run(&router, "wo-bind-a").await;
+    let (wo_b, _run_b) = create_approved_run(&router, "wo-bind-b").await;
+    assert_ne!(wo_a, wo_b);
+
+    let response = router
+        .oneshot(json_request(
+            Method::POST,
+            // Path names B; run belongs to A.
+            &format!("/api/v1/work-orders/{wo_b}/runs/{run_a}/artifacts"),
+            Some(json!({
+                "artifact_kind": "decision-summary",
+                "content_base64": BASE64_STANDARD.encode(b"should not land"),
+                "provenance": [{
+                    "relation": "WasDerivedFrom",
+                    "resource": "mindvault://schemas/meeting-source"
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Provenance is required but must not be an amplification vector.
+#[tokio::test]
+async fn recording_an_artifact_rejects_oversized_provenance() {
+    let (router, _tmp) = setup().await;
+
+    let mut body = work_order_body(vec![], "wo-prov-cap");
+    body["nodes"][0]["risk_tier"] = json!("low");
+    let response = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/work-orders",
+            Some(body),
+        ))
+        .await
+        .unwrap();
+    let created: Value = body_json(response).await;
+    let work_order_id = created["work_order"]["work_order_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let node_id = created["nodes"][0]["node_id"].as_str().unwrap().to_string();
+
+    let response = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/work-orders/{work_order_id}/nodes/{node_id}/runs"),
+            Some(json!({})),
+        ))
+        .await
+        .unwrap();
+    let started: Value = body_json(response).await;
+    let run_id = started["run"]["run_id"].as_str().unwrap().to_string();
+
+    router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/work-orders/{work_order_id}/runs/{run_id}/approve"),
+            None,
+        ))
+        .await
+        .unwrap();
+
+    // One over the model ceiling (MAX_ARTIFACT_PROVENANCE = 32).
+    let provenance: Vec<Value> = (0..33)
+        .map(|i| {
+            json!({
+                "relation": "WasDerivedFrom",
+                "resource": format!("mindvault://schemas/source-{i}")
+            })
+        })
+        .collect();
+
+    let response = router
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/work-orders/{work_order_id}/runs/{run_id}/artifacts"),
+            Some(json!({
+                "artifact_kind": "decision-summary",
+                "content_base64": BASE64_STANDARD.encode(b"too many citations"),
+                "provenance": provenance
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Oversized base64 is refused before decode allocates the decoded payload.
+///
+/// Ceiling matches `MAX_RUN_ARTIFACT_BYTES` in the work-order REST module
+/// (5 MiB decoded ⇒ ~6.67 MiB base64 plus padding allowance).
+#[tokio::test]
+async fn recording_an_artifact_rejects_oversized_content() {
+    let (router, _tmp) = setup().await;
+
+    let mut body = work_order_body(vec![], "wo-size-cap");
+    body["nodes"][0]["risk_tier"] = json!("low");
+    let response = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/work-orders",
+            Some(body),
+        ))
+        .await
+        .unwrap();
+    let created: Value = body_json(response).await;
+    let work_order_id = created["work_order"]["work_order_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let node_id = created["nodes"][0]["node_id"].as_str().unwrap().to_string();
+
+    let response = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/work-orders/{work_order_id}/nodes/{node_id}/runs"),
+            Some(json!({})),
+        ))
+        .await
+        .unwrap();
+    let started: Value = body_json(response).await;
+    let run_id = started["run"]["run_id"].as_str().unwrap().to_string();
+
+    router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/work-orders/{work_order_id}/runs/{run_id}/approve"),
+            None,
+        ))
+        .await
+        .unwrap();
+
+    let max_run_artifact_bytes = 5 * 1024 * 1024;
+    let max_base64_chars = max_run_artifact_bytes
+        .saturating_mul(4)
+        .div_ceil(3)
+        .saturating_add(4);
+    let oversized = "A".repeat(max_base64_chars + 1);
+
+    let response = router
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/work-orders/{work_order_id}/runs/{run_id}/artifacts"),
+            Some(json!({
+                "artifact_kind": "decision-summary",
+                "content_base64": oversized,
+                "provenance": [{
+                    "relation": "WasDerivedFrom",
+                    "resource": "mindvault://schemas/meeting-source"
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
 
 /// The default path is untouched: no env var, no admission, ordinary create.
 ///

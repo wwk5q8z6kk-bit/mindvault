@@ -37,3 +37,8 @@ under `docs/adr/`.
     Artifacts with grant-bound write scope, lease-based conflict control, and
     risk-scaled verification gates; supersedes the `plans` schema
     `docs/adr/012-governed-agent-execution-graph.md`
+13. **013-admin-authority-grant-apis** — Lift the grant-API deferral for
+    admin-only issue / suspend / revoke / resume so `enforce` is usable
+    after local Context Node registration
+    `docs/adr/013-admin-authority-grant-apis.md`
+

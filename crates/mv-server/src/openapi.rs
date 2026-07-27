@@ -1260,14 +1260,11 @@ async fn work_order_run_readiness() {}
     post, path = "/api/v1/work-orders/{id}/runs/{run_id}/artifacts", tag = "work-orders",
     params(("id" = String, Path), ("run_id" = String, Path)),
     responses(
-        (status = 201, description = "Artifact recorded. The content digest is derived \
-            from the submitted bytes, never taken from the request, so gate G2 verifies \
-            content rather than a claim. Sensitivity and retention are inherited from the \
-            governing Work Order"),
-        (status = 400, description = "Content is not valid base64, or provenance is \
-            missing or names an unknown relation"),
-        (status = 409, description = "The run is terminal; evidence cannot be added to a \
-            closed attempt")
+        (status = 201, description = "Artifact recorded. The content digest is derived             from the submitted bytes, never taken from the request, so gate G2 verifies             content rather than a claim. Sensitivity and retention are inherited from the             governing Work Order. The path work order must own the run"),
+        (status = 400, description = "Content is not valid base64, provenance is missing             or names an unknown relation, or provenance exceeds the reference ceiling"),
+        (status = 404, description = "Run not found under the named work order"),
+        (status = 409, description = "The run is terminal; evidence cannot be added to a             closed attempt"),
+        (status = 413, description = "Decoded artifact content exceeds the size ceiling")
     )
 )]
 async fn work_order_record_artifact() {}

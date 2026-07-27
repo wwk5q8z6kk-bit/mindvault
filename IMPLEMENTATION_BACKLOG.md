@@ -284,13 +284,13 @@ interoperability kernel."
 
 #### IK-001b — Admin-only grant issuance and lifecycle endpoints
 - **priority:** P0 — the second prerequisite for `enforce`
-- **status:** not_started
+- **status:** **verified** (2026-07-27)
 - **mandate:** `docs/architecture/AUTHORITY_GRANT_MODEL.md` — "public grant APIs ... remain later integration gates"
 - **governing_authority:** Law 2 (`INTEROPERABILITY_CONSTITUTION.md:46`), feature-completeness §2-§3
 - **blocked_by:** IK-001a
-- **files:** `crates/mv-server/src/rest/interoperability.rs`, `crates/mv-server/src/rest.rs`, `crates/mv-server/src/openapi.rs`
+- **files:** `crates/mv-engine/src/engine/interoperability_ops.rs`, `crates/mv-server/src/rest/interoperability.rs`, `crates/mv-server/src/rest.rs`, `crates/mv-server/src/openapi.rs`, `docs/adr/013-admin-authority-grant-apis.md`
 - **acceptance:** an owner can issue, suspend and revoke a Tool Grant over the API; lifting the deferral is recorded in an ADR note rather than done silently
-- **evidence:** —
+- **evidence:** Admin `POST/GET /api/v1/authority-grants` plus suspend/revoke/resume. Grantor is the local owner principal; grantee accepts a URI or `grantee_subject` matching command-admission derivation. Defaults target the local node with Tool/`command`/durable retention so enforce can admit creates. ADR 013 records the deferral lift. Engine lifecycle tests + HTTP enforce round-trip.
 
 #### IK-001c — Durable command-admission decisions
 - **priority:** P1 — makes denials durable and is the first brick of the Trust Ledger

@@ -22,7 +22,7 @@ use mv_core::{
     AgentRun, EdgeKind, ExecutorKind, GateId, GateOutcome, InteroperabilityStore,
     ProvenanceReference, ProvenanceRelation, RetentionClass, RiskTier, RunArtifact,
     RunFailureClass, Sensitivity, StableUri, WorkOrder, WorkOrderBudget, WorkOrderExport,
-    WorkOrderStatus,
+    WorkOrderStatus, MAX_ARTIFACT_PROVENANCE,
 };
 use mv_engine::engine::{
     AdmissionRefusal, ProposedEdge, ProposedNode, ProposedWorkOrder, RunReadiness,
@@ -32,6 +32,15 @@ use uuid::Uuid;
 
 use crate::auth::{authorize_read, authorize_write, AuthContext};
 use crate::state::{AgentNotification, AppState};
+
+/// Decoded artifact payload ceiling. Matches the email attachment default so a
+/// write-capable client cannot OOM the vault with one base64 body.
+pub(crate) const MAX_RUN_ARTIFACT_BYTES: usize = 5 * 1024 * 1024;
+
+/// HTTP body ceiling for `POST …/artifacts`: decoded limit plus base64 expansion
+/// and a small JSON envelope budget.
+pub(crate) const MAX_RUN_ARTIFACT_REQUEST_BYTES: usize =
+    MAX_RUN_ARTIFACT_BYTES.saturating_mul(4).div_ceil(3).saturating_add(64 * 1024);
 
 // ---------------------------------------------------------------------------
 // Requests
@@ -356,10 +365,33 @@ pub(crate) async fn start_run(
 pub(crate) async fn record_artifact(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
-    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+    Path((work_order_id, run_id)): Path<(Uuid, Uuid)>,
     Json(request): Json<RecordArtifactRequest>,
 ) -> Result<(StatusCode, Json<ArtifactView>), (StatusCode, String)> {
     authorize_write(&auth)?;
+    require_run_for_work_order(&state, work_order_id, run_id).await?;
+
+    // Reject oversized base64 before decode so peak memory stays near the limit
+    // rather than 4/3 of it plus the decoded copy.
+    let max_base64_chars = MAX_RUN_ARTIFACT_BYTES
+        .saturating_mul(4)
+        .div_ceil(3)
+        .saturating_add(4);
+    if request.content_base64.len() > max_base64_chars {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("artifact content exceeds {MAX_RUN_ARTIFACT_BYTES} bytes"),
+        ));
+    }
+
+    if request.provenance.len() > MAX_ARTIFACT_PROVENANCE {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "an artifact may cite at most {MAX_ARTIFACT_PROVENANCE} provenance references"
+            ),
+        ));
+    }
 
     let payload = BASE64_STANDARD
         .decode(&request.content_base64)
@@ -369,6 +401,12 @@ pub(crate) async fn record_artifact(
                 format!("content is not valid base64: {err}"),
             )
         })?;
+    if payload.len() > MAX_RUN_ARTIFACT_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("artifact content exceeds {MAX_RUN_ARTIFACT_BYTES} bytes"),
+        ));
+    }
 
     let mut provenance = Vec::with_capacity(request.provenance.len());
     for reference in &request.provenance {
@@ -415,10 +453,11 @@ pub(crate) async fn record_artifact(
 pub(crate) async fn record_gate(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
-    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+    Path((work_order_id, run_id)): Path<(Uuid, Uuid)>,
     Json(request): Json<RecordGateRequest>,
 ) -> Result<(StatusCode, Json<GateResultView>), (StatusCode, String)> {
     authorize_write(&auth)?;
+    require_run_for_work_order(&state, work_order_id, run_id).await?;
 
     let gate: GateId = request
         .gate
@@ -477,9 +516,10 @@ pub(crate) async fn record_gate(
 pub(crate) async fn approve_run(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
-    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+    Path((work_order_id, run_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<RunView>, (StatusCode, String)> {
     authorize_write(&auth)?;
+    require_run_for_work_order(&state, work_order_id, run_id).await?;
     let run = state
         .engine
         .resume_approved_run(run_id)
@@ -493,9 +533,10 @@ pub(crate) async fn approve_run(
 pub(crate) async fn complete_run(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
-    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+    Path((work_order_id, run_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<CompleteRunResponse>, (StatusCode, String)> {
     authorize_write(&auth)?;
+    require_run_for_work_order(&state, work_order_id, run_id).await?;
     match state
         .engine
         .complete_run(run_id)
@@ -527,10 +568,11 @@ pub(crate) async fn complete_run(
 pub(crate) async fn fail_run(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
-    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+    Path((work_order_id, run_id)): Path<(Uuid, Uuid)>,
     Json(request): Json<FailRunRequest>,
 ) -> Result<Json<RunView>, (StatusCode, String)> {
     authorize_write(&auth)?;
+    require_run_for_work_order(&state, work_order_id, run_id).await?;
     let class: RunFailureClass = request
         .failure_class
         .parse()
@@ -612,9 +654,10 @@ pub(crate) async fn list_runs(
 pub(crate) async fn list_gates(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
-    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+    Path((work_order_id, run_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Vec<GateResultView>>, (StatusCode, String)> {
     authorize_read(&auth)?;
+    require_run_for_work_order(&state, work_order_id, run_id).await?;
     let results = state
         .engine
         .store
@@ -641,9 +684,10 @@ pub(crate) async fn list_gates(
 pub(crate) async fn get_run_readiness(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
-    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+    Path((work_order_id, run_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<ReadinessView>, (StatusCode, String)> {
     authorize_read(&auth)?;
+    require_run_for_work_order(&state, work_order_id, run_id).await?;
     let readiness = state
         .engine
         .run_readiness(run_id)
@@ -958,6 +1002,31 @@ async fn load_detail(
             })
             .collect(),
     })
+}
+
+
+/// Bind a run-scoped URL to the work order named in the path.
+///
+/// Without this check a caller who knows only `run_id` can mutate another
+/// order's run while the path claims a different work order — the asymmetry
+/// already hardened on artifact content GET.
+async fn require_run_for_work_order(
+    state: &AppState,
+    work_order_id: Uuid,
+    run_id: Uuid,
+) -> Result<AgentRun, (StatusCode, String)> {
+    let run = state
+        .engine
+        .store
+        .nodes
+        .get_agent_run(run_id)
+        .await
+        .map_err(crate::rest::map_mv_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "agent run not found".to_string()))?;
+    if run.work_order_id != work_order_id {
+        return Err((StatusCode::NOT_FOUND, "agent run not found".to_string()));
+    }
+    Ok(run)
 }
 
 fn work_order_summary(work_order: &WorkOrder) -> WorkOrderSummary {

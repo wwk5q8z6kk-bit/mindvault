@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::{
     body::Body,
-    extract::{Multipart, Path, Query, Request, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State},
     http::{
         header::{CONTENT_DISPOSITION, CONTENT_TYPE},
         HeaderMap, HeaderValue, Method, StatusCode,
@@ -233,7 +233,9 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         )
         .route(
             "/api/v1/work-orders/:id/runs/:run_id/artifacts",
-            post(work_orders::record_artifact),
+            post(work_orders::record_artifact).layer(DefaultBodyLimit::max(
+                work_orders::MAX_RUN_ARTIFACT_REQUEST_BYTES,
+            )),
         )
         .route(
             "/api/v1/work-orders/:id/runs/:run_id/gates",

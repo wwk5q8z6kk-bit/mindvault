@@ -14,15 +14,19 @@
 //! substitute for role-based access.
 
 use axum::{
-    extract::State,
+    extract::{Path, Query, State},
     http::StatusCode,
     Extension, Json,
 };
+use chrono::{Duration, Utc};
 use mv_core::{
-    AdmissionDecision, AuthorityGrantKind, CommandAdmissionRequest, ContextCapability,
-    ContextNodeRecord, IdempotencyKey, MvError, RetentionClass, Sensitivity, StableUri,
+    AdmissionDecision, AuthorityGrant, AuthorityGrantKind, AuthorityGrantStatus,
+    CommandAdmissionRequest, ContextCapability, ContextNodeRecord, IdempotencyKey,
+    InteroperabilityStore, MvError, RetentionClass, Sensitivity, StableUri,
 };
+use mv_engine::engine::IssueAuthorityGrantRequest;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -365,4 +369,349 @@ pub(crate) async fn get_local_context_node(
         })?;
 
     Ok(Json(LocalContextNodeView::from_record(&record, false)))
+}
+
+
+// ---------------------------------------------------------------------------
+// Authority Grant issuance and lifecycle (IK-001b)
+// ---------------------------------------------------------------------------
+
+/// Operator-facing view of an Authority Grant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AuthorityGrantView {
+    pub grant_id: Uuid,
+    pub revision: u64,
+    pub grant_uri: String,
+    pub kind: String,
+    pub grantor: String,
+    pub grantee: String,
+    pub governing_node: String,
+    pub targets: Vec<String>,
+    pub capabilities: Vec<String>,
+    pub sensitivity_ceiling: String,
+    pub retention_ceiling: String,
+    pub purpose: String,
+    pub status: String,
+    pub status_reason: Option<String>,
+    pub not_before: String,
+    pub expires_at: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub newly_issued: bool,
+}
+
+impl AuthorityGrantView {
+    fn from_grant(grant: &AuthorityGrant, newly_issued: bool) -> Self {
+        Self {
+            grant_id: grant.grant_id,
+            revision: grant.revision,
+            grant_uri: grant.grant_uri.as_str().to_string(),
+            kind: grant.kind.as_str().to_string(),
+            grantor: grant.grantor.as_str().to_string(),
+            grantee: grant.grantee.as_str().to_string(),
+            governing_node: grant.governing_node.as_str().to_string(),
+            targets: grant.targets.iter().map(|t| t.as_str().to_string()).collect(),
+            capabilities: grant
+                .capabilities
+                .iter()
+                .map(|c| c.as_str().to_string())
+                .collect(),
+            sensitivity_ceiling: grant.sensitivity_ceiling.as_str().to_string(),
+            retention_ceiling: grant.retention_ceiling.as_str().to_string(),
+            purpose: grant.purpose.clone(),
+            status: grant.status.as_str().to_string(),
+            status_reason: grant.status_reason.clone(),
+            not_before: grant.not_before.to_rfc3339(),
+            expires_at: grant.expires_at.to_rfc3339(),
+            created_at: grant.created_at.to_rfc3339(),
+            updated_at: grant.updated_at.to_rfc3339(),
+            newly_issued,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct IssueAuthorityGrantBody {
+    /// `tool` or `context`. Defaults to `tool` — the kind enforce needs for creates.
+    #[serde(default = "default_tool_kind")]
+    pub kind: String,
+    /// Full grantee principal URI. Mutually exclusive with `grantee_subject`.
+    pub grantee: Option<String>,
+    /// Auth subject string derived with the same v5 scheme as command admission.
+    /// Use `"local-system"` to grant the default unauthenticated admin principal.
+    pub grantee_subject: Option<String>,
+    /// Exact target URIs. Defaults to the local Context Node URI (required for creates).
+    pub targets: Option<Vec<String>>,
+    /// Capability tokens. Defaults to `["command"]` for tool grants.
+    pub capabilities: Option<Vec<String>>,
+    pub purpose: String,
+    /// RFC3339 expiry. Defaults to now + 30 days when omitted.
+    pub expires_at: Option<String>,
+    #[serde(default = "default_internal")]
+    pub sensitivity_ceiling: String,
+    /// Defaults to `durable` so a freshly issued Tool Grant can admit node creates.
+    #[serde(default = "default_durable")]
+    pub retention_ceiling: String,
+    pub idempotency_key: String,
+}
+
+fn default_tool_kind() -> String {
+    "tool".into()
+}
+fn default_internal() -> String {
+    "internal".into()
+}
+fn default_durable() -> String {
+    "durable".into()
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct TransitionAuthorityGrantBody {
+    pub reason: String,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ListAuthorityGrantsQuery {
+    pub grantee: Option<String>,
+    pub kind: Option<String>,
+    pub status: Option<String>,
+}
+
+fn map_grant_error(err: MvError) -> (StatusCode, String) {
+    match &err {
+        MvError::VaultSealed => (StatusCode::LOCKED, err.to_string()),
+        MvError::InvalidInput(_) => (StatusCode::BAD_REQUEST, err.to_string()),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+fn parse_kind(value: &str) -> Result<AuthorityGrantKind, (StatusCode, String)> {
+    AuthorityGrantKind::from_str(value)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))
+}
+
+fn parse_capability(value: &str) -> Result<ContextCapability, (StatusCode, String)> {
+    ContextCapability::from_str(value).map_err(|err| (StatusCode::BAD_REQUEST, err))
+}
+
+/// `POST /api/v1/authority-grants` — issue a Context or Tool Grant.
+///
+/// Admin-only. The grantor is always the vault's local owner principal; the
+/// caller chooses the grantee. Idempotent on `idempotency_key`.
+pub(crate) async fn issue_authority_grant(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<IssueAuthorityGrantBody>,
+) -> Result<(StatusCode, Json<AuthorityGrantView>), (StatusCode, String)> {
+    require_admin(&auth)?;
+
+    let local_node_id = state
+        .engine
+        .store
+        .nodes
+        .local_context_node_id()
+        .await
+        .map_err(map_grant_error)?;
+
+    let grantee = match (&body.grantee, &body.grantee_subject) {
+        (Some(uri), None) => StableUri::parse(uri).map_err(|err| (StatusCode::BAD_REQUEST, err))?,
+        (None, Some(subject)) => {
+            if subject.trim().is_empty() {
+                return Err((StatusCode::BAD_REQUEST, "grantee_subject must not be empty".into()));
+            }
+            state.engine.principal_for_subject(local_node_id, subject)
+        }
+        (None, None) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "provide grantee or grantee_subject".into(),
+            ));
+        }
+        (Some(_), Some(_)) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "provide only one of grantee or grantee_subject".into(),
+            ));
+        }
+    };
+
+    let kind = parse_kind(&body.kind)?;
+    let targets = match body.targets {
+        Some(values) if !values.is_empty() => values
+            .into_iter()
+            .map(|value| StableUri::parse(value).map_err(|err| (StatusCode::BAD_REQUEST, err)))
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => {
+            return Err((StatusCode::BAD_REQUEST, "targets must not be empty".into()));
+        }
+        None => vec![StableUri::node(local_node_id)],
+    };
+    let capabilities = match body.capabilities {
+        Some(values) if !values.is_empty() => values
+            .iter()
+            .map(|value| parse_capability(value))
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "capabilities must not be empty".into(),
+            ));
+        }
+        None => match kind {
+            AuthorityGrantKind::Tool => vec![ContextCapability::Command],
+            AuthorityGrantKind::Context => vec![ContextCapability::Discover],
+        },
+    };
+    let expires_at = match body.expires_at {
+        Some(value) => chrono::DateTime::parse_from_rfc3339(&value)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|err| (StatusCode::BAD_REQUEST, format!("expires_at: {err}")))?,
+        None => Utc::now() + Duration::days(30),
+    };
+    let sensitivity_ceiling = Sensitivity::from_str(&body.sensitivity_ceiling)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let retention_ceiling = RetentionClass::from_str(&body.retention_ceiling)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let idempotency_key = IdempotencyKey::parse(&body.idempotency_key)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    if body.purpose.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "purpose must not be empty".into()));
+    }
+
+    let issuance = state
+        .engine
+        .issue_authority_grant(IssueAuthorityGrantRequest {
+            kind,
+            grantee,
+            targets,
+            capabilities,
+            purpose: body.purpose,
+            expires_at,
+            sensitivity_ceiling,
+            retention_ceiling,
+            idempotency_key,
+        })
+        .await
+        .map_err(map_grant_error)?;
+
+    let status = if issuance.newly_issued {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((
+        status,
+        Json(AuthorityGrantView::from_grant(
+            &issuance.grant,
+            issuance.newly_issued,
+        )),
+    ))
+}
+
+/// `GET /api/v1/authority-grants` — list grants (admin).
+pub(crate) async fn list_authority_grants(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ListAuthorityGrantsQuery>,
+) -> Result<Json<Vec<AuthorityGrantView>>, (StatusCode, String)> {
+    require_admin(&auth)?;
+    let grantee = match query.grantee {
+        Some(value) => Some(StableUri::parse(value).map_err(|err| (StatusCode::BAD_REQUEST, err))?),
+        None => None,
+    };
+    let kind = match query.kind {
+        Some(value) => Some(parse_kind(&value)?),
+        None => None,
+    };
+    let status = match query.status {
+        Some(value) => Some(
+            AuthorityGrantStatus::from_str(&value)
+                .map_err(|err| (StatusCode::BAD_REQUEST, err))?,
+        ),
+        None => None,
+    };
+    let grants = state
+        .engine
+        .list_authority_grants(grantee.as_ref(), kind, status)
+        .await
+        .map_err(map_grant_error)?;
+    Ok(Json(
+        grants
+            .iter()
+            .map(|grant| AuthorityGrantView::from_grant(grant, false))
+            .collect(),
+    ))
+}
+
+/// `GET /api/v1/authority-grants/:id` — read one grant (admin).
+pub(crate) async fn get_authority_grant(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(grant_id): Path<Uuid>,
+) -> Result<Json<AuthorityGrantView>, (StatusCode, String)> {
+    require_admin(&auth)?;
+    let grant = state
+        .engine
+        .get_authority_grant(grant_id)
+        .await
+        .map_err(map_grant_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "authority grant not found".into()))?;
+    Ok(Json(AuthorityGrantView::from_grant(&grant, false)))
+}
+
+async fn transition_grant(
+    auth: &AuthContext,
+    state: &AppState,
+    grant_id: Uuid,
+    to_status: AuthorityGrantStatus,
+    body: TransitionAuthorityGrantBody,
+) -> Result<Json<AuthorityGrantView>, (StatusCode, String)> {
+    require_admin(auth)?;
+    if body.reason.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "reason must not be empty".into()));
+    }
+    let idempotency_key = IdempotencyKey::parse(&body.idempotency_key)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let transition = state
+        .engine
+        .transition_authority_grant(grant_id, to_status, body.reason, idempotency_key)
+        .await
+        .map_err(map_grant_error)?;
+    Ok(Json(AuthorityGrantView::from_grant(
+        &transition.grant,
+        false,
+    )))
+}
+
+/// `POST /api/v1/authority-grants/:id/suspend`
+pub(crate) async fn suspend_authority_grant(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(grant_id): Path<Uuid>,
+    Json(body): Json<TransitionAuthorityGrantBody>,
+) -> Result<Json<AuthorityGrantView>, (StatusCode, String)> {
+    transition_grant(&auth, &state, grant_id, AuthorityGrantStatus::Suspended, body).await
+}
+
+/// `POST /api/v1/authority-grants/:id/revoke`
+pub(crate) async fn revoke_authority_grant(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(grant_id): Path<Uuid>,
+    Json(body): Json<TransitionAuthorityGrantBody>,
+) -> Result<Json<AuthorityGrantView>, (StatusCode, String)> {
+    transition_grant(&auth, &state, grant_id, AuthorityGrantStatus::Revoked, body).await
+}
+
+/// `POST /api/v1/authority-grants/:id/resume` — suspended → active.
+pub(crate) async fn resume_authority_grant(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(grant_id): Path<Uuid>,
+    Json(body): Json<TransitionAuthorityGrantBody>,
+) -> Result<Json<AuthorityGrantView>, (StatusCode, String)> {
+    // Resume clears the reason in the engine; the request still requires one
+    // for audit attribution of the transition intent.
+    transition_grant(&auth, &state, grant_id, AuthorityGrantStatus::Active, body).await
 }

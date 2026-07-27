@@ -19,6 +19,8 @@ use uuid::Uuid;
 
 use super::interoperability::interoperability_string_enum;
 use super::{ProvenanceReference, RetentionClass, SchemaReference, Sensitivity, StableUri};
+#[cfg(test)]
+use super::ProvenanceRelation;
 
 /// Maximum write-lease duration, matching the outbox dispatch bound in
 /// `ACTION_RECEIPT_MODEL.md`. A longer lease would let a crashed run hold a
@@ -842,6 +844,12 @@ pub struct RunArtifact {
     pub created_at: DateTime<Utc>,
 }
 
+/// Upper bound on provenance references attached to one run artifact.
+///
+/// Keeps a single record_artifact request from amplifying into an unbounded
+/// number of provenance rows in the same transaction.
+pub const MAX_ARTIFACT_PROVENANCE: usize = 32;
+
 impl RunArtifact {
     pub fn validate(&self) -> Result<(), String> {
         if !is_sha256_hex(&self.content_digest) {
@@ -853,6 +861,11 @@ impl RunArtifact {
         // Derived knowledge never erases the authority of its evidence.
         if self.provenance.is_empty() {
             return Err("an artifact must reference the evidence it derives from".into());
+        }
+        if self.provenance.len() > MAX_ARTIFACT_PROVENANCE {
+            return Err(format!(
+                "an artifact may cite at most {MAX_ARTIFACT_PROVENANCE} provenance references"
+            ));
         }
         Ok(())
     }
@@ -1294,5 +1307,40 @@ mod tests {
             missing_gates(RiskTier::Low, &with_failure),
             vec![GateId::G6]
         );
+    }
+
+    #[test]
+    fn artifact_provenance_is_required_and_bounded() {
+        let mut artifact = RunArtifact {
+            artifact_id: Uuid::nil(),
+            artifact_uri: uri("mindvault://schemas/artifact"),
+            run_id: Uuid::nil(),
+            work_order_id: Uuid::nil(),
+            artifact_kind: "summary".into(),
+            content_digest: "a".repeat(64),
+            schema: None,
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Operational,
+            provenance: Vec::new(),
+            created_at: Utc::now(),
+        };
+        assert!(
+            artifact.validate().unwrap_err().contains("evidence"),
+            "empty provenance must fail closed"
+        );
+
+        artifact.provenance = (0..=MAX_ARTIFACT_PROVENANCE)
+            .map(|i| ProvenanceReference {
+                resource: uri(&format!("mindvault://schemas/source-{i}")),
+                relation: ProvenanceRelation::WasDerivedFrom,
+            })
+            .collect();
+        assert!(
+            artifact.validate().unwrap_err().contains("at most"),
+            "provenance above the ceiling must be refused"
+        );
+
+        artifact.provenance.truncate(MAX_ARTIFACT_PROVENANCE);
+        artifact.validate().expect("ceiling inclusive");
     }
 }
