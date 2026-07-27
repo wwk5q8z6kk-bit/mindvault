@@ -56,6 +56,17 @@ async fn setup() -> (axum::Router, TempDir) {
 }
 
 async fn setup_with_config(config: EngineConfig, tmp: TempDir) -> (axum::Router, TempDir) {
+    // The request rate limiter is a process-global `OnceLock` (`limits.rs`)
+    // holding one bucket for the entire suite, defaulting to 120 requests per
+    // 60 seconds. This suite runs serially in a single process and finishes
+    // well inside that window, so without a raised ceiling the whole run sits
+    // near the limit and *adding a test* makes some unrelated later test fail
+    // with 429. Raise it here, before the first request initializes the lock.
+    //
+    // This does not weaken any assertion: the two tests in this workspace that
+    // expect 429 are exercising the namespace node quota, not the rate limiter.
+    std::env::set_var("MINDVAULT_RATE_LIMIT_REQUESTS", "1000000");
+
     let engine = MindVaultEngine::init(config).await.expect("engine init");
     let state = Arc::new(AppState::new(Arc::new(engine)));
     let router = create_router(state);
@@ -2434,5 +2445,75 @@ async fn a_run_produces_a_verified_artifact_and_completes_over_http() {
         gate["evidence_digest"].as_str().unwrap(),
         "0".repeat(64),
         "the server records its own evidence digest"
+    );
+}
+
+/// The default path is untouched: no env var, no admission, ordinary create.
+///
+/// Paired with the enforced case below so the two together show the flag is
+/// what changes behaviour, rather than something incidental to the fixture.
+#[tokio::test]
+async fn node_create_is_unaffected_when_command_admission_is_unset() {
+    let (router, _tmp) = setup().await;
+
+    let resp = router
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({
+                "kind": "fact",
+                "content": "admission unset",
+                "title": "Unset",
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+/// Over real HTTP, an enforced vault with no issued grant refuses the create
+/// and writes nothing.
+///
+/// `ScopedEnvVar` holds the shared env lock and restores the previous value on
+/// drop; without it the mode would leak into unrelated tests in this
+/// single-process suite and surface as unexplained 403s.
+#[tokio::test]
+async fn node_create_fails_closed_under_enforced_command_admission() {
+    let _mode = ScopedEnvVar::set("MINDVAULT_COMMAND_ADMISSION_MODE", "enforce");
+    let tmp = TempDir::new().expect("tempdir");
+    let config = test_config(&tmp.path().to_string_lossy());
+    let (router, _tmp) = setup_with_config(config, tmp).await;
+
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/nodes",
+            Some(json!({
+                "kind": "fact",
+                "content": "should never be stored",
+                "title": "Refused",
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // The refusal must not have written a node.
+    let resp = router
+        .oneshot(json_request(Method::GET, "/api/v1/nodes", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let listed: Value = body_json(resp).await;
+    let nodes = listed
+        .get("nodes")
+        .and_then(Value::as_array)
+        .or_else(|| listed.as_array())
+        .expect("a node list");
+    assert!(
+        nodes.is_empty(),
+        "a refused create must not persist a node: {listed}"
     );
 }
