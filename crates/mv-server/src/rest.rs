@@ -10800,11 +10800,19 @@ async fn store_node(
             resource: subject,
             relation: ProvenanceRelation::PrimarySource,
         }],
-        data: serde_json::json!({
-            "resource_kind": "knowledge_node",
-            "node_kind": node.kind.as_str(),
-            "namespace": node.namespace,
-        }),
+        data: {
+            let mut data = serde_json::json!({
+                "resource_kind": "knowledge_node",
+                "node_kind": node.kind.as_str(),
+                "namespace": node.namespace,
+            });
+            // Present only when the resolver ran, so `off` stays byte-identical.
+            // Credential-free and content-free: identities and enum tokens only.
+            if let Some(decision) = &admission {
+                data["admission"] = decision.policy_metadata();
+            }
+            data
+        },
     })
     .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
 
