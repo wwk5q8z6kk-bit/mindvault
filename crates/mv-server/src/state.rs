@@ -186,6 +186,75 @@ pub struct WebhookConfig {
     pub timeout_secs: u64,
 }
 
+/// Whether public commands must resolve an authorizing grant before mutating.
+///
+/// Constitutional law 8 makes action authority a separate axis from context
+/// access, so this is additive: it never replaces the role, namespace, or quota
+/// checks that already guard a command.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CommandAdmissionMode {
+    /// Resolver does not run. Byte-identical to pre-admission behaviour.
+    #[default]
+    Off,
+    /// Resolver runs and the decision is recorded, but never blocks. The
+    /// rollout position: watch denials reach zero before enforcing.
+    Observe,
+    /// Resolver runs and an unauthorized command is refused.
+    Enforce,
+}
+
+/// Reads `MINDVAULT_COMMAND_ADMISSION_MODE`, defaulting to `Off`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CommandAdmissionPolicy {
+    mode: CommandAdmissionMode,
+}
+
+impl CommandAdmissionPolicy {
+    /// An unrecognized value falls back to `Off` with a warning.
+    ///
+    /// Deliberately not `Enforce`: what is unknown here is the feature's
+    /// configuration, not the caller's authority, and the pre-existing role,
+    /// namespace and quota checks remain fully in force either way. Silently
+    /// enforcing on a typo would refuse every write on a running vault.
+    pub fn from_env() -> Self {
+        let mode = match std::env::var("MINDVAULT_COMMAND_ADMISSION_MODE") {
+            Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+                "" | "off" => CommandAdmissionMode::Off,
+                "observe" => CommandAdmissionMode::Observe,
+                "enforce" => CommandAdmissionMode::Enforce,
+                other => {
+                    tracing::warn!(
+                        value = other,
+                        "unrecognized MINDVAULT_COMMAND_ADMISSION_MODE; \
+                         falling back to off (expected off, observe, or enforce)"
+                    );
+                    CommandAdmissionMode::Off
+                }
+            },
+            Err(_) => CommandAdmissionMode::Off,
+        };
+        Self { mode }
+    }
+
+    pub fn new(mode: CommandAdmissionMode) -> Self {
+        Self { mode }
+    }
+
+    pub fn mode(&self) -> CommandAdmissionMode {
+        self.mode
+    }
+
+    /// Whether the resolver runs at all.
+    pub fn is_active(&self) -> bool {
+        self.mode != CommandAdmissionMode::Off
+    }
+
+    /// Whether a refusal blocks the command.
+    pub fn enforces(&self) -> bool {
+        self.mode == CommandAdmissionMode::Enforce
+    }
+}
+
 /// Server-side capability boundary for local filesystem mounting.
 ///
 /// The environment value uses the host path-list separator (`:` on Unix,
