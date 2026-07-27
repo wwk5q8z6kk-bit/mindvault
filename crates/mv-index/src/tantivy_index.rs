@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use tantivy::collector::TopDocs;
-use tantivy::directory::error::{DeleteError, OpenReadError, OpenWriteError};
+use tantivy::directory::error::{DeleteError, LockError, OpenReadError, OpenWriteError};
 use tantivy::directory::{
-    AntiCallToken, Directory, FileHandle, FileSlice, TerminatingWrite, WatchCallback,
-    WatchCallbackList, WatchHandle, WritePtr,
+    AntiCallToken, Directory, DirectoryLock, FileHandle, FileSlice, Lock, TerminatingWrite,
+    WatchCallback, WatchCallbackList, WatchHandle, WritePtr,
 };
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
@@ -143,10 +143,21 @@ impl EncryptedTantivyDirectory {
             std::fs::create_dir_all(parent)?;
         }
 
-        let tmp_path = storage_path.with_extension("tmp");
-        std::fs::write(&tmp_path, sealed)?;
-        std::fs::rename(tmp_path, storage_path)?;
+        // Unique temp names avoid rename races when concurrent writers target the same
+        // logical path (e.g. meta-lock acquire via open_write + flush).
+        let tmp_path = storage_path.with_extension(format!("tmp-{}", Uuid::now_v7()));
+        std::fs::write(&tmp_path, &sealed)?;
+        std::fs::rename(&tmp_path, &storage_path)?;
         Ok(())
+    }
+
+    fn os_lock_path(&self, lock: &Lock) -> PathBuf {
+        let name = lock
+            .filepath
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_else(|| std::ffi::OsString::from("directory.lock"));
+        self.root.join(".locks").join(name)
     }
 
     fn read_plaintext(&self, logical_path: &Path) -> Result<Vec<u8>, OpenReadError> {
@@ -279,8 +290,64 @@ impl Directory for EncryptedTantivyDirectory {
         Ok(())
     }
 
+    fn acquire_lock(&self, lock: &Lock) -> Result<DirectoryLock, LockError> {
+        // Prefer OS create_new locks over encrypting lockfiles through open_write.
+        // The default Directory::acquire_lock path races on shared .tmp renames and with
+        // OnCommitWithDelay watchers concurrently taking META_LOCK.
+        let lock_path = self.os_lock_path(lock);
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).map_err(LockError::wrap_io_error)?;
+        }
+
+        let mut attempts = 0u32;
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(file) => {
+                    return Ok(DirectoryLock::from(Box::new(EncryptedDirectoryLockGuard {
+                        path: lock_path,
+                        _file: file,
+                    })));
+                }
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                    if !lock.is_blocking {
+                        return Err(LockError::LockBusy);
+                    }
+                    attempts = attempts.saturating_add(1);
+                    if attempts > 100 {
+                        return Err(LockError::LockBusy);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(err) => return Err(LockError::wrap_io_error(err)),
+            }
+        }
+    }
+
     fn watch(&self, watch_callback: WatchCallback) -> tantivy::Result<WatchHandle> {
         Ok(self.watch_callbacks.subscribe(watch_callback))
+    }
+}
+
+struct EncryptedDirectoryLockGuard {
+    path: PathBuf,
+    _file: std::fs::File,
+}
+
+impl Drop for EncryptedDirectoryLockGuard {
+    fn drop(&mut self) {
+        if let Err(err) = std::fs::remove_file(&self.path) {
+            if err.kind() != io::ErrorKind::NotFound {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    error = %err,
+                    "failed to release sealed tantivy lock file"
+                );
+            }
+        }
     }
 }
 
@@ -348,7 +415,9 @@ impl TantivyFullTextIndex {
 
         let reader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            // Manual: commit() already calls reload(). OnCommitWithDelay races META_LOCK
+            // acquisition against that explicit reload in the encrypted directory.
+            .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .map_err(|e| MvError::Index(format!("create reader: {e}")))?;
 
