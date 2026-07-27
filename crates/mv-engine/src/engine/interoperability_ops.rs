@@ -304,6 +304,14 @@ mod tests {
         }
     }
 
+    /// Root grants must be issued by a local principal, not by the node URI.
+    fn grantor_of(local_node_id: Uuid) -> StableUri {
+        StableUri::principal(
+            local_node_id,
+            Uuid::new_v5(&local_node_id, b"admission-grantor"),
+        )
+    }
+
     fn grantee_of(local_node_id: Uuid) -> StableUri {
         StableUri::principal(
             local_node_id,
@@ -325,7 +333,7 @@ mod tests {
 
         let mut grant = AuthorityGrant::new_tool(
             node_uri.clone(),
-            node_uri.clone(),
+            grantor_of(local_node_id),
             grantee.clone(),
             vec![node_uri.clone()],
             vec![ContextCapability::Command],
@@ -374,7 +382,7 @@ mod tests {
 
         let mut grant = AuthorityGrant::new_context(
             node_uri.clone(),
-            node_uri.clone(),
+            grantor_of(local_node_id),
             grantee.clone(),
             vec![node_uri.clone()],
             vec![ContextCapability::Read],
@@ -393,7 +401,10 @@ mod tests {
         );
         let decision = engine.resolve_command_admission(&request).await.unwrap();
 
-        assert!(!decision.is_admitted(), "a context grant admitted a mutation");
+        assert!(
+            !decision.is_admitted(),
+            "a context grant admitted a mutation"
+        );
         assert!(matches!(
             decision,
             AdmissionDecision::Denied {
@@ -439,7 +450,7 @@ mod tests {
         // Deliberately left at the `new_tool` default of Operational.
         let grant = AuthorityGrant::new_tool(
             node_uri.clone(),
-            node_uri.clone(),
+            grantor_of(local_node_id),
             grantee.clone(),
             vec![node_uri.clone()],
             vec![ContextCapability::Command],

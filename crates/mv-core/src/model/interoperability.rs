@@ -278,7 +278,9 @@ impl Sensitivity {
         }
     }
 
-    const fn rank(self) -> u8 {
+    /// Ordering position, low to high. A grant admits a request only when the
+    /// request's rank is at or below the grant's ceiling.
+    pub const fn rank(self) -> u8 {
         match self {
             Self::Public => 0,
             Self::Internal => 1,
@@ -321,7 +323,9 @@ impl RetentionClass {
         }
     }
 
-    const fn rank(self) -> u8 {
+    /// Ordering position, low to high. A grant admits a request only when the
+    /// request's rank is at or below the grant's ceiling.
+    pub const fn rank(self) -> u8 {
         match self {
             Self::Ephemeral => 0,
             Self::Operational => 1,
