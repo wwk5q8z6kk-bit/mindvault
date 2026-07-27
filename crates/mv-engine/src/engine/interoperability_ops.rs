@@ -21,6 +21,17 @@ use uuid::Uuid;
 
 use super::MindVaultEngine;
 
+/// Outcome of [`MindVaultEngine::register_local_context_node`].
+///
+/// `newly_registered` is decided by storage — either the early existing-descriptor
+/// read, or the idempotent commit's `replayed` flag — so callers never race a
+/// separate "is it there?" check against the write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalContextNodeRegistration {
+    pub record: ContextNodeRecord,
+    pub newly_registered: bool,
+}
+
 /// Capabilities the local node declares as a Context Node.
 ///
 /// Deliberately narrow, and narrower than what the REST API can do. A
@@ -32,10 +43,13 @@ use super::MindVaultEngine;
 ///
 /// Expand this list when a governed contract for the capability actually ships,
 /// and expect the manifest revision and digest to change with it.
+/// Order matters. `ContextCapabilityManifest::validate` requires capabilities to
+/// be strictly sorted by their wire token, so this list is in `as_str()` order
+/// ("command", "discover", "health") rather than conceptual order.
 const LOCAL_NODE_CAPABILITIES: [ContextCapability; 3] = [
+    ContextCapability::Command,
     ContextCapability::Discover,
     ContextCapability::Health,
-    ContextCapability::Command,
 ];
 
 impl MindVaultEngine {
@@ -58,12 +72,15 @@ impl MindVaultEngine {
     pub async fn register_local_context_node(
         &self,
         display_name: &str,
-    ) -> MvResult<ContextNodeRecord> {
+    ) -> MvResult<LocalContextNodeRegistration> {
         self.ensure_unsealed_for_node_io().await?;
         let local_node_id = self.store.nodes.local_context_node_id().await?;
 
         if let Some(existing) = self.store.nodes.get_context_node(local_node_id).await? {
-            return Ok(existing);
+            return Ok(LocalContextNodeRegistration {
+                record: existing,
+                newly_registered: false,
+            });
         }
 
         let manifest = ContextCapabilityManifest::new(
@@ -121,12 +138,15 @@ impl MindVaultEngine {
         })
         .map_err(MvError::InvalidInput)?;
         event.payload_digest = record.semantic_digest();
-
-        self.store
+        let commit = self
+            .store
             .nodes
             .commit_context_node_with_event(&record, &event)
             .await?;
-        Ok(record)
+        Ok(LocalContextNodeRegistration {
+            record: commit.context_node,
+            newly_registered: !commit.replayed,
+        })
     }
 
     /// Read the local Context Node descriptor, if it has been registered.
@@ -289,78 +309,17 @@ mod tests {
         (engine, temp_dir)
     }
 
-    /// Register the local Context Node so governance events are admissible.
+    /// Register the local Context Node via the production command.
     ///
-    /// `commit_authority_grant_with_event` refuses a grant whose governing node
-    /// has no Active registered descriptor, so every grant fixture needs this.
+    /// Calling the real op rather than a hand-rolled fixture means these tests
+    /// fail if registration regresses, instead of quietly testing a copy.
     async fn register_local_node(engine: &MindVaultEngine) -> Uuid {
-        let local_node_id = engine.store.nodes.local_context_node_id().await.unwrap();
-        let manifest = ContextCapabilityManifest::new(
-            vec![ContextCapability::Discover],
-            Vec::new(),
-            Vec::new(),
-        )
-        .unwrap();
-        let owner = StableUri::principal(
-            local_node_id,
-            Uuid::new_v5(&local_node_id, b"local-context-owner"),
-        );
-        let mut record = ContextNodeRecord::discovered(
-            local_node_id,
-            ContextNodeType::Personal,
-            owner,
-            StableUri::node(local_node_id),
-            "Personal Vault",
-            manifest,
-        )
-        .unwrap();
-        record.trust_class = ContextNodeTrustClass::local();
-        record.status = ContextNodeStatus::Active;
-
-        let data = serde_json::json!({
-            "node_id": record.node_id,
-            "node_type": record.node_type.as_str(),
-            "status": record.status.as_str(),
-            "record_digest": record.semantic_digest(),
-            "capability_digest": record.capability_manifest.content_digest,
-        });
-        let principal = StableUri::principal(
-            local_node_id,
-            Uuid::new_v5(&local_node_id, b"admission-test-principal"),
-        );
-        let mut event = EventEnvelope::new(NewEventEnvelope {
-            event_type: CONTEXT_NODE_REGISTERED_V1.into(),
-            source: StableUri::node(local_node_id),
-            subject: record.node_uri.clone(),
-            schema: SchemaReference::new(
-                StableUri::schema("context-node-registered").unwrap(),
-                "1.0.0",
-            )
-            .unwrap(),
-            principal: principal.clone(),
-            actor: principal,
-            correlation_id: Uuid::now_v7(),
-            causation_id: None,
-            idempotency_key: IdempotencyKey::parse("admission-register-local-node").unwrap(),
-            payload_digest: canonical_json_sha256(&data),
-            sensitivity: Sensitivity::Internal,
-            retention: RetentionClass::Durable,
-            provenance: vec![ProvenanceReference {
-                resource: record.node_uri.clone(),
-                relation: ProvenanceRelation::PrimarySource,
-            }],
-            data,
-        })
-        .unwrap();
-        event.payload_digest = record.semantic_digest();
-
         engine
-            .store
-            .nodes
-            .commit_context_node_with_event(&record, &event)
+            .register_local_context_node("Personal Vault")
             .await
-            .unwrap();
-        local_node_id
+            .unwrap()
+            .record
+            .node_id
     }
 
     async fn commit_grant(engine: &MindVaultEngine, local_node_id: Uuid, grant: &AuthorityGrant) {
@@ -625,5 +584,59 @@ mod tests {
             .await
             .expect_err("a context grant cannot carry a command");
         assert!(matches!(error, MvError::InvalidInput(_)), "got {error:?}");
+    }
+
+    /// Fresh vaults get an active self-governed descriptor they can issue grants against.
+    #[tokio::test]
+    async fn registers_the_local_context_node_as_active() {
+        let (engine, _tmp) = test_engine().await;
+        assert!(engine.local_context_node().await.unwrap().is_none());
+
+        let registration = engine
+            .register_local_context_node("Personal Vault")
+            .await
+            .unwrap();
+        assert!(registration.newly_registered);
+        let record = registration.record;
+
+        assert_eq!(record.status, ContextNodeStatus::Active);
+        assert_eq!(record.display_name, "Personal Vault");
+        assert_eq!(record.node_type, ContextNodeType::Personal);
+        assert_eq!(record.trust_class, ContextNodeTrustClass::local());
+        assert!(
+            record
+                .capability_manifest
+                .capabilities
+                .contains(&ContextCapability::Command),
+            "bootstrap must advertise Command so Tool Grants can authorize creates"
+        );
+        assert_eq!(
+            engine.local_context_node().await.unwrap().unwrap().node_id,
+            record.node_id
+        );
+    }
+
+    /// A second call is a no-op: same descriptor, no rival registration.
+    #[tokio::test]
+    async fn local_context_node_registration_is_idempotent() {
+        let (engine, _tmp) = test_engine().await;
+        let first = engine
+            .register_local_context_node("Personal Vault")
+            .await
+            .unwrap();
+        assert!(first.newly_registered);
+        let second = engine
+            .register_local_context_node("A different name that must be ignored")
+            .await
+            .unwrap();
+        assert!(!second.newly_registered);
+
+        assert_eq!(first.record.node_id, second.record.node_id);
+        assert_eq!(first.record.revision, second.record.revision);
+        assert_eq!(first.record.display_name, second.record.display_name);
+        assert_eq!(
+            first.record.semantic_digest(),
+            second.record.semantic_digest()
+        );
     }
 }
