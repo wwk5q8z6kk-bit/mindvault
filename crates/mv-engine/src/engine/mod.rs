@@ -19,6 +19,7 @@ mod workspace_projection_ops;
 pub use work_order_ops::{
     AdmissionRefusal, ProposedEdge, ProposedNode, ProposedWorkOrder, RunReadiness,
 };
+pub use interoperability_ops::LocalContextNodeRegistration;
 pub use workspace_ops::WorkspaceMountResult;
 pub use workspace_projection_ops::WorkspaceProjectionOutcome;
 

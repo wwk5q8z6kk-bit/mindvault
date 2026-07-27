@@ -280,7 +280,7 @@ interoperability kernel."
 - **blocked_by:** none
 - **files:** `crates/mv-engine/src/engine/interoperability_ops.rs`, `crates/mv-server/src/rest/interoperability.rs`, `crates/mv-server/src/rest.rs`, `crates/mv-server/src/openapi.rs`
 - **acceptance:** a fresh vault can register its local Context Node through a governed command, so a Tool Grant can then be issued
-- **evidence:** `POST/GET /api/v1/context-nodes/local` (admin write / authenticated read). Engine command is idempotent and registers the self-governed node directly as `active` per `CONTEXT_NODE_MODEL.md`. Observed: engine registration tests + `local_context_node_registers_idempotently_over_http`.
+- **evidence:** `POST/GET /api/v1/context-nodes/local` (admin write / authenticated read). Engine command is idempotent and registers the self-governed node directly as `active` per `CONTEXT_NODE_MODEL.md`. `LocalContextNodeRegistration.newly_registered` comes from the idempotent commit (not a TOCTOU pre-check). Observed: 7/7 `engine::interoperability_ops` + `local_context_node_registers_idempotently_over_http`.
 
 #### IK-001b — Admin-only grant issuance and lifecycle endpoints
 - **priority:** P0 — the second prerequisite for `enforce`
