@@ -108,7 +108,9 @@ work, or its citations are unanchored from the first day.
 | WS — knowledge workspace | 22 | 6 | 0 |
 | SPACE — collaborative spaces | 8 | 4 | 0 |
 | PARK — explicitly deferred | 6 | 0 | 0 |
-| **Total** | **120** | **35** | **0** |
+| AGENT — governed agent execution graph | 8 | 1 | 0 |
+| HYG — engineering hygiene | 5 | 1 | 2 |
+| **Total** | **134** | **37** | **2** |
 
 ---
 
