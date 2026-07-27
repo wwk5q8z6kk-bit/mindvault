@@ -283,7 +283,17 @@ consumer retry timing, expired-claim recovery, stale-completion rejection,
 exact application-claim binding, terminal checkpoint advancement, and sealed
 consumer payloads.
 
-The next gated kernel slice should wire action-envelope and grant admission
-ahead of any live provider publisher. End-to-end completion may be claimed only
-when authenticated delivery can be joined to the independently queryable
-consumer application receipt and checkpoint.
+Grant admission is now wired to public command admission on `POST /api/v1/nodes`
+(`IK-001`), ahead of any live provider publisher, as this section previously
+required. It ships `off` by default and is additive to the existing role,
+namespace, and quota checks.
+
+Two prerequisites remain before an operator can run `enforce` on a real vault:
+a governed command for registering the local Context Node, and admin-only grant
+issuance. Until both exist, `enforce` is a test and staging mode, and `observe`
+is the operator's rollout position.
+
+The next gated slice is the outbox dispatcher and its first authenticated
+publisher. End-to-end completion may be claimed only when authenticated delivery
+can be joined to the independently queryable consumer application receipt and
+checkpoint.
