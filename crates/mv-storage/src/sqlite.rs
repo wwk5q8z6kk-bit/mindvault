@@ -3430,7 +3430,7 @@ impl InteroperabilityStore for SqliteNodeStore {
             .map_err(|err| MvError::Storage(format!("begin admission-decision commit: {err}")))?;
 
         if let Some(existing) = Self::load_command_admission_decision(
-            &*transaction,
+            &transaction,
             &record.principal,
             &record.idempotency_key,
         )? {
@@ -3451,7 +3451,7 @@ impl InteroperabilityStore for SqliteNodeStore {
             });
         }
 
-        Self::insert_command_admission_decision(&*transaction, record)?;
+        Self::insert_command_admission_decision(&transaction, record)?;
         transaction
             .commit()
             .map_err(|err| MvError::Storage(format!("commit admission decision: {err}")))?;
