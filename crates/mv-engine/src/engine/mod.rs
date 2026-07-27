@@ -2,6 +2,7 @@ mod access_ops;
 mod consumer_ops;
 mod graph_ops;
 mod intent_ops;
+mod interoperability_ops;
 mod mcp_ops;
 mod node_ops;
 mod profile_ops;
