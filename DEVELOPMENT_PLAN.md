@@ -522,9 +522,20 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 
 ## Remaining Work
 
-### Phase 3: Interoperability & Enhancements
+> **This section is historical. See `IMPLEMENTATION_BACKLOG.md` for remaining work.**
+>
+> "Interoperability" below means the pre-constitution sense — MCP stdio, relay
+> adapters, and peer federation — not the governed context fabric defined by
+> `INTEROPERABILITY_CONSTITUTION.md` and ADR 011. The two are different things
+> that share a word. Retained for provenance.
 
-**Status:** Complete
+### Phase 3: Interoperability & Enhancements (pre-constitution scope)
+
+**Status:** Code complete, governance incomplete. The federation rows below are
+code-present but **must not be read as production-ready**:
+`docs/architecture/FEDERATION_THREAT_MODEL.md:22` requires production federation
+to remain disabled until its ten release gates pass, and peers currently live in
+process memory. Tracked as `FED-000`..`FED-012` in `IMPLEMENTATION_BACKLOG.md`.
 
 Backend:
 
