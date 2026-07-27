@@ -43,15 +43,15 @@ impl MindVaultEngine {
         let grant = self
             .store
             .nodes
-            .find_authorizing_grant(
-                &request.actor,
-                request.required_grant_kind,
-                &request.resource,
-                request.operation,
-                request.sensitivity,
-                request.retention,
-                request.requested_at,
-            )
+            .find_authorizing_grant(GrantQuery {
+                grantee: &request.actor,
+                kind: request.required_grant_kind,
+                target: &request.resource,
+                capability: request.operation,
+                sensitivity: request.sensitivity,
+                retention: request.retention,
+                at: request.requested_at,
+            })
             .await?;
 
         match grant {
