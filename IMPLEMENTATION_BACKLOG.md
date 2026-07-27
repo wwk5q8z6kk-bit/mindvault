@@ -1,7 +1,7 @@
 # MindVault Implementation Backlog
 
 - **Status:** Authoritative execution tracker
-- **Created:** 2026-07-26 · **Last recount:** 2026-07-27
+- **Created:** 2026-07-26 · **Last recount:** 2026-07-27 (verified count re-derived from item status, not carried forward)
 - **Branch:** `feat/product-evolution-session`
 - **Governing law:** `INTEROPERABILITY_CONSTITUTION.md`, then `docs/adr/011-sovereign-interoperability-fabric.md`, then `docs/adr/012-governed-agent-execution-graph.md`
 - **Supersedes for execution tracking:** `DEVELOPMENT_PLAN.md` sections
@@ -98,7 +98,7 @@ work, or its citations are unanchored from the first day.
 |---|---|---|---|
 | DOC — documentation corrections | 9 | 5 | 0 |
 | PROG — program governance | 4 | 3 | 0 |
-| IK — interoperability kernel | 25 | 9 | 1 |
+| IK — interoperability kernel | 25 | 9 | 6 |
 | EXT — extension runtime & gateway | 9 | 0 | 0 |
 | PROTO — protocol adapters | 9 | 0 | 0 |
 | SRC — source authority & connectors | 8 | 0 | 0 |
@@ -110,7 +110,7 @@ work, or its citations are unanchored from the first day.
 | PARK — explicitly deferred | 6 | 0 | 0 |
 | AGENT — governed agent execution graph | 8 | 1 | 0 |
 | HYG — engineering hygiene | 6 | 1 | 3 |
-| **Total** | **138** | **39** | **4** |
+| **Total** | **138** | **39** | **9** |
 
 ---
 
