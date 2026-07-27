@@ -2418,6 +2418,68 @@ impl AdmissionDecision {
     }
 }
 
+/// Durable record of one command-admission decision (IK-001c).
+///
+/// Append-only. Keyed for idempotent replay on `(principal, idempotency_key)`.
+/// Denied commands have no mutation/event, so this is the Law 15 durability
+/// surface for refusals. Admitted decisions may also be recorded here as the
+/// first Trust Ledger brick; they continue to ride in the event envelope too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandAdmissionDecisionRecord {
+    pub decision_id: Uuid,
+    pub principal: StableUri,
+    pub actor: StableUri,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: Uuid,
+    pub request_id: Uuid,
+    pub resource: StableUri,
+    pub subject: StableUri,
+    pub operation: ContextCapability,
+    pub required_grant_kind: AuthorityGrantKind,
+    pub decision: AdmissionDecision,
+    pub admission_digest: String,
+    pub decided_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl CommandAdmissionDecisionRecord {
+    pub fn from_request_and_decision(
+        request: &CommandAdmissionRequest,
+        decision: &AdmissionDecision,
+    ) -> Self {
+        let decided_at = match decision {
+            AdmissionDecision::Admitted { decided_at, .. }
+            | AdmissionDecision::Denied { decided_at, .. } => *decided_at,
+        };
+        Self {
+            decision_id: Uuid::now_v7(),
+            principal: request.principal.clone(),
+            actor: request.actor.clone(),
+            idempotency_key: request.idempotency_key.clone(),
+            correlation_id: request.correlation_id,
+            request_id: request.request_id,
+            resource: request.resource.clone(),
+            subject: request.subject.clone(),
+            operation: request.operation,
+            required_grant_kind: request.required_grant_kind,
+            decision: decision.clone(),
+            admission_digest: request.admission_digest(),
+            decided_at,
+            created_at: Utc::now(),
+        }
+    }
+
+    pub fn is_denied(&self) -> bool {
+        !self.decision.is_admitted()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IdempotentAdmissionDecisionCommit {
+    pub record: CommandAdmissionDecisionRecord,
+    pub replayed: bool,
+}
+
 /// Versioned attribution record for one public command (IK-002).
 ///
 /// Built from a [`CommandAdmissionRequest`] and its [`AdmissionDecision`]. Fail

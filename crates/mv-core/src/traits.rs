@@ -746,6 +746,21 @@ pub trait InteroperabilityStore: Send + Sync {
         event: &EventEnvelope,
     ) -> MvResult<IdempotentAuthorityGrantCommit>;
 
+    /// Persist one immutable command-admission decision.
+    ///
+    /// Idempotent on `(principal, idempotency_key)`. A matching digest replays;
+    /// a conflicting digest is `IdempotencyConflict`.
+    async fn commit_command_admission_decision(
+        &self,
+        record: &CommandAdmissionDecisionRecord,
+    ) -> MvResult<IdempotentAdmissionDecisionCommit>;
+
+    async fn get_command_admission_decision(
+        &self,
+        principal: &StableUri,
+        idempotency_key: &IdempotencyKey,
+    ) -> MvResult<Option<CommandAdmissionDecisionRecord>>;
+
     /// Atomically register an immutable public schema and its event.
     async fn commit_public_schema_with_event(
         &self,

@@ -155,6 +155,9 @@ pub(crate) async fn admit_command(
                 "vault is sealed".to_string(),
             ));
         }
+        Err(MvError::IdempotencyConflict(message)) => {
+            return Err((StatusCode::CONFLICT, message));
+        }
         Err(error) => {
             tracing::error!(%error, "command admission resolver failed");
             if enforcing {

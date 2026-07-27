@@ -294,13 +294,13 @@ interoperability kernel."
 
 #### IK-001c — Durable command-admission decisions
 - **priority:** P1 — makes denials durable and is the first brick of the Trust Ledger
-- **status:** not_started
+- **status:** **verified** (2026-07-27)
 - **mandate:** `docs/architecture/ACTION_RECEIPT_MODEL.md` § "Command admission does not write an action receipt"
 - **governing_authority:** Law 15 (`INTEROPERABILITY_CONSTITUTION.md:77`), ADR 010:149-152
 - **blocked_by:** none
-- **files:** new `migrations/039_command_admission_decisions.sql`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`
+- **files:** `migrations/039_command_admission_decisions.sql`, `crates/mv-core/src/model/interoperability.rs`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-engine/src/engine/interoperability_ops.rs`
 - **acceptance:** a denied command leaves an immutable, idempotent record keyed on `(principal_uri, idempotency_key)`
-- **evidence:** deferred from IK-001 because it needs a migration — the one change class that is not trivially reversible on a running vault. Admitted decisions currently ride in the event envelope; denials reach only the audit trail and metrics.
+- **evidence:** Append-only `interoperability_command_admission_decisions` with immutability triggers. `resolve_command_admission` persists admitted and denied decisions fail-closed. Idempotent replay on `(principal, idempotency_key)` with digest/decision conflict → `IdempotencyConflict`. Observed: engine tests for durable denial, conflict, and admitted persistence.
 
 #### IK-002 — Versioned action envelope on every public command
 - **priority:** P0 — named as the immediate next slice alongside IK-001

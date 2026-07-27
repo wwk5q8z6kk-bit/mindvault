@@ -442,20 +442,32 @@ impl MindVaultEngine {
             })
             .await?;
 
-        match grant {
-            Some(grant) => Ok(AdmissionDecision::Admitted {
+        let decision = match grant {
+            Some(grant) => AdmissionDecision::Admitted {
                 grant_id: grant.grant_id,
                 grant_uri: grant.grant_uri.clone(),
                 grant_kind: grant.kind,
                 capability: request.operation,
                 delegation_depth_remaining: grant.delegation_depth_remaining,
                 decided_at: Utc::now(),
-            }),
-            None => Ok(AdmissionDecision::Denied {
+            },
+            None => AdmissionDecision::Denied {
                 reason: self.classify_admission_denial(request).await,
                 decided_at: Utc::now(),
-            }),
-        }
+            },
+        };
+
+        // Law 15: denials must be durable. Admitted decisions are recorded too
+        // as the first Trust Ledger brick; they also continue to ride in the
+        // event envelope for committed mutations. Persistence failure fails
+        // closed — an unrecorded decision must not be treated as settled.
+        let record = CommandAdmissionDecisionRecord::from_request_and_decision(request, &decision);
+        self.store
+            .nodes
+            .commit_command_admission_decision(&record)
+            .await?;
+
+        Ok(decision)
     }
 
     /// Narrow a refusal to a bounded reason, for the audit trail only.
@@ -1007,4 +1019,124 @@ mod tests {
             .expect_err("revoked grants cannot resume");
         assert!(matches!(err, MvError::InvalidInput(_)), "got {err:?}");
     }
+
+    /// IK-001c: a denial is durable and idempotent on (principal, idempotency_key).
+    #[tokio::test]
+    async fn denied_command_admission_is_persisted_idempotently() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let grantee = grantee_of(local_node_id);
+        let request = node_create_request(
+            local_node_id,
+            &grantee,
+            AuthorityGrantKind::Tool,
+            ContextCapability::Command,
+        );
+
+        let first = engine
+            .resolve_command_admission(&request)
+            .await
+            .unwrap();
+        assert!(!first.is_admitted());
+
+        let stored = engine
+            .store
+            .nodes
+            .get_command_admission_decision(&request.principal, &request.idempotency_key)
+            .await
+            .unwrap()
+            .expect("denial must be durable");
+        assert!(stored.is_denied());
+        assert_eq!(stored.admission_digest, request.admission_digest());
+        assert_eq!(stored.principal, request.principal);
+
+        let second = engine
+            .resolve_command_admission(&request)
+            .await
+            .unwrap();
+        assert!(!second.is_admitted());
+        let again = engine
+            .store
+            .nodes
+            .get_command_admission_decision(&request.principal, &request.idempotency_key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.decision_id, stored.decision_id);
+        assert_eq!(again.decided_at, stored.decided_at);
+    }
+
+    /// Changing the admission question under the same idempotency key conflicts.
+    #[tokio::test]
+    async fn conflicting_admission_decision_replay_is_rejected() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let grantee = grantee_of(local_node_id);
+        let mut request = node_create_request(
+            local_node_id,
+            &grantee,
+            AuthorityGrantKind::Tool,
+            ContextCapability::Command,
+        );
+        engine
+            .resolve_command_admission(&request)
+            .await
+            .unwrap();
+
+        // Same principal + idempotency key, different subject → different digest.
+        request.subject = StableUri::knowledge_node(local_node_id, Uuid::now_v7());
+        let err = engine
+            .resolve_command_admission(&request)
+            .await
+            .expect_err("conflicting replay must fail closed");
+        assert!(
+            matches!(err, MvError::IdempotencyConflict(_)),
+            "got {err:?}"
+        );
+    }
+
+    /// An admitted decision is also durable (Trust Ledger brick).
+    #[tokio::test]
+    async fn admitted_command_admission_is_persisted() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let grantee = grantee_of(local_node_id);
+        let node_uri = StableUri::node(local_node_id);
+        engine
+            .issue_authority_grant(IssueAuthorityGrantRequest {
+                kind: AuthorityGrantKind::Tool,
+                grantee: grantee.clone(),
+                targets: vec![node_uri],
+                capabilities: vec![ContextCapability::Command],
+                purpose: "persist admitted decision".into(),
+                expires_at: Utc::now() + Duration::days(1),
+                sensitivity_ceiling: Sensitivity::Internal,
+                retention_ceiling: RetentionClass::Durable,
+                idempotency_key: IdempotencyKey::parse("issue-for-durable-admit").unwrap(),
+            })
+            .await
+            .unwrap();
+
+        let request = node_create_request(
+            local_node_id,
+            &grantee,
+            AuthorityGrantKind::Tool,
+            ContextCapability::Command,
+        );
+        let decision = engine
+            .resolve_command_admission(&request)
+            .await
+            .unwrap();
+        assert!(decision.is_admitted());
+        let stored = engine
+            .store
+            .nodes
+            .get_command_admission_decision(&request.principal, &request.idempotency_key)
+            .await
+            .unwrap()
+            .expect("admission must be durable");
+        assert!(!stored.is_denied());
+        assert!(stored.decision.is_admitted());
+    }
+
 }

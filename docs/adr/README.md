@@ -46,3 +46,7 @@ under `docs/adr/`.
     action/correlation IDs, principal, actor, resource, operation, grant IDs,
     and policy decision on mutating node commands (IK-002)
     `docs/adr/014-versioned-action-envelope.md`
+
+15. **015-durable-command-admission-decisions** — Append-only admission
+    decision records for Law 15 denials (IK-001c)
+    `docs/adr/015-durable-command-admission-decisions.md`

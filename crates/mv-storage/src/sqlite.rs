@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -286,6 +287,10 @@ impl SqliteNodeStore {
             (
                 38,
                 include_str!("../../../migrations/038_work_orders_and_agent_runs.sql"),
+            ),
+            (
+                39,
+                include_str!("../../../migrations/039_command_admission_decisions.sql"),
             ),
         ];
 
@@ -1844,6 +1849,305 @@ impl SqliteNodeStore {
             .map_err(|err| MvError::Storage(format!("load authority-grant revision: {err}")))
     }
 
+
+
+    fn admission_decisions_match(left: &AdmissionDecision, right: &AdmissionDecision) -> bool {
+        match (left, right) {
+            (
+                AdmissionDecision::Admitted {
+                    grant_id: left_grant,
+                    grant_uri: left_uri,
+                    grant_kind: left_kind,
+                    capability: left_capability,
+                    delegation_depth_remaining: left_depth,
+                    ..
+                },
+                AdmissionDecision::Admitted {
+                    grant_id: right_grant,
+                    grant_uri: right_uri,
+                    grant_kind: right_kind,
+                    capability: right_capability,
+                    delegation_depth_remaining: right_depth,
+                    ..
+                },
+            ) => {
+                left_grant == right_grant
+                    && left_uri == right_uri
+                    && left_kind == right_kind
+                    && left_capability == right_capability
+                    && left_depth == right_depth
+            }
+            (
+                AdmissionDecision::Denied {
+                    reason: left_reason, ..
+                },
+                AdmissionDecision::Denied {
+                    reason: right_reason, ..
+                },
+            ) => left_reason == right_reason,
+            _ => false,
+        }
+    }
+
+    fn insert_command_admission_decision(
+        connection: &Connection,
+        record: &CommandAdmissionDecisionRecord,
+    ) -> MvResult<()> {
+        let (
+            decision,
+            denial_reason,
+            grant_id,
+            grant_uri,
+            grant_kind,
+            capability,
+            delegation_depth_remaining,
+        ) = match &record.decision {
+            AdmissionDecision::Admitted {
+                grant_id,
+                grant_uri,
+                grant_kind,
+                capability,
+                delegation_depth_remaining,
+                ..
+            } => (
+                "admitted",
+                None::<String>,
+                Some(grant_id.to_string()),
+                Some(grant_uri.as_str().to_string()),
+                Some(grant_kind.as_str().to_string()),
+                Some(capability.as_str().to_string()),
+                Some(i64::from(*delegation_depth_remaining)),
+            ),
+            AdmissionDecision::Denied { reason, .. } => (
+                "denied",
+                Some(reason.as_str().to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        };
+
+        connection
+            .execute(
+                "INSERT INTO interoperability_command_admission_decisions (
+                    decision_id, principal_uri, actor_uri, idempotency_key, correlation_id,
+                    request_id, resource_uri, subject_uri, operation, required_grant_kind,
+                    decision, denial_reason, grant_id, grant_uri, grant_kind, capability,
+                    delegation_depth_remaining, admission_digest, decided_at, created_at
+                 ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                    ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+                 )",
+                params![
+                    record.decision_id.to_string(),
+                    record.principal.as_str(),
+                    record.actor.as_str(),
+                    record.idempotency_key.as_str(),
+                    record.correlation_id.to_string(),
+                    record.request_id.to_string(),
+                    record.resource.as_str(),
+                    record.subject.as_str(),
+                    record.operation.as_str(),
+                    record.required_grant_kind.as_str(),
+                    decision,
+                    denial_reason,
+                    grant_id,
+                    grant_uri,
+                    grant_kind,
+                    capability,
+                    delegation_depth_remaining,
+                    record.admission_digest,
+                    record.decided_at.to_rfc3339(),
+                    record.created_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert admission decision: {err}")))?;
+        Ok(())
+    }
+
+    fn load_command_admission_decision(
+        connection: &Connection,
+        principal: &StableUri,
+        idempotency_key: &IdempotencyKey,
+    ) -> MvResult<Option<CommandAdmissionDecisionRecord>> {
+        let mut statement = connection
+            .prepare(
+                "SELECT decision_id, principal_uri, actor_uri, idempotency_key, correlation_id,
+                        request_id, resource_uri, subject_uri, operation, required_grant_kind,
+                        decision, denial_reason, grant_id, grant_uri, grant_kind, capability,
+                        delegation_depth_remaining, admission_digest, decided_at, created_at
+                 FROM interoperability_command_admission_decisions
+                 WHERE principal_uri = ?1 AND idempotency_key = ?2",
+            )
+            .map_err(|err| MvError::Storage(format!("prepare admission-decision lookup: {err}")))?;
+        let mut rows = statement
+            .query(params![principal.as_str(), idempotency_key.as_str()])
+            .map_err(|err| MvError::Storage(format!("query admission decision: {err}")))?;
+        let Some(row) = rows
+            .next()
+            .map_err(|err| MvError::Storage(format!("read admission decision: {err}")))?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self::row_to_command_admission_decision(row)?))
+    }
+
+    fn row_to_command_admission_decision(
+        row: &rusqlite::Row<'_>,
+    ) -> MvResult<CommandAdmissionDecisionRecord> {
+        let decision_id = Uuid::parse_str(
+            &row.get::<_, String>(0)
+                .map_err(|err| MvError::Storage(format!("decision_id: {err}")))?,
+        )
+        .map_err(|err| MvError::Storage(format!("invalid decision_id: {err}")))?;
+        let principal = StableUri::parse(
+            row.get::<_, String>(1)
+                .map_err(|err| MvError::Storage(format!("principal_uri: {err}")))?,
+        )
+        .map_err(MvError::InvalidInput)?;
+        let actor = StableUri::parse(
+            row.get::<_, String>(2)
+                .map_err(|err| MvError::Storage(format!("actor_uri: {err}")))?,
+        )
+        .map_err(MvError::InvalidInput)?;
+        let idempotency_key = IdempotencyKey::parse(
+            row.get::<_, String>(3)
+                .map_err(|err| MvError::Storage(format!("idempotency_key: {err}")))?,
+        )
+        .map_err(MvError::InvalidInput)?;
+        let correlation_id = Uuid::parse_str(
+            &row.get::<_, String>(4)
+                .map_err(|err| MvError::Storage(format!("correlation_id: {err}")))?,
+        )
+        .map_err(|err| MvError::Storage(format!("invalid correlation_id: {err}")))?;
+        let request_id = Uuid::parse_str(
+            &row.get::<_, String>(5)
+                .map_err(|err| MvError::Storage(format!("request_id: {err}")))?,
+        )
+        .map_err(|err| MvError::Storage(format!("invalid request_id: {err}")))?;
+        let resource = StableUri::parse(
+            row.get::<_, String>(6)
+                .map_err(|err| MvError::Storage(format!("resource_uri: {err}")))?,
+        )
+        .map_err(MvError::InvalidInput)?;
+        let subject = StableUri::parse(
+            row.get::<_, String>(7)
+                .map_err(|err| MvError::Storage(format!("subject_uri: {err}")))?,
+        )
+        .map_err(MvError::InvalidInput)?;
+        let operation = ContextCapability::from_str(
+            &row.get::<_, String>(8)
+                .map_err(|err| MvError::Storage(format!("operation: {err}")))?,
+        )
+        .map_err(MvError::InvalidInput)?;
+        let required_grant_kind = AuthorityGrantKind::from_str(
+            &row.get::<_, String>(9)
+                .map_err(|err| MvError::Storage(format!("required_grant_kind: {err}")))?,
+        )
+        .map_err(MvError::InvalidInput)?;
+        let decision_token: String = row
+            .get(10)
+            .map_err(|err| MvError::Storage(format!("decision: {err}")))?;
+        let denial_reason: Option<String> = row
+            .get(11)
+            .map_err(|err| MvError::Storage(format!("denial_reason: {err}")))?;
+        let grant_id: Option<String> = row
+            .get(12)
+            .map_err(|err| MvError::Storage(format!("grant_id: {err}")))?;
+        let grant_uri: Option<String> = row
+            .get(13)
+            .map_err(|err| MvError::Storage(format!("grant_uri: {err}")))?;
+        let grant_kind: Option<String> = row
+            .get(14)
+            .map_err(|err| MvError::Storage(format!("grant_kind: {err}")))?;
+        let capability: Option<String> = row
+            .get(15)
+            .map_err(|err| MvError::Storage(format!("capability: {err}")))?;
+        let delegation_depth_remaining: Option<i64> = row
+            .get(16)
+            .map_err(|err| MvError::Storage(format!("delegation_depth_remaining: {err}")))?;
+        let admission_digest: String = row
+            .get(17)
+            .map_err(|err| MvError::Storage(format!("admission_digest: {err}")))?;
+        let decided_at = chrono::DateTime::parse_from_rfc3339(
+            &row.get::<_, String>(18)
+                .map_err(|err| MvError::Storage(format!("decided_at: {err}")))?,
+        )
+        .map_err(|err| MvError::Storage(format!("invalid decided_at: {err}")))?
+        .with_timezone(&Utc);
+        let created_at = chrono::DateTime::parse_from_rfc3339(
+            &row.get::<_, String>(19)
+                .map_err(|err| MvError::Storage(format!("created_at: {err}")))?,
+        )
+        .map_err(|err| MvError::Storage(format!("invalid created_at: {err}")))?
+        .with_timezone(&Utc);
+
+        let decision = match decision_token.as_str() {
+            "admitted" => AdmissionDecision::Admitted {
+                grant_id: Uuid::parse_str(
+                    grant_id
+                        .as_deref()
+                        .ok_or_else(|| MvError::Storage("admitted row missing grant_id".into()))?,
+                )
+                .map_err(|err| MvError::Storage(format!("invalid grant_id: {err}")))?,
+                grant_uri: StableUri::parse(grant_uri.ok_or_else(|| {
+                    MvError::Storage("admitted row missing grant_uri".into())
+                })?)
+                .map_err(MvError::InvalidInput)?,
+                grant_kind: AuthorityGrantKind::from_str(
+                    grant_kind
+                        .as_deref()
+                        .ok_or_else(|| MvError::Storage("admitted row missing grant_kind".into()))?,
+                )
+                .map_err(MvError::InvalidInput)?,
+                capability: ContextCapability::from_str(
+                    capability
+                        .as_deref()
+                        .ok_or_else(|| MvError::Storage("admitted row missing capability".into()))?,
+                )
+                .map_err(MvError::InvalidInput)?,
+                delegation_depth_remaining: u8::try_from(delegation_depth_remaining.ok_or_else(
+                    || MvError::Storage("admitted row missing delegation_depth_remaining".into()),
+                )?)
+                .map_err(|err| MvError::Storage(format!("delegation_depth_remaining: {err}")))?,
+                decided_at,
+            },
+            "denied" => AdmissionDecision::Denied {
+                reason: AdmissionDenialReason::from_str(
+                    denial_reason.as_deref().ok_or_else(|| {
+                        MvError::Storage("denied row missing denial_reason".into())
+                    })?,
+                )
+                .map_err(MvError::InvalidInput)?,
+                decided_at,
+            },
+            other => {
+                return Err(MvError::Storage(format!(
+                    "unknown admission decision token: {other}"
+                )))
+            }
+        };
+
+        Ok(CommandAdmissionDecisionRecord {
+            decision_id,
+            principal,
+            actor,
+            idempotency_key,
+            correlation_id,
+            request_id,
+            resource,
+            subject,
+            operation,
+            required_grant_kind,
+            decision,
+            admission_digest,
+            decided_at,
+            created_at,
+        })
+    }
+
     fn insert_authority_grant(
         &self,
         transaction: &rusqlite::Transaction<'_>,
@@ -3109,6 +3413,62 @@ impl InteroperabilityStore for SqliteNodeStore {
             grant: replacement.clone(),
             event: event.clone(),
             replayed: false,
+        })
+    }
+
+    async fn commit_command_admission_decision(
+        &self,
+        record: &CommandAdmissionDecisionRecord,
+    ) -> MvResult<IdempotentAdmissionDecisionCommit> {
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| {
+                MvError::Storage(format!("begin admission-decision commit: {err}"))
+            })?;
+
+        if let Some(existing) = Self::load_command_admission_decision(
+            &*transaction,
+            &record.principal,
+            &record.idempotency_key,
+        )? {
+            if existing.admission_digest != record.admission_digest
+                || !Self::admission_decisions_match(&existing.decision, &record.decision)
+            {
+                return Err(MvError::IdempotencyConflict(
+                    "command admission decision conflicts with a prior record for the same principal and idempotency key"
+                        .into(),
+                ));
+            }
+            transaction.commit().map_err(|err| {
+                MvError::Storage(format!("finish admission-decision replay: {err}"))
+            })?;
+            return Ok(IdempotentAdmissionDecisionCommit {
+                record: existing,
+                replayed: true,
+            });
+        }
+
+        Self::insert_command_admission_decision(&*transaction, record)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit admission decision: {err}")))?;
+        Ok(IdempotentAdmissionDecisionCommit {
+            record: record.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn get_command_admission_decision(
+        &self,
+        principal: &StableUri,
+        idempotency_key: &IdempotencyKey,
+    ) -> MvResult<Option<CommandAdmissionDecisionRecord>> {
+        self.with_conn(|connection| {
+            Self::load_command_admission_decision(connection, principal, idempotency_key)
         })
     }
 

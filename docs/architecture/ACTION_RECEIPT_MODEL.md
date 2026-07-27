@@ -85,6 +85,7 @@ a new table — plus the audit trail and metrics. A denied command produces no
 mutation and therefore, correctly, no event; law 4 covers *committed* mutations,
 and the denial is recorded in the audit trail.
 
-Making denials durable requires a separate append-only table with its own
-immutability triggers. That is deferred because it needs a migration, the one
-change class that is not trivially reversible on a running vault.
+Making denials durable uses a separate append-only table with its own
+immutability triggers (`interoperability_command_admission_decisions`, IK-001c).
+Denied decisions are keyed idempotently on `(principal_uri, idempotency_key)`
+and must never share the outbox/action-receipt write path.
