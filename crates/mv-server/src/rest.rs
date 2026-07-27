@@ -10740,9 +10740,8 @@ async fn store_node(
     let correlation_id =
         optional_uuid_header(&headers, CORRELATION_ID_HEADER)?.unwrap_or_else(Uuid::now_v7);
     let causation_id = optional_uuid_header(&headers, CAUSATION_ID_HEADER)?;
-    let identity_subject = auth.subject.as_deref().unwrap_or("local-system");
-    let principal_id = Uuid::new_v5(&local_node_id, identity_subject.as_bytes());
-    let principal = StableUri::principal(local_node_id, principal_id);
+    let identity = interoperability::CommandIdentity::derive(&auth, local_node_id);
+    let principal = identity.principal.clone();
     let payload_digest = node_create_payload_digest(&node)?;
     if let Some(replay) = state
         .engine
@@ -10752,6 +10751,29 @@ async fn store_node(
     {
         return Ok((StatusCode::OK, Json(replay.node)));
     }
+
+    // Ordered after the replay lookup and before the quota check.
+    //
+    // After replay: a replay performs no mutation, and the lookup is
+    // principal-scoped, so re-admitting would refuse a network retry whose
+    // original commit already succeeded — leaving the caller with a false view
+    // of the world.
+    //
+    // Before quota: ADR 010:104-111 orders authorization as identity → role →
+    // resource → grants → delegation → budget. A caller who holds no authority
+    // should not consume quota accounting to find that out.
+    let admission = interoperability::admit_command(
+        &state,
+        &interoperability::node_create_admission_request(
+            &identity,
+            local_node_id,
+            subject.clone(),
+            idempotency_key.clone(),
+            correlation_id,
+            causation_id,
+        ),
+    )
+    .await?;
 
     enforce_namespace_quota(&state.engine, &node.namespace)
         .await
