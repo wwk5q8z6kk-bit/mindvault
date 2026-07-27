@@ -66,6 +66,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, auth: crate::aut
                         "operation": notification.operation,
                         "timestamp": notification.timestamp,
                         "namespace": notification.namespace,
+                        "event": notification.event,
                     });
                     if sender.send(Message::Text(json.to_string())).await.is_err() {
                         break;

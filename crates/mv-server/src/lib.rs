@@ -10,6 +10,7 @@ pub mod rest;
 pub mod state;
 pub mod validation;
 pub mod websocket;
+pub mod workspace_watch;
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -165,6 +166,7 @@ pub async fn start_server(
     spawn_google_calendar_sync(Arc::clone(&state.engine), shutdown_tx.subscribe());
     adapter_poll::spawn_adapter_polling(Arc::clone(&state), shutdown_tx.subscribe());
     email::spawn_email_adapter(Arc::clone(&state), shutdown_tx.subscribe());
+    workspace_watch::spawn_workspace_watcher(Arc::clone(&state), shutdown_tx.subscribe());
 
     // Background task: expire stale proxy approvals every 60 seconds
     {

@@ -16,7 +16,7 @@ wip = []
 
 [dependencies]
 mv-core = { workspace = true }
-mv-storage = { workspace = true }
+mv-storage = { workspace = true, default-features = false }
 mv-index = { workspace = true }
 mv-graph = { workspace = true }
 serde = { workspace = true }

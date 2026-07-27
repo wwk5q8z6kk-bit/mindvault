@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 
 pub use mv_core::ChangeNotification;
-use mv_core::{CapturedIntent, ChronicleEntry, ProactiveInsight};
+use mv_core::{CapturedIntent, ChronicleEntry, EventEnvelope, ProactiveInsight};
 
 /// Shared application state.
 pub struct AppState {
@@ -25,6 +25,8 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     /// Counter: requests rejected by sealed-mode middleware.
     pub sealed_blocked_requests: AtomicU64,
+    /// Filesystem roots beneath which an administrator may mount workspaces.
+    pub workspace_root_policy: WorkspaceRootPolicy,
 }
 
 /// Notification for task reminders.
@@ -69,6 +71,35 @@ pub enum AgentNotification {
         node_id: String,
         namespace: Option<String>,
     },
+    /// A governed agent run changed lifecycle state.
+    ///
+    /// Carries identifiers and status only — never artifact content or declared
+    /// scope. The stream is an observation surface, and a run's write scope is
+    /// governed detail that belongs behind the query API where the caller's
+    /// read authorization is checked.
+    ///
+    /// `awaiting_approval` is the state the approval UI listens for; it is
+    /// unbounded by design and must never be rendered as an error or a timeout.
+    AgentRunTransitioned {
+        run_id: String,
+        work_order_id: String,
+        status: String,
+        /// Present only on terminal failure.
+        failure_class: Option<String>,
+        namespace: Option<String>,
+    },
+    /// Gate evidence was recorded for a run.
+    ///
+    /// Immutable once emitted, matching the underlying evidence: a client that
+    /// sees a `fail` will never see it revised to a `pass` for the same run and
+    /// gate.
+    AgentRunGateRecorded {
+        run_id: String,
+        work_order_id: String,
+        gate: String,
+        outcome: String,
+        namespace: Option<String>,
+    },
 }
 
 impl AgentNotification {
@@ -78,7 +109,44 @@ impl AgentNotification {
             | Self::Intent { namespace, .. }
             | Self::InsightDiscovered { namespace, .. }
             | Self::RelatedContext { namespace, .. }
-            | Self::NodeEnriched { namespace, .. } => namespace.as_deref(),
+            | Self::NodeEnriched { namespace, .. }
+            | Self::AgentRunTransitioned { namespace, .. }
+            | Self::AgentRunGateRecorded { namespace, .. } => namespace.as_deref(),
+        }
+    }
+}
+
+impl AgentNotification {
+    /// Observation of a run lifecycle transition.
+    ///
+    /// `namespace` is `None` because the execution graph is not namespace-scoped
+    /// data — a Work Order is governed by its governing node URI and its
+    /// AuthorityGrant, not by a namespace.
+    ///
+    /// Consequence, stated rather than discovered later: `handle_agent_socket`
+    /// drops any notification whose namespace does not equal the client's scope,
+    /// so a namespace-scoped WebSocket client receives none of these. Unscoped
+    /// clients receive them all. This is deliberate — bypassing the scope filter
+    /// would push cross-scope signal to a client that asked to be limited — but
+    /// it means a scoped client must use the query API rather than the stream.
+    pub fn run_transitioned(run: &mv_core::AgentRun) -> Self {
+        Self::AgentRunTransitioned {
+            run_id: run.run_id.to_string(),
+            work_order_id: run.work_order_id.to_string(),
+            status: run.status.as_str().to_string(),
+            failure_class: run.failure_class.map(|class| class.as_str().to_string()),
+            namespace: None,
+        }
+    }
+
+    /// Observation of recorded gate evidence.
+    pub fn gate_recorded(result: &mv_core::GateResult) -> Self {
+        Self::AgentRunGateRecorded {
+            run_id: result.run_id.to_string(),
+            work_order_id: result.work_order_id.to_string(),
+            gate: result.gate.as_str().to_string(),
+            outcome: result.outcome.as_str().to_string(),
+            namespace: None,
         }
     }
 }
@@ -90,6 +158,53 @@ pub struct WebhookConfig {
     pub change_url: Option<String>,
     pub keychain_alert_url: Option<String>,
     pub timeout_secs: u64,
+}
+
+/// Server-side capability boundary for local filesystem mounting.
+///
+/// The environment value uses the host path-list separator (`:` on Unix,
+/// `;` on Windows). An empty policy disables REST-based root mounting.
+#[derive(Clone, Debug, Default)]
+pub struct WorkspaceRootPolicy {
+    allowed_roots: Vec<PathBuf>,
+}
+
+impl WorkspaceRootPolicy {
+    pub fn from_env() -> Self {
+        let allowed_roots = std::env::var_os("MINDVAULT_WORKSPACE_ALLOWED_ROOTS")
+            .map(|value| std::env::split_paths(&value).collect())
+            .unwrap_or_default();
+        Self { allowed_roots }
+    }
+
+    pub fn new(allowed_roots: Vec<PathBuf>) -> Self {
+        Self { allowed_roots }
+    }
+
+    pub fn authorize(&self, requested_root: &std::path::Path) -> Result<PathBuf, String> {
+        if self.allowed_roots.is_empty() {
+            return Err(
+                "workspace mounting is disabled; configure MINDVAULT_WORKSPACE_ALLOWED_ROOTS"
+                    .into(),
+            );
+        }
+        let requested = std::fs::canonicalize(requested_root)
+            .map_err(|error| format!("workspace root unavailable: {error}"))?;
+        if !requested.is_dir() {
+            return Err("workspace root must be a directory".into());
+        }
+
+        let authorized = self.allowed_roots.iter().any(|allowed| {
+            std::fs::canonicalize(allowed)
+                .map(|allowed| requested == allowed || requested.starts_with(allowed))
+                .unwrap_or(false)
+        });
+        if authorized {
+            Ok(requested)
+        } else {
+            Err("workspace root is outside the configured allowlist".into())
+        }
+    }
 }
 
 impl WebhookConfig {
@@ -152,15 +267,32 @@ impl AppState {
             plugin_runtime: Arc::new(RwLock::new(plugin_runtime)),
             http_client,
             sealed_blocked_requests: AtomicU64::new(0),
+            workspace_root_policy: WorkspaceRootPolicy::from_env(),
         }
     }
 
+    pub fn with_workspace_allowed_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.workspace_root_policy = WorkspaceRootPolicy::new(roots);
+        self
+    }
+
     pub fn notify_change(&self, node_id: &str, operation: &str, namespace: Option<&str>) {
+        self.notify_change_with_event(node_id, operation, namespace, None);
+    }
+
+    pub fn notify_change_with_event(
+        &self,
+        node_id: &str,
+        operation: &str,
+        namespace: Option<&str>,
+        event: Option<EventEnvelope>,
+    ) {
         let _ = self.change_tx.send(ChangeNotification {
             node_id: node_id.to_string(),
             operation: operation.to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             namespace: namespace.map(|ns| ns.to_string()),
+            event,
         });
     }
 
@@ -221,6 +353,7 @@ impl AppState {
 mod tests {
     use super::*;
     use mv_core::{InsightType, IntentType};
+    use tempfile::tempdir;
 
     #[test]
     fn agent_notification_serializes_with_expected_type_tag() {
@@ -252,5 +385,46 @@ mod tests {
             namespace: Some("ops".to_string()),
         };
         assert_eq!(notification.namespace(), Some("ops"));
+    }
+
+    #[test]
+    fn workspace_root_policy_is_disabled_until_explicitly_allowlisted() {
+        let directory = tempdir().unwrap();
+        let error = WorkspaceRootPolicy::default()
+            .authorize(directory.path())
+            .unwrap_err();
+        assert!(error.contains("mounting is disabled"));
+    }
+
+    #[test]
+    fn workspace_root_policy_accepts_descendants_and_rejects_other_roots() {
+        let allowed = tempdir().unwrap();
+        let child = allowed.path().join("Knowledge");
+        std::fs::create_dir(&child).unwrap();
+        let outside = tempdir().unwrap();
+        let policy = WorkspaceRootPolicy::new(vec![allowed.path().to_path_buf()]);
+
+        assert_eq!(
+            policy.authorize(&child).unwrap(),
+            std::fs::canonicalize(&child).unwrap()
+        );
+        assert!(policy
+            .authorize(outside.path())
+            .unwrap_err()
+            .contains("outside"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_root_policy_resolves_symlinks_before_authorizing() {
+        use std::os::unix::fs::symlink;
+
+        let allowed = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let link = allowed.path().join("escape");
+        symlink(outside.path(), &link).unwrap();
+        let policy = WorkspaceRootPolicy::new(vec![allowed.path().to_path_buf()]);
+
+        assert!(policy.authorize(&link).is_err());
     }
 }

@@ -5,9 +5,12 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use chrono::Utc;
+use hmac::{Hmac, Mac};
 use rusqlite::types::Type;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -36,6 +39,8 @@ struct SealedNodePayload {
     source: Option<String>,
     metadata: std::collections::HashMap<String, serde_json::Value>,
 }
+
+const INTEROPERABILITY_REGISTRY_NAMESPACE: &str = "interoperability-registry";
 
 pub struct SqliteNodeStore {
     /// Connection pool — round-robin across `DEFAULT_POOL_SIZE` connections.
@@ -250,6 +255,38 @@ impl SqliteNodeStore {
                 30,
                 include_str!("../../../migrations/030_conversation_turn_sources.sql"),
             ),
+            (
+                31,
+                include_str!("../../../migrations/031_knowledge_workspace_manifest.sql"),
+            ),
+            (
+                32,
+                include_str!("../../../migrations/032_interoperability_kernel.sql"),
+            ),
+            (
+                33,
+                include_str!("../../../migrations/033_governed_interoperability_registries.sql"),
+            ),
+            (
+                34,
+                include_str!("../../../migrations/034_context_node_registry.sql"),
+            ),
+            (
+                35,
+                include_str!("../../../migrations/035_authority_grants.sql"),
+            ),
+            (
+                36,
+                include_str!("../../../migrations/036_outbox_dispatch_and_action_receipts.sql"),
+            ),
+            (
+                37,
+                include_str!("../../../migrations/037_consumer_inbox_checkpoints.sql"),
+            ),
+            (
+                38,
+                include_str!("../../../migrations/038_work_orders_and_agent_runs.sql"),
+            ),
         ];
 
         // Migration 001 must always run first to create schema_version table.
@@ -360,6 +397,119 @@ impl SqliteNodeStore {
                 None,
             ))
         }
+    }
+
+    fn encode_governance_record<T: Serialize>(
+        &self,
+        record: &T,
+        label: &str,
+    ) -> MvResult<(Vec<u8>, &'static str, Option<String>)> {
+        let plaintext = serde_json::to_vec(record)
+            .map_err(|err| MvError::Storage(format!("serialize {label}: {err}")))?;
+        if !self.sealed_mode() {
+            return Ok((plaintext, "json-v1", None));
+        }
+
+        let kek = self.derive_namespace_kek(INTEROPERABILITY_REGISTRY_NAMESPACE)?;
+        let dek = VaultCrypto::generate_node_dek();
+        let ciphertext = VaultCrypto::aes_gcm_encrypt_pub(&dek, &plaintext)
+            .map_err(|err| MvError::Storage(format!("encrypt {label}: {err}")))?;
+        let wrapped_dek = VaultCrypto::wrap_node_dek(&kek, &dek)
+            .map_err(|err| MvError::Storage(format!("wrap {label} key: {err}")))?;
+        Ok((ciphertext, "mvenc-v1", Some(wrapped_dek)))
+    }
+
+    /// Seal opaque content bytes for storage.
+    ///
+    /// Distinct from [`Self::encode_governance_record`], which serializes a
+    /// governed record through serde_json. Artifact content is not a JSON
+    /// document, and routing it through serde_json would store a JSON array of
+    /// integers — roughly four bytes per byte of content.
+    ///
+    /// Sealing is identical to the record path: the same namespace KEK, a fresh
+    /// per-record DEK, and the same `mvenc-v1` marker. Only the plaintext
+    /// marker differs (`bytes-v1`), so a reader can never mistake opaque
+    /// content for a decodable record.
+    fn encode_governance_bytes(
+        &self,
+        plaintext: &[u8],
+        label: &str,
+    ) -> MvResult<(Vec<u8>, &'static str, Option<String>)> {
+        if !self.sealed_mode() {
+            return Ok((plaintext.to_vec(), "bytes-v1", None));
+        }
+
+        let kek = self.derive_namespace_kek(INTEROPERABILITY_REGISTRY_NAMESPACE)?;
+        let dek = VaultCrypto::generate_node_dek();
+        let ciphertext = VaultCrypto::aes_gcm_encrypt_pub(&dek, plaintext)
+            .map_err(|err| MvError::Storage(format!("encrypt {label}: {err}")))?;
+        let wrapped_dek = VaultCrypto::wrap_node_dek(&kek, &dek)
+            .map_err(|err| MvError::Storage(format!("wrap {label} key: {err}")))?;
+        Ok((ciphertext, "mvenc-v1", Some(wrapped_dek)))
+    }
+
+    /// Recover opaque content bytes sealed by [`Self::encode_governance_bytes`].
+    fn decode_governance_bytes(
+        &self,
+        payload: &[u8],
+        payload_format: &str,
+        wrapped_dek: Option<&str>,
+        label: &str,
+    ) -> MvResult<Vec<u8>> {
+        match payload_format {
+            "bytes-v1" if wrapped_dek.is_none() => Ok(payload.to_vec()),
+            "mvenc-v1" => {
+                let wrapped_dek = wrapped_dek.ok_or_else(|| {
+                    MvError::Storage(format!("encrypted {label} is missing its wrapped key"))
+                })?;
+                let kek = self.derive_namespace_kek(INTEROPERABILITY_REGISTRY_NAMESPACE)?;
+                let dek = VaultCrypto::unwrap_node_dek(&kek, wrapped_dek)
+                    .map_err(|err| MvError::Storage(format!("unwrap {label} key: {err}")))?;
+                VaultCrypto::aes_gcm_decrypt_pub(&dek, payload)
+                    .map_err(|err| MvError::Storage(format!("decrypt {label}: {err}")))
+            }
+            "bytes-v1" => Err(MvError::Storage(format!(
+                "plaintext {label} unexpectedly has a wrapped key"
+            ))),
+            other => Err(MvError::Storage(format!(
+                "unsupported {label} payload format: {other}"
+            ))),
+        }
+    }
+
+    fn decode_governance_record<T: DeserializeOwned>(
+        &self,
+        payload: &[u8],
+        payload_format: &str,
+        wrapped_dek: Option<&str>,
+        label: &str,
+    ) -> MvResult<T> {
+        let plaintext = match payload_format {
+            "json-v1" if wrapped_dek.is_none() => payload.to_vec(),
+            "mvenc-v1" => {
+                let wrapped_dek = wrapped_dek.ok_or_else(|| {
+                    MvError::Storage(format!("encrypted {label} is missing its wrapped key"))
+                })?;
+                let kek = self.derive_namespace_kek(INTEROPERABILITY_REGISTRY_NAMESPACE)?;
+                let dek = VaultCrypto::unwrap_node_dek(&kek, wrapped_dek)
+                    .map_err(|err| MvError::Storage(format!("unwrap {label} key: {err}")))?;
+                VaultCrypto::aes_gcm_decrypt_pub(&dek, payload)
+                    .map_err(|err| MvError::Storage(format!("decrypt {label}: {err}")))?
+            }
+            "json-v1" => {
+                return Err(MvError::Storage(format!(
+                    "plaintext {label} unexpectedly has a wrapped key"
+                )))
+            }
+            other => {
+                return Err(MvError::Storage(format!(
+                    "unsupported {label} payload format: {other}"
+                )))
+            }
+        };
+
+        serde_json::from_slice(&plaintext)
+            .map_err(|err| MvError::Storage(format!("decode {label}: {err}")))
     }
 
     fn row_to_node(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeNode> {
@@ -525,6 +675,127 @@ fn parse_optional_dt_strict(
         Some(value) => parse_dt_strict(column, &value).map(Some),
         None => Ok(None),
     }
+}
+
+fn event_binding_id(event: &EventEnvelope) -> MvResult<Uuid> {
+    let value = event
+        .data
+        .get("binding_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| MvError::InvalidInput("event data is missing binding_id".into()))?;
+    Uuid::parse_str(value)
+        .map_err(|err| MvError::InvalidInput(format!("event binding_id is invalid: {err}")))
+}
+
+fn event_context_node_id(event: &EventEnvelope) -> MvResult<Uuid> {
+    let value = event
+        .data
+        .get("node_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| MvError::InvalidInput("event data is missing node_id".into()))?;
+    Uuid::parse_str(value)
+        .map_err(|err| MvError::InvalidInput(format!("event node_id is invalid: {err}")))
+}
+
+fn event_context_node_revision(event: &EventEnvelope, default: u64) -> MvResult<u64> {
+    match event.data.get("revision") {
+        Some(value) => value.as_u64().ok_or_else(|| {
+            MvError::InvalidInput("event context-node revision must be an unsigned integer".into())
+        }),
+        None => Ok(default),
+    }
+}
+
+fn event_authority_grant_id(event: &EventEnvelope) -> MvResult<Uuid> {
+    let value = event
+        .data
+        .get("grant_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| MvError::InvalidInput("event data is missing grant_id".into()))?;
+    Uuid::parse_str(value)
+        .map_err(|err| MvError::InvalidInput(format!("event grant_id is invalid: {err}")))
+}
+
+fn event_authority_grant_revision(event: &EventEnvelope, default: u64) -> MvResult<u64> {
+    match event.data.get("revision") {
+        Some(value) => value.as_u64().ok_or_else(|| {
+            MvError::InvalidInput(
+                "event authority-grant revision must be an unsigned integer".into(),
+            )
+        }),
+        None => Ok(default),
+    }
+}
+
+fn parse_workspace_enum<T>(column: usize, value: &str) -> rusqlite::Result<T>
+where
+    T: std::str::FromStr<Err = String>,
+{
+    value.parse().map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, err)),
+        )
+    })
+}
+
+fn parse_workspace_revision(column: usize, revision: i64) -> rusqlite::Result<u64> {
+    u64::try_from(revision).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(column, Type::Integer, Box::new(err))
+    })
+}
+
+fn row_to_knowledge_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeWorkspace> {
+    let id: String = row.get(0)?;
+    let mode: String = row.get(2)?;
+    let state: String = row.get(3)?;
+    let payload_format: String = row.get(5)?;
+    let created_at: String = row.get(7)?;
+    let updated_at: String = row.get(8)?;
+    let last_reconciled_at: Option<String> = row.get(9)?;
+
+    Ok(KnowledgeWorkspace {
+        id: parse_uuid_str(0, &id)?,
+        namespace: row.get(1)?,
+        mode: parse_workspace_enum(2, &mode)?,
+        state: parse_workspace_enum(3, &state)?,
+        descriptor_payload: row.get(4)?,
+        payload_format: parse_workspace_enum(5, &payload_format)?,
+        revision: parse_workspace_revision(6, row.get(6)?)?,
+        created_at: parse_dt_strict(7, &created_at)?,
+        updated_at: parse_dt_strict(8, &updated_at)?,
+        last_reconciled_at: parse_optional_dt_strict(9, last_reconciled_at)?,
+    })
+}
+
+fn row_to_workspace_document(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<KnowledgeWorkspaceDocument> {
+    let id: String = row.get(0)?;
+    let workspace_id: String = row.get(1)?;
+    let payload_format: String = row.get(4)?;
+    let lifecycle_state: String = row.get(5)?;
+    let projection_state: String = row.get(6)?;
+    let projected_node_id: Option<String> = row.get(7)?;
+    let created_at: String = row.get(9)?;
+    let updated_at: String = row.get(10)?;
+
+    Ok(KnowledgeWorkspaceDocument {
+        id: parse_uuid_str(0, &id)?,
+        workspace_id: parse_uuid_str(1, &workspace_id)?,
+        path_token: row.get(2)?,
+        document_payload: row.get(3)?,
+        payload_format: parse_workspace_enum(4, &payload_format)?,
+        lifecycle_state: parse_workspace_enum(5, &lifecycle_state)?,
+        projection_state: parse_workspace_enum(6, &projection_state)?,
+        projected_node_id: projected_node_id
+            .map(|value| parse_uuid_str(7, &value))
+            .transpose()?,
+        revision: parse_workspace_revision(8, row.get(8)?)?,
+        created_at: parse_dt_strict(9, &created_at)?,
+        updated_at: parse_dt_strict(10, &updated_at)?,
+    })
 }
 
 fn parse_metadata_json(
@@ -935,6 +1206,5316 @@ impl NodeStore for SqliteNodeStore {
 }
 
 impl SqliteNodeStore {
+    fn source_lookup_key(&self, value: &str) -> MvResult<String> {
+        let digest = if self.sealed_mode() {
+            let key = self.derive_namespace_kek(INTEROPERABILITY_REGISTRY_NAMESPACE)?;
+            let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&key)
+                .map_err(|err| MvError::Storage(format!("create source lookup HMAC: {err}")))?;
+            mac.update(value.as_bytes());
+            mac.finalize().into_bytes().to_vec()
+        } else {
+            Sha256::digest(value.as_bytes()).to_vec()
+        };
+        Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    }
+
+    fn ensure_local_context_node(transaction: &rusqlite::Transaction<'_>) -> MvResult<Uuid> {
+        let generated = Uuid::now_v7();
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO interoperability_local_identity
+                 (singleton, node_id, created_at) VALUES (1, ?1, ?2)",
+                params![generated.to_string(), Utc::now().to_rfc3339()],
+            )
+            .map_err(|err| MvError::Storage(format!("ensure local context identity: {err}")))?;
+        let node_id: String = transaction
+            .query_row(
+                "SELECT node_id FROM interoperability_local_identity WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|err| MvError::Storage(format!("load local context identity: {err}")))?;
+        Uuid::parse_str(&node_id)
+            .map_err(|err| MvError::Storage(format!("invalid local context identity: {err}")))
+    }
+
+    fn require_active_event_schema(connection: &Connection, event: &EventEnvelope) -> MvResult<()> {
+        let schema: Option<(String, String)> = connection
+            .query_row(
+                "SELECT lifecycle, definition_json
+                 FROM interoperability_public_schemas
+                 WHERE schema_uri = ?1 AND schema_version = ?2",
+                params![event.schema.uri.as_str(), &event.schema.version],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("resolve event schema: {err}")))?;
+        let Some((lifecycle, definition_json)) = schema else {
+            return Err(MvError::InvalidInput(
+                "event schema is not registered".into(),
+            ));
+        };
+        if lifecycle != "active" {
+            return Err(MvError::InvalidInput(format!(
+                "event schema is not active: {lifecycle}"
+            )));
+        }
+        let definition: serde_json::Value = serde_json::from_str(&definition_json)
+            .map_err(|err| MvError::Storage(format!("decode registered event schema: {err}")))?;
+        match definition
+            .get(EVENT_TYPE_SCHEMA_EXTENSION)
+            .and_then(|value| value.as_str())
+        {
+            Some(registered_type) if registered_type == event.event_type => Ok(()),
+            Some(registered_type) => Err(MvError::InvalidInput(format!(
+                "event type {} does not match registered schema type {registered_type}",
+                event.event_type
+            ))),
+            None => Err(MvError::InvalidInput(
+                "event schema is not registered for event-envelope admission".into(),
+            )),
+        }
+    }
+
+    fn validate_governance_event(
+        connection: &Connection,
+        event: &EventEnvelope,
+        local_node_id: Uuid,
+        expected_type: &str,
+        expected_schema_name: &str,
+    ) -> MvResult<()> {
+        event.validate().map_err(MvError::InvalidInput)?;
+        if event.source != StableUri::node(local_node_id) {
+            return Err(MvError::InvalidInput(
+                "governance event source must identify the local context node".into(),
+            ));
+        }
+        let expected_schema = StableUri::schema(expected_schema_name)
+            .map_err(|err| MvError::Storage(format!("invalid built-in schema URI: {err}")))?;
+        if event.event_type != expected_type
+            || event.schema.uri != expected_schema
+            || event.schema.version != "1.0.0"
+        {
+            return Err(MvError::InvalidInput(format!(
+                "{expected_type} requires its registered 1.0.0 event schema"
+            )));
+        }
+        if !event.provenance.iter().any(|reference| {
+            reference.resource == event.subject
+                && reference.relation == ProvenanceRelation::PrimarySource
+        }) {
+            return Err(MvError::InvalidInput(
+                "governance event must identify its subject as a primary source".into(),
+            ));
+        }
+        Self::require_active_event_schema(connection, event)
+    }
+
+    fn resolve_governance_replay(
+        connection: &Connection,
+        event: &EventEnvelope,
+        expected_type: &str,
+    ) -> MvResult<Option<EventEnvelope>> {
+        let existing: Option<(String, String, String)> = connection
+            .query_row(
+                "SELECT envelope_json, payload_digest, event_type
+                 FROM interoperability_outbox
+                 WHERE source_uri = ?1 AND principal_uri = ?2 AND idempotency_key = ?3",
+                params![
+                    event.source.as_str(),
+                    event.principal.as_str(),
+                    event.idempotency_key.as_str()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("check governance replay: {err}")))?;
+        let Some((envelope_json, payload_digest, event_type)) = existing else {
+            return Ok(None);
+        };
+        if payload_digest != event.payload_digest || event_type != expected_type {
+            return Err(MvError::IdempotencyConflict(
+                "idempotency key was already used by a different governance command".into(),
+            ));
+        }
+        Self::decode_outbox_event(&envelope_json).map(Some)
+    }
+
+    fn insert_outbox_event(
+        transaction: &rusqlite::Transaction<'_>,
+        event: &EventEnvelope,
+    ) -> MvResult<()> {
+        event.validate().map_err(MvError::InvalidInput)?;
+        Self::require_active_event_schema(transaction, event)?;
+        let event_json = serde_json::to_string(event)?;
+        transaction
+            .execute(
+                "INSERT INTO interoperability_outbox
+                 (event_id, source_uri, principal_uri, event_type, subject_uri, schema_uri,
+                  schema_version, correlation_id, causation_id, idempotency_key,
+                  payload_digest, envelope_json, created_at, next_attempt_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?13)",
+                params![
+                    event.id.to_string(),
+                    event.source.as_str(),
+                    event.principal.as_str(),
+                    &event.event_type,
+                    event.subject.as_str(),
+                    event.schema.uri.as_str(),
+                    &event.schema.version,
+                    event.correlation_id.to_string(),
+                    event.causation_id.map(|id| id.to_string()),
+                    event.idempotency_key.as_str(),
+                    &event.payload_digest,
+                    event_json,
+                    event.occurred_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("enqueue interoperability event: {err}")))?;
+        Ok(())
+    }
+
+    fn row_to_public_schema(row: &rusqlite::Row<'_>) -> rusqlite::Result<PublicSchemaRecord> {
+        let schema_uri: String = row.get(0)?;
+        let schema_version: String = row.get(1)?;
+        let definition_json: String = row.get(3)?;
+        let lifecycle: String = row.get(5)?;
+        let owner_uri: String = row.get(6)?;
+        let created_at: String = row.get(7)?;
+        let deprecated_at: Option<String> = row.get(8)?;
+        let record = PublicSchemaRecord {
+            schema: SchemaReference::new(
+                StableUri::parse(schema_uri)
+                    .map_err(|err| Self::as_sql_conversion_error(0, err))?,
+                schema_version,
+            )
+            .map_err(|err| Self::as_sql_conversion_error(1, err))?,
+            media_type: row.get(2)?,
+            definition: serde_json::from_str(&definition_json).map_err(|err| {
+                Self::as_sql_conversion_error(3, format!("invalid schema JSON: {err}"))
+            })?,
+            content_digest: row.get(4)?,
+            lifecycle: lifecycle
+                .parse()
+                .map_err(|err: String| Self::as_sql_conversion_error(5, err))?,
+            owner: StableUri::parse(owner_uri)
+                .map_err(|err| Self::as_sql_conversion_error(6, err))?,
+            created_at: parse_dt_strict(7, &created_at)?,
+            deprecated_at: parse_optional_dt_strict(8, deprecated_at)?,
+        };
+        record
+            .validate()
+            .map_err(|err| Self::as_sql_conversion_error(3, err))?;
+        Ok(record)
+    }
+
+    fn load_public_schema_from_connection(
+        connection: &Connection,
+        reference: &SchemaReference,
+    ) -> MvResult<Option<PublicSchemaRecord>> {
+        connection
+            .query_row(
+                "SELECT schema_uri, schema_version, media_type, definition_json,
+                        content_digest, lifecycle, owner_uri, created_at, deprecated_at
+                 FROM interoperability_public_schemas
+                 WHERE schema_uri = ?1 AND schema_version = ?2",
+                params![reference.uri.as_str(), &reference.version],
+                Self::row_to_public_schema,
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load public schema: {err}")))
+    }
+
+    fn validate_context_node_event_record(
+        event: &EventEnvelope,
+        context_node: &ContextNodeRecord,
+        require_revision: bool,
+        require_capability_digest: bool,
+    ) -> MvResult<()> {
+        let node_id = event_context_node_id(event)?;
+        let revision = event_context_node_revision(event, context_node.revision)?;
+        let record_digest = context_node.semantic_digest();
+        if event.subject != context_node.node_uri
+            || node_id != context_node.node_id
+            || (require_revision && revision != context_node.revision)
+            || event
+                .data
+                .get("record_digest")
+                .and_then(|value| value.as_str())
+                != Some(record_digest.as_str())
+            || event.payload_digest != record_digest
+            || (require_capability_digest
+                && event
+                    .data
+                    .get("capability_digest")
+                    .and_then(|value| value.as_str())
+                    != Some(context_node.capability_manifest.content_digest.as_str()))
+        {
+            return Err(MvError::InvalidInput(
+                "context-node event must match the governed descriptor revision".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn row_to_context_node(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<ContextNodeRecord> {
+        let node_id: String = row.get(0)?;
+        let revision: u64 = row.get(1)?;
+        let node_uri: String = row.get(2)?;
+        let node_type: String = row.get(3)?;
+        let owner_actor_uri: String = row.get(4)?;
+        let governing_node_uri: String = row.get(5)?;
+        let trust_class: String = row.get(6)?;
+        let status: String = row.get(7)?;
+        let capability_digest: String = row.get(8)?;
+        let payload: Vec<u8> = row.get(9)?;
+        let payload_format: String = row.get(10)?;
+        let wrapped_dek: Option<String> = row.get(11)?;
+        let created_at: String = row.get(12)?;
+        let updated_at: String = row.get(13)?;
+
+        let context_node: ContextNodeRecord = self
+            .decode_governance_record(
+                &payload,
+                &payload_format,
+                wrapped_dek.as_deref(),
+                "context-node descriptor",
+            )
+            .map_err(|err| Self::as_sql_conversion_error(9, err.to_string()))?;
+        context_node
+            .validate()
+            .map_err(|err| Self::as_sql_conversion_error(9, err))?;
+
+        let stored_node_type: ContextNodeType = node_type
+            .parse()
+            .map_err(|err: String| Self::as_sql_conversion_error(3, err))?;
+        let stored_trust_class = ContextNodeTrustClass::parse(trust_class)
+            .map_err(|err| Self::as_sql_conversion_error(6, err))?;
+        let stored_status: ContextNodeStatus = status
+            .parse()
+            .map_err(|err: String| Self::as_sql_conversion_error(7, err))?;
+
+        if context_node.node_id != parse_uuid_str(0, &node_id)?
+            || context_node.revision != revision
+            || context_node.node_uri.as_str() != node_uri
+            || context_node.node_type != stored_node_type
+            || context_node.owner_actor_id.as_str() != owner_actor_uri
+            || context_node.governing_node_id.as_str() != governing_node_uri
+            || context_node.trust_class != stored_trust_class
+            || context_node.status != stored_status
+            || context_node.capability_manifest.content_digest != capability_digest
+            || context_node.created_at != parse_dt_strict(12, &created_at)?
+            || context_node.updated_at != parse_dt_strict(13, &updated_at)?
+        {
+            return Err(Self::as_sql_conversion_error(
+                9,
+                "context-node payload does not match its governed index",
+            ));
+        }
+        Ok(context_node)
+    }
+
+    fn load_context_node_from_connection(
+        &self,
+        connection: &Connection,
+        node_id: Uuid,
+    ) -> MvResult<Option<ContextNodeRecord>> {
+        connection
+            .query_row(
+                "SELECT node_id, revision, node_uri, node_type, owner_actor_uri,
+                        governing_node_uri, trust_class, status, capability_digest,
+                        record_payload, payload_format, payload_wrapped_dek, created_at, updated_at
+                 FROM interoperability_context_nodes
+                 WHERE node_id = ?1",
+                params![node_id.to_string()],
+                |row| self.row_to_context_node(row),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load context node: {err}")))
+    }
+
+    fn load_context_node_revision_from_connection(
+        &self,
+        connection: &Connection,
+        node_id: Uuid,
+        revision: u64,
+    ) -> MvResult<Option<ContextNodeRecord>> {
+        connection
+            .query_row(
+                "SELECT node_id, revision, node_uri, node_type, owner_actor_uri,
+                        governing_node_uri, trust_class, status, capability_digest,
+                        record_payload, payload_format, payload_wrapped_dek, created_at, updated_at
+                 FROM interoperability_context_nodes
+                 WHERE node_id = ?1 AND revision = ?2
+                 UNION ALL
+                 SELECT node_id, revision, node_uri, node_type, owner_actor_uri,
+                        governing_node_uri, trust_class, status, capability_digest,
+                        record_payload, payload_format, payload_wrapped_dek, created_at, updated_at
+                 FROM interoperability_context_node_history
+                 WHERE node_id = ?1 AND revision = ?2
+                 LIMIT 1",
+                params![node_id.to_string(), revision],
+                |row| self.row_to_context_node(row),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load context-node revision: {err}")))
+    }
+
+    fn require_active_context_node(
+        &self,
+        connection: &Connection,
+        node_id: Uuid,
+    ) -> MvResult<ContextNodeRecord> {
+        let context_node = self
+            .load_context_node_from_connection(connection, node_id)?
+            .ok_or_else(|| {
+                MvError::InvalidInput("governing context node is not registered".into())
+            })?;
+        if context_node.status != ContextNodeStatus::Active {
+            return Err(MvError::InvalidInput(format!(
+                "governing context node is not active: {}",
+                context_node.status.as_str()
+            )));
+        }
+        Ok(context_node)
+    }
+
+    fn require_active_schema_references(
+        connection: &Connection,
+        manifest: &ContextCapabilityManifest,
+    ) -> MvResult<()> {
+        for reference in &manifest.supported_schema_versions {
+            let lifecycle: Option<String> = connection
+                .query_row(
+                    "SELECT lifecycle
+                     FROM interoperability_public_schemas
+                     WHERE schema_uri = ?1 AND schema_version = ?2",
+                    params![reference.uri.as_str(), &reference.version],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|err| {
+                    MvError::Storage(format!("resolve advertised schema reference: {err}"))
+                })?;
+            match lifecycle.as_deref() {
+                Some("active") => {}
+                Some(other) => {
+                    return Err(MvError::InvalidInput(format!(
+                        "advertised schema is not active: {}@{} ({other})",
+                        reference.uri, reference.version
+                    )))
+                }
+                None => {
+                    return Err(MvError::InvalidInput(format!(
+                        "advertised schema is not registered: {}@{}",
+                        reference.uri, reference.version
+                    )))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn insert_context_node(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        context_node: &ContextNodeRecord,
+    ) -> MvResult<()> {
+        let (payload, payload_format, wrapped_dek) =
+            self.encode_governance_record(context_node, "context-node descriptor")?;
+        transaction
+            .execute(
+                "INSERT INTO interoperability_context_nodes
+                 (node_id, revision, node_uri, node_type, owner_actor_uri, governing_node_uri,
+                  trust_class, status, capability_digest, record_payload, payload_format,
+                  payload_wrapped_dek, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                params![
+                    context_node.node_id.to_string(),
+                    context_node.revision,
+                    context_node.node_uri.as_str(),
+                    context_node.node_type.as_str(),
+                    context_node.owner_actor_id.as_str(),
+                    context_node.governing_node_id.as_str(),
+                    context_node.trust_class.as_str(),
+                    context_node.status.as_str(),
+                    &context_node.capability_manifest.content_digest,
+                    payload,
+                    payload_format,
+                    wrapped_dek,
+                    context_node.created_at.to_rfc3339(),
+                    context_node.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert context node: {err}")))?;
+        Ok(())
+    }
+
+    fn update_context_node(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        expected_revision: u64,
+        replacement: &ContextNodeRecord,
+    ) -> MvResult<()> {
+        let (payload, payload_format, wrapped_dek) =
+            self.encode_governance_record(replacement, "context-node descriptor")?;
+        let changed = transaction
+            .execute(
+                "UPDATE interoperability_context_nodes
+                 SET revision = ?3, node_uri = ?4, node_type = ?5, owner_actor_uri = ?6,
+                     governing_node_uri = ?7, trust_class = ?8, status = ?9,
+                     capability_digest = ?10, record_payload = ?11, payload_format = ?12,
+                     payload_wrapped_dek = ?13, created_at = ?14, updated_at = ?15
+                 WHERE node_id = ?1 AND revision = ?2",
+                params![
+                    replacement.node_id.to_string(),
+                    expected_revision,
+                    replacement.revision,
+                    replacement.node_uri.as_str(),
+                    replacement.node_type.as_str(),
+                    replacement.owner_actor_id.as_str(),
+                    replacement.governing_node_id.as_str(),
+                    replacement.trust_class.as_str(),
+                    replacement.status.as_str(),
+                    &replacement.capability_manifest.content_digest,
+                    payload,
+                    payload_format,
+                    wrapped_dek,
+                    replacement.created_at.to_rfc3339(),
+                    replacement.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("update context node: {err}")))?;
+        if changed != 1 {
+            return Err(MvError::InvalidInput(
+                "context-node expected revision does not match current state".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_authority_grant_event_record(
+        event: &EventEnvelope,
+        grant: &AuthorityGrant,
+        require_revision: bool,
+        require_identity_fields: bool,
+    ) -> MvResult<()> {
+        let grant_id = event_authority_grant_id(event)?;
+        let revision = event_authority_grant_revision(event, grant.revision)?;
+        let record_digest = grant.semantic_digest();
+        if event.subject != grant.grant_uri
+            || grant_id != grant.grant_id
+            || (require_revision && revision != grant.revision)
+            || event
+                .data
+                .get("record_digest")
+                .and_then(|value| value.as_str())
+                != Some(record_digest.as_str())
+            || event.payload_digest != record_digest
+            || (require_identity_fields
+                && (event
+                    .data
+                    .get("grant_kind")
+                    .and_then(|value| value.as_str())
+                    != Some(grant.kind.as_str())
+                    || event
+                        .data
+                        .get("grantee_uri")
+                        .and_then(|value| value.as_str())
+                        != Some(grant.grantee.as_str())
+                    || event
+                        .data
+                        .get("governing_node_uri")
+                        .and_then(|value| value.as_str())
+                        != Some(grant.governing_node.as_str())))
+        {
+            return Err(MvError::InvalidInput(
+                "authority-grant event must match the governed grant revision".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn row_to_authority_grant(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<AuthorityGrant> {
+        let grant_id: String = row.get(0)?;
+        let revision: u64 = row.get(1)?;
+        let grant_uri: String = row.get(2)?;
+        let grant_kind: String = row.get(3)?;
+        let grantor_uri: String = row.get(4)?;
+        let grantee_uri: String = row.get(5)?;
+        let governing_node_uri: String = row.get(6)?;
+        let status: String = row.get(7)?;
+        let parent_grant_id: Option<String> = row.get(8)?;
+        let not_before: String = row.get(9)?;
+        let expires_at: String = row.get(10)?;
+        let payload: Vec<u8> = row.get(11)?;
+        let payload_format: String = row.get(12)?;
+        let wrapped_dek: Option<String> = row.get(13)?;
+        let created_at: String = row.get(14)?;
+        let updated_at: String = row.get(15)?;
+
+        let grant: AuthorityGrant = self
+            .decode_governance_record(
+                &payload,
+                &payload_format,
+                wrapped_dek.as_deref(),
+                "authority grant",
+            )
+            .map_err(|err| Self::as_sql_conversion_error(11, err.to_string()))?;
+        grant
+            .validate()
+            .map_err(|err| Self::as_sql_conversion_error(11, err))?;
+        let stored_kind: AuthorityGrantKind = grant_kind
+            .parse()
+            .map_err(|err: String| Self::as_sql_conversion_error(3, err))?;
+        let stored_status: AuthorityGrantStatus = status
+            .parse()
+            .map_err(|err: String| Self::as_sql_conversion_error(7, err))?;
+        let stored_parent = parent_grant_id
+            .as_deref()
+            .map(|value| parse_uuid_str(8, value))
+            .transpose()?;
+
+        if grant.grant_id != parse_uuid_str(0, &grant_id)?
+            || grant.revision != revision
+            || grant.grant_uri.as_str() != grant_uri
+            || grant.kind != stored_kind
+            || grant.grantor.as_str() != grantor_uri
+            || grant.grantee.as_str() != grantee_uri
+            || grant.governing_node.as_str() != governing_node_uri
+            || grant.status != stored_status
+            || grant.parent_grant_id != stored_parent
+            || grant.not_before != parse_dt_strict(9, &not_before)?
+            || grant.expires_at != parse_dt_strict(10, &expires_at)?
+            || grant.created_at != parse_dt_strict(14, &created_at)?
+            || grant.updated_at != parse_dt_strict(15, &updated_at)?
+        {
+            return Err(Self::as_sql_conversion_error(
+                11,
+                "authority-grant payload does not match its governed index",
+            ));
+        }
+        Ok(grant)
+    }
+
+    fn load_authority_grant_from_connection(
+        &self,
+        connection: &Connection,
+        grant_id: Uuid,
+    ) -> MvResult<Option<AuthorityGrant>> {
+        connection
+            .query_row(
+                "SELECT grant_id, revision, grant_uri, grant_kind, grantor_uri, grantee_uri,
+                        governing_node_uri, status, parent_grant_id, not_before, expires_at,
+                        record_payload, payload_format, payload_wrapped_dek, created_at, updated_at
+                 FROM interoperability_authority_grants
+                 WHERE grant_id = ?1",
+                params![grant_id.to_string()],
+                |row| self.row_to_authority_grant(row),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load authority grant: {err}")))
+    }
+
+    fn load_authority_grant_revision_from_connection(
+        &self,
+        connection: &Connection,
+        grant_id: Uuid,
+        revision: u64,
+    ) -> MvResult<Option<AuthorityGrant>> {
+        connection
+            .query_row(
+                "SELECT grant_id, revision, grant_uri, grant_kind, grantor_uri, grantee_uri,
+                        governing_node_uri, status, parent_grant_id, not_before, expires_at,
+                        record_payload, payload_format, payload_wrapped_dek, created_at, updated_at
+                 FROM interoperability_authority_grants
+                 WHERE grant_id = ?1 AND revision = ?2
+                 UNION ALL
+                 SELECT grant_id, revision, grant_uri, grant_kind, grantor_uri, grantee_uri,
+                        governing_node_uri, status, parent_grant_id, not_before, expires_at,
+                        record_payload, payload_format, payload_wrapped_dek, created_at, updated_at
+                 FROM interoperability_authority_grant_history
+                 WHERE grant_id = ?1 AND revision = ?2
+                 LIMIT 1",
+                params![grant_id.to_string(), revision],
+                |row| self.row_to_authority_grant(row),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load authority-grant revision: {err}")))
+    }
+
+    fn insert_authority_grant(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        grant: &AuthorityGrant,
+    ) -> MvResult<()> {
+        let (payload, payload_format, wrapped_dek) =
+            self.encode_governance_record(grant, "authority grant")?;
+        transaction
+            .execute(
+                "INSERT INTO interoperability_authority_grants
+                 (grant_id, revision, grant_uri, grant_kind, grantor_uri, grantee_uri,
+                  governing_node_uri, status, parent_grant_id, not_before, expires_at,
+                  record_payload, payload_format, payload_wrapped_dek, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                params![
+                    grant.grant_id.to_string(),
+                    grant.revision,
+                    grant.grant_uri.as_str(),
+                    grant.kind.as_str(),
+                    grant.grantor.as_str(),
+                    grant.grantee.as_str(),
+                    grant.governing_node.as_str(),
+                    grant.status.as_str(),
+                    grant.parent_grant_id.map(|id| id.to_string()),
+                    grant.not_before.to_rfc3339(),
+                    grant.expires_at.to_rfc3339(),
+                    payload,
+                    payload_format,
+                    wrapped_dek,
+                    grant.created_at.to_rfc3339(),
+                    grant.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert authority grant: {err}")))?;
+        Ok(())
+    }
+
+    fn update_authority_grant(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        expected_revision: u64,
+        replacement: &AuthorityGrant,
+    ) -> MvResult<()> {
+        let (payload, payload_format, wrapped_dek) =
+            self.encode_governance_record(replacement, "authority grant")?;
+        let changed = transaction
+            .execute(
+                "UPDATE interoperability_authority_grants
+                 SET revision = ?3, grant_uri = ?4, grant_kind = ?5, grantor_uri = ?6,
+                     grantee_uri = ?7, governing_node_uri = ?8, status = ?9,
+                     parent_grant_id = ?10, not_before = ?11, expires_at = ?12,
+                     record_payload = ?13, payload_format = ?14, payload_wrapped_dek = ?15,
+                     created_at = ?16, updated_at = ?17
+                 WHERE grant_id = ?1 AND revision = ?2",
+                params![
+                    replacement.grant_id.to_string(),
+                    expected_revision,
+                    replacement.revision,
+                    replacement.grant_uri.as_str(),
+                    replacement.kind.as_str(),
+                    replacement.grantor.as_str(),
+                    replacement.grantee.as_str(),
+                    replacement.governing_node.as_str(),
+                    replacement.status.as_str(),
+                    replacement.parent_grant_id.map(|id| id.to_string()),
+                    replacement.not_before.to_rfc3339(),
+                    replacement.expires_at.to_rfc3339(),
+                    payload,
+                    payload_format,
+                    wrapped_dek,
+                    replacement.created_at.to_rfc3339(),
+                    replacement.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("update authority grant: {err}")))?;
+        if changed != 1 {
+            return Err(MvError::InvalidInput(
+                "authority-grant expected revision does not match current state".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn authority_grant_chain_is_effective(
+        &self,
+        connection: &Connection,
+        grant: &AuthorityGrant,
+        at: chrono::DateTime<Utc>,
+    ) -> MvResult<bool> {
+        let mut current = grant.clone();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            if !current.is_effective_at(at) || !seen.insert(current.grant_id) {
+                return Ok(false);
+            }
+            let Some(parent_id) = current.parent_grant_id else {
+                return Ok(true);
+            };
+            if seen.len() > 17 {
+                return Ok(false);
+            }
+            let Some(parent) = self.load_authority_grant_from_connection(connection, parent_id)?
+            else {
+                return Ok(false);
+            };
+            if !current.is_delegation_subset_of(&parent) {
+                return Ok(false);
+            }
+            current = parent;
+        }
+    }
+
+    fn row_to_source_binding(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<SourceBinding> {
+        let binding_id: String = row.get(0)?;
+        let revision: u64 = row.get(1)?;
+        let resource_uri: String = row.get(2)?;
+        let context_node_uri: String = row.get(3)?;
+        let external_system: String = row.get(4)?;
+        let external_account_key: String = row.get(5)?;
+        let external_object_key: String = row.get(6)?;
+        let status: String = row.get(7)?;
+        let supersedes_binding_id: Option<String> = row.get(8)?;
+        let payload: Vec<u8> = row.get(9)?;
+        let payload_format: String = row.get(10)?;
+        let wrapped_dek: Option<String> = row.get(11)?;
+        let created_at: String = row.get(12)?;
+        let updated_at: String = row.get(13)?;
+
+        let binding: SourceBinding = self
+            .decode_governance_record(
+                &payload,
+                &payload_format,
+                wrapped_dek.as_deref(),
+                "source binding",
+            )
+            .map_err(|err| Self::as_sql_conversion_error(9, err.to_string()))?;
+        binding
+            .validate()
+            .map_err(|err| Self::as_sql_conversion_error(9, err))?;
+
+        let stored_supersedes = supersedes_binding_id
+            .map(|value| parse_uuid_str(8, &value))
+            .transpose()?;
+        if binding.binding_id != parse_uuid_str(0, &binding_id)?
+            || binding.revision != revision
+            || binding.resource_uri.as_str() != resource_uri
+            || binding.context_node.as_str() != context_node_uri
+            || binding.external_system != external_system
+            || self
+                .source_lookup_key(&binding.external_account_id)
+                .map_err(|err| Self::as_sql_conversion_error(5, err.to_string()))?
+                != external_account_key
+            || self
+                .source_lookup_key(&binding.external_object_id)
+                .map_err(|err| Self::as_sql_conversion_error(6, err.to_string()))?
+                != external_object_key
+            || binding.status.as_str() != status
+            || binding.supersedes_binding_id != stored_supersedes
+            || binding.created_at != parse_dt_strict(12, &created_at)?
+            || binding.updated_at != parse_dt_strict(13, &updated_at)?
+        {
+            return Err(Self::as_sql_conversion_error(
+                9,
+                "source binding payload does not match its governed index",
+            ));
+        }
+        Ok(binding)
+    }
+
+    fn load_source_binding_from_connection(
+        &self,
+        connection: &Connection,
+        binding_id: Uuid,
+    ) -> MvResult<Option<SourceBinding>> {
+        connection
+            .query_row(
+                "SELECT binding_id, revision, resource_uri, context_node_uri,
+                        external_system, external_account_key, external_object_key,
+                        status, supersedes_binding_id, record_payload, payload_format,
+                        payload_wrapped_dek, created_at, updated_at
+                 FROM interoperability_source_bindings
+                 WHERE binding_id = ?1",
+                params![binding_id.to_string()],
+                |row| self.row_to_source_binding(row),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load source binding: {err}")))
+    }
+
+    fn insert_source_binding(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        binding: &SourceBinding,
+    ) -> MvResult<()> {
+        let (payload, payload_format, wrapped_dek) =
+            self.encode_governance_record(binding, "source binding")?;
+        transaction
+            .execute(
+                "INSERT INTO interoperability_source_bindings
+                 (binding_id, revision, resource_uri, context_node_uri, external_system,
+                  external_account_key, external_object_key, status, supersedes_binding_id,
+                  record_payload, payload_format, payload_wrapped_dek, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                params![
+                    binding.binding_id.to_string(),
+                    binding.revision,
+                    binding.resource_uri.as_str(),
+                    binding.context_node.as_str(),
+                    &binding.external_system,
+                    self.source_lookup_key(&binding.external_account_id)?,
+                    self.source_lookup_key(&binding.external_object_id)?,
+                    binding.status.as_str(),
+                    binding.supersedes_binding_id.map(|id| id.to_string()),
+                    payload,
+                    payload_format,
+                    wrapped_dek,
+                    binding.created_at.to_rfc3339(),
+                    binding.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert source binding: {err}")))?;
+        Ok(())
+    }
+
+    fn row_to_action_receipt(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<ActionReceipt> {
+        let receipt_id: String = row.get(0)?;
+        let receipt_version: String = row.get(1)?;
+        let event_id: String = row.get(2)?;
+        let claim_id: String = row.get(3)?;
+        let attempt: u32 = row.get(4)?;
+        let outcome: String = row.get(5)?;
+        let executor: String = row.get(6)?;
+        let destination: String = row.get(7)?;
+        let subject: String = row.get(8)?;
+        let principal: String = row.get(9)?;
+        let actor: String = row.get(10)?;
+        let correlation_id: String = row.get(11)?;
+        let request_digest: String = row.get(12)?;
+        let started_at: String = row.get(13)?;
+        let completed_at: String = row.get(14)?;
+        let sensitivity: String = row.get(15)?;
+        let retention: String = row.get(16)?;
+        let payload: Vec<u8> = row.get(17)?;
+        let payload_format: String = row.get(18)?;
+        let wrapped_dek: Option<String> = row.get(19)?;
+
+        let receipt: ActionReceipt = self
+            .decode_governance_record(
+                &payload,
+                &payload_format,
+                wrapped_dek.as_deref(),
+                "action receipt",
+            )
+            .map_err(|err| Self::as_sql_conversion_error(17, err.to_string()))?;
+        receipt
+            .validate()
+            .map_err(|err| Self::as_sql_conversion_error(17, err))?;
+        if receipt.receipt_id != parse_uuid_str(0, &receipt_id)?
+            || receipt.receipt_version != receipt_version
+            || receipt.event_id != parse_uuid_str(2, &event_id)?
+            || receipt.claim_id != parse_uuid_str(3, &claim_id)?
+            || receipt.attempt != attempt
+            || receipt.outcome.as_str() != outcome
+            || receipt.executor.as_str() != executor
+            || receipt.destination.as_str() != destination
+            || receipt.subject.as_str() != subject
+            || receipt.principal.as_str() != principal
+            || receipt.actor.as_str() != actor
+            || receipt.correlation_id != parse_uuid_str(11, &correlation_id)?
+            || receipt.request_digest != request_digest
+            || receipt.started_at != parse_dt_strict(13, &started_at)?
+            || receipt.completed_at != parse_dt_strict(14, &completed_at)?
+            || receipt.sensitivity.as_str() != sensitivity
+            || receipt.retention.as_str() != retention
+        {
+            return Err(Self::as_sql_conversion_error(
+                17,
+                "action receipt payload does not match its governed index",
+            ));
+        }
+        Ok(receipt)
+    }
+
+    fn load_action_receipt_by_attempt(
+        &self,
+        connection: &Connection,
+        event_id: Uuid,
+        attempt: u32,
+    ) -> MvResult<Option<ActionReceipt>> {
+        connection
+            .query_row(
+                "SELECT receipt_id, receipt_version, event_id, claim_id, attempt_no, outcome,
+                        executor_uri, destination_uri, subject_uri, principal_uri,
+                        actor_uri, correlation_id, request_digest, started_at,
+                        completed_at, sensitivity, retention, payload, payload_format,
+                        payload_wrapped_dek
+                 FROM interoperability_action_receipts
+                 WHERE event_id = ?1 AND attempt_no = ?2",
+                params![event_id.to_string(), attempt],
+                |row| self.row_to_action_receipt(row),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load action receipt attempt: {err}")))
+    }
+
+    fn row_to_consumer_inbox_admission(
+        &self,
+        row: &rusqlite::Row<'_>,
+    ) -> rusqlite::Result<ConsumerInboxAdmission> {
+        let inbox_sequence: u64 = row.get(0)?;
+        let consumer_uri: String = row.get(1)?;
+        let event_id: String = row.get(2)?;
+        let event_digest: String = row.get(3)?;
+        let source_uri: String = row.get(4)?;
+        let subject_uri: String = row.get(5)?;
+        let principal_uri: String = row.get(6)?;
+        let actor_uri: String = row.get(7)?;
+        let event_type: String = row.get(8)?;
+        let schema_uri: String = row.get(9)?;
+        let schema_version: String = row.get(10)?;
+        let correlation_id: String = row.get(11)?;
+        let occurred_at: String = row.get(12)?;
+        let sensitivity: String = row.get(13)?;
+        let retention: String = row.get(14)?;
+        let payload: Vec<u8> = row.get(15)?;
+        let payload_format: String = row.get(16)?;
+        let wrapped_dek: Option<String> = row.get(17)?;
+        let received_at: String = row.get(18)?;
+
+        let event: EventEnvelope = self
+            .decode_governance_record(
+                &payload,
+                &payload_format,
+                wrapped_dek.as_deref(),
+                "consumer inbox event",
+            )
+            .map_err(|err| Self::as_sql_conversion_error(15, err.to_string()))?;
+        event
+            .validate()
+            .map_err(|err| Self::as_sql_conversion_error(15, err))?;
+        let consumer = StableUri::parse(consumer_uri.clone())
+            .map_err(|err| Self::as_sql_conversion_error(1, err))?;
+        if event.id != parse_uuid_str(2, &event_id)?
+            || event.content_digest() != event_digest
+            || event.source.as_str() != source_uri
+            || event.subject.as_str() != subject_uri
+            || event.principal.as_str() != principal_uri
+            || event.actor.as_str() != actor_uri
+            || event.event_type != event_type
+            || event.schema.uri.as_str() != schema_uri
+            || event.schema.version != schema_version
+            || event.correlation_id != parse_uuid_str(11, &correlation_id)?
+            || event.occurred_at != parse_dt_strict(12, &occurred_at)?
+            || event.sensitivity.as_str() != sensitivity
+            || event.retention.as_str() != retention
+        {
+            return Err(Self::as_sql_conversion_error(
+                15,
+                "consumer inbox payload does not match its governed index",
+            ));
+        }
+        Ok(ConsumerInboxAdmission {
+            inbox_sequence,
+            consumer,
+            event,
+            received_at: parse_dt_strict(18, &received_at)?,
+            replayed: false,
+        })
+    }
+
+    fn load_consumer_inbox_admission(
+        &self,
+        connection: &Connection,
+        consumer: &StableUri,
+        event_id: Uuid,
+    ) -> MvResult<Option<ConsumerInboxAdmission>> {
+        connection
+            .query_row(
+                "SELECT inbox_sequence, consumer_uri, event_id, event_digest, source_uri,
+                        subject_uri, principal_uri, actor_uri, event_type, schema_uri,
+                        schema_version, correlation_id, occurred_at, sensitivity, retention,
+                        envelope_payload, payload_format, payload_wrapped_dek, received_at
+                 FROM interoperability_consumer_inbox
+                 WHERE consumer_uri = ?1 AND event_id = ?2",
+                params![consumer.as_str(), event_id.to_string()],
+                |row| self.row_to_consumer_inbox_admission(row),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load consumer inbox event: {err}")))
+    }
+
+    fn load_consumer_inbox_admission_by_sequence(
+        &self,
+        connection: &Connection,
+        inbox_sequence: u64,
+    ) -> MvResult<Option<ConsumerInboxAdmission>> {
+        connection
+            .query_row(
+                "SELECT inbox_sequence, consumer_uri, event_id, event_digest, source_uri,
+                        subject_uri, principal_uri, actor_uri, event_type, schema_uri,
+                        schema_version, correlation_id, occurred_at, sensitivity, retention,
+                        envelope_payload, payload_format, payload_wrapped_dek, received_at
+                 FROM interoperability_consumer_inbox
+                 WHERE inbox_sequence = ?1",
+                params![inbox_sequence],
+                |row| self.row_to_consumer_inbox_admission(row),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load consumer inbox sequence: {err}")))
+    }
+
+    fn row_to_consumer_application_receipt(
+        &self,
+        row: &rusqlite::Row<'_>,
+    ) -> rusqlite::Result<ConsumerApplicationReceipt> {
+        let receipt_id: String = row.get(0)?;
+        let receipt_version: String = row.get(1)?;
+        let inbox_sequence: u64 = row.get(2)?;
+        let event_id: String = row.get(3)?;
+        let claim_id: String = row.get(4)?;
+        let attempt: u32 = row.get(5)?;
+        let outcome: String = row.get(6)?;
+        let consumer_uri: String = row.get(7)?;
+        let processor_uri: String = row.get(8)?;
+        let source_uri: String = row.get(9)?;
+        let subject_uri: String = row.get(10)?;
+        let principal_uri: String = row.get(11)?;
+        let actor_uri: String = row.get(12)?;
+        let correlation_id: String = row.get(13)?;
+        let request_digest: String = row.get(14)?;
+        let started_at: String = row.get(15)?;
+        let completed_at: String = row.get(16)?;
+        let sensitivity: String = row.get(17)?;
+        let retention: String = row.get(18)?;
+        let payload: Vec<u8> = row.get(19)?;
+        let payload_format: String = row.get(20)?;
+        let wrapped_dek: Option<String> = row.get(21)?;
+
+        let receipt: ConsumerApplicationReceipt = self
+            .decode_governance_record(
+                &payload,
+                &payload_format,
+                wrapped_dek.as_deref(),
+                "consumer application receipt",
+            )
+            .map_err(|err| Self::as_sql_conversion_error(19, err.to_string()))?;
+        receipt
+            .validate()
+            .map_err(|err| Self::as_sql_conversion_error(19, err))?;
+        if receipt.receipt_id != parse_uuid_str(0, &receipt_id)?
+            || receipt.receipt_version != receipt_version
+            || receipt.inbox_sequence != inbox_sequence
+            || receipt.event_id != parse_uuid_str(3, &event_id)?
+            || receipt.claim_id != parse_uuid_str(4, &claim_id)?
+            || receipt.attempt != attempt
+            || receipt.outcome.as_str() != outcome
+            || receipt.consumer.as_str() != consumer_uri
+            || receipt.processor.as_str() != processor_uri
+            || receipt.source.as_str() != source_uri
+            || receipt.subject.as_str() != subject_uri
+            || receipt.principal.as_str() != principal_uri
+            || receipt.actor.as_str() != actor_uri
+            || receipt.correlation_id != parse_uuid_str(13, &correlation_id)?
+            || receipt.request_digest != request_digest
+            || receipt.started_at != parse_dt_strict(15, &started_at)?
+            || receipt.completed_at != parse_dt_strict(16, &completed_at)?
+            || receipt.sensitivity.as_str() != sensitivity
+            || receipt.retention.as_str() != retention
+        {
+            return Err(Self::as_sql_conversion_error(
+                19,
+                "consumer receipt payload does not match its governed index",
+            ));
+        }
+        Ok(receipt)
+    }
+
+    fn load_consumer_application_receipt_by_attempt(
+        &self,
+        connection: &Connection,
+        inbox_sequence: u64,
+        attempt: u32,
+    ) -> MvResult<Option<ConsumerApplicationReceipt>> {
+        connection
+            .query_row(
+                "SELECT receipt_id, receipt_version, inbox_sequence, event_id, claim_id, attempt_no,
+                        outcome, consumer_uri, processor_uri, source_uri, subject_uri,
+                        principal_uri, actor_uri, correlation_id, request_digest,
+                        started_at, completed_at, sensitivity, retention, payload,
+                        payload_format, payload_wrapped_dek
+                 FROM interoperability_consumer_application_receipts
+                 WHERE inbox_sequence = ?1 AND attempt_no = ?2",
+                params![inbox_sequence, attempt],
+                |row| self.row_to_consumer_application_receipt(row),
+            )
+            .optional()
+            .map_err(|err| {
+                MvError::Storage(format!("load consumer application receipt attempt: {err}"))
+            })
+    }
+
+    fn row_to_consumer_checkpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConsumerCheckpoint> {
+        let consumer_uri: String = row.get(0)?;
+        let source_uri: String = row.get(1)?;
+        let last_dispositioned_event_id: String = row.get(3)?;
+        let last_applied_event_id: Option<String> = row.get(5)?;
+        let updated_at: String = row.get(8)?;
+        let checkpoint = ConsumerCheckpoint {
+            consumer: StableUri::parse(consumer_uri)
+                .map_err(|err| Self::as_sql_conversion_error(0, err))?,
+            source: StableUri::parse(source_uri)
+                .map_err(|err| Self::as_sql_conversion_error(1, err))?,
+            last_dispositioned_sequence: row.get(2)?,
+            last_dispositioned_event_id: parse_uuid_str(3, &last_dispositioned_event_id)?,
+            last_applied_sequence: row.get(4)?,
+            last_applied_event_id: last_applied_event_id
+                .map(|event_id| parse_uuid_str(5, &event_id))
+                .transpose()?,
+            applied_count: row.get(6)?,
+            dead_letter_count: row.get(7)?,
+            updated_at: parse_dt_strict(8, &updated_at)?,
+        };
+        checkpoint
+            .validate()
+            .map_err(|err| Self::as_sql_conversion_error(2, err))?;
+        Ok(checkpoint)
+    }
+
+    fn load_consumer_checkpoint(
+        connection: &Connection,
+        consumer: &StableUri,
+        source: &StableUri,
+    ) -> MvResult<Option<ConsumerCheckpoint>> {
+        connection
+            .query_row(
+                "SELECT consumer_uri, source_uri, last_dispositioned_sequence,
+                        last_dispositioned_event_id, last_applied_sequence,
+                        last_applied_event_id, applied_count, dead_letter_count, updated_at
+                 FROM interoperability_consumer_checkpoints
+                 WHERE consumer_uri = ?1 AND source_uri = ?2",
+                params![consumer.as_str(), source.as_str()],
+                Self::row_to_consumer_checkpoint,
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load consumer checkpoint: {err}")))
+    }
+}
+
+#[async_trait]
+impl InteroperabilityStore for SqliteNodeStore {
+    async fn local_context_node_id(&self) -> MvResult<Uuid> {
+        let mut conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| MvError::Storage(format!("begin local identity transaction: {e}")))?;
+        let generated = Uuid::now_v7();
+        tx.execute(
+            "INSERT OR IGNORE INTO interoperability_local_identity
+             (singleton, node_id, created_at) VALUES (1, ?1, ?2)",
+            params![generated.to_string(), Utc::now().to_rfc3339()],
+        )
+        .map_err(|e| MvError::Storage(format!("persist local context identity: {e}")))?;
+        let node_id: String = tx
+            .query_row(
+                "SELECT node_id FROM interoperability_local_identity WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| MvError::Storage(format!("load local context identity: {e}")))?;
+        let node_id = Uuid::parse_str(&node_id)
+            .map_err(|e| MvError::Storage(format!("invalid local context identity: {e}")))?;
+        tx.commit()
+            .map_err(|e| MvError::Storage(format!("commit local identity transaction: {e}")))?;
+        Ok(node_id)
+    }
+
+    async fn commit_context_node_with_event(
+        &self,
+        context_node: &ContextNodeRecord,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentContextNodeCommit> {
+        context_node.validate().map_err(MvError::InvalidInput)?;
+        if context_node.revision != 1 {
+            return Err(MvError::InvalidInput(
+                "new context-node descriptors must start at revision one".into(),
+            ));
+        }
+        Self::validate_context_node_event_record(event, context_node, false, true)?;
+        if event.data.get("node_type").and_then(|value| value.as_str())
+            != Some(context_node.node_type.as_str())
+            || event.data.get("status").and_then(|value| value.as_str())
+                != Some(context_node.status.as_str())
+        {
+            return Err(MvError::InvalidInput(
+                "context-node registration event must identify its type and initial status".into(),
+            ));
+        }
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin context-node registration: {err}")))?;
+        let local_node_id = Self::ensure_local_context_node(&transaction)?;
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            local_node_id,
+            CONTEXT_NODE_REGISTERED_V1,
+            "context-node-registered",
+        )?;
+
+        if let Some(existing_event) =
+            Self::resolve_governance_replay(&transaction, event, CONTEXT_NODE_REGISTERED_V1)?
+        {
+            let existing_node_id = event_context_node_id(&existing_event)?;
+            let existing_revision = event_context_node_revision(&existing_event, 1)?;
+            let existing_context_node = self
+                .load_context_node_revision_from_connection(
+                    &transaction,
+                    existing_node_id,
+                    existing_revision,
+                )?
+                .ok_or_else(|| {
+                    MvError::Storage(
+                        "context-node replay references a missing descriptor revision".into(),
+                    )
+                })?;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish context-node replay: {err}")))?;
+            return Ok(IdempotentContextNodeCommit {
+                context_node: existing_context_node,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        let is_discovered = context_node.status == ContextNodeStatus::Discovered
+            && context_node.trust_class == ContextNodeTrustClass::untrusted();
+        let is_local_bootstrap = context_node.node_id == local_node_id
+            && context_node.node_uri == StableUri::node(local_node_id)
+            && context_node.governing_node_id == context_node.node_uri
+            && context_node.status == ContextNodeStatus::Active
+            && context_node.trust_class == ContextNodeTrustClass::local();
+        if !is_discovered && !is_local_bootstrap {
+            return Err(MvError::InvalidInput(
+                "new context nodes must be untrusted discoveries or the active self-governed local node"
+                    .into(),
+            ));
+        }
+
+        Self::require_active_schema_references(&transaction, &context_node.capability_manifest)?;
+        self.insert_context_node(&transaction, context_node)?;
+        Self::insert_outbox_event(&transaction, event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit context-node registration: {err}")))?;
+        Ok(IdempotentContextNodeCommit {
+            context_node: context_node.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn get_context_node(&self, node_id: Uuid) -> MvResult<Option<ContextNodeRecord>> {
+        self.with_conn(|connection| self.load_context_node_from_connection(connection, node_id))
+    }
+
+    async fn list_context_nodes(
+        &self,
+        status: Option<ContextNodeStatus>,
+    ) -> MvResult<Vec<ContextNodeRecord>> {
+        self.with_conn(|connection| {
+            let sql = if status.is_some() {
+                "SELECT node_id, revision, node_uri, node_type, owner_actor_uri,
+                        governing_node_uri, trust_class, status, capability_digest,
+                        record_payload, payload_format, payload_wrapped_dek, created_at, updated_at
+                 FROM interoperability_context_nodes
+                 WHERE status = ?1
+                 ORDER BY updated_at ASC, node_id ASC"
+            } else {
+                "SELECT node_id, revision, node_uri, node_type, owner_actor_uri,
+                        governing_node_uri, trust_class, status, capability_digest,
+                        record_payload, payload_format, payload_wrapped_dek, created_at, updated_at
+                 FROM interoperability_context_nodes
+                 ORDER BY updated_at ASC, node_id ASC"
+            };
+            let mut statement = connection
+                .prepare(sql)
+                .map_err(|err| MvError::Storage(format!("prepare context-node query: {err}")))?;
+            let mut nodes = Vec::new();
+            if let Some(status) = status {
+                let rows = statement
+                    .query_map(params![status.as_str()], |row| {
+                        self.row_to_context_node(row)
+                    })
+                    .map_err(|err| MvError::Storage(format!("query context nodes: {err}")))?;
+                for row in rows {
+                    nodes.push(row.map_err(|err| {
+                        MvError::Storage(format!("read context-node descriptor: {err}"))
+                    })?);
+                }
+            } else {
+                let rows = statement
+                    .query_map([], |row| self.row_to_context_node(row))
+                    .map_err(|err| MvError::Storage(format!("query context nodes: {err}")))?;
+                for row in rows {
+                    nodes.push(row.map_err(|err| {
+                        MvError::Storage(format!("read context-node descriptor: {err}"))
+                    })?);
+                }
+            }
+            Ok(nodes)
+        })
+    }
+
+    async fn update_context_node_descriptor_with_event(
+        &self,
+        expected_revision: u64,
+        replacement: &ContextNodeRecord,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentContextNodeCommit> {
+        replacement.validate().map_err(MvError::InvalidInput)?;
+        let next_revision = expected_revision
+            .checked_add(1)
+            .ok_or_else(|| MvError::InvalidInput("context-node revision overflow".into()))?;
+        if replacement.revision != next_revision {
+            return Err(MvError::InvalidInput(
+                "replacement context-node revision must advance exactly once".into(),
+            ));
+        }
+        Self::validate_context_node_event_record(event, replacement, true, true)?;
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin context-node update: {err}")))?;
+        let local_node_id = Self::ensure_local_context_node(&transaction)?;
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            local_node_id,
+            CONTEXT_NODE_DESCRIPTOR_UPDATED_V1,
+            "context-node-descriptor-updated",
+        )?;
+
+        if let Some(existing_event) = Self::resolve_governance_replay(
+            &transaction,
+            event,
+            CONTEXT_NODE_DESCRIPTOR_UPDATED_V1,
+        )? {
+            let existing_node_id = event_context_node_id(&existing_event)?;
+            let existing_revision = event_context_node_revision(&existing_event, 1)?;
+            let existing_context_node = self
+                .load_context_node_revision_from_connection(
+                    &transaction,
+                    existing_node_id,
+                    existing_revision,
+                )?
+                .ok_or_else(|| {
+                    MvError::Storage(
+                        "context-node replay references a missing descriptor revision".into(),
+                    )
+                })?;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish context-node replay: {err}")))?;
+            return Ok(IdempotentContextNodeCommit {
+                context_node: existing_context_node,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        let current = self
+            .load_context_node_from_connection(&transaction, replacement.node_id)?
+            .ok_or_else(|| MvError::InvalidInput("context node does not exist".into()))?;
+        if current.revision != expected_revision
+            || replacement.node_uri != current.node_uri
+            || replacement.node_type != current.node_type
+            || replacement.owner_actor_id != current.owner_actor_id
+            || replacement.governing_node_id != current.governing_node_id
+            || replacement.status != current.status
+            || replacement.created_at != current.created_at
+            || replacement.updated_at < current.updated_at
+        {
+            return Err(MvError::InvalidInput(
+                "descriptor updates must preserve stable identity, governance, lifecycle, and creation time"
+                    .into(),
+            ));
+        }
+        if replacement.capability_manifest != current.capability_manifest {
+            let next_manifest_revision = current
+                .capability_manifest
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| MvError::InvalidInput("capability revision overflow".into()))?;
+            if replacement.capability_manifest.revision != next_manifest_revision {
+                return Err(MvError::InvalidInput(
+                    "changed capability manifests must advance exactly one revision".into(),
+                ));
+            }
+        }
+
+        Self::require_active_schema_references(&transaction, &replacement.capability_manifest)?;
+        self.update_context_node(&transaction, expected_revision, replacement)?;
+        Self::insert_outbox_event(&transaction, event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit context-node update: {err}")))?;
+        Ok(IdempotentContextNodeCommit {
+            context_node: replacement.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn transition_context_node_with_event(
+        &self,
+        expected_revision: u64,
+        replacement: &ContextNodeRecord,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentContextNodeCommit> {
+        replacement.validate().map_err(MvError::InvalidInput)?;
+        let next_revision = expected_revision
+            .checked_add(1)
+            .ok_or_else(|| MvError::InvalidInput("context-node revision overflow".into()))?;
+        if replacement.revision != next_revision {
+            return Err(MvError::InvalidInput(
+                "replacement context-node revision must advance exactly once".into(),
+            ));
+        }
+        Self::validate_context_node_event_record(event, replacement, true, false)?;
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin context-node transition: {err}")))?;
+        let local_node_id = Self::ensure_local_context_node(&transaction)?;
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            local_node_id,
+            CONTEXT_NODE_LIFECYCLE_TRANSITIONED_V1,
+            "context-node-lifecycle-transitioned",
+        )?;
+
+        if let Some(existing_event) = Self::resolve_governance_replay(
+            &transaction,
+            event,
+            CONTEXT_NODE_LIFECYCLE_TRANSITIONED_V1,
+        )? {
+            let existing_node_id = event_context_node_id(&existing_event)?;
+            let existing_revision = event_context_node_revision(&existing_event, 1)?;
+            let existing_context_node = self
+                .load_context_node_revision_from_connection(
+                    &transaction,
+                    existing_node_id,
+                    existing_revision,
+                )?
+                .ok_or_else(|| {
+                    MvError::Storage(
+                        "context-node replay references a missing descriptor revision".into(),
+                    )
+                })?;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish context-node replay: {err}")))?;
+            return Ok(IdempotentContextNodeCommit {
+                context_node: existing_context_node,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        let current = self
+            .load_context_node_from_connection(&transaction, replacement.node_id)?
+            .ok_or_else(|| MvError::InvalidInput("context node does not exist".into()))?;
+        if current.revision != expected_revision
+            || !current.status.can_transition_to(replacement.status)
+            || event
+                .data
+                .get("from_status")
+                .and_then(|value| value.as_str())
+                != Some(current.status.as_str())
+            || event.data.get("to_status").and_then(|value| value.as_str())
+                != Some(replacement.status.as_str())
+        {
+            return Err(MvError::InvalidInput(
+                "context-node lifecycle transition is not allowed or does not match its event"
+                    .into(),
+            ));
+        }
+        let mut expected = current.clone();
+        expected.revision = replacement.revision;
+        expected.status = replacement.status;
+        expected.updated_at = replacement.updated_at;
+        if expected != *replacement {
+            return Err(MvError::InvalidInput(
+                "lifecycle transitions may change only status, revision, and update time".into(),
+            ));
+        }
+
+        self.update_context_node(&transaction, expected_revision, replacement)?;
+        Self::insert_outbox_event(&transaction, event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit context-node transition: {err}")))?;
+        Ok(IdempotentContextNodeCommit {
+            context_node: replacement.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn commit_authority_grant_with_event(
+        &self,
+        grant: &AuthorityGrant,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentAuthorityGrantCommit> {
+        grant.validate().map_err(MvError::InvalidInput)?;
+        if grant.revision != 1 || grant.status != AuthorityGrantStatus::Active {
+            return Err(MvError::InvalidInput(
+                "new authority grants must start active at revision one".into(),
+            ));
+        }
+        Self::validate_authority_grant_event_record(event, grant, false, true)?;
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin authority-grant issuance: {err}")))?;
+        let local_node_id = Self::ensure_local_context_node(&transaction)?;
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            local_node_id,
+            AUTHORITY_GRANT_ISSUED_V1,
+            "authority-grant-issued",
+        )?;
+
+        if event.principal != grant.grantor || event.actor != grant.grantor {
+            return Err(MvError::InvalidInput(
+                "authority-grant issuance principal and actor must be the grantor".into(),
+            ));
+        }
+        if grant.governing_node != StableUri::node(local_node_id) {
+            return Err(MvError::InvalidInput(
+                "authority grants must be governed by the local Context Node".into(),
+            ));
+        }
+        let local_node = self
+            .load_context_node_from_connection(&transaction, local_node_id)?
+            .ok_or_else(|| {
+                MvError::InvalidInput(
+                    "authority grants require a registered local Context Node".into(),
+                )
+            })?;
+        if local_node.status != ContextNodeStatus::Active {
+            return Err(MvError::InvalidInput(
+                "authority grants require an active local Context Node".into(),
+            ));
+        }
+        if !grant.is_effective_at(event.occurred_at) {
+            return Err(MvError::InvalidInput(
+                "authority grant must be effective when its issuance event occurs".into(),
+            ));
+        }
+
+        if let Some(existing_event) =
+            Self::resolve_governance_replay(&transaction, event, AUTHORITY_GRANT_ISSUED_V1)?
+        {
+            let existing_grant_id = event_authority_grant_id(&existing_event)?;
+            let existing_revision = event_authority_grant_revision(&existing_event, 1)?;
+            let existing_grant = self
+                .load_authority_grant_revision_from_connection(
+                    &transaction,
+                    existing_grant_id,
+                    existing_revision,
+                )?
+                .ok_or_else(|| {
+                    MvError::Storage(
+                        "authority-grant replay references a missing grant revision".into(),
+                    )
+                })?;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish authority-grant replay: {err}")))?;
+            return Ok(IdempotentAuthorityGrantCommit {
+                grant: existing_grant,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        if let Some(parent_id) = grant.parent_grant_id {
+            let parent = self
+                .load_authority_grant_from_connection(&transaction, parent_id)?
+                .ok_or_else(|| {
+                    MvError::InvalidInput("authority-grant parent does not exist".into())
+                })?;
+            if !grant.is_delegation_subset_of(&parent)
+                || !self.authority_grant_chain_is_effective(
+                    &transaction,
+                    &parent,
+                    event.occurred_at,
+                )?
+            {
+                return Err(MvError::InvalidInput(
+                    "delegated authority grant must be a strict subset of an effective parent chain"
+                        .into(),
+                ));
+            }
+        } else if grant.grantor.principal_context_node_uuid() != Some(local_node_id) {
+            return Err(MvError::InvalidInput(
+                "root authority grants must be issued by a local principal".into(),
+            ));
+        }
+
+        self.insert_authority_grant(&transaction, grant)?;
+        Self::insert_outbox_event(&transaction, event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit authority-grant issuance: {err}")))?;
+        Ok(IdempotentAuthorityGrantCommit {
+            grant: grant.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn get_authority_grant(&self, grant_id: Uuid) -> MvResult<Option<AuthorityGrant>> {
+        self.with_conn(|connection| self.load_authority_grant_from_connection(connection, grant_id))
+    }
+
+    async fn list_authority_grants(
+        &self,
+        grantee: Option<&StableUri>,
+        kind: Option<AuthorityGrantKind>,
+        status: Option<AuthorityGrantStatus>,
+    ) -> MvResult<Vec<AuthorityGrant>> {
+        self.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT grant_id, revision, grant_uri, grant_kind, grantor_uri, grantee_uri,
+                            governing_node_uri, status, parent_grant_id, not_before, expires_at,
+                            record_payload, payload_format, payload_wrapped_dek, created_at, updated_at
+                     FROM interoperability_authority_grants
+                     WHERE (?1 IS NULL OR grantee_uri = ?1)
+                       AND (?2 IS NULL OR grant_kind = ?2)
+                       AND (?3 IS NULL OR status = ?3)
+                     ORDER BY updated_at ASC, grant_id ASC",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare authority-grant query: {err}")))?;
+            let grantee = grantee.map(StableUri::as_str);
+            let kind = kind.map(|value| value.as_str());
+            let status = status.map(|value| value.as_str());
+            let rows = statement
+                .query_map(params![grantee, kind, status], |row| {
+                    self.row_to_authority_grant(row)
+                })
+                .map_err(|err| MvError::Storage(format!("query authority grants: {err}")))?;
+            let mut grants = Vec::new();
+            for row in rows {
+                grants.push(
+                    row.map_err(|err| MvError::Storage(format!("read authority grant: {err}")))?,
+                );
+            }
+            Ok(grants)
+        })
+    }
+
+    async fn find_authorizing_grant(
+        &self,
+        query: GrantQuery<'_>,
+    ) -> MvResult<Option<AuthorityGrant>> {
+        let GrantQuery {
+            grantee,
+            kind,
+            target,
+            capability,
+            sensitivity,
+            retention,
+            at,
+        } = query;
+        self.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT grant_id, revision, grant_uri, grant_kind, grantor_uri, grantee_uri,
+                            governing_node_uri, status, parent_grant_id, not_before, expires_at,
+                            record_payload, payload_format, payload_wrapped_dek, created_at, updated_at
+                     FROM interoperability_authority_grants
+                     WHERE grantee_uri = ?1
+                       AND grant_kind = ?2
+                       AND status = 'active'
+                       AND not_before <= ?3
+                       AND expires_at > ?3
+                     ORDER BY expires_at ASC, grant_id ASC",
+                )
+                .map_err(|err| {
+                    MvError::Storage(format!("prepare authority resolution query: {err}"))
+                })?;
+            let at_text = at.to_rfc3339();
+            let rows = statement
+                .query_map(params![grantee.as_str(), kind.as_str(), at_text], |row| {
+                    self.row_to_authority_grant(row)
+                })
+                .map_err(|err| MvError::Storage(format!("query authorizing grants: {err}")))?;
+            for row in rows {
+                let grant = row.map_err(|err| {
+                    MvError::Storage(format!("read authorizing grant candidate: {err}"))
+                })?;
+                if grant.allows(kind, target, capability, sensitivity, retention, at)
+                    && self.authority_grant_chain_is_effective(connection, &grant, at)?
+                {
+                    return Ok(Some(grant));
+                }
+            }
+            Ok(None)
+        })
+    }
+
+    async fn transition_authority_grant_with_event(
+        &self,
+        expected_revision: u64,
+        replacement: &AuthorityGrant,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentAuthorityGrantCommit> {
+        replacement.validate().map_err(MvError::InvalidInput)?;
+        let next_revision = expected_revision
+            .checked_add(1)
+            .ok_or_else(|| MvError::InvalidInput("authority-grant revision overflow".into()))?;
+        if replacement.revision != next_revision {
+            return Err(MvError::InvalidInput(
+                "replacement authority-grant revision must advance exactly once".into(),
+            ));
+        }
+        Self::validate_authority_grant_event_record(event, replacement, true, false)?;
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin authority-grant transition: {err}")))?;
+        let local_node_id = Self::ensure_local_context_node(&transaction)?;
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            local_node_id,
+            AUTHORITY_GRANT_LIFECYCLE_TRANSITIONED_V1,
+            "authority-grant-lifecycle-transitioned",
+        )?;
+        if event.principal != replacement.grantor || event.actor != replacement.grantor {
+            return Err(MvError::InvalidInput(
+                "authority-grant transition principal and actor must be the grantor".into(),
+            ));
+        }
+        if replacement.governing_node != StableUri::node(local_node_id) {
+            return Err(MvError::InvalidInput(
+                "authority grants must be governed by the local Context Node".into(),
+            ));
+        }
+
+        if let Some(existing_event) = Self::resolve_governance_replay(
+            &transaction,
+            event,
+            AUTHORITY_GRANT_LIFECYCLE_TRANSITIONED_V1,
+        )? {
+            let existing_grant_id = event_authority_grant_id(&existing_event)?;
+            let existing_revision = event_authority_grant_revision(&existing_event, 1)?;
+            let existing_grant = self
+                .load_authority_grant_revision_from_connection(
+                    &transaction,
+                    existing_grant_id,
+                    existing_revision,
+                )?
+                .ok_or_else(|| {
+                    MvError::Storage(
+                        "authority-grant replay references a missing grant revision".into(),
+                    )
+                })?;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish authority-grant replay: {err}")))?;
+            return Ok(IdempotentAuthorityGrantCommit {
+                grant: existing_grant,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        let current = self
+            .load_authority_grant_from_connection(&transaction, replacement.grant_id)?
+            .ok_or_else(|| MvError::InvalidInput("authority grant does not exist".into()))?;
+        if current.revision != expected_revision
+            || !current.status.can_transition_to(replacement.status)
+            || event
+                .data
+                .get("from_status")
+                .and_then(|value| value.as_str())
+                != Some(current.status.as_str())
+            || event.data.get("to_status").and_then(|value| value.as_str())
+                != Some(replacement.status.as_str())
+        {
+            return Err(MvError::InvalidInput(
+                "authority-grant lifecycle transition is not allowed or does not match its event"
+                    .into(),
+            ));
+        }
+        let mut expected = current.clone();
+        expected.revision = replacement.revision;
+        expected.status = replacement.status;
+        expected.status_reason = replacement.status_reason.clone();
+        expected.updated_at = replacement.updated_at;
+        if expected != *replacement {
+            return Err(MvError::InvalidInput(
+                "authority-grant lifecycle transitions may change only status, reason, revision, and update time"
+                    .into(),
+            ));
+        }
+        if replacement.status == AuthorityGrantStatus::Expired
+            && event.occurred_at < replacement.expires_at
+        {
+            return Err(MvError::InvalidInput(
+                "authority grants cannot transition to expired before their expiry time".into(),
+            ));
+        }
+        if replacement.status == AuthorityGrantStatus::Active
+            && !self.authority_grant_chain_is_effective(
+                &transaction,
+                replacement,
+                event.occurred_at,
+            )?
+        {
+            return Err(MvError::InvalidInput(
+                "authority grant cannot reactivate without an effective parent chain".into(),
+            ));
+        }
+
+        self.update_authority_grant(&transaction, expected_revision, replacement)?;
+        Self::insert_outbox_event(&transaction, event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit authority-grant transition: {err}")))?;
+        Ok(IdempotentAuthorityGrantCommit {
+            grant: replacement.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn commit_public_schema_with_event(
+        &self,
+        schema: &PublicSchemaRecord,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentSchemaCommit> {
+        schema.validate().map_err(MvError::InvalidInput)?;
+        if schema.lifecycle != PublicSchemaLifecycle::Active {
+            return Err(MvError::InvalidInput(
+                "new public schema versions must be registered as active".into(),
+            ));
+        }
+        let expected_subject =
+            StableUri::schema_version(&schema.schema.uri, &schema.schema.version)
+                .map_err(MvError::InvalidInput)?;
+        if event.subject != expected_subject
+            || event
+                .data
+                .get("schema_uri")
+                .and_then(|value| value.as_str())
+                != Some(schema.schema.uri.as_str())
+            || event
+                .data
+                .get("schema_version")
+                .and_then(|value| value.as_str())
+                != Some(schema.schema.version.as_str())
+            || event
+                .data
+                .get("content_digest")
+                .and_then(|value| value.as_str())
+                != Some(schema.content_digest.as_str())
+        {
+            return Err(MvError::InvalidInput(
+                "schema registration event must match the governed schema record".into(),
+            ));
+        }
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin schema registration: {err}")))?;
+        let local_node_id = Self::ensure_local_context_node(&transaction)?;
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            local_node_id,
+            PUBLIC_SCHEMA_REGISTERED_V1,
+            "public-schema-registered",
+        )?;
+
+        if let Some(existing_event) =
+            Self::resolve_governance_replay(&transaction, event, PUBLIC_SCHEMA_REGISTERED_V1)?
+        {
+            let schema_uri = existing_event
+                .data
+                .get("schema_uri")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    MvError::Storage("stored schema event is missing schema_uri".into())
+                })?;
+            let schema_version = existing_event
+                .data
+                .get("schema_version")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    MvError::Storage("stored schema event is missing schema_version".into())
+                })?;
+            let reference = SchemaReference::new(
+                StableUri::parse(schema_uri).map_err(MvError::Storage)?,
+                schema_version,
+            )
+            .map_err(MvError::Storage)?;
+            let existing_schema =
+                Self::load_public_schema_from_connection(&transaction, &reference)?.ok_or_else(
+                    || MvError::Storage("schema replay references a missing schema record".into()),
+                )?;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish schema replay: {err}")))?;
+            return Ok(IdempotentSchemaCommit {
+                schema: existing_schema,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        let definition_json = serde_json::to_string(&schema.definition)?;
+        transaction
+            .execute(
+                "INSERT INTO interoperability_public_schemas
+                 (schema_uri, schema_version, media_type, definition_json, content_digest,
+                  lifecycle, owner_uri, created_at, deprecated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    schema.schema.uri.as_str(),
+                    &schema.schema.version,
+                    &schema.media_type,
+                    definition_json,
+                    &schema.content_digest,
+                    schema.lifecycle.as_str(),
+                    schema.owner.as_str(),
+                    schema.created_at.to_rfc3339(),
+                    schema.deprecated_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert public schema: {err}")))?;
+        Self::insert_outbox_event(&transaction, event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit schema registration: {err}")))?;
+        Ok(IdempotentSchemaCommit {
+            schema: schema.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn get_public_schema(
+        &self,
+        reference: &SchemaReference,
+    ) -> MvResult<Option<PublicSchemaRecord>> {
+        self.with_conn(|connection| Self::load_public_schema_from_connection(connection, reference))
+    }
+
+    async fn list_public_schema_versions(
+        &self,
+        schema_uri: &StableUri,
+    ) -> MvResult<Vec<PublicSchemaRecord>> {
+        self.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT schema_uri, schema_version, media_type, definition_json,
+                            content_digest, lifecycle, owner_uri, created_at, deprecated_at
+                     FROM interoperability_public_schemas
+                     WHERE schema_uri = ?1
+                     ORDER BY created_at ASC, schema_version ASC",
+                )
+                .map_err(|err| {
+                    MvError::Storage(format!("prepare public schema version query: {err}"))
+                })?;
+            let rows = statement
+                .query_map(params![schema_uri.as_str()], Self::row_to_public_schema)
+                .map_err(|err| MvError::Storage(format!("query public schema versions: {err}")))?;
+            let mut schemas = Vec::new();
+            for row in rows {
+                schemas.push(
+                    row.map_err(|err| MvError::Storage(format!("read public schema: {err}")))?,
+                );
+            }
+            Ok(schemas)
+        })
+    }
+
+    async fn commit_source_binding_with_event(
+        &self,
+        binding: &SourceBinding,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentSourceBindingCommit> {
+        binding.validate().map_err(MvError::InvalidInput)?;
+        if binding.revision != 1
+            || binding.status != SourceBindingStatus::Active
+            || binding.supersedes_binding_id.is_some()
+        {
+            return Err(MvError::InvalidInput(
+                "new source bindings must be active revision one without a predecessor".into(),
+            ));
+        }
+        let local_node_id = binding.context_node.context_node_uuid().ok_or_else(|| {
+            MvError::InvalidInput("source binding context node must end in its node UUID".into())
+        })?;
+        let expected_subject = StableUri::source_binding(local_node_id, binding.binding_id);
+        if event.subject != expected_subject
+            || event
+                .data
+                .get("binding_id")
+                .and_then(|value| value.as_str())
+                != Some(binding.binding_id.to_string().as_str())
+            || event
+                .data
+                .get("resource_uri")
+                .and_then(|value| value.as_str())
+                != Some(binding.resource_uri.as_str())
+            || event
+                .data
+                .get("external_system")
+                .and_then(|value| value.as_str())
+                != Some(binding.external_system.as_str())
+            || event
+                .data
+                .get("materialization_mode")
+                .and_then(|value| value.as_str())
+                != Some(binding.materialization_mode.as_str())
+        {
+            return Err(MvError::InvalidInput(
+                "source-binding event must match the governed binding record".into(),
+            ));
+        }
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin source binding registration: {err}")))?;
+        let persisted_local_node_id = Self::ensure_local_context_node(&transaction)?;
+        if local_node_id != persisted_local_node_id
+            || binding.context_node != StableUri::node(persisted_local_node_id)
+        {
+            return Err(MvError::InvalidInput(
+                "source binding must be governed by the local context node".into(),
+            ));
+        }
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            persisted_local_node_id,
+            SOURCE_BINDING_REGISTERED_V1,
+            "source-binding-registered",
+        )?;
+
+        if let Some(existing_event) =
+            Self::resolve_governance_replay(&transaction, event, SOURCE_BINDING_REGISTERED_V1)?
+        {
+            let existing_id = event_binding_id(&existing_event)?;
+            let existing_binding = self
+                .load_source_binding_from_connection(&transaction, existing_id)?
+                .ok_or_else(|| {
+                    MvError::Storage("source-binding replay references a missing binding".into())
+                })?;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish source-binding replay: {err}")))?;
+            return Ok(IdempotentSourceBindingCommit {
+                binding: existing_binding,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        self.require_active_context_node(&transaction, persisted_local_node_id)?;
+        self.insert_source_binding(&transaction, binding)?;
+        Self::insert_outbox_event(&transaction, event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit source binding: {err}")))?;
+        Ok(IdempotentSourceBindingCommit {
+            binding: binding.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn get_source_binding(&self, binding_id: Uuid) -> MvResult<Option<SourceBinding>> {
+        self.with_conn(|connection| {
+            self.load_source_binding_from_connection(connection, binding_id)
+        })
+    }
+
+    async fn find_active_source_binding(
+        &self,
+        context_node: &StableUri,
+        external_account_id: &str,
+        external_object_id: &str,
+    ) -> MvResult<Option<SourceBinding>> {
+        if external_account_id.is_empty() || external_object_id.is_empty() {
+            return Err(MvError::InvalidInput(
+                "external account and object identifiers must not be empty".into(),
+            ));
+        }
+        self.with_conn(|connection| {
+            connection
+                .query_row(
+                    "SELECT binding_id, revision, resource_uri, context_node_uri,
+                            external_system, external_account_key, external_object_key,
+                            status, supersedes_binding_id, record_payload, payload_format,
+                            payload_wrapped_dek, created_at, updated_at
+                     FROM interoperability_source_bindings
+                     WHERE context_node_uri = ?1
+                       AND external_account_key = ?2
+                       AND external_object_key = ?3
+                       AND status = 'active'",
+                    params![
+                        context_node.as_str(),
+                        self.source_lookup_key(external_account_id)?,
+                        self.source_lookup_key(external_object_id)?,
+                    ],
+                    |row| self.row_to_source_binding(row),
+                )
+                .optional()
+                .map_err(|err| MvError::Storage(format!("find active source binding: {err}")))
+        })
+    }
+
+    async fn rebind_source_with_event(
+        &self,
+        previous_binding_id: Uuid,
+        replacement: &SourceBinding,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentSourceBindingCommit> {
+        replacement.validate().map_err(MvError::InvalidInput)?;
+        if replacement.revision != 1
+            || replacement.status != SourceBindingStatus::Active
+            || replacement.supersedes_binding_id != Some(previous_binding_id)
+        {
+            return Err(MvError::InvalidInput(
+                "replacement binding must be active revision one and name its predecessor".into(),
+            ));
+        }
+        let local_node_id = replacement
+            .context_node
+            .context_node_uuid()
+            .ok_or_else(|| {
+                MvError::InvalidInput("replacement context node must end in its node UUID".into())
+            })?;
+        let expected_subject = StableUri::source_binding(local_node_id, replacement.binding_id);
+        if event.subject != expected_subject
+            || event_binding_id(event)? != replacement.binding_id
+            || event
+                .data
+                .get("supersedes_binding_id")
+                .and_then(|value| value.as_str())
+                != Some(previous_binding_id.to_string().as_str())
+        {
+            return Err(MvError::InvalidInput(
+                "source-rebinding event must identify the replacement and predecessor".into(),
+            ));
+        }
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin source rebinding: {err}")))?;
+        let persisted_local_node_id = Self::ensure_local_context_node(&transaction)?;
+        if local_node_id != persisted_local_node_id
+            || replacement.context_node != StableUri::node(persisted_local_node_id)
+        {
+            return Err(MvError::InvalidInput(
+                "replacement must be governed by the local context node".into(),
+            ));
+        }
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            persisted_local_node_id,
+            SOURCE_BINDING_REBOUND_V1,
+            "source-binding-rebound",
+        )?;
+        if let Some(existing_event) =
+            Self::resolve_governance_replay(&transaction, event, SOURCE_BINDING_REBOUND_V1)?
+        {
+            let existing_id = event_binding_id(&existing_event)?;
+            let existing_binding = self
+                .load_source_binding_from_connection(&transaction, existing_id)?
+                .ok_or_else(|| {
+                    MvError::Storage("rebinding replay references a missing binding".into())
+                })?;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish rebinding replay: {err}")))?;
+            return Ok(IdempotentSourceBindingCommit {
+                binding: existing_binding,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        self.require_active_context_node(&transaction, persisted_local_node_id)?;
+        let previous = self
+            .load_source_binding_from_connection(&transaction, previous_binding_id)?
+            .ok_or_else(|| MvError::InvalidInput("predecessor binding does not exist".into()))?;
+        if previous.status != SourceBindingStatus::Active {
+            return Err(MvError::InvalidInput(
+                "only an active source binding can be rebound".into(),
+            ));
+        }
+        if previous.context_node != replacement.context_node {
+            return Err(MvError::InvalidInput(
+                "rebinding cannot transfer context-node authority implicitly".into(),
+            ));
+        }
+        if previous.resource_uri != replacement.resource_uri {
+            return Err(MvError::InvalidInput(
+                "rebinding must preserve the canonical resource identity".into(),
+            ));
+        }
+        if event.occurred_at < previous.updated_at {
+            return Err(MvError::InvalidInput(
+                "rebinding event cannot predate the active source binding".into(),
+            ));
+        }
+
+        let mut retired = previous.clone();
+        retired.status = SourceBindingStatus::Migrated;
+        retired.revision = previous.revision + 1;
+        retired.updated_at = event.occurred_at;
+        retired.validate().map_err(MvError::InvalidInput)?;
+        let (payload, payload_format, wrapped_dek) =
+            self.encode_governance_record(&retired, "retired source binding")?;
+        let updated = transaction
+            .execute(
+                "UPDATE interoperability_source_bindings
+                 SET revision = ?2, status = ?3, record_payload = ?4,
+                     payload_format = ?5, payload_wrapped_dek = ?6, updated_at = ?7
+                 WHERE binding_id = ?1 AND revision = ?8 AND status = 'active'",
+                params![
+                    previous.binding_id.to_string(),
+                    retired.revision,
+                    retired.status.as_str(),
+                    payload,
+                    payload_format,
+                    wrapped_dek,
+                    retired.updated_at.to_rfc3339(),
+                    previous.revision,
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("retire source binding: {err}")))?;
+        if updated != 1 {
+            return Err(MvError::IdempotencyConflict(
+                "source binding changed during rebinding".into(),
+            ));
+        }
+        self.insert_source_binding(&transaction, replacement)?;
+        Self::insert_outbox_event(&transaction, event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit source rebinding: {err}")))?;
+        Ok(IdempotentSourceBindingCommit {
+            binding: replacement.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn commit_node_create_with_event(
+        &self,
+        node: &KnowledgeNode,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentNodeCommit> {
+        event.validate().map_err(MvError::InvalidInput)?;
+        if event.subject.trailing_uuid() != Some(node.id) {
+            return Err(MvError::InvalidInput(
+                "event subject must identify the node being created".into(),
+            ));
+        }
+
+        let mut conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| MvError::Storage(format!("begin interoperable mutation: {e}")))?;
+
+        let local_node_id = Self::ensure_local_context_node(&tx)?;
+        let expected_source = StableUri::node(local_node_id);
+        let expected_subject = StableUri::knowledge_node(local_node_id, node.id);
+        let expected_schema = StableUri::schema("knowledge-node-created")
+            .map_err(|e| MvError::Storage(format!("invalid built-in event schema: {e}")))?;
+        if event.source != expected_source {
+            return Err(MvError::InvalidInput(
+                "event source must identify the local context node".into(),
+            ));
+        }
+        if event.subject != expected_subject {
+            return Err(MvError::InvalidInput(
+                "event subject must use the local canonical knowledge-node URI".into(),
+            ));
+        }
+        if event.event_type != KNOWLEDGE_NODE_CREATED_V1
+            || event.schema.uri != expected_schema
+            || event.schema.version != "1.0.0"
+        {
+            return Err(MvError::InvalidInput(
+                "node creation requires the supported knowledge-node-created event schema".into(),
+            ));
+        }
+        Self::require_active_event_schema(&tx, event)?;
+        if !event.provenance.iter().any(|reference| {
+            reference.resource == expected_subject
+                && reference.relation == ProvenanceRelation::PrimarySource
+        }) {
+            return Err(MvError::InvalidInput(
+                "node creation event must identify the node as its primary source".into(),
+            ));
+        }
+        if event
+            .data
+            .get("resource_kind")
+            .and_then(|value| value.as_str())
+            != Some("knowledge_node")
+            || event.data.get("node_kind").and_then(|value| value.as_str())
+                != Some(node.kind.as_str())
+            || event.data.get("namespace").and_then(|value| value.as_str())
+                != Some(node.namespace.as_str())
+        {
+            return Err(MvError::InvalidInput(
+                "node creation event data must match the canonical node".into(),
+            ));
+        }
+
+        if let Some(existing) = self.resolve_node_create_replay(
+            &tx,
+            &event.source,
+            &event.principal,
+            &event.idempotency_key,
+            &event.payload_digest,
+        )? {
+            tx.commit()
+                .map_err(|e| MvError::Storage(format!("finish idempotent replay: {e}")))?;
+            return Ok(existing);
+        }
+
+        let (title, content, source, metadata_json, payload_ciphertext, payload_wrapped_dek) =
+            self.project_node_for_storage(node)?;
+        tx.execute(
+            "INSERT INTO knowledge_nodes
+             (id, kind, title, content, source, namespace, importance,
+              created_at, updated_at, last_accessed_at, access_count, version,
+              expires_at, metadata_json, payload_ciphertext, payload_wrapped_dek)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                node.id.to_string(),
+                node.kind.as_str(),
+                title,
+                content,
+                source,
+                node.namespace,
+                node.importance,
+                node.temporal.created_at.to_rfc3339(),
+                node.temporal.updated_at.to_rfc3339(),
+                node.temporal.last_accessed_at.to_rfc3339(),
+                node.temporal.access_count,
+                node.temporal.version,
+                node.temporal.expires_at.map(|dt| dt.to_rfc3339()),
+                metadata_json,
+                payload_ciphertext,
+                payload_wrapped_dek,
+            ],
+        )
+        .map_err(|e| MvError::Storage(format!("insert interoperable node: {e}")))?;
+        Self::save_tags(&tx, node.id, &node.tags)?;
+        Self::log_change(&tx, node.id, ChangeOp::Create, None)?;
+
+        Self::insert_outbox_event(&tx, event)?;
+        tx.commit()
+            .map_err(|e| MvError::Storage(format!("commit interoperable mutation: {e}")))?;
+
+        Ok(IdempotentNodeCommit {
+            node: node.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn find_node_create_replay(
+        &self,
+        source: &StableUri,
+        principal: &StableUri,
+        idempotency_key: &IdempotencyKey,
+        payload_digest: &str,
+    ) -> MvResult<Option<IdempotentNodeCommit>> {
+        self.with_conn(|conn| {
+            self.resolve_node_create_replay(
+                conn,
+                source,
+                principal,
+                idempotency_key,
+                payload_digest,
+            )
+        })
+    }
+
+    async fn get_outbox_event(&self, event_id: Uuid) -> MvResult<Option<EventEnvelope>> {
+        self.with_conn(|conn| {
+            let envelope_json: Option<String> = conn
+                .query_row(
+                    "SELECT envelope_json FROM interoperability_outbox WHERE event_id = ?1",
+                    params![event_id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| MvError::Storage(format!("load interoperability event: {e}")))?;
+            envelope_json
+                .map(|json| Self::decode_outbox_event(&json))
+                .transpose()
+        })
+    }
+
+    async fn list_pending_outbox_events(&self, limit: usize) -> MvResult<Vec<EventEnvelope>> {
+        if !(1..=1000).contains(&limit) {
+            return Err(MvError::InvalidInput(
+                "outbox event limit must be between 1 and 1000".into(),
+            ));
+        }
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT envelope_json FROM interoperability_outbox
+                     WHERE delivery_state = 'pending'
+                     ORDER BY created_at ASC, event_id ASC
+                     LIMIT ?1",
+                )
+                .map_err(|e| MvError::Storage(format!("prepare outbox query: {e}")))?;
+            let rows = stmt
+                .query_map(params![limit as i64], |row| row.get::<_, String>(0))
+                .map_err(|e| MvError::Storage(format!("query pending outbox events: {e}")))?;
+            let mut events = Vec::new();
+            for row in rows {
+                let json =
+                    row.map_err(|e| MvError::Storage(format!("read pending outbox event: {e}")))?;
+                events.push(Self::decode_outbox_event(&json)?);
+            }
+            Ok(events)
+        })
+    }
+
+    async fn get_outbox_delivery_status(
+        &self,
+        event_id: Uuid,
+    ) -> MvResult<Option<OutboxDeliveryStatus>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT event_id, delivery_state, delivery_attempts, next_attempt_at,
+                        lease_expires_at, published_at, last_error, updated_at
+                 FROM interoperability_outbox
+                 WHERE event_id = ?1",
+                params![event_id.to_string()],
+                |row| {
+                    let stored_event_id: String = row.get(0)?;
+                    let state: String = row.get(1)?;
+                    let next_attempt_at: String = row.get(3)?;
+                    let lease_expires_at: Option<String> = row.get(4)?;
+                    let published_at: Option<String> = row.get(5)?;
+                    let updated_at: String = row.get(7)?;
+                    Ok(OutboxDeliveryStatus {
+                        event_id: parse_uuid_str(0, &stored_event_id)?,
+                        state: state
+                            .parse()
+                            .map_err(|err: String| Self::as_sql_conversion_error(1, err))?,
+                        attempts: row.get(2)?,
+                        next_attempt_at: parse_dt_strict(3, &next_attempt_at)?,
+                        lease_expires_at: parse_optional_dt_strict(4, lease_expires_at)?,
+                        published_at: parse_optional_dt_strict(5, published_at)?,
+                        last_error_code: row.get(6)?,
+                        updated_at: parse_dt_strict(7, &updated_at)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load outbox delivery status: {err}")))
+        })
+    }
+
+    async fn claim_outbox_events(
+        &self,
+        executor: &StableUri,
+        destination: &StableUri,
+        claimed_at: chrono::DateTime<Utc>,
+        lease_expires_at: chrono::DateTime<Utc>,
+        limit: usize,
+    ) -> MvResult<Vec<OutboxDeliveryClaim>> {
+        if !(1..=1000).contains(&limit) {
+            return Err(MvError::InvalidInput(
+                "outbox claim limit must be between 1 and 1000".into(),
+            ));
+        }
+        if lease_expires_at <= claimed_at
+            || lease_expires_at - claimed_at > chrono::Duration::hours(1)
+        {
+            return Err(MvError::InvalidInput(
+                "outbox lease must be positive and no longer than one hour".into(),
+            ));
+        }
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin outbox claim: {err}")))?;
+        let candidates = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT event_id, envelope_json, delivery_attempts
+                     FROM interoperability_outbox
+                     WHERE delivery_state = 'pending'
+                       AND next_attempt_at <= ?1
+                       AND (lease_id IS NULL OR lease_expires_at <= ?1)
+                     ORDER BY created_at ASC, event_id ASC
+                     LIMIT ?2",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare outbox claim: {err}")))?;
+            let rows = statement
+                .query_map(params![claimed_at.to_rfc3339(), limit as i64], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, u32>(2)?,
+                    ))
+                })
+                .map_err(|err| MvError::Storage(format!("query dispatchable events: {err}")))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|err| MvError::Storage(format!("read dispatchable event: {err}")))?
+        };
+
+        let mut claims = Vec::with_capacity(candidates.len());
+        for (event_id, envelope_json, previous_attempts) in candidates {
+            let event = Self::decode_outbox_event(&envelope_json)?;
+            if event.id.to_string() != event_id {
+                return Err(MvError::Storage(
+                    "outbox envelope ID does not match its governed index".into(),
+                ));
+            }
+            let lease_id = Uuid::now_v7();
+            let attempt = previous_attempts.checked_add(1).ok_or_else(|| {
+                MvError::Storage("outbox delivery attempt counter overflow".into())
+            })?;
+            let updated = transaction
+                .execute(
+                    "UPDATE interoperability_outbox
+                     SET delivery_attempts = ?2,
+                         lease_id = ?3,
+                         lease_owner_uri = ?4,
+                         lease_destination_uri = ?5,
+                         lease_expires_at = ?6,
+                         last_attempt_at = ?7,
+                         updated_at = ?7
+                     WHERE event_id = ?1
+                       AND delivery_state = 'pending'
+                       AND delivery_attempts = ?8
+                       AND next_attempt_at <= ?7
+                       AND (lease_id IS NULL OR lease_expires_at <= ?7)",
+                    params![
+                        &event_id,
+                        attempt,
+                        lease_id.to_string(),
+                        executor.as_str(),
+                        destination.as_str(),
+                        lease_expires_at.to_rfc3339(),
+                        claimed_at.to_rfc3339(),
+                        previous_attempts,
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("claim outbox event: {err}")))?;
+            if updated != 1 {
+                return Err(MvError::Storage(
+                    "outbox event changed while its claim was being committed".into(),
+                ));
+            }
+            let claim = OutboxDeliveryClaim {
+                event,
+                lease_id,
+                attempt,
+                executor: executor.clone(),
+                destination: destination.clone(),
+                claimed_at,
+                lease_expires_at,
+            };
+            claim.validate().map_err(MvError::InvalidInput)?;
+            claims.push(claim);
+        }
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit outbox claims: {err}")))?;
+        Ok(claims)
+    }
+
+    async fn complete_outbox_delivery(
+        &self,
+        claim: &OutboxDeliveryClaim,
+        completion: &OutboxDeliveryCompletion,
+    ) -> MvResult<ActionReceipt> {
+        completion
+            .validate_for(claim)
+            .map_err(MvError::InvalidInput)?;
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin outbox completion: {err}")))?;
+
+        if let Some(existing) =
+            self.load_action_receipt_by_attempt(&transaction, claim.event.id, claim.attempt)?
+        {
+            if !existing.matches_delivery(claim, completion) {
+                return Err(MvError::IdempotencyConflict(
+                    "delivery attempt already has a different action receipt".into(),
+                ));
+            }
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish receipt replay: {err}")))?;
+            return Ok(existing);
+        }
+
+        let stored_claim: Option<(String, u32, String, String, String, String, String)> =
+            transaction
+                .query_row(
+                    "SELECT delivery_state, delivery_attempts, lease_id, lease_owner_uri,
+                            lease_destination_uri, last_attempt_at, envelope_json
+                     FROM interoperability_outbox
+                     WHERE event_id = ?1",
+                    params![claim.event.id.to_string()],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|err| MvError::Storage(format!("load active outbox claim: {err}")))?;
+        let Some((
+            delivery_state,
+            attempt,
+            lease_id,
+            executor,
+            destination,
+            started_at,
+            envelope_json,
+        )) = stored_claim
+        else {
+            return Err(MvError::InvalidInput(format!(
+                "outbox event not found: {}",
+                claim.event.id
+            )));
+        };
+        let stored_event = Self::decode_outbox_event(&envelope_json)?;
+        if delivery_state != OutboxDeliveryState::Pending.as_str()
+            || attempt != claim.attempt
+            || lease_id != claim.lease_id.to_string()
+            || executor != claim.executor.as_str()
+            || destination != claim.destination.as_str()
+            || started_at != claim.claimed_at.to_rfc3339()
+            || stored_event != claim.event
+        {
+            return Err(MvError::IdempotencyConflict(
+                "outbox completion references a stale or different claim".into(),
+            ));
+        }
+
+        let receipt = ActionReceipt::from_outbox_delivery(claim, completion)
+            .map_err(MvError::InvalidInput)?;
+        let (payload, payload_format, wrapped_dek) =
+            self.encode_governance_record(&receipt, "action receipt")?;
+        transaction
+            .execute(
+                "INSERT INTO interoperability_action_receipts
+                 (receipt_id, receipt_version, event_id, claim_id, attempt_no, outcome,
+                  executor_uri, destination_uri, subject_uri, principal_uri, actor_uri,
+                  correlation_id, request_digest, started_at, completed_at, sensitivity,
+                  retention, payload, payload_format, payload_wrapped_dek, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?15)",
+                params![
+                    receipt.receipt_id.to_string(),
+                    &receipt.receipt_version,
+                    receipt.event_id.to_string(),
+                    receipt.claim_id.to_string(),
+                    receipt.attempt,
+                    receipt.outcome.as_str(),
+                    receipt.executor.as_str(),
+                    receipt.destination.as_str(),
+                    receipt.subject.as_str(),
+                    receipt.principal.as_str(),
+                    receipt.actor.as_str(),
+                    receipt.correlation_id.to_string(),
+                    &receipt.request_digest,
+                    receipt.started_at.to_rfc3339(),
+                    receipt.completed_at.to_rfc3339(),
+                    receipt.sensitivity.as_str(),
+                    receipt.retention.as_str(),
+                    payload,
+                    payload_format,
+                    wrapped_dek,
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert action receipt: {err}")))?;
+
+        let (state, next_attempt_at, published_at, last_error) = match &completion.result {
+            OutboxDeliveryResult::Published { .. } => (
+                OutboxDeliveryState::Published,
+                None,
+                Some(completion.completed_at.to_rfc3339()),
+                None,
+            ),
+            OutboxDeliveryResult::RetryScheduled {
+                retry_at,
+                error_code,
+                ..
+            } => (
+                OutboxDeliveryState::Pending,
+                Some(retry_at.to_rfc3339()),
+                None,
+                Some(error_code.as_str()),
+            ),
+            OutboxDeliveryResult::DeadLettered { error_code, .. } => (
+                OutboxDeliveryState::DeadLetter,
+                None,
+                None,
+                Some(error_code.as_str()),
+            ),
+        };
+        let updated = match state {
+            OutboxDeliveryState::Pending => transaction.execute(
+                "UPDATE interoperability_outbox
+                 SET delivery_state = ?2, next_attempt_at = ?3, published_at = NULL,
+                     last_error = ?4, lease_id = NULL, lease_owner_uri = NULL,
+                     lease_destination_uri = NULL, lease_expires_at = NULL,
+                     updated_at = ?5
+                 WHERE event_id = ?1 AND delivery_state = 'pending'
+                   AND delivery_attempts = ?6 AND lease_id = ?7",
+                params![
+                    receipt.event_id.to_string(),
+                    state.as_str(),
+                    next_attempt_at,
+                    last_error,
+                    completion.completed_at.to_rfc3339(),
+                    claim.attempt,
+                    claim.lease_id.to_string(),
+                ],
+            ),
+            OutboxDeliveryState::Published | OutboxDeliveryState::DeadLetter => transaction
+                .execute(
+                    "UPDATE interoperability_outbox
+                 SET delivery_state = ?2, published_at = ?3, last_error = ?4,
+                     lease_id = NULL, lease_owner_uri = NULL,
+                     lease_destination_uri = NULL, lease_expires_at = NULL,
+                     updated_at = ?5
+                 WHERE event_id = ?1 AND delivery_state = 'pending'
+                   AND delivery_attempts = ?6 AND lease_id = ?7",
+                    params![
+                        receipt.event_id.to_string(),
+                        state.as_str(),
+                        published_at,
+                        last_error,
+                        completion.completed_at.to_rfc3339(),
+                        claim.attempt,
+                        claim.lease_id.to_string(),
+                    ],
+                ),
+        }
+        .map_err(|err| MvError::Storage(format!("complete outbox delivery: {err}")))?;
+        if updated != 1 {
+            return Err(MvError::IdempotencyConflict(
+                "outbox claim changed before completion".into(),
+            ));
+        }
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit outbox completion: {err}")))?;
+        Ok(receipt)
+    }
+
+    async fn get_action_receipt(&self, receipt_id: Uuid) -> MvResult<Option<ActionReceipt>> {
+        self.with_conn(|connection| {
+            connection
+                .query_row(
+                    "SELECT receipt_id, receipt_version, event_id, claim_id, attempt_no, outcome,
+                            executor_uri, destination_uri, subject_uri, principal_uri,
+                            actor_uri, correlation_id, request_digest, started_at,
+                            completed_at, sensitivity, retention, payload, payload_format,
+                            payload_wrapped_dek
+                     FROM interoperability_action_receipts
+                     WHERE receipt_id = ?1",
+                    params![receipt_id.to_string()],
+                    |row| self.row_to_action_receipt(row),
+                )
+                .optional()
+                .map_err(|err| MvError::Storage(format!("load action receipt: {err}")))
+        })
+    }
+
+    async fn list_action_receipts(
+        &self,
+        event_id: Uuid,
+        limit: usize,
+    ) -> MvResult<Vec<ActionReceipt>> {
+        if !(1..=1000).contains(&limit) {
+            return Err(MvError::InvalidInput(
+                "action receipt limit must be between 1 and 1000".into(),
+            ));
+        }
+        self.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT receipt_id, receipt_version, event_id, claim_id, attempt_no, outcome,
+                            executor_uri, destination_uri, subject_uri, principal_uri,
+                            actor_uri, correlation_id, request_digest, started_at,
+                            completed_at, sensitivity, retention, payload, payload_format,
+                            payload_wrapped_dek
+                     FROM interoperability_action_receipts
+                     WHERE event_id = ?1
+                     ORDER BY attempt_no ASC
+                     LIMIT ?2",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare action receipts: {err}")))?;
+            let rows = statement
+                .query_map(params![event_id.to_string(), limit as i64], |row| {
+                    self.row_to_action_receipt(row)
+                })
+                .map_err(|err| MvError::Storage(format!("query action receipts: {err}")))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|err| MvError::Storage(format!("read action receipt: {err}")))
+        })
+    }
+
+    async fn admit_consumer_event(
+        &self,
+        consumer: &StableUri,
+        event: &EventEnvelope,
+        received_at: chrono::DateTime<Utc>,
+    ) -> MvResult<ConsumerInboxAdmission> {
+        event.validate().map_err(MvError::InvalidInput)?;
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin consumer inbox admission: {err}")))?;
+
+        if let Some(mut existing) =
+            self.load_consumer_inbox_admission(&transaction, consumer, event.id)?
+        {
+            if existing.event != *event || existing.event.content_digest() != event.content_digest()
+            {
+                return Err(MvError::IdempotencyConflict(
+                    "consumer inbox event ID already has different envelope content".into(),
+                ));
+            }
+            existing.replayed = true;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish inbox admission replay: {err}")))?;
+            return Ok(existing);
+        }
+
+        let event_digest = event.content_digest();
+        let (payload, payload_format, wrapped_dek) =
+            self.encode_governance_record(event, "consumer inbox event")?;
+        transaction
+            .execute(
+                "INSERT INTO interoperability_consumer_inbox
+                 (consumer_uri, event_id, event_digest, source_uri, subject_uri,
+                  principal_uri, actor_uri, event_type, schema_uri, schema_version,
+                  correlation_id, occurred_at, sensitivity, retention, envelope_payload,
+                  payload_format, payload_wrapped_dek, state, attempts, next_attempt_at,
+                  lease_id, lease_processor_uri, lease_expires_at, last_attempt_at,
+                  applied_at, last_error_code, received_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                         ?14, ?15, ?16, ?17, 'pending', 0, ?18, NULL, NULL, NULL,
+                         NULL, NULL, NULL, ?18, ?18)",
+                params![
+                    consumer.as_str(),
+                    event.id.to_string(),
+                    &event_digest,
+                    event.source.as_str(),
+                    event.subject.as_str(),
+                    event.principal.as_str(),
+                    event.actor.as_str(),
+                    &event.event_type,
+                    event.schema.uri.as_str(),
+                    &event.schema.version,
+                    event.correlation_id.to_string(),
+                    event.occurred_at.to_rfc3339(),
+                    event.sensitivity.as_str(),
+                    event.retention.as_str(),
+                    payload,
+                    payload_format,
+                    wrapped_dek,
+                    received_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("admit consumer inbox event: {err}")))?;
+        let inbox_sequence = transaction.last_insert_rowid();
+        let inbox_sequence = u64::try_from(inbox_sequence)
+            .map_err(|_| MvError::Storage("consumer inbox sequence is invalid".into()))?;
+        let admission = ConsumerInboxAdmission {
+            inbox_sequence,
+            consumer: consumer.clone(),
+            event: event.clone(),
+            received_at,
+            replayed: false,
+        };
+        admission.validate().map_err(MvError::InvalidInput)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit consumer inbox admission: {err}")))?;
+        Ok(admission)
+    }
+
+    async fn get_consumer_inbox_status(
+        &self,
+        consumer: &StableUri,
+        event_id: Uuid,
+    ) -> MvResult<Option<ConsumerInboxStatus>> {
+        self.with_conn(|connection| {
+            connection
+                .query_row(
+                    "SELECT inbox_sequence, consumer_uri, event_id, source_uri, state,
+                            attempts, next_attempt_at, lease_expires_at, applied_at,
+                            last_error_code, received_at, updated_at
+                     FROM interoperability_consumer_inbox
+                     WHERE consumer_uri = ?1 AND event_id = ?2",
+                    params![consumer.as_str(), event_id.to_string()],
+                    |row| {
+                        let consumer_uri: String = row.get(1)?;
+                        let stored_event_id: String = row.get(2)?;
+                        let source_uri: String = row.get(3)?;
+                        let state: String = row.get(4)?;
+                        let next_attempt_at: String = row.get(6)?;
+                        let lease_expires_at: Option<String> = row.get(7)?;
+                        let applied_at: Option<String> = row.get(8)?;
+                        let received_at: String = row.get(10)?;
+                        let updated_at: String = row.get(11)?;
+                        Ok(ConsumerInboxStatus {
+                            inbox_sequence: row.get(0)?,
+                            consumer: StableUri::parse(consumer_uri)
+                                .map_err(|err| Self::as_sql_conversion_error(1, err))?,
+                            event_id: parse_uuid_str(2, &stored_event_id)?,
+                            source: StableUri::parse(source_uri)
+                                .map_err(|err| Self::as_sql_conversion_error(3, err))?,
+                            state: state
+                                .parse()
+                                .map_err(|err: String| Self::as_sql_conversion_error(4, err))?,
+                            attempts: row.get(5)?,
+                            next_attempt_at: parse_dt_strict(6, &next_attempt_at)?,
+                            lease_expires_at: parse_optional_dt_strict(7, lease_expires_at)?,
+                            applied_at: parse_optional_dt_strict(8, applied_at)?,
+                            last_error_code: row.get(9)?,
+                            received_at: parse_dt_strict(10, &received_at)?,
+                            updated_at: parse_dt_strict(11, &updated_at)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(|err| MvError::Storage(format!("load consumer inbox status: {err}")))
+        })
+    }
+
+    async fn claim_consumer_events(
+        &self,
+        consumer: &StableUri,
+        processor: &StableUri,
+        claimed_at: chrono::DateTime<Utc>,
+        lease_expires_at: chrono::DateTime<Utc>,
+        limit: usize,
+    ) -> MvResult<Vec<ConsumerInboxClaim>> {
+        if !(1..=1000).contains(&limit) {
+            return Err(MvError::InvalidInput(
+                "consumer inbox claim limit must be between 1 and 1000".into(),
+            ));
+        }
+        if lease_expires_at <= claimed_at
+            || lease_expires_at - claimed_at > chrono::Duration::hours(1)
+        {
+            return Err(MvError::InvalidInput(
+                "consumer inbox lease must be positive and no longer than one hour".into(),
+            ));
+        }
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin consumer inbox claim: {err}")))?;
+        let candidates = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT candidate.inbox_sequence, candidate.attempts
+                     FROM interoperability_consumer_inbox candidate
+                     WHERE candidate.consumer_uri = ?1
+                       AND candidate.state = 'pending'
+                       AND candidate.next_attempt_at <= ?2
+                       AND (
+                           candidate.lease_id IS NULL
+                           OR candidate.lease_expires_at <= ?2
+                       )
+                       AND NOT EXISTS (
+                           SELECT 1
+                           FROM interoperability_consumer_inbox predecessor
+                           WHERE predecessor.consumer_uri = candidate.consumer_uri
+                             AND predecessor.source_uri = candidate.source_uri
+                             AND predecessor.inbox_sequence < candidate.inbox_sequence
+                             AND predecessor.state = 'pending'
+                       )
+                     ORDER BY candidate.inbox_sequence ASC
+                     LIMIT ?3",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare consumer inbox claim: {err}")))?;
+            let rows = statement
+                .query_map(
+                    params![consumer.as_str(), claimed_at.to_rfc3339(), limit as i64],
+                    |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u32>(1)?)),
+                )
+                .map_err(|err| MvError::Storage(format!("query consumer inbox claim: {err}")))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|err| MvError::Storage(format!("read consumer inbox claim: {err}")))?
+        };
+
+        let mut claims = Vec::with_capacity(candidates.len());
+        for (inbox_sequence, previous_attempts) in candidates {
+            let admission = self
+                .load_consumer_inbox_admission_by_sequence(&transaction, inbox_sequence)?
+                .ok_or_else(|| {
+                    MvError::Storage("consumer inbox candidate disappeared during claim".into())
+                })?;
+            if admission.consumer != *consumer {
+                return Err(MvError::Storage(
+                    "consumer inbox candidate belongs to another consumer".into(),
+                ));
+            }
+            let attempt = previous_attempts.checked_add(1).ok_or_else(|| {
+                MvError::Storage("consumer application attempt counter overflow".into())
+            })?;
+            let lease_id = Uuid::now_v7();
+            let updated = transaction
+                .execute(
+                    "UPDATE interoperability_consumer_inbox
+                     SET attempts = ?2, lease_id = ?3, lease_processor_uri = ?4,
+                         lease_expires_at = ?5, last_attempt_at = ?6, updated_at = ?6
+                     WHERE inbox_sequence = ?1
+                       AND consumer_uri = ?7
+                       AND state = 'pending'
+                       AND attempts = ?8
+                       AND next_attempt_at <= ?6
+                       AND (lease_id IS NULL OR lease_expires_at <= ?6)
+                       AND NOT EXISTS (
+                           SELECT 1
+                           FROM interoperability_consumer_inbox predecessor
+                           WHERE predecessor.consumer_uri =
+                                     interoperability_consumer_inbox.consumer_uri
+                             AND predecessor.source_uri =
+                                     interoperability_consumer_inbox.source_uri
+                             AND predecessor.inbox_sequence <
+                                     interoperability_consumer_inbox.inbox_sequence
+                             AND predecessor.state = 'pending'
+                       )",
+                    params![
+                        inbox_sequence,
+                        attempt,
+                        lease_id.to_string(),
+                        processor.as_str(),
+                        lease_expires_at.to_rfc3339(),
+                        claimed_at.to_rfc3339(),
+                        consumer.as_str(),
+                        previous_attempts,
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("claim consumer inbox event: {err}")))?;
+            if updated != 1 {
+                return Err(MvError::Storage(
+                    "consumer inbox event changed while its claim was being committed".into(),
+                ));
+            }
+            let claim = ConsumerInboxClaim {
+                inbox_sequence,
+                consumer: consumer.clone(),
+                event: admission.event,
+                lease_id,
+                attempt,
+                processor: processor.clone(),
+                claimed_at,
+                lease_expires_at,
+            };
+            claim.validate().map_err(MvError::InvalidInput)?;
+            claims.push(claim);
+        }
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit consumer inbox claims: {err}")))?;
+        Ok(claims)
+    }
+
+    async fn complete_consumer_event(
+        &self,
+        claim: &ConsumerInboxClaim,
+        completion: &ConsumerApplicationCompletion,
+    ) -> MvResult<ConsumerApplicationReceipt> {
+        completion
+            .validate_for(claim)
+            .map_err(MvError::InvalidInput)?;
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin consumer completion: {err}")))?;
+
+        if let Some(existing) = self.load_consumer_application_receipt_by_attempt(
+            &transaction,
+            claim.inbox_sequence,
+            claim.attempt,
+        )? {
+            if !existing.matches_application(claim, completion) {
+                return Err(MvError::IdempotencyConflict(
+                    "consumer attempt already has a different application receipt".into(),
+                ));
+            }
+            transaction.commit().map_err(|err| {
+                MvError::Storage(format!("finish consumer receipt replay: {err}"))
+            })?;
+            return Ok(existing);
+        }
+
+        let stored_claim: Option<(String, u32, String, String, String, String)> = transaction
+            .query_row(
+                "SELECT state, attempts, lease_id, lease_processor_uri, last_attempt_at,
+                        lease_expires_at
+                 FROM interoperability_consumer_inbox
+                 WHERE inbox_sequence = ?1",
+                params![claim.inbox_sequence],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load active consumer claim: {err}")))?;
+        let Some((state, attempt, lease_id, processor, started_at, lease_expires_at)) =
+            stored_claim
+        else {
+            return Err(MvError::InvalidInput(format!(
+                "consumer inbox sequence not found: {}",
+                claim.inbox_sequence
+            )));
+        };
+        let stored = self
+            .load_consumer_inbox_admission_by_sequence(&transaction, claim.inbox_sequence)?
+            .ok_or_else(|| MvError::Storage("consumer inbox event disappeared".into()))?;
+        if state != ConsumerInboxState::Pending.as_str()
+            || attempt != claim.attempt
+            || lease_id != claim.lease_id.to_string()
+            || processor != claim.processor.as_str()
+            || started_at != claim.claimed_at.to_rfc3339()
+            || lease_expires_at != claim.lease_expires_at.to_rfc3339()
+            || stored.consumer != claim.consumer
+            || stored.event != claim.event
+        {
+            return Err(MvError::IdempotencyConflict(
+                "consumer completion references a stale or different claim".into(),
+            ));
+        }
+
+        let receipt = ConsumerApplicationReceipt::from_application(claim, completion)
+            .map_err(MvError::InvalidInput)?;
+        let (payload, payload_format, wrapped_dek) =
+            self.encode_governance_record(&receipt, "consumer application receipt")?;
+        transaction
+            .execute(
+                "INSERT INTO interoperability_consumer_application_receipts
+                 (receipt_id, receipt_version, inbox_sequence, event_id, claim_id,
+                  attempt_no, outcome, consumer_uri, processor_uri, source_uri,
+                  subject_uri, principal_uri, actor_uri, correlation_id, request_digest,
+                  started_at, completed_at, sensitivity, retention, payload,
+                  payload_format, payload_wrapped_dek, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?17)",
+                params![
+                    receipt.receipt_id.to_string(),
+                    &receipt.receipt_version,
+                    receipt.inbox_sequence,
+                    receipt.event_id.to_string(),
+                    claim.lease_id.to_string(),
+                    receipt.attempt,
+                    receipt.outcome.as_str(),
+                    receipt.consumer.as_str(),
+                    receipt.processor.as_str(),
+                    receipt.source.as_str(),
+                    receipt.subject.as_str(),
+                    receipt.principal.as_str(),
+                    receipt.actor.as_str(),
+                    receipt.correlation_id.to_string(),
+                    &receipt.request_digest,
+                    receipt.started_at.to_rfc3339(),
+                    receipt.completed_at.to_rfc3339(),
+                    receipt.sensitivity.as_str(),
+                    receipt.retention.as_str(),
+                    payload,
+                    payload_format,
+                    wrapped_dek,
+                ],
+            )
+            .map_err(|err| {
+                MvError::Storage(format!("insert consumer application receipt: {err}"))
+            })?;
+
+        if matches!(
+            completion.result,
+            ConsumerApplicationResult::Applied { .. }
+                | ConsumerApplicationResult::DeadLettered { .. }
+        ) {
+            let existing_checkpoint =
+                Self::load_consumer_checkpoint(&transaction, &claim.consumer, &claim.event.source)?;
+            let is_applied = matches!(completion.result, ConsumerApplicationResult::Applied { .. });
+            let (last_applied_sequence, last_applied_event_id, applied_count, dead_letter_count) =
+                match existing_checkpoint.as_ref() {
+                    Some(checkpoint) => (
+                        if is_applied {
+                            Some(claim.inbox_sequence)
+                        } else {
+                            checkpoint.last_applied_sequence
+                        },
+                        if is_applied {
+                            Some(claim.event.id)
+                        } else {
+                            checkpoint.last_applied_event_id
+                        },
+                        checkpoint
+                            .applied_count
+                            .checked_add(u64::from(is_applied))
+                            .ok_or_else(|| {
+                                MvError::Storage("consumer applied counter overflow".into())
+                            })?,
+                        checkpoint
+                            .dead_letter_count
+                            .checked_add(u64::from(!is_applied))
+                            .ok_or_else(|| {
+                                MvError::Storage("consumer dead-letter counter overflow".into())
+                            })?,
+                    ),
+                    None => (
+                        is_applied.then_some(claim.inbox_sequence),
+                        is_applied.then_some(claim.event.id),
+                        u64::from(is_applied),
+                        u64::from(!is_applied),
+                    ),
+                };
+            let checkpoint_params = params![
+                claim.consumer.as_str(),
+                claim.event.source.as_str(),
+                claim.inbox_sequence,
+                claim.event.id.to_string(),
+                last_applied_sequence,
+                last_applied_event_id.map(|event_id| event_id.to_string()),
+                applied_count,
+                dead_letter_count,
+                completion.completed_at.to_rfc3339(),
+            ];
+            if existing_checkpoint.is_some() {
+                transaction.execute(
+                    "UPDATE interoperability_consumer_checkpoints
+                     SET last_dispositioned_sequence = ?3,
+                         last_dispositioned_event_id = ?4,
+                         last_applied_sequence = ?5,
+                         last_applied_event_id = ?6,
+                         applied_count = ?7,
+                         dead_letter_count = ?8,
+                         updated_at = ?9
+                     WHERE consumer_uri = ?1 AND source_uri = ?2",
+                    checkpoint_params,
+                )
+            } else {
+                transaction.execute(
+                    "INSERT INTO interoperability_consumer_checkpoints
+                     (consumer_uri, source_uri, last_dispositioned_sequence,
+                      last_dispositioned_event_id, last_applied_sequence,
+                      last_applied_event_id, applied_count, dead_letter_count, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    checkpoint_params,
+                )
+            }
+            .map_err(|err| MvError::Storage(format!("advance consumer checkpoint: {err}")))?;
+        }
+
+        let updated = match &completion.result {
+            ConsumerApplicationResult::RetryScheduled {
+                retry_at,
+                error_code,
+                ..
+            } => transaction.execute(
+                "UPDATE interoperability_consumer_inbox
+                 SET state = 'pending', next_attempt_at = ?2, applied_at = NULL,
+                     last_error_code = ?3, lease_id = NULL,
+                     lease_processor_uri = NULL, lease_expires_at = NULL,
+                     updated_at = ?4
+                 WHERE inbox_sequence = ?1 AND state = 'pending'
+                   AND attempts = ?5 AND lease_id = ?6",
+                params![
+                    claim.inbox_sequence,
+                    retry_at.to_rfc3339(),
+                    error_code,
+                    completion.completed_at.to_rfc3339(),
+                    claim.attempt,
+                    claim.lease_id.to_string(),
+                ],
+            ),
+            ConsumerApplicationResult::Applied { .. } => transaction.execute(
+                "UPDATE interoperability_consumer_inbox
+                 SET state = 'applied', applied_at = ?2, last_error_code = NULL,
+                     lease_id = NULL, lease_processor_uri = NULL,
+                     lease_expires_at = NULL, updated_at = ?2
+                 WHERE inbox_sequence = ?1 AND state = 'pending'
+                   AND attempts = ?3 AND lease_id = ?4",
+                params![
+                    claim.inbox_sequence,
+                    completion.completed_at.to_rfc3339(),
+                    claim.attempt,
+                    claim.lease_id.to_string(),
+                ],
+            ),
+            ConsumerApplicationResult::DeadLettered { error_code, .. } => transaction.execute(
+                "UPDATE interoperability_consumer_inbox
+                 SET state = 'dead_letter', applied_at = NULL, last_error_code = ?2,
+                     lease_id = NULL, lease_processor_uri = NULL,
+                     lease_expires_at = NULL, updated_at = ?3
+                 WHERE inbox_sequence = ?1 AND state = 'pending'
+                   AND attempts = ?4 AND lease_id = ?5",
+                params![
+                    claim.inbox_sequence,
+                    error_code,
+                    completion.completed_at.to_rfc3339(),
+                    claim.attempt,
+                    claim.lease_id.to_string(),
+                ],
+            ),
+        }
+        .map_err(|err| MvError::Storage(format!("complete consumer inbox event: {err}")))?;
+        if updated != 1 {
+            return Err(MvError::IdempotencyConflict(
+                "consumer inbox claim changed before completion".into(),
+            ));
+        }
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit consumer completion: {err}")))?;
+        Ok(receipt)
+    }
+
+    async fn get_consumer_checkpoint(
+        &self,
+        consumer: &StableUri,
+        source: &StableUri,
+    ) -> MvResult<Option<ConsumerCheckpoint>> {
+        self.with_conn(|connection| Self::load_consumer_checkpoint(connection, consumer, source))
+    }
+
+    async fn get_consumer_application_receipt(
+        &self,
+        receipt_id: Uuid,
+    ) -> MvResult<Option<ConsumerApplicationReceipt>> {
+        self.with_conn(|connection| {
+            connection
+                .query_row(
+                    "SELECT receipt_id, receipt_version, inbox_sequence, event_id,
+                            claim_id, attempt_no, outcome, consumer_uri, processor_uri, source_uri,
+                            subject_uri, principal_uri, actor_uri, correlation_id,
+                            request_digest, started_at, completed_at, sensitivity,
+                            retention, payload, payload_format, payload_wrapped_dek
+                     FROM interoperability_consumer_application_receipts
+                     WHERE receipt_id = ?1",
+                    params![receipt_id.to_string()],
+                    |row| self.row_to_consumer_application_receipt(row),
+                )
+                .optional()
+                .map_err(|err| {
+                    MvError::Storage(format!("load consumer application receipt: {err}"))
+                })
+        })
+    }
+
+    async fn list_consumer_application_receipts(
+        &self,
+        consumer: &StableUri,
+        event_id: Uuid,
+        limit: usize,
+    ) -> MvResult<Vec<ConsumerApplicationReceipt>> {
+        if !(1..=1000).contains(&limit) {
+            return Err(MvError::InvalidInput(
+                "consumer receipt limit must be between 1 and 1000".into(),
+            ));
+        }
+        self.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT receipt_id, receipt_version, inbox_sequence, event_id,
+                            claim_id, attempt_no, outcome, consumer_uri, processor_uri, source_uri,
+                            subject_uri, principal_uri, actor_uri, correlation_id,
+                            request_digest, started_at, completed_at, sensitivity,
+                            retention, payload, payload_format, payload_wrapped_dek
+                     FROM interoperability_consumer_application_receipts
+                     WHERE consumer_uri = ?1 AND event_id = ?2
+                     ORDER BY attempt_no ASC
+                     LIMIT ?3",
+                )
+                .map_err(|err| {
+                    MvError::Storage(format!("prepare consumer application receipts: {err}"))
+                })?;
+            let rows = statement
+                .query_map(
+                    params![consumer.as_str(), event_id.to_string(), limit as i64],
+                    |row| self.row_to_consumer_application_receipt(row),
+                )
+                .map_err(|err| {
+                    MvError::Storage(format!("query consumer application receipts: {err}"))
+                })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|err| MvError::Storage(format!("read consumer receipt: {err}")))
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Governed agent execution graph
+    // -----------------------------------------------------------------------
+
+    async fn commit_work_order_with_event(
+        &self,
+        work_order: &WorkOrder,
+        nodes: &[WorkOrderNode],
+        edges: &[WorkOrderEdge],
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentWorkOrderCommit> {
+        work_order.validate().map_err(MvError::InvalidInput)?;
+        if nodes.is_empty() {
+            return Err(MvError::InvalidInput(
+                "a work order must contain at least one node contract".into(),
+            ));
+        }
+        for node in nodes {
+            node.validate().map_err(MvError::InvalidInput)?;
+            if node.work_order_id != work_order.work_order_id {
+                return Err(MvError::InvalidInput(
+                    "node contracts must belong to the committed work order".into(),
+                ));
+            }
+        }
+        for edge in edges {
+            edge.validate().map_err(MvError::InvalidInput)?;
+            if edge.work_order_id != work_order.work_order_id {
+                return Err(MvError::InvalidInput(
+                    "edges must belong to the committed work order".into(),
+                ));
+            }
+        }
+
+        // Every intersecting write scope must carry a derived conflict edge.
+        // Recomputing here means an admission path that forgot to derive them
+        // fails closed instead of admitting an unguarded overlap.
+        let expected =
+            derive_conflict_edges(work_order.work_order_id, nodes, work_order.created_at);
+        for required in &expected {
+            let present = edges.iter().any(|edge| {
+                edge.kind == EdgeKind::Conflict
+                    && ((edge.from_node_id == required.from_node_id
+                        && edge.to_node_id == required.to_node_id)
+                        || (edge.from_node_id == required.to_node_id
+                            && edge.to_node_id == required.from_node_id))
+            });
+            if !present {
+                return Err(MvError::InvalidInput(
+                    "intersecting write scopes require a derived conflict edge".into(),
+                ));
+            }
+        }
+        if let Some(cycle) = find_dependency_cycle(nodes, edges) {
+            return Err(MvError::InvalidInput(format!(
+                "work-order dependency graph contains a cycle across {} contracts",
+                cycle.len()
+            )));
+        }
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin work-order admission: {err}")))?;
+        let local_node_id = Self::ensure_local_context_node(&transaction)?;
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            local_node_id,
+            WORK_ORDER_ADMITTED_V1,
+            "work-order-admitted",
+        )?;
+        if work_order.governing_node != StableUri::node(local_node_id) {
+            return Err(MvError::InvalidInput(
+                "work orders must be governed by the local Context Node".into(),
+            ));
+        }
+
+        if let Some(existing_event) =
+            Self::resolve_governance_replay(&transaction, event, WORK_ORDER_ADMITTED_V1)?
+        {
+            let existing_id = existing_event
+                .subject
+                .trailing_uuid()
+                .ok_or_else(|| MvError::Storage("work-order replay lost its subject".into()))?;
+            let existing = self
+                .load_work_order_from_connection(&transaction, existing_id)?
+                .ok_or_else(|| {
+                    MvError::Storage("work-order replay references a missing record".into())
+                })?;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish work-order replay: {err}")))?;
+            return Ok(IdempotentWorkOrderCommit {
+                work_order: existing,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        let (payload, format, wrapped_dek) =
+            self.encode_governance_record(work_order, "work order")?;
+        transaction
+            .execute(
+                "INSERT INTO work_orders
+                 (work_order_id, revision, work_order_uri, principal_uri, actor_uri,
+                  governing_node_uri, status, status_reason, sensitivity, retention,
+                  correlation_id, causation_id, idempotency_key,
+                  budget_wall_clock_secs, budget_run_attempts, budget_model_tokens,
+                  budget_effect_actions, remaining_wall_clock_secs, remaining_run_attempts,
+                  remaining_model_tokens, remaining_effect_actions,
+                  record_payload, payload_format, payload_wrapped_dek, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
+                params![
+                    work_order.work_order_id.to_string(),
+                    work_order.revision,
+                    work_order.work_order_uri.as_str(),
+                    work_order.principal.as_str(),
+                    work_order.actor.as_str(),
+                    work_order.governing_node.as_str(),
+                    work_order.status.as_str(),
+                    work_order.status_reason,
+                    work_order.sensitivity.as_str(),
+                    work_order.retention.as_str(),
+                    work_order.correlation_id.to_string(),
+                    work_order.causation_id.map(|id| id.to_string()),
+                    work_order.idempotency_key,
+                    work_order.budget.wall_clock_secs as i64,
+                    work_order.budget.run_attempts as i64,
+                    work_order.budget.model_tokens as i64,
+                    work_order.budget.effect_actions as i64,
+                    work_order.remaining.wall_clock_secs as i64,
+                    work_order.remaining.run_attempts as i64,
+                    work_order.remaining.model_tokens as i64,
+                    work_order.remaining.effect_actions as i64,
+                    payload,
+                    format,
+                    wrapped_dek,
+                    work_order.created_at.to_rfc3339(),
+                    work_order.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert work order: {err}")))?;
+
+        for node in nodes {
+            let (node_payload, node_format, node_dek) =
+                self.encode_governance_record(node, "work-order node")?;
+            transaction
+                .execute(
+                    "INSERT INTO work_order_nodes
+                     (node_id, work_order_id, node_uri, executor_kind, risk_tier, status,
+                      timeout_secs, max_attempts, authorizing_grant_id,
+                      record_payload, payload_format, payload_wrapped_dek, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    params![
+                        node.node_id.to_string(),
+                        node.work_order_id.to_string(),
+                        node.node_uri.as_str(),
+                        node.executor_kind.as_str(),
+                        node.risk_tier.as_str(),
+                        node.status.as_str(),
+                        node.timeout_secs,
+                        node.max_attempts,
+                        node.authorizing_grant_id.map(|id| id.to_string()),
+                        node_payload,
+                        node_format,
+                        node_dek,
+                        node.created_at.to_rfc3339(),
+                        node.updated_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("insert work-order node: {err}")))?;
+
+            // Digests, never plaintext targets: a sealed vault must not expose
+            // scope through the conflict or lease indexes.
+            for digest in node.write_target_digests() {
+                transaction
+                    .execute(
+                        "INSERT INTO work_order_node_write_targets
+                         (node_id, work_order_id, target_digest, created_at)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            node.node_id.to_string(),
+                            node.work_order_id.to_string(),
+                            digest,
+                            node.created_at.to_rfc3339(),
+                        ],
+                    )
+                    .map_err(|err| {
+                        MvError::Storage(format!("insert declared write target: {err}"))
+                    })?;
+            }
+        }
+
+        for edge in edges {
+            transaction
+                .execute(
+                    "INSERT INTO work_order_edges
+                     (edge_id, work_order_id, from_node_id, to_node_id, edge_kind,
+                      derived, detail, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        edge.edge_id.to_string(),
+                        edge.work_order_id.to_string(),
+                        edge.from_node_id.to_string(),
+                        edge.to_node_id.to_string(),
+                        edge.kind.as_str(),
+                        i64::from(edge.derived),
+                        edge.detail,
+                        edge.created_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("insert work-order edge: {err}")))?;
+        }
+
+        Self::insert_outbox_event(&transaction, event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit work-order admission: {err}")))?;
+
+        Ok(IdempotentWorkOrderCommit {
+            work_order: work_order.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn get_work_order(&self, work_order_id: Uuid) -> MvResult<Option<WorkOrder>> {
+        self.with_conn(|connection| self.load_work_order_from_connection(connection, work_order_id))
+    }
+
+    async fn list_work_orders(
+        &self,
+        status: Option<WorkOrderStatus>,
+        limit: usize,
+    ) -> MvResult<Vec<WorkOrder>> {
+        if !(1..=1000).contains(&limit) {
+            return Err(MvError::InvalidInput(
+                "work-order limit must be between 1 and 1000".into(),
+            ));
+        }
+        self.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT work_order_id, revision, work_order_uri, principal_uri, actor_uri,
+                            governing_node_uri, status, record_payload, payload_format,
+                            payload_wrapped_dek, created_at, updated_at
+                     FROM work_orders
+                     WHERE (?1 IS NULL OR status = ?1)
+                     ORDER BY updated_at DESC, work_order_id ASC
+                     LIMIT ?2",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare work-order list: {err}")))?;
+            let rows = statement
+                .query_map(
+                    params![status.map(|value| value.as_str()), limit as i64],
+                    |row| self.row_to_work_order(row),
+                )
+                .map_err(|err| MvError::Storage(format!("query work orders: {err}")))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|err| MvError::Storage(format!("read work order: {err}")))
+        })
+    }
+
+    async fn list_work_order_nodes(&self, work_order_id: Uuid) -> MvResult<Vec<WorkOrderNode>> {
+        self.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT record_payload, payload_format, payload_wrapped_dek
+                     FROM work_order_nodes
+                     WHERE work_order_id = ?1
+                     ORDER BY created_at ASC, node_id ASC",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare node list: {err}")))?;
+            let rows = statement
+                .query_map(params![work_order_id.to_string()], |row| {
+                    let payload: Vec<u8> = row.get(0)?;
+                    let format: String = row.get(1)?;
+                    let dek: Option<String> = row.get(2)?;
+                    self.decode_governance_record::<WorkOrderNode>(
+                        &payload,
+                        &format,
+                        dek.as_deref(),
+                        "work-order node",
+                    )
+                    .map_err(|err| Self::as_sql_conversion_error(0, err.to_string()))
+                })
+                .map_err(|err| MvError::Storage(format!("query work-order nodes: {err}")))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|err| MvError::Storage(format!("read work-order node: {err}")))
+        })
+    }
+
+    async fn list_work_order_edges(&self, work_order_id: Uuid) -> MvResult<Vec<WorkOrderEdge>> {
+        self.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT edge_id, work_order_id, from_node_id, to_node_id, edge_kind,
+                            derived, detail, created_at
+                     FROM work_order_edges
+                     WHERE work_order_id = ?1
+                     ORDER BY created_at ASC, edge_id ASC",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare edge list: {err}")))?;
+            let rows = statement
+                .query_map(params![work_order_id.to_string()], |row| {
+                    let kind_text: String = row.get(4)?;
+                    let derived: i64 = row.get(5)?;
+                    Ok(WorkOrderEdge {
+                        edge_id: parse_uuid_str(0, &row.get::<_, String>(0)?)?,
+                        work_order_id: parse_uuid_str(1, &row.get::<_, String>(1)?)?,
+                        from_node_id: parse_uuid_str(2, &row.get::<_, String>(2)?)?,
+                        to_node_id: parse_uuid_str(3, &row.get::<_, String>(3)?)?,
+                        kind: kind_text
+                            .parse()
+                            .map_err(|err: String| Self::as_sql_conversion_error(4, err))?,
+                        derived: derived != 0,
+                        detail: row.get(6)?,
+                        created_at: parse_dt_strict(7, &row.get::<_, String>(7)?)?,
+                    })
+                })
+                .map_err(|err| MvError::Storage(format!("query work-order edges: {err}")))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|err| MvError::Storage(format!("read work-order edge: {err}")))
+        })
+    }
+
+    async fn transition_work_order_with_event(
+        &self,
+        expected_revision: u64,
+        replacement: &WorkOrder,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentWorkOrderCommit> {
+        replacement.validate().map_err(MvError::InvalidInput)?;
+        if replacement.revision != expected_revision.saturating_add(1) {
+            return Err(MvError::InvalidInput(
+                "replacement work-order revision must advance exactly once".into(),
+            ));
+        }
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin work-order transition: {err}")))?;
+        let local_node_id = Self::ensure_local_context_node(&transaction)?;
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            local_node_id,
+            WORK_ORDER_LIFECYCLE_TRANSITIONED_V1,
+            "work-order-lifecycle-transitioned",
+        )?;
+
+        if let Some(existing_event) = Self::resolve_governance_replay(
+            &transaction,
+            event,
+            WORK_ORDER_LIFECYCLE_TRANSITIONED_V1,
+        )? {
+            let existing = self
+                .load_work_order_from_connection(&transaction, replacement.work_order_id)?
+                .ok_or_else(|| {
+                    MvError::Storage("work-order replay references a missing record".into())
+                })?;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish work-order replay: {err}")))?;
+            return Ok(IdempotentWorkOrderCommit {
+                work_order: existing,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        let current = self
+            .load_work_order_from_connection(&transaction, replacement.work_order_id)?
+            .ok_or_else(|| MvError::NotFound("work order not found".into()))?;
+        if current.revision != expected_revision {
+            return Err(MvError::IdempotencyConflict(
+                "work order changed since the expected revision".into(),
+            ));
+        }
+        if current.status != replacement.status
+            && !current.status.can_transition_to(replacement.status)
+        {
+            return Err(MvError::InvalidInput(format!(
+                "invalid work-order transition from {} to {}",
+                current.status.as_str(),
+                replacement.status.as_str()
+            )));
+        }
+
+        Self::archive_work_order_revision(&transaction, &current, replacement.updated_at)?;
+        self.write_work_order_revision(&transaction, replacement)?;
+        Self::insert_outbox_event(&transaction, event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit work-order transition: {err}")))?;
+
+        Ok(IdempotentWorkOrderCommit {
+            work_order: replacement.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn commit_agent_run_with_event(
+        &self,
+        run: &AgentRun,
+        spend: &WorkOrderSpend,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentAgentRunCommit> {
+        run.validate().map_err(MvError::InvalidInput)?;
+        if run.status != AgentRunStatus::Ready {
+            return Err(MvError::InvalidInput(
+                "a new agent run starts in the ready state".into(),
+            ));
+        }
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin agent-run start: {err}")))?;
+        let local_node_id = Self::ensure_local_context_node(&transaction)?;
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            local_node_id,
+            AGENT_RUN_STARTED_V1,
+            "agent-run-started",
+        )?;
+
+        if let Some(existing_event) =
+            Self::resolve_governance_replay(&transaction, event, AGENT_RUN_STARTED_V1)?
+        {
+            let existing = self
+                .load_agent_run_from_connection(&transaction, run.run_id)?
+                .ok_or_else(|| {
+                    MvError::Storage("agent-run replay references a missing record".into())
+                })?;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish agent-run replay: {err}")))?;
+            return Ok(IdempotentAgentRunCommit {
+                run: existing,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        // Budget decrement, run insertion, and event emission share this one
+        // immediate transaction. The CHECK constraint prevents a negative row;
+        // only this shared transaction prevents a double spend.
+        let work_order = self
+            .load_work_order_from_connection(&transaction, run.work_order_id)?
+            .ok_or_else(|| MvError::NotFound("work order not found".into()))?;
+        let remaining = work_order
+            .remaining
+            .checked_spend(spend)
+            .map_err(MvError::InvalidInput)?;
+        let mut spent = work_order.clone();
+        spent.remaining = remaining;
+        spent.revision = work_order.revision.saturating_add(1);
+        spent.updated_at = run.created_at;
+        Self::archive_work_order_revision(&transaction, &work_order, run.created_at)?;
+        self.write_work_order_revision(&transaction, &spent)?;
+
+        let (payload, format, wrapped_dek) = self.encode_governance_record(run, "agent run")?;
+        transaction
+            .execute(
+                "INSERT INTO agent_runs
+                 (run_id, run_uri, work_order_id, node_id, attempt_no, status, failure_class,
+                  principal_uri, actor_uri, correlation_id, causation_id, started_at, ended_at,
+                  record_payload, payload_format, payload_wrapped_dek, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                params![
+                    run.run_id.to_string(),
+                    run.run_uri.as_str(),
+                    run.work_order_id.to_string(),
+                    run.node_id.to_string(),
+                    run.attempt_no,
+                    run.status.as_str(),
+                    run.failure_class.map(|class| class.as_str()),
+                    run.principal.as_str(),
+                    run.actor.as_str(),
+                    run.correlation_id.to_string(),
+                    run.causation_id.map(|id| id.to_string()),
+                    run.started_at.map(|at| at.to_rfc3339()),
+                    run.ended_at.map(|at| at.to_rfc3339()),
+                    payload,
+                    format,
+                    wrapped_dek,
+                    run.created_at.to_rfc3339(),
+                    run.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert agent run: {err}")))?;
+
+        Self::insert_outbox_event(&transaction, event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit agent-run start: {err}")))?;
+
+        Ok(IdempotentAgentRunCommit {
+            run: run.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn get_agent_run(&self, run_id: Uuid) -> MvResult<Option<AgentRun>> {
+        self.with_conn(|connection| self.load_agent_run_from_connection(connection, run_id))
+    }
+
+    async fn list_agent_runs(&self, work_order_id: Uuid, limit: usize) -> MvResult<Vec<AgentRun>> {
+        if !(1..=1000).contains(&limit) {
+            return Err(MvError::InvalidInput(
+                "agent-run limit must be between 1 and 1000".into(),
+            ));
+        }
+        self.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT record_payload, payload_format, payload_wrapped_dek
+                     FROM agent_runs
+                     WHERE work_order_id = ?1
+                     ORDER BY created_at ASC, run_id ASC
+                     LIMIT ?2",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare agent-run list: {err}")))?;
+            let rows = statement
+                .query_map(params![work_order_id.to_string(), limit as i64], |row| {
+                    let payload: Vec<u8> = row.get(0)?;
+                    let format: String = row.get(1)?;
+                    let dek: Option<String> = row.get(2)?;
+                    self.decode_governance_record::<AgentRun>(
+                        &payload,
+                        &format,
+                        dek.as_deref(),
+                        "agent run",
+                    )
+                    .map_err(|err| Self::as_sql_conversion_error(0, err.to_string()))
+                })
+                .map_err(|err| MvError::Storage(format!("query agent runs: {err}")))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|err| MvError::Storage(format!("read agent run: {err}")))
+        })
+    }
+
+    async fn transition_agent_run_with_event(
+        &self,
+        run: &AgentRun,
+        release_reason: Option<LeaseReleaseReason>,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentAgentRunCommit> {
+        run.validate().map_err(MvError::InvalidInput)?;
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin agent-run transition: {err}")))?;
+        let local_node_id = Self::ensure_local_context_node(&transaction)?;
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            local_node_id,
+            AGENT_RUN_LIFECYCLE_TRANSITIONED_V1,
+            "agent-run-lifecycle-transitioned",
+        )?;
+
+        if let Some(existing_event) = Self::resolve_governance_replay(
+            &transaction,
+            event,
+            AGENT_RUN_LIFECYCLE_TRANSITIONED_V1,
+        )? {
+            let existing = self
+                .load_agent_run_from_connection(&transaction, run.run_id)?
+                .ok_or_else(|| {
+                    MvError::Storage("agent-run replay references a missing record".into())
+                })?;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish agent-run replay: {err}")))?;
+            return Ok(IdempotentAgentRunCommit {
+                run: existing,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        let current = self
+            .load_agent_run_from_connection(&transaction, run.run_id)?
+            .ok_or_else(|| MvError::NotFound("agent run not found".into()))?;
+        if current.status != run.status && !current.status.can_transition_to(run.status) {
+            return Err(MvError::InvalidInput(format!(
+                "invalid agent-run transition from {} to {}",
+                current.status.as_str(),
+                run.status.as_str()
+            )));
+        }
+
+        // A state that may not hold leases releases them in the same
+        // transaction as the transition. Approval is unbounded, so a parked run
+        // holding leases would block every other run on those targets.
+        if !run.status.may_hold_write_leases() {
+            let reason = release_reason.unwrap_or(match run.status {
+                AgentRunStatus::AwaitingApproval => LeaseReleaseReason::AwaitingApproval,
+                AgentRunStatus::Cancelled => LeaseReleaseReason::Cancelled,
+                AgentRunStatus::Completed => LeaseReleaseReason::Completed,
+                _ => LeaseReleaseReason::Failed,
+            });
+            Self::release_run_leases(&transaction, run.run_id, reason, run.updated_at)?;
+        }
+
+        let (payload, format, wrapped_dek) = self.encode_governance_record(run, "agent run")?;
+        let updated = transaction
+            .execute(
+                "UPDATE agent_runs
+                 SET status = ?2, failure_class = ?3, started_at = ?4, ended_at = ?5,
+                     record_payload = ?6, payload_format = ?7, payload_wrapped_dek = ?8,
+                     updated_at = ?9
+                 WHERE run_id = ?1",
+                params![
+                    run.run_id.to_string(),
+                    run.status.as_str(),
+                    run.failure_class.map(|class| class.as_str()),
+                    run.started_at.map(|at| at.to_rfc3339()),
+                    run.ended_at.map(|at| at.to_rfc3339()),
+                    payload,
+                    format,
+                    wrapped_dek,
+                    run.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("update agent run: {err}")))?;
+        if updated != 1 {
+            return Err(MvError::Storage(
+                "agent run changed while its transition was being committed".into(),
+            ));
+        }
+
+        Self::insert_outbox_event(&transaction, event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit agent-run transition: {err}")))?;
+
+        Ok(IdempotentAgentRunCommit {
+            run: run.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn claim_write_leases(
+        &self,
+        run_id: Uuid,
+        target_digests: &[String],
+        claimed_at: DateTime<Utc>,
+        lease_expires_at: DateTime<Utc>,
+    ) -> MvResult<Vec<WriteLease>> {
+        if target_digests.is_empty() {
+            return Ok(Vec::new());
+        }
+        if lease_expires_at <= claimed_at {
+            return Err(MvError::InvalidInput(
+                "write-lease interval must be non-empty".into(),
+            ));
+        }
+        if lease_expires_at - claimed_at > chrono::Duration::seconds(MAX_WRITE_LEASE_SECS) {
+            return Err(MvError::InvalidInput(
+                "write leases are bounded to one hour".into(),
+            ));
+        }
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin write-lease claim: {err}")))?;
+
+        let run = self
+            .load_agent_run_from_connection(&transaction, run_id)?
+            .ok_or_else(|| MvError::NotFound("agent run not found".into()))?;
+        let work_order = self
+            .load_work_order_from_connection(&transaction, run.work_order_id)?
+            .ok_or_else(|| MvError::NotFound("work order not found".into()))?;
+
+        let mut leases = Vec::with_capacity(target_digests.len());
+        for digest in target_digests {
+            // An expired lease is replaced atomically; an unexpired one held by
+            // another run blocks the claim, which is the point of the lease.
+            transaction
+                .execute(
+                    "UPDATE agent_run_write_leases
+                     SET released_at = ?2, release_reason = 'expired_replaced'
+                     WHERE target_digest = ?1
+                       AND governing_node_uri = ?3
+                       AND released_at IS NULL
+                       AND lease_expires_at <= ?2",
+                    params![
+                        digest,
+                        claimed_at.to_rfc3339(),
+                        work_order.governing_node.as_str()
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("reap expired write lease: {err}")))?;
+
+            let next_attempt: i64 = transaction
+                .query_row(
+                    "SELECT COALESCE(MAX(attempt_no), 0) + 1
+                     FROM agent_run_write_leases
+                     WHERE target_digest = ?1 AND governing_node_uri = ?2",
+                    params![digest, work_order.governing_node.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(|err| MvError::Storage(format!("read write-lease attempt: {err}")))?;
+
+            let lease = WriteLease {
+                lease_id: Uuid::now_v7(),
+                run_id,
+                work_order_id: run.work_order_id,
+                target_digest: digest.clone(),
+                governing_node: work_order.governing_node.clone(),
+                attempt_no: next_attempt as u32,
+                claimed_at,
+                lease_expires_at,
+                released_at: None,
+                release_reason: None,
+                created_at: claimed_at,
+            };
+            lease.validate().map_err(MvError::InvalidInput)?;
+
+            transaction
+                .execute(
+                    "INSERT INTO agent_run_write_leases
+                     (lease_id, run_id, work_order_id, target_digest, governing_node_uri,
+                      attempt_no, claimed_at, lease_expires_at, released_at, release_reason,
+                      created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?9)",
+                    params![
+                        lease.lease_id.to_string(),
+                        lease.run_id.to_string(),
+                        lease.work_order_id.to_string(),
+                        lease.target_digest,
+                        lease.governing_node.as_str(),
+                        lease.attempt_no,
+                        lease.claimed_at.to_rfc3339(),
+                        lease.lease_expires_at.to_rfc3339(),
+                        lease.created_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(|err| {
+                    // All-or-nothing: a partial claim would let a run begin
+                    // writing part of its scope while another holds the rest.
+                    MvError::Conflict(format!("write lease unavailable: {err}"))
+                })?;
+            leases.push(lease);
+        }
+
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit write-lease claim: {err}")))?;
+        Ok(leases)
+    }
+
+    async fn release_write_leases(
+        &self,
+        run_id: Uuid,
+        reason: LeaseReleaseReason,
+        released_at: DateTime<Utc>,
+    ) -> MvResult<usize> {
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin write-lease release: {err}")))?;
+        let released = Self::release_run_leases(&transaction, run_id, reason, released_at)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit write-lease release: {err}")))?;
+        Ok(released)
+    }
+
+    async fn list_write_leases(&self, run_id: Uuid) -> MvResult<Vec<WriteLease>> {
+        self.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT lease_id, run_id, work_order_id, target_digest, governing_node_uri,
+                            attempt_no, claimed_at, lease_expires_at, released_at,
+                            release_reason, created_at
+                     FROM agent_run_write_leases
+                     WHERE run_id = ?1
+                     ORDER BY claimed_at ASC, lease_id ASC",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare lease list: {err}")))?;
+            let rows = statement
+                .query_map(params![run_id.to_string()], |row| {
+                    Self::row_to_write_lease(row)
+                })
+                .map_err(|err| MvError::Storage(format!("query write leases: {err}")))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|err| MvError::Storage(format!("read write lease: {err}")))
+        })
+    }
+
+    async fn conflicting_write_targets(
+        &self,
+        excluding_run: Uuid,
+        target_digests: &[String],
+        at: DateTime<Utc>,
+    ) -> MvResult<Vec<String>> {
+        if target_digests.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.with_conn(|connection| {
+            let mut conflicts = Vec::new();
+            let mut statement = connection
+                .prepare(
+                    "SELECT 1 FROM agent_run_write_leases
+                     WHERE target_digest = ?1
+                       AND run_id != ?2
+                       AND released_at IS NULL
+                       AND lease_expires_at > ?3
+                     LIMIT 1",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare conflict probe: {err}")))?;
+            for digest in target_digests {
+                let held = statement
+                    .exists(params![digest, excluding_run.to_string(), at.to_rfc3339()])
+                    .map_err(|err| MvError::Storage(format!("probe write conflict: {err}")))?;
+                if held {
+                    conflicts.push(digest.clone());
+                }
+            }
+            Ok(conflicts)
+        })
+    }
+
+    async fn record_gate_result(&self, result: &GateResult) -> MvResult<GateResult> {
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin gate result: {err}")))?;
+
+        let run = self
+            .load_agent_run_from_connection(&transaction, result.run_id)?
+            .ok_or_else(|| MvError::NotFound("agent run not found".into()))?;
+        // Checked here as well as by the database trigger: the trigger is the
+        // guarantee, this is the readable error.
+        result.validate(&run).map_err(MvError::InvalidInput)?;
+
+        transaction
+            .execute(
+                "INSERT INTO agent_run_gate_results
+                 (result_id, run_id, work_order_id, gate, outcome, evaluator_actor_uri,
+                  evidence_digest, detail, evaluated_at, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    result.result_id.to_string(),
+                    result.run_id.to_string(),
+                    result.work_order_id.to_string(),
+                    result.gate.as_str(),
+                    result.outcome.as_str(),
+                    result.evaluator_actor.as_str(),
+                    result.evidence_digest,
+                    result.detail,
+                    result.evaluated_at.to_rfc3339(),
+                    result.created_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert gate result: {err}")))?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit gate result: {err}")))?;
+        Ok(result.clone())
+    }
+
+    async fn list_gate_results(&self, run_id: Uuid) -> MvResult<Vec<GateResult>> {
+        self.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT result_id, run_id, work_order_id, gate, outcome,
+                            evaluator_actor_uri, evidence_digest, detail, evaluated_at, created_at
+                     FROM agent_run_gate_results
+                     WHERE run_id = ?1
+                     ORDER BY gate ASC",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare gate list: {err}")))?;
+            let rows = statement
+                .query_map(params![run_id.to_string()], |row| {
+                    let gate_text: String = row.get(3)?;
+                    let outcome_text: String = row.get(4)?;
+                    Ok(GateResult {
+                        result_id: parse_uuid_str(0, &row.get::<_, String>(0)?)?,
+                        run_id: parse_uuid_str(1, &row.get::<_, String>(1)?)?,
+                        work_order_id: parse_uuid_str(2, &row.get::<_, String>(2)?)?,
+                        gate: gate_text
+                            .parse()
+                            .map_err(|err: String| Self::as_sql_conversion_error(3, err))?,
+                        outcome: outcome_text
+                            .parse()
+                            .map_err(|err: String| Self::as_sql_conversion_error(4, err))?,
+                        evaluator_actor: StableUri::parse(row.get::<_, String>(5)?)
+                            .map_err(|err| Self::as_sql_conversion_error(5, err))?,
+                        evidence_digest: row.get(6)?,
+                        detail: row.get(7)?,
+                        evaluated_at: parse_dt_strict(8, &row.get::<_, String>(8)?)?,
+                        created_at: parse_dt_strict(9, &row.get::<_, String>(9)?)?,
+                    })
+                })
+                .map_err(|err| MvError::Storage(format!("query gate results: {err}")))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|err| MvError::Storage(format!("read gate result: {err}")))
+        })
+    }
+
+    async fn record_run_artifact(
+        &self,
+        artifact: &RunArtifact,
+        payload: &[u8],
+    ) -> MvResult<RunArtifact> {
+        artifact.validate().map_err(MvError::InvalidInput)?;
+        // The stored digest must describe the stored bytes, or G2 would verify
+        // a claim rather than the content.
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        let computed = format!("{:x}", hasher.finalize());
+        if computed != artifact.content_digest {
+            return Err(MvError::InvalidInput(
+                "artifact content digest does not match its payload".into(),
+            ));
+        }
+
+        let (stored, format, wrapped_dek) =
+            self.encode_governance_bytes(payload, "run artifact")?;
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin artifact record: {err}")))?;
+        transaction
+            .execute(
+                "INSERT INTO agent_run_artifacts
+                 (artifact_id, artifact_uri, run_id, work_order_id, artifact_kind,
+                  content_digest, schema_uri, schema_version, sensitivity, retention,
+                  payload, payload_format, payload_wrapped_dek, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                params![
+                    artifact.artifact_id.to_string(),
+                    artifact.artifact_uri.as_str(),
+                    artifact.run_id.to_string(),
+                    artifact.work_order_id.to_string(),
+                    artifact.artifact_kind,
+                    artifact.content_digest,
+                    artifact.schema.as_ref().map(|s| s.uri.as_str().to_string()),
+                    artifact.schema.as_ref().map(|s| s.version.clone()),
+                    artifact.sensitivity.as_str(),
+                    artifact.retention.as_str(),
+                    stored,
+                    format,
+                    wrapped_dek,
+                    artifact.created_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert run artifact: {err}")))?;
+
+        for reference in &artifact.provenance {
+            transaction
+                .execute(
+                    "INSERT INTO agent_run_artifact_provenance
+                     (artifact_id, relation, reference_uri, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        artifact.artifact_id.to_string(),
+                        format!("{:?}", reference.relation),
+                        reference.resource.as_str(),
+                        artifact.created_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("insert artifact provenance: {err}")))?;
+        }
+
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit artifact record: {err}")))?;
+        Ok(artifact.clone())
+    }
+
+    async fn get_run_artifact(&self, artifact_id: Uuid) -> MvResult<Option<RunArtifact>> {
+        self.with_conn(|connection| {
+            let artifact = connection
+                .query_row(
+                    "SELECT artifact_id, artifact_uri, run_id, work_order_id, artifact_kind,
+                            content_digest, schema_uri, schema_version, sensitivity,
+                            retention, created_at
+                     FROM agent_run_artifacts
+                     WHERE artifact_id = ?1",
+                    params![artifact_id.to_string()],
+                    |row| self.row_to_run_artifact(row),
+                )
+                .optional()
+                .map_err(|err| MvError::Storage(format!("load run artifact: {err}")))?;
+            let Some(mut artifact) = artifact else {
+                return Ok(None);
+            };
+            artifact.provenance = self.load_artifact_provenance(connection, artifact_id)?;
+            Ok(Some(artifact))
+        })
+    }
+
+    async fn list_run_artifacts(&self, work_order_id: Uuid) -> MvResult<Vec<RunArtifact>> {
+        self.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT artifact_id, artifact_uri, run_id, work_order_id, artifact_kind,
+                            content_digest, schema_uri, schema_version, sensitivity,
+                            retention, created_at
+                     FROM agent_run_artifacts
+                     WHERE work_order_id = ?1
+                     ORDER BY created_at ASC, artifact_id ASC",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare artifact list: {err}")))?;
+            let rows = statement
+                .query_map(params![work_order_id.to_string()], |row| {
+                    self.row_to_run_artifact(row)
+                })
+                .map_err(|err| MvError::Storage(format!("query run artifacts: {err}")))?;
+            let mut artifacts = rows
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|err| MvError::Storage(format!("read run artifact: {err}")))?;
+            for artifact in &mut artifacts {
+                artifact.provenance =
+                    self.load_artifact_provenance(connection, artifact.artifact_id)?;
+            }
+            Ok(artifacts)
+        })
+    }
+
+    async fn restore_work_order_graph(
+        &self,
+        export: &WorkOrderExport,
+        artifact_payloads: &[Vec<u8>],
+    ) -> MvResult<()> {
+        if artifact_payloads.len() != export.artifacts.len() {
+            return Err(MvError::InvalidInput(
+                "restore was given a different number of artifact payloads than artifacts".into(),
+            ));
+        }
+
+        // Encode outside the transaction: sealing derives a key per record, and
+        // holding the write lock across that work would block other writers for
+        // no reason.
+        let order = &export.work_order;
+        let (order_payload, order_format, order_dek) =
+            self.encode_governance_record(order, "work order")?;
+
+        let mut node_records = Vec::with_capacity(export.nodes.len());
+        for node in &export.nodes {
+            node_records.push((
+                node,
+                self.encode_governance_record(node, "work-order node")?,
+            ));
+        }
+        let mut run_records = Vec::with_capacity(export.runs.len());
+        for run in &export.runs {
+            run_records.push((run, self.encode_governance_record(run, "agent run")?));
+        }
+        let mut artifact_records = Vec::with_capacity(export.artifacts.len());
+        for (exported, payload) in export.artifacts.iter().zip(artifact_payloads) {
+            artifact_records.push((
+                &exported.artifact,
+                self.encode_governance_bytes(payload, "run artifact")?,
+            ));
+        }
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin work-order restore: {err}")))?;
+
+        transaction
+            .execute(
+                "INSERT INTO work_orders
+                 (work_order_id, revision, work_order_uri, principal_uri, actor_uri,
+                  governing_node_uri, status, status_reason, sensitivity, retention,
+                  correlation_id, causation_id, idempotency_key,
+                  budget_wall_clock_secs, budget_run_attempts, budget_model_tokens,
+                  budget_effect_actions, remaining_wall_clock_secs, remaining_run_attempts,
+                  remaining_model_tokens, remaining_effect_actions,
+                  record_payload, payload_format, payload_wrapped_dek, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
+                params![
+                    order.work_order_id.to_string(),
+                    order.revision,
+                    order.work_order_uri.as_str(),
+                    order.principal.as_str(),
+                    order.actor.as_str(),
+                    order.governing_node.as_str(),
+                    order.status.as_str(),
+                    order.status_reason,
+                    order.sensitivity.as_str(),
+                    order.retention.as_str(),
+                    order.correlation_id.to_string(),
+                    order.causation_id.map(|id| id.to_string()),
+                    order.idempotency_key,
+                    order.budget.wall_clock_secs as i64,
+                    order.budget.run_attempts as i64,
+                    order.budget.model_tokens as i64,
+                    order.budget.effect_actions as i64,
+                    order.remaining.wall_clock_secs as i64,
+                    order.remaining.run_attempts as i64,
+                    order.remaining.model_tokens as i64,
+                    order.remaining.effect_actions as i64,
+                    order_payload,
+                    order_format,
+                    order_dek,
+                    order.created_at.to_rfc3339(),
+                    order.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("restore work order: {err}")))?;
+
+        for (node, (payload, format, dek)) in &node_records {
+            // Authority does not travel with the record. A node contract points
+            // at the AuthorityGrant that authorized its write scope; if that
+            // grant is not present in *this* vault, the reference is dropped
+            // rather than restored. Carrying it would make an export file a way
+            // to move authority between vaults, and a hand-written export could
+            // then assert a grant that was never issued here.
+            //
+            // The contract, its declared scope, and its evidence are preserved
+            // in full — what is not preserved is permission to act on them. A
+            // restored order must be re-authorized locally before any new run
+            // can pass gate G0.
+            let local_grant = match node.authorizing_grant_id {
+                Some(grant_id) => transaction
+                    .query_row(
+                        "SELECT 1 FROM interoperability_authority_grants WHERE grant_id = ?1",
+                        params![grant_id.to_string()],
+                        |_| Ok(()),
+                    )
+                    .optional()
+                    .map_err(|err| MvError::Storage(format!("resolve restored grant: {err}")))?
+                    .map(|()| grant_id.to_string()),
+                None => None,
+            };
+
+            // The reference must be stripped from the record too, not only from
+            // the column. The read model reconstructs a node contract from its
+            // sealed record payload, so nulling the column alone would leave a
+            // restored contract still claiming an authority this vault never
+            // issued.
+            let stripped;
+            let (payload, format, dek) = if node.authorizing_grant_id.is_some()
+                && local_grant.is_none()
+            {
+                let mut without_authority = (*node).clone();
+                without_authority.authorizing_grant_id = None;
+                stripped = self.encode_governance_record(&without_authority, "work-order node")?;
+                (&stripped.0, &stripped.1, &stripped.2)
+            } else {
+                (payload, format, dek)
+            };
+
+            transaction
+                .execute(
+                    "INSERT INTO work_order_nodes
+                     (node_id, work_order_id, node_uri, executor_kind, risk_tier, status,
+                      timeout_secs, max_attempts, authorizing_grant_id,
+                      record_payload, payload_format, payload_wrapped_dek, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    params![
+                        node.node_id.to_string(),
+                        node.work_order_id.to_string(),
+                        node.node_uri.as_str(),
+                        node.executor_kind.as_str(),
+                        node.risk_tier.as_str(),
+                        node.status.as_str(),
+                        node.timeout_secs,
+                        node.max_attempts,
+                        local_grant,
+                        payload,
+                        format,
+                        dek,
+                        node.created_at.to_rfc3339(),
+                        node.updated_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("restore work-order node: {err}")))?;
+
+            // Rebuilt from the record, not carried in the export: the digest
+            // index is derived state, and recomputing it means a tampered
+            // index cannot travel between vaults.
+            for digest in node.write_target_digests() {
+                transaction
+                    .execute(
+                        "INSERT INTO work_order_node_write_targets
+                         (node_id, work_order_id, target_digest, created_at)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            node.node_id.to_string(),
+                            node.work_order_id.to_string(),
+                            digest,
+                            node.created_at.to_rfc3339(),
+                        ],
+                    )
+                    .map_err(|err| {
+                        MvError::Storage(format!("restore declared write target: {err}"))
+                    })?;
+            }
+        }
+
+        for edge in &export.edges {
+            transaction
+                .execute(
+                    "INSERT INTO work_order_edges
+                     (edge_id, work_order_id, from_node_id, to_node_id, edge_kind,
+                      derived, detail, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        edge.edge_id.to_string(),
+                        edge.work_order_id.to_string(),
+                        edge.from_node_id.to_string(),
+                        edge.to_node_id.to_string(),
+                        edge.kind.as_str(),
+                        i64::from(edge.derived),
+                        edge.detail,
+                        edge.created_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("restore work-order edge: {err}")))?;
+        }
+
+        for (run, (payload, format, dek)) in &run_records {
+            transaction
+                .execute(
+                    "INSERT INTO agent_runs
+                     (run_id, run_uri, work_order_id, node_id, attempt_no, status, failure_class,
+                      principal_uri, actor_uri, correlation_id, causation_id, started_at, ended_at,
+                      record_payload, payload_format, payload_wrapped_dek, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                             ?14, ?15, ?16, ?17, ?18)",
+                    params![
+                        run.run_id.to_string(),
+                        run.run_uri.as_str(),
+                        run.work_order_id.to_string(),
+                        run.node_id.to_string(),
+                        run.attempt_no,
+                        run.status.as_str(),
+                        run.failure_class.map(|class| class.as_str()),
+                        run.principal.as_str(),
+                        run.actor.as_str(),
+                        run.correlation_id.to_string(),
+                        run.causation_id.map(|id| id.to_string()),
+                        run.started_at.map(|at| at.to_rfc3339()),
+                        run.ended_at.map(|at| at.to_rfc3339()),
+                        payload,
+                        format,
+                        dek,
+                        run.created_at.to_rfc3339(),
+                        run.updated_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("restore agent run: {err}")))?;
+        }
+
+        // The insert triggers still apply — including the one refusing evidence
+        // that a run satisfied its own G5 — so a hand-edited export cannot
+        // launder an independence violation through the restore path.
+        for result in &export.gate_results {
+            transaction
+                .execute(
+                    "INSERT INTO agent_run_gate_results
+                     (result_id, run_id, work_order_id, gate, outcome, evaluator_actor_uri,
+                      evidence_digest, detail, evaluated_at, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![
+                        result.result_id.to_string(),
+                        result.run_id.to_string(),
+                        result.work_order_id.to_string(),
+                        result.gate.as_str(),
+                        result.outcome.as_str(),
+                        result.evaluator_actor.as_str(),
+                        result.evidence_digest,
+                        result.detail,
+                        result.evaluated_at.to_rfc3339(),
+                        result.created_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("restore gate result: {err}")))?;
+        }
+
+        for (artifact, (payload, format, dek)) in &artifact_records {
+            transaction
+                .execute(
+                    "INSERT INTO agent_run_artifacts
+                     (artifact_id, artifact_uri, run_id, work_order_id, artifact_kind,
+                      content_digest, schema_uri, schema_version, sensitivity, retention,
+                      payload, payload_format, payload_wrapped_dek, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    params![
+                        artifact.artifact_id.to_string(),
+                        artifact.artifact_uri.as_str(),
+                        artifact.run_id.to_string(),
+                        artifact.work_order_id.to_string(),
+                        artifact.artifact_kind,
+                        artifact.content_digest,
+                        artifact.schema.as_ref().map(|s| s.uri.as_str().to_string()),
+                        artifact.schema.as_ref().map(|s| s.version.clone()),
+                        artifact.sensitivity.as_str(),
+                        artifact.retention.as_str(),
+                        payload,
+                        format,
+                        dek,
+                        artifact.created_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("restore run artifact: {err}")))?;
+
+            for reference in &artifact.provenance {
+                transaction
+                    .execute(
+                        "INSERT INTO agent_run_artifact_provenance
+                         (artifact_id, relation, reference_uri, created_at)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            artifact.artifact_id.to_string(),
+                            format!("{:?}", reference.relation),
+                            reference.resource.as_str(),
+                            artifact.created_at.to_rfc3339(),
+                        ],
+                    )
+                    .map_err(|err| {
+                        MvError::Storage(format!("restore artifact provenance: {err}"))
+                    })?;
+            }
+        }
+
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit work-order restore: {err}")))
+    }
+
+    async fn read_run_artifact_payload(&self, artifact_id: Uuid) -> MvResult<Option<Vec<u8>>> {
+        let row = self.with_conn(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload, payload_format, payload_wrapped_dek, content_digest
+                     FROM agent_run_artifacts
+                     WHERE artifact_id = ?1",
+                    params![artifact_id.to_string()],
+                    |row| {
+                        Ok((
+                            row.get::<_, Vec<u8>>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|err| MvError::Storage(format!("load artifact payload: {err}")))
+        })?;
+        let Some((stored, format, wrapped_dek, recorded_digest)) = row else {
+            return Ok(None);
+        };
+
+        let payload =
+            self.decode_governance_bytes(&stored, &format, wrapped_dek.as_deref(), "run artifact")?;
+
+        // Re-verify rather than trusting the stored digest column. A digest
+        // compared only against itself proves nothing, and G2 is supposed to
+        // check content.
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let computed = format!("{:x}", hasher.finalize());
+        if computed != recorded_digest {
+            return Err(MvError::Storage(format!(
+                "artifact {artifact_id} content does not match its recorded digest"
+            )));
+        }
+        Ok(Some(payload))
+    }
+}
+
+impl SqliteNodeStore {
+    // -----------------------------------------------------------------------
+    // Governed agent execution graph helpers
+    // -----------------------------------------------------------------------
+
+    fn row_to_work_order(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkOrder> {
+        let work_order_id: String = row.get(0)?;
+        let revision: u64 = row.get(1)?;
+        let work_order_uri: String = row.get(2)?;
+        let principal_uri: String = row.get(3)?;
+        let actor_uri: String = row.get(4)?;
+        let governing_node_uri: String = row.get(5)?;
+        let status: String = row.get(6)?;
+        let payload: Vec<u8> = row.get(7)?;
+        let payload_format: String = row.get(8)?;
+        let wrapped_dek: Option<String> = row.get(9)?;
+        let created_at: String = row.get(10)?;
+        let updated_at: String = row.get(11)?;
+
+        let work_order: WorkOrder = self
+            .decode_governance_record(
+                &payload,
+                &payload_format,
+                wrapped_dek.as_deref(),
+                "work order",
+            )
+            .map_err(|err| Self::as_sql_conversion_error(7, err.to_string()))?;
+        work_order
+            .validate()
+            .map_err(|err| Self::as_sql_conversion_error(7, err))?;
+        let stored_status: WorkOrderStatus = status
+            .parse()
+            .map_err(|err: String| Self::as_sql_conversion_error(6, err))?;
+
+        // The payload is authoritative; the indexed columns must agree with it
+        // or the record has been tampered with outside the governed path.
+        if work_order.work_order_id != parse_uuid_str(0, &work_order_id)?
+            || work_order.revision != revision
+            || work_order.work_order_uri.as_str() != work_order_uri
+            || work_order.principal.as_str() != principal_uri
+            || work_order.actor.as_str() != actor_uri
+            || work_order.governing_node.as_str() != governing_node_uri
+            || work_order.status != stored_status
+            || work_order.created_at != parse_dt_strict(10, &created_at)?
+            || work_order.updated_at != parse_dt_strict(11, &updated_at)?
+        {
+            return Err(Self::as_sql_conversion_error(
+                7,
+                "work-order payload does not match its governed index",
+            ));
+        }
+        Ok(work_order)
+    }
+
+    fn load_work_order_from_connection(
+        &self,
+        connection: &Connection,
+        work_order_id: Uuid,
+    ) -> MvResult<Option<WorkOrder>> {
+        connection
+            .query_row(
+                "SELECT work_order_id, revision, work_order_uri, principal_uri, actor_uri,
+                        governing_node_uri, status, record_payload, payload_format,
+                        payload_wrapped_dek, created_at, updated_at
+                 FROM work_orders
+                 WHERE work_order_id = ?1",
+                params![work_order_id.to_string()],
+                |row| self.row_to_work_order(row),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load work order: {err}")))
+    }
+
+    fn archive_work_order_revision(
+        transaction: &rusqlite::Transaction<'_>,
+        current: &WorkOrder,
+        archived_at: DateTime<Utc>,
+    ) -> MvResult<()> {
+        transaction
+            .execute(
+                "INSERT INTO work_order_history
+                 SELECT work_order_id, revision, work_order_uri, principal_uri, actor_uri,
+                        governing_node_uri, status, status_reason, sensitivity, retention,
+                        correlation_id, causation_id, idempotency_key,
+                        budget_wall_clock_secs, budget_run_attempts, budget_model_tokens,
+                        budget_effect_actions, remaining_wall_clock_secs, remaining_run_attempts,
+                        remaining_model_tokens, remaining_effect_actions,
+                        record_payload, payload_format, payload_wrapped_dek,
+                        created_at, updated_at, ?2
+                 FROM work_orders
+                 WHERE work_order_id = ?1",
+                params![current.work_order_id.to_string(), archived_at.to_rfc3339()],
+            )
+            .map_err(|err| MvError::Storage(format!("archive work-order revision: {err}")))?;
+        Ok(())
+    }
+
+    fn write_work_order_revision(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        replacement: &WorkOrder,
+    ) -> MvResult<()> {
+        let (payload, format, wrapped_dek) =
+            self.encode_governance_record(replacement, "work order")?;
+        let updated = transaction
+            .execute(
+                "UPDATE work_orders
+                 SET revision = ?2, status = ?3, status_reason = ?4,
+                     remaining_wall_clock_secs = ?5, remaining_run_attempts = ?6,
+                     remaining_model_tokens = ?7, remaining_effect_actions = ?8,
+                     record_payload = ?9, payload_format = ?10, payload_wrapped_dek = ?11,
+                     updated_at = ?12
+                 WHERE work_order_id = ?1",
+                params![
+                    replacement.work_order_id.to_string(),
+                    replacement.revision,
+                    replacement.status.as_str(),
+                    replacement.status_reason,
+                    replacement.remaining.wall_clock_secs as i64,
+                    replacement.remaining.run_attempts as i64,
+                    replacement.remaining.model_tokens as i64,
+                    replacement.remaining.effect_actions as i64,
+                    payload,
+                    format,
+                    wrapped_dek,
+                    replacement.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("update work order: {err}")))?;
+        if updated != 1 {
+            return Err(MvError::Storage(
+                "work order changed while its revision was being committed".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn load_agent_run_from_connection(
+        &self,
+        connection: &Connection,
+        run_id: Uuid,
+    ) -> MvResult<Option<AgentRun>> {
+        connection
+            .query_row(
+                "SELECT record_payload, payload_format, payload_wrapped_dek
+                 FROM agent_runs
+                 WHERE run_id = ?1",
+                params![run_id.to_string()],
+                |row| {
+                    let payload: Vec<u8> = row.get(0)?;
+                    let format: String = row.get(1)?;
+                    let dek: Option<String> = row.get(2)?;
+                    self.decode_governance_record::<AgentRun>(
+                        &payload,
+                        &format,
+                        dek.as_deref(),
+                        "agent run",
+                    )
+                    .map_err(|err| Self::as_sql_conversion_error(0, err.to_string()))
+                },
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load agent run: {err}")))
+    }
+
+    /// Release every unreleased lease held by a run. Called in the same
+    /// transaction as any transition into a state that may not hold leases.
+    fn release_run_leases(
+        transaction: &rusqlite::Transaction<'_>,
+        run_id: Uuid,
+        reason: LeaseReleaseReason,
+        released_at: DateTime<Utc>,
+    ) -> MvResult<usize> {
+        transaction
+            .execute(
+                "UPDATE agent_run_write_leases
+                 SET released_at = ?2, release_reason = ?3
+                 WHERE run_id = ?1 AND released_at IS NULL",
+                params![
+                    run_id.to_string(),
+                    released_at.to_rfc3339(),
+                    reason.as_str()
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("release write leases: {err}")))
+    }
+
+    fn row_to_write_lease(row: &rusqlite::Row<'_>) -> rusqlite::Result<WriteLease> {
+        let release_reason: Option<String> = row.get(9)?;
+        Ok(WriteLease {
+            lease_id: parse_uuid_str(0, &row.get::<_, String>(0)?)?,
+            run_id: parse_uuid_str(1, &row.get::<_, String>(1)?)?,
+            work_order_id: parse_uuid_str(2, &row.get::<_, String>(2)?)?,
+            target_digest: row.get(3)?,
+            governing_node: StableUri::parse(row.get::<_, String>(4)?)
+                .map_err(|err| Self::as_sql_conversion_error(4, err))?,
+            attempt_no: row.get(5)?,
+            claimed_at: parse_dt_strict(6, &row.get::<_, String>(6)?)?,
+            lease_expires_at: parse_dt_strict(7, &row.get::<_, String>(7)?)?,
+            released_at: row
+                .get::<_, Option<String>>(8)?
+                .map(|value| parse_dt_strict(8, &value))
+                .transpose()?,
+            release_reason: release_reason
+                .map(|value| value.parse())
+                .transpose()
+                .map_err(|err: String| Self::as_sql_conversion_error(9, err))?,
+            created_at: parse_dt_strict(10, &row.get::<_, String>(10)?)?,
+        })
+    }
+
+    fn row_to_run_artifact(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<RunArtifact> {
+        let schema_uri: Option<String> = row.get(6)?;
+        let schema_version: Option<String> = row.get(7)?;
+        let schema = match (schema_uri, schema_version) {
+            (Some(uri), Some(version)) => Some(
+                SchemaReference::new(
+                    StableUri::parse(uri).map_err(|err| Self::as_sql_conversion_error(6, err))?,
+                    version,
+                )
+                .map_err(|err| Self::as_sql_conversion_error(6, err))?,
+            ),
+            _ => None,
+        };
+        let sensitivity: String = row.get(8)?;
+        let retention: String = row.get(9)?;
+        Ok(RunArtifact {
+            artifact_id: parse_uuid_str(0, &row.get::<_, String>(0)?)?,
+            artifact_uri: StableUri::parse(row.get::<_, String>(1)?)
+                .map_err(|err| Self::as_sql_conversion_error(1, err))?,
+            run_id: parse_uuid_str(2, &row.get::<_, String>(2)?)?,
+            work_order_id: parse_uuid_str(3, &row.get::<_, String>(3)?)?,
+            artifact_kind: row.get(4)?,
+            content_digest: row.get(5)?,
+            schema,
+            sensitivity: sensitivity
+                .parse()
+                .map_err(|err: String| Self::as_sql_conversion_error(8, err))?,
+            retention: retention
+                .parse()
+                .map_err(|err: String| Self::as_sql_conversion_error(9, err))?,
+            provenance: Vec::new(),
+            created_at: parse_dt_strict(10, &row.get::<_, String>(10)?)?,
+        })
+    }
+
+    fn load_artifact_provenance(
+        &self,
+        connection: &Connection,
+        artifact_id: Uuid,
+    ) -> MvResult<Vec<ProvenanceReference>> {
+        let mut statement = connection
+            .prepare(
+                "SELECT relation, reference_uri
+                 FROM agent_run_artifact_provenance
+                 WHERE artifact_id = ?1
+                 ORDER BY relation ASC, reference_uri ASC",
+            )
+            .map_err(|err| MvError::Storage(format!("prepare artifact provenance: {err}")))?;
+        let rows = statement
+            .query_map(params![artifact_id.to_string()], |row| {
+                let relation: String = row.get(0)?;
+                let resource: String = row.get(1)?;
+                Ok((relation, resource))
+            })
+            .map_err(|err| MvError::Storage(format!("query artifact provenance: {err}")))?;
+        let mut references = Vec::new();
+        for row in rows {
+            let (relation, resource) =
+                row.map_err(|err| MvError::Storage(format!("read artifact provenance: {err}")))?;
+            let relation = match relation.as_str() {
+                "WasDerivedFrom" => ProvenanceRelation::WasDerivedFrom,
+                "WasAttributedTo" => ProvenanceRelation::WasAttributedTo,
+                "WasGeneratedBy" => ProvenanceRelation::WasGeneratedBy,
+                "PrimarySource" => ProvenanceRelation::PrimarySource,
+                other => {
+                    return Err(MvError::Storage(format!(
+                        "unknown artifact provenance relation: {other}"
+                    )))
+                }
+            };
+            references.push(ProvenanceReference {
+                resource: StableUri::parse(resource).map_err(MvError::Storage)?,
+                relation,
+            });
+        }
+        Ok(references)
+    }
+
+    fn resolve_node_create_replay(
+        &self,
+        conn: &Connection,
+        source: &StableUri,
+        principal: &StableUri,
+        idempotency_key: &IdempotencyKey,
+        payload_digest: &str,
+    ) -> MvResult<Option<IdempotentNodeCommit>> {
+        let existing: Option<(String, String)> = conn
+            .query_row(
+                "SELECT envelope_json, payload_digest
+                 FROM interoperability_outbox
+                 WHERE source_uri = ?1 AND principal_uri = ?2 AND idempotency_key = ?3",
+                params![
+                    source.as_str(),
+                    principal.as_str(),
+                    idempotency_key.as_str()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| MvError::Storage(format!("check idempotency key: {e}")))?;
+        let Some((existing_json, existing_digest)) = existing else {
+            return Ok(None);
+        };
+        if existing_digest != payload_digest {
+            return Err(MvError::IdempotencyConflict(
+                "idempotency key was already used with a different payload".into(),
+            ));
+        }
+        let existing_event = Self::decode_outbox_event(&existing_json)?;
+        let existing_node_id = existing_event.subject.trailing_uuid().ok_or_else(|| {
+            MvError::Storage("stored event subject does not identify a UUID".into())
+        })?;
+        let existing_node = self
+            .load_node_from_connection(conn, existing_node_id)?
+            .ok_or_else(|| {
+                MvError::Storage("idempotency record references a missing knowledge node".into())
+            })?;
+        Ok(Some(IdempotentNodeCommit {
+            node: existing_node,
+            event: existing_event,
+            replayed: true,
+        }))
+    }
+
+    fn load_node_from_connection(
+        &self,
+        conn: &Connection,
+        id: Uuid,
+    ) -> MvResult<Option<KnowledgeNode>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, title, content, source, namespace, importance,
+                 created_at, updated_at, last_accessed_at, access_count, version,
+                 expires_at, metadata_json, payload_ciphertext, payload_wrapped_dek
+                 FROM knowledge_nodes WHERE id = ?1",
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let mut node = stmt
+            .query_row(params![id.to_string()], |row| self.row_to_node(row))
+            .optional()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        if let Some(node) = &mut node {
+            node.tags = Self::load_tags(conn, node.id)?;
+        }
+        Ok(node)
+    }
+
+    fn decode_outbox_event(envelope_json: &str) -> MvResult<EventEnvelope> {
+        let event: EventEnvelope = serde_json::from_str(envelope_json)
+            .map_err(|e| MvError::Storage(format!("decode stored event envelope: {e}")))?;
+        event
+            .validate()
+            .map_err(|e| MvError::Storage(format!("stored event envelope is invalid: {e}")))?;
+        Ok(event)
+    }
+
     /// Find a node by its `source` field (exact match).
     /// Used for dedup during imports (e.g. Obsidian vault import).
     pub async fn find_by_source(&self, source: &str) -> MvResult<Option<KnowledgeNode>> {
@@ -4974,6 +10555,471 @@ impl ConversationStore for SqliteNodeStore {
     }
 }
 
+// ---------------------------------------------------------------------------
+// KnowledgeWorkspaceManifestStore
+// ---------------------------------------------------------------------------
+
+const WORKSPACE_SELECT: &str = "SELECT id, namespace, mode, state, descriptor_payload, \
+    payload_format, revision, created_at, updated_at, last_reconciled_at FROM workspaces";
+const WORKSPACE_DOCUMENT_SELECT: &str = "SELECT id, workspace_id, path_token, document_payload, \
+    payload_format, lifecycle_state, projection_state, projected_node_id, revision, created_at, \
+    updated_at FROM workspace_documents";
+
+fn checked_workspace_revision(revision: u64) -> MvResult<i64> {
+    if revision == 0 {
+        return Err(MvError::InvalidInput(
+            "workspace manifest revision must be greater than zero".into(),
+        ));
+    }
+    i64::try_from(revision)
+        .map_err(|_| MvError::InvalidInput("workspace manifest revision is too large".into()))
+}
+
+fn validate_revision_advance(revision: u64, expected_revision: u64) -> MvResult<()> {
+    let next_revision = expected_revision
+        .checked_add(1)
+        .ok_or_else(|| MvError::InvalidInput("workspace manifest revision overflow".into()))?;
+    if revision != next_revision {
+        return Err(MvError::InvalidInput(format!(
+            "replacement revision must be {next_revision}, got {revision}"
+        )));
+    }
+    checked_workspace_revision(revision)?;
+    Ok(())
+}
+
+fn validate_manifest_payload(
+    sealed_mode: bool,
+    payload: &[u8],
+    payload_format: WorkspaceManifestPayloadFormat,
+) -> MvResult<()> {
+    if payload.is_empty() {
+        return Err(MvError::InvalidInput(
+            "workspace manifest payload must not be empty".into(),
+        ));
+    }
+    if sealed_mode && payload_format != WorkspaceManifestPayloadFormat::MvencV1 {
+        return Err(MvError::InvalidInput(
+            "sealed storage requires mvenc-v1 workspace manifest payloads".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_workspace_record(sealed_mode: bool, workspace: &KnowledgeWorkspace) -> MvResult<i64> {
+    if workspace.namespace.trim().is_empty() {
+        return Err(MvError::InvalidInput(
+            "knowledge workspace namespace must not be empty".into(),
+        ));
+    }
+    validate_manifest_payload(
+        sealed_mode,
+        &workspace.descriptor_payload,
+        workspace.payload_format,
+    )?;
+    checked_workspace_revision(workspace.revision)
+}
+
+fn validate_workspace_document_record(
+    sealed_mode: bool,
+    document: &KnowledgeWorkspaceDocument,
+) -> MvResult<i64> {
+    if document.path_token.len() != 64
+        || !document
+            .path_token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(MvError::InvalidInput(
+            "workspace document path token must be 64 lowercase hexadecimal characters".into(),
+        ));
+    }
+    validate_manifest_payload(
+        sealed_mode,
+        &document.document_payload,
+        document.payload_format,
+    )?;
+    checked_workspace_revision(document.revision)
+}
+
+#[async_trait]
+impl KnowledgeWorkspaceManifestStore for SqliteNodeStore {
+    async fn insert_knowledge_workspace(&self, workspace: &KnowledgeWorkspace) -> MvResult<()> {
+        let revision = validate_workspace_record(self.sealed_mode(), workspace)?;
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO workspaces (
+                    id, namespace, mode, state, descriptor_payload, payload_format,
+                    revision, created_at, updated_at, last_reconciled_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    workspace.id.to_string(),
+                    workspace.namespace,
+                    workspace.mode.as_str(),
+                    workspace.state.as_str(),
+                    workspace.descriptor_payload,
+                    workspace.payload_format.as_str(),
+                    revision,
+                    workspace.created_at.to_rfc3339(),
+                    workspace.updated_at.to_rfc3339(),
+                    workspace.last_reconciled_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert knowledge workspace failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_knowledge_workspace(&self, id: Uuid) -> MvResult<Option<KnowledgeWorkspace>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                &format!("{WORKSPACE_SELECT} WHERE id = ?1"),
+                params![id.to_string()],
+                row_to_knowledge_workspace,
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("get knowledge workspace failed: {err}")))
+        })
+    }
+
+    async fn list_knowledge_workspaces(
+        &self,
+        namespace: Option<&str>,
+    ) -> MvResult<Vec<KnowledgeWorkspace>> {
+        self.with_conn(|conn| {
+            let sql = match namespace {
+                Some(_) => {
+                    format!("{WORKSPACE_SELECT} WHERE namespace = ?1 ORDER BY created_at, id")
+                }
+                None => format!("{WORKSPACE_SELECT} ORDER BY created_at, id"),
+            };
+            let mut statement = conn
+                .prepare(&sql)
+                .map_err(|err| MvError::Storage(format!("prepare workspace list failed: {err}")))?;
+            let rows = match namespace {
+                Some(value) => statement.query_map(params![value], row_to_knowledge_workspace),
+                None => statement.query_map([], row_to_knowledge_workspace),
+            }
+            .map_err(|err| MvError::Storage(format!("list knowledge workspaces failed: {err}")))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|err| {
+                MvError::Storage(format!("collect knowledge workspaces failed: {err}"))
+            })
+        })
+    }
+
+    async fn update_knowledge_workspace(
+        &self,
+        workspace: &KnowledgeWorkspace,
+        expected_revision: u64,
+    ) -> MvResult<bool> {
+        validate_revision_advance(workspace.revision, expected_revision)?;
+        let revision = validate_workspace_record(self.sealed_mode(), workspace)?;
+        let expected_revision = checked_workspace_revision(expected_revision)?;
+        self.with_conn(|conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE workspaces SET
+                        namespace = ?2, mode = ?3, state = ?4, descriptor_payload = ?5,
+                        payload_format = ?6, revision = ?7, updated_at = ?8,
+                        last_reconciled_at = ?9
+                     WHERE id = ?1 AND revision = ?10",
+                    params![
+                        workspace.id.to_string(),
+                        workspace.namespace,
+                        workspace.mode.as_str(),
+                        workspace.state.as_str(),
+                        workspace.descriptor_payload,
+                        workspace.payload_format.as_str(),
+                        revision,
+                        workspace.updated_at.to_rfc3339(),
+                        workspace.last_reconciled_at.map(|value| value.to_rfc3339()),
+                        expected_revision,
+                    ],
+                )
+                .map_err(|err| {
+                    MvError::Storage(format!("update knowledge workspace failed: {err}"))
+                })?;
+            Ok(updated > 0)
+        })
+    }
+
+    async fn insert_workspace_document(
+        &self,
+        document: &KnowledgeWorkspaceDocument,
+    ) -> MvResult<()> {
+        let revision = validate_workspace_document_record(self.sealed_mode(), document)?;
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO workspace_documents (
+                    id, workspace_id, path_token, document_payload, payload_format,
+                    lifecycle_state, projection_state, projected_node_id, revision,
+                    created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    document.id.to_string(),
+                    document.workspace_id.to_string(),
+                    document.path_token,
+                    document.document_payload,
+                    document.payload_format.as_str(),
+                    document.lifecycle_state.as_str(),
+                    document.projection_state.as_str(),
+                    document.projected_node_id.map(|value| value.to_string()),
+                    revision,
+                    document.created_at.to_rfc3339(),
+                    document.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert workspace document failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_workspace_document(
+        &self,
+        id: Uuid,
+    ) -> MvResult<Option<KnowledgeWorkspaceDocument>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                &format!("{WORKSPACE_DOCUMENT_SELECT} WHERE id = ?1"),
+                params![id.to_string()],
+                row_to_workspace_document,
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("get workspace document failed: {err}")))
+        })
+    }
+
+    async fn get_workspace_document_by_path_token(
+        &self,
+        workspace_id: Uuid,
+        path_token: &str,
+    ) -> MvResult<Option<KnowledgeWorkspaceDocument>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                &format!("{WORKSPACE_DOCUMENT_SELECT} WHERE workspace_id = ?1 AND path_token = ?2"),
+                params![workspace_id.to_string(), path_token],
+                row_to_workspace_document,
+            )
+            .optional()
+            .map_err(|err| {
+                MvError::Storage(format!(
+                    "get workspace document by path token failed: {err}"
+                ))
+            })
+        })
+    }
+
+    async fn list_workspace_documents(
+        &self,
+        workspace_id: Uuid,
+    ) -> MvResult<Vec<KnowledgeWorkspaceDocument>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(&format!(
+                    "{WORKSPACE_DOCUMENT_SELECT} WHERE workspace_id = ?1 ORDER BY path_token, id"
+                ))
+                .map_err(|err| {
+                    MvError::Storage(format!("prepare workspace document list failed: {err}"))
+                })?;
+            let rows = statement
+                .query_map(params![workspace_id.to_string()], row_to_workspace_document)
+                .map_err(|err| {
+                    MvError::Storage(format!("list workspace documents failed: {err}"))
+                })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|err| {
+                MvError::Storage(format!("collect workspace documents failed: {err}"))
+            })
+        })
+    }
+
+    async fn update_workspace_document(
+        &self,
+        document: &KnowledgeWorkspaceDocument,
+        expected_revision: u64,
+    ) -> MvResult<bool> {
+        validate_revision_advance(document.revision, expected_revision)?;
+        let revision = validate_workspace_document_record(self.sealed_mode(), document)?;
+        let expected_revision = checked_workspace_revision(expected_revision)?;
+        self.with_conn(|conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE workspace_documents SET
+                        path_token = ?3, document_payload = ?4,
+                        payload_format = ?5, lifecycle_state = ?6, projection_state = ?7,
+                        projected_node_id = ?8, revision = ?9, updated_at = ?10
+                     WHERE id = ?1 AND workspace_id = ?2 AND revision = ?11",
+                    params![
+                        document.id.to_string(),
+                        document.workspace_id.to_string(),
+                        document.path_token,
+                        document.document_payload,
+                        document.payload_format.as_str(),
+                        document.lifecycle_state.as_str(),
+                        document.projection_state.as_str(),
+                        document.projected_node_id.map(|value| value.to_string()),
+                        revision,
+                        document.updated_at.to_rfc3339(),
+                        expected_revision,
+                    ],
+                )
+                .map_err(|err| {
+                    MvError::Storage(format!("update workspace document failed: {err}"))
+                })?;
+            Ok(updated > 0)
+        })
+    }
+
+    async fn apply_workspace_reconciliation(
+        &self,
+        reconciliation: &WorkspaceManifestReconciliation,
+    ) -> MvResult<bool> {
+        let workspace = &reconciliation.workspace_replacement;
+        validate_revision_advance(
+            workspace.revision,
+            reconciliation.expected_workspace_revision,
+        )?;
+        let workspace_revision = validate_workspace_record(self.sealed_mode(), workspace)?;
+        let expected_workspace_revision =
+            checked_workspace_revision(reconciliation.expected_workspace_revision)?;
+
+        let mut document_ids = std::collections::HashSet::new();
+        for document in &reconciliation.document_inserts {
+            if document.workspace_id != workspace.id {
+                return Err(MvError::InvalidInput(
+                    "reconciliation document insert belongs to another workspace".into(),
+                ));
+            }
+            if !document_ids.insert(document.id) {
+                return Err(MvError::InvalidInput(
+                    "reconciliation contains a duplicate document id".into(),
+                ));
+            }
+            validate_workspace_document_record(self.sealed_mode(), document)?;
+        }
+        for update in &reconciliation.document_updates {
+            let document = &update.replacement;
+            if document.workspace_id != workspace.id {
+                return Err(MvError::InvalidInput(
+                    "reconciliation document update belongs to another workspace".into(),
+                ));
+            }
+            if !document_ids.insert(document.id) {
+                return Err(MvError::InvalidInput(
+                    "reconciliation contains a duplicate document id".into(),
+                ));
+            }
+            validate_revision_advance(document.revision, update.expected_revision)?;
+            validate_workspace_document_record(self.sealed_mode(), document)?;
+            checked_workspace_revision(update.expected_revision)?;
+        }
+
+        self.with_conn(|conn| {
+            let transaction = conn.unchecked_transaction().map_err(|err| {
+                MvError::Storage(format!("begin workspace reconciliation failed: {err}"))
+            })?;
+
+            let workspace_updated = transaction
+                .execute(
+                    "UPDATE workspaces SET
+                        namespace = ?2, mode = ?3, state = ?4, descriptor_payload = ?5,
+                        payload_format = ?6, revision = ?7, updated_at = ?8,
+                        last_reconciled_at = ?9
+                     WHERE id = ?1 AND revision = ?10",
+                    params![
+                        workspace.id.to_string(),
+                        workspace.namespace,
+                        workspace.mode.as_str(),
+                        workspace.state.as_str(),
+                        workspace.descriptor_payload,
+                        workspace.payload_format.as_str(),
+                        workspace_revision,
+                        workspace.updated_at.to_rfc3339(),
+                        workspace.last_reconciled_at.map(|value| value.to_rfc3339()),
+                        expected_workspace_revision,
+                    ],
+                )
+                .map_err(|err| {
+                    MvError::Storage(format!(
+                        "update workspace during reconciliation failed: {err}"
+                    ))
+                })?;
+            if workspace_updated == 0 {
+                return Ok(false);
+            }
+
+            for document in &reconciliation.document_inserts {
+                let revision = checked_workspace_revision(document.revision)?;
+                transaction
+                    .execute(
+                        "INSERT INTO workspace_documents (
+                            id, workspace_id, path_token, document_payload, payload_format,
+                            lifecycle_state, projection_state, projected_node_id, revision,
+                            created_at, updated_at
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                        params![
+                            document.id.to_string(),
+                            document.workspace_id.to_string(),
+                            document.path_token,
+                            document.document_payload,
+                            document.payload_format.as_str(),
+                            document.lifecycle_state.as_str(),
+                            document.projection_state.as_str(),
+                            document.projected_node_id.map(|value| value.to_string()),
+                            revision,
+                            document.created_at.to_rfc3339(),
+                            document.updated_at.to_rfc3339(),
+                        ],
+                    )
+                    .map_err(|err| {
+                        MvError::Storage(format!(
+                            "insert document during reconciliation failed: {err}"
+                        ))
+                    })?;
+            }
+
+            for update in &reconciliation.document_updates {
+                let document = &update.replacement;
+                let revision = checked_workspace_revision(document.revision)?;
+                let expected_revision = checked_workspace_revision(update.expected_revision)?;
+                let updated = transaction
+                    .execute(
+                        "UPDATE workspace_documents SET
+                            path_token = ?3, document_payload = ?4,
+                            payload_format = ?5, lifecycle_state = ?6, projection_state = ?7,
+                            projected_node_id = ?8, revision = ?9, updated_at = ?10
+                         WHERE id = ?1 AND workspace_id = ?2 AND revision = ?11",
+                        params![
+                            document.id.to_string(),
+                            document.workspace_id.to_string(),
+                            document.path_token,
+                            document.document_payload,
+                            document.payload_format.as_str(),
+                            document.lifecycle_state.as_str(),
+                            document.projection_state.as_str(),
+                            document.projected_node_id.map(|value| value.to_string()),
+                            revision,
+                            document.updated_at.to_rfc3339(),
+                            expected_revision,
+                        ],
+                    )
+                    .map_err(|err| {
+                        MvError::Storage(format!(
+                            "update document during reconciliation failed: {err}"
+                        ))
+                    })?;
+                if updated == 0 {
+                    return Ok(false);
+                }
+            }
+
+            transaction.commit().map_err(|err| {
+                MvError::Storage(format!("commit workspace reconciliation failed: {err}"))
+            })?;
+            Ok(true)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5006,6 +11052,190 @@ mod tests {
         haystack
             .windows(needle.len())
             .any(|window| window == needle)
+    }
+
+    fn node_created_event(
+        local_node_id: Uuid,
+        node_id: Uuid,
+        key: &str,
+        digest: &str,
+    ) -> EventEnvelope {
+        let subject = StableUri::knowledge_node(local_node_id, node_id);
+        let principal = StableUri::principal(
+            local_node_id,
+            Uuid::new_v5(&local_node_id, b"interoperability-test-principal"),
+        );
+        EventEnvelope::new(NewEventEnvelope {
+            event_type: KNOWLEDGE_NODE_CREATED_V1.into(),
+            source: StableUri::node(local_node_id),
+            subject: subject.clone(),
+            schema: SchemaReference::new(
+                StableUri::schema("knowledge-node-created").unwrap(),
+                "1.0.0",
+            )
+            .unwrap(),
+            principal: principal.clone(),
+            actor: principal,
+            correlation_id: Uuid::now_v7(),
+            causation_id: None,
+            idempotency_key: IdempotencyKey::parse(key).unwrap(),
+            payload_digest: digest.into(),
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Durable,
+            provenance: vec![ProvenanceReference {
+                resource: subject,
+                relation: ProvenanceRelation::PrimarySource,
+            }],
+            data: serde_json::json!({
+                "resource_kind": "knowledge_node",
+                "node_kind": "fact",
+                "namespace": "interoperability",
+            }),
+        })
+        .unwrap()
+    }
+
+    fn governance_event(
+        local_node_id: Uuid,
+        event_type: &str,
+        schema_name: &str,
+        subject: StableUri,
+        key: &str,
+        data: serde_json::Value,
+    ) -> EventEnvelope {
+        let principal = StableUri::principal(
+            local_node_id,
+            Uuid::new_v5(&local_node_id, b"governance-test-principal"),
+        );
+        EventEnvelope::new(NewEventEnvelope {
+            event_type: event_type.into(),
+            source: StableUri::node(local_node_id),
+            subject: subject.clone(),
+            schema: SchemaReference::new(StableUri::schema(schema_name).unwrap(), "1.0.0").unwrap(),
+            principal: principal.clone(),
+            actor: principal,
+            correlation_id: Uuid::now_v7(),
+            causation_id: None,
+            idempotency_key: IdempotencyKey::parse(key).unwrap(),
+            payload_digest: canonical_json_sha256(&data),
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Durable,
+            provenance: vec![ProvenanceReference {
+                resource: subject,
+                relation: ProvenanceRelation::PrimarySource,
+            }],
+            data,
+        })
+        .unwrap()
+    }
+
+    fn context_node_event(
+        local_node_id: Uuid,
+        event_type: &str,
+        schema_name: &str,
+        context_node: &ContextNodeRecord,
+        key: &str,
+        data: serde_json::Value,
+    ) -> EventEnvelope {
+        let mut event = governance_event(
+            local_node_id,
+            event_type,
+            schema_name,
+            context_node.node_uri.clone(),
+            key,
+            data,
+        );
+        event.payload_digest = context_node.semantic_digest();
+        event
+    }
+
+    fn authority_grant_event(
+        local_node_id: Uuid,
+        event_type: &str,
+        schema_name: &str,
+        grant: &AuthorityGrant,
+        key: &str,
+        data: serde_json::Value,
+    ) -> EventEnvelope {
+        let mut event = governance_event(
+            local_node_id,
+            event_type,
+            schema_name,
+            grant.grant_uri.clone(),
+            key,
+            data,
+        );
+        event.principal = grant.grantor.clone();
+        event.actor = grant.grantor.clone();
+        event.payload_digest = grant.semantic_digest();
+        event
+    }
+
+    fn test_local_context_node(local_node_id: Uuid) -> ContextNodeRecord {
+        let manifest = ContextCapabilityManifest::new(
+            vec![ContextCapability::Discover],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut context_node = ContextNodeRecord::discovered(
+            local_node_id,
+            ContextNodeType::Personal,
+            StableUri::principal(
+                local_node_id,
+                Uuid::new_v5(&local_node_id, b"local-context-owner"),
+            ),
+            StableUri::node(local_node_id),
+            "Personal Vault",
+            manifest,
+        )
+        .unwrap();
+        context_node.trust_class = ContextNodeTrustClass::local();
+        context_node.status = ContextNodeStatus::Active;
+        context_node
+    }
+
+    async fn register_local_context_node(store: &SqliteNodeStore) -> ContextNodeRecord {
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let context_node = test_local_context_node(local_node_id);
+        let data = serde_json::json!({
+            "node_id": context_node.node_id,
+            "node_type": context_node.node_type.as_str(),
+            "status": context_node.status.as_str(),
+            "record_digest": context_node.semantic_digest(),
+            "capability_digest": context_node.capability_manifest.content_digest,
+        });
+        let event = context_node_event(
+            local_node_id,
+            CONTEXT_NODE_REGISTERED_V1,
+            "context-node-registered",
+            &context_node,
+            "register-local-context-node",
+            data,
+        );
+        store
+            .commit_context_node_with_event(&context_node, &event)
+            .await
+            .unwrap();
+        context_node
+    }
+
+    fn test_source_binding(
+        local_node_id: Uuid,
+        external_account_id: &str,
+        external_object_id: &str,
+    ) -> SourceBinding {
+        let resource_id = Uuid::now_v7();
+        SourceBinding::new(
+            StableUri::knowledge_node(local_node_id, resource_id),
+            StableUri::node(local_node_id),
+            "calendar",
+            external_account_id,
+            external_object_id,
+            StableUri::parse("mindvault://sources/calendar").unwrap(),
+            StableUri::knowledge_node(local_node_id, resource_id),
+        )
+        .unwrap()
     }
 
     #[tokio::test]
@@ -5500,5 +11730,3258 @@ mod tests {
         assert!(stored.can_auto_reply);
         assert_eq!(stored.allowed_namespaces, vec!["all"]);
         assert!(stored.max_confidence_override.is_none());
+    }
+
+    #[test]
+    fn knowledge_workspace_migration_installs_complete_manifest_contract() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let expected_tables = [
+            "workspace_manifest_versions",
+            "workspaces",
+            "workspace_documents",
+            "workspace_events",
+            "workspace_document_versions",
+            "workspace_conflicts",
+            "workspace_migrations",
+            "workspace_migration_items",
+        ];
+
+        store
+            .with_conn(|conn| {
+                for table in expected_tables {
+                    let present: bool = conn
+                        .query_row(
+                            "SELECT EXISTS(
+                                SELECT 1 FROM sqlite_master
+                                WHERE type = 'table' AND name = ?1
+                             )",
+                            params![table],
+                            |row| row.get(0),
+                        )
+                        .map_err(|err| MvError::Storage(err.to_string()))?;
+                    assert!(present, "expected manifest table {table}");
+                }
+
+                let contract: String = conn
+                    .query_row(
+                        "SELECT contract_name FROM workspace_manifest_versions WHERE version = 1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|err| MvError::Storage(err.to_string()))?;
+                assert_eq!(contract, "knowledge-workspace-manifest-v1");
+
+                let schema_version: i64 = conn
+                    .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|err| MvError::Storage(err.to_string()))?;
+                assert_eq!(schema_version, 38);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn knowledge_workspace_manifest_round_trips_without_filesystem_access() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let workspace = KnowledgeWorkspace::new(
+            "personal",
+            KnowledgeWorkspaceMode::Mounted,
+            br#"{"display_name":"Vault"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        store.insert_knowledge_workspace(&workspace).await.unwrap();
+
+        assert_eq!(
+            store.get_knowledge_workspace(workspace.id).await.unwrap(),
+            Some(workspace.clone())
+        );
+        assert_eq!(
+            store
+                .list_knowledge_workspaces(Some("personal"))
+                .await
+                .unwrap(),
+            vec![workspace.clone()]
+        );
+        assert!(store
+            .list_knowledge_workspaces(Some("other"))
+            .await
+            .unwrap()
+            .is_empty());
+
+        let raw_path = KnowledgeWorkspaceDocument::new(
+            workspace.id,
+            "notes/private.md",
+            br#"{"relative_path":"notes/private.md"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        assert!(matches!(
+            store.insert_workspace_document(&raw_path).await,
+            Err(MvError::InvalidInput(message))
+                if message.contains("64 lowercase hexadecimal")
+        ));
+
+        let path_token = "a".repeat(64);
+        let document = KnowledgeWorkspaceDocument::new(
+            workspace.id,
+            path_token.clone(),
+            br#"{"relative_path":"notes/hello.md","content_hash":"sha256:ab12"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        store.insert_workspace_document(&document).await.unwrap();
+
+        assert_eq!(
+            store.get_workspace_document(document.id).await.unwrap(),
+            Some(document.clone())
+        );
+        assert_eq!(
+            store
+                .get_workspace_document_by_path_token(workspace.id, &path_token)
+                .await
+                .unwrap(),
+            Some(document.clone())
+        );
+        assert_eq!(
+            store.list_workspace_documents(workspace.id).await.unwrap(),
+            vec![document.clone()]
+        );
+
+        let duplicate_path = KnowledgeWorkspaceDocument::new(
+            workspace.id,
+            document.path_token.clone(),
+            br#"{"relative_path":"different.md"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        assert!(store
+            .insert_workspace_document(&duplicate_path)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn knowledge_workspace_updates_require_the_expected_revision() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let mut workspace = KnowledgeWorkspace::new(
+            "personal",
+            KnowledgeWorkspaceMode::ManagedPlaintext,
+            br#"{"display_name":"Managed Vault"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        store.insert_knowledge_workspace(&workspace).await.unwrap();
+
+        workspace.state = KnowledgeWorkspaceState::Ready;
+        workspace.revision = 2;
+        workspace.updated_at = Utc::now();
+        assert!(store
+            .update_knowledge_workspace(&workspace, 1)
+            .await
+            .unwrap());
+
+        let mut stale = workspace.clone();
+        stale.state = KnowledgeWorkspaceState::Offline;
+        assert!(!store.update_knowledge_workspace(&stale, 1).await.unwrap());
+        assert_eq!(
+            store
+                .get_knowledge_workspace(workspace.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            KnowledgeWorkspaceState::Ready
+        );
+
+        let mut invalid_advance = workspace.clone();
+        invalid_advance.revision = 4;
+        assert!(matches!(
+            store.update_knowledge_workspace(&invalid_advance, 2).await,
+            Err(MvError::InvalidInput(_))
+        ));
+
+        let mut document = KnowledgeWorkspaceDocument::new(
+            workspace.id,
+            "b".repeat(64),
+            br#"{"relative_path":"notes/revision.md"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        store.insert_workspace_document(&document).await.unwrap();
+
+        document.projection_state = WorkspaceProjectionState::Ready;
+        document.revision = 2;
+        document.updated_at = Utc::now();
+        assert!(store.update_workspace_document(&document, 1).await.unwrap());
+        assert!(!store.update_workspace_document(&document, 1).await.unwrap());
+
+        let original_workspace_id = document.workspace_id;
+        document.workspace_id = Uuid::now_v7();
+        document.revision = 3;
+        assert!(!store.update_workspace_document(&document, 2).await.unwrap());
+        assert_eq!(
+            store
+                .get_workspace_document(document.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .workspace_id,
+            original_workspace_id
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_reconciliation_rolls_back_when_any_revision_is_stale() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let workspace = KnowledgeWorkspace::new(
+            "personal",
+            KnowledgeWorkspaceMode::Mounted,
+            br#"{"display_name":"Atomic Vault"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        store.insert_knowledge_workspace(&workspace).await.unwrap();
+
+        let document = KnowledgeWorkspaceDocument::new(
+            workspace.id,
+            "c".repeat(64),
+            br#"{"schema":"test","relative_path":"one.md"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        store.insert_workspace_document(&document).await.unwrap();
+
+        let mut workspace_replacement = workspace.clone();
+        workspace_replacement.state = KnowledgeWorkspaceState::Ready;
+        workspace_replacement.revision = 2;
+        workspace_replacement.updated_at = Utc::now();
+
+        let inserted = KnowledgeWorkspaceDocument::new(
+            workspace.id,
+            "d".repeat(64),
+            br#"{"schema":"test","relative_path":"two.md"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        let mut stale_replacement = document.clone();
+        stale_replacement.lifecycle_state = WorkspaceDocumentLifecycle::Missing;
+        stale_replacement.revision = 3;
+        stale_replacement.updated_at = Utc::now();
+        let reconciliation = WorkspaceManifestReconciliation {
+            expected_workspace_revision: 1,
+            workspace_replacement,
+            document_inserts: vec![inserted.clone()],
+            document_updates: vec![WorkspaceDocumentManifestUpdate {
+                expected_revision: 2,
+                replacement: stale_replacement,
+            }],
+        };
+
+        assert!(!store
+            .apply_workspace_reconciliation(&reconciliation)
+            .await
+            .unwrap());
+        assert_eq!(
+            store
+                .get_knowledge_workspace(workspace.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            1
+        );
+        assert!(store
+            .get_workspace_document(inserted.id)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store
+                .get_workspace_document(document.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .lifecycle_state,
+            WorkspaceDocumentLifecycle::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn knowledge_workspace_sealed_storage_rejects_plaintext_payloads() {
+        let store = SqliteNodeStore::open_in_memory_with_mode(true).unwrap();
+        let workspace = KnowledgeWorkspace::new(
+            "personal",
+            KnowledgeWorkspaceMode::Mounted,
+            br#"{"root":"/sensitive/path"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+
+        assert!(matches!(
+            store.insert_knowledge_workspace(&workspace).await,
+            Err(MvError::InvalidInput(message))
+                if message.contains("requires mvenc-v1")
+        ));
+    }
+
+    #[tokio::test]
+    async fn context_node_registration_is_atomic_listable_and_idempotent() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let context_node = test_local_context_node(local_node_id);
+        let data = serde_json::json!({
+            "node_id": context_node.node_id,
+            "node_type": context_node.node_type.as_str(),
+            "status": context_node.status.as_str(),
+            "record_digest": context_node.semantic_digest(),
+            "capability_digest": context_node.capability_manifest.content_digest,
+        });
+        let event = context_node_event(
+            local_node_id,
+            CONTEXT_NODE_REGISTERED_V1,
+            "context-node-registered",
+            &context_node,
+            "context-node-registration-idempotency",
+            data.clone(),
+        );
+        let first = store
+            .commit_context_node_with_event(&context_node, &event)
+            .await
+            .unwrap();
+        assert!(!first.replayed);
+        assert_eq!(
+            store.get_context_node(local_node_id).await.unwrap(),
+            Some(context_node.clone())
+        );
+        assert_eq!(
+            store
+                .list_context_nodes(Some(ContextNodeStatus::Active))
+                .await
+                .unwrap(),
+            vec![context_node.clone()]
+        );
+
+        let retry_event = context_node_event(
+            local_node_id,
+            CONTEXT_NODE_REGISTERED_V1,
+            "context-node-registered",
+            &context_node,
+            "context-node-registration-idempotency",
+            data,
+        );
+        let replay = store
+            .commit_context_node_with_event(&context_node, &retry_event)
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.event.id, first.event.id);
+        assert_eq!(replay.context_node, context_node);
+    }
+
+    #[tokio::test]
+    async fn context_node_updates_archive_revisions_and_replay_exact_history() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let original = register_local_context_node(&store).await;
+
+        let mut descriptor_update = original.clone();
+        descriptor_update.revision = 2;
+        descriptor_update.display_name = "Personal Vault v2".into();
+        descriptor_update.updated_at = Utc::now();
+        let update_data = serde_json::json!({
+            "node_id": descriptor_update.node_id,
+            "revision": descriptor_update.revision,
+            "record_digest": descriptor_update.semantic_digest(),
+            "capability_digest": descriptor_update.capability_manifest.content_digest,
+        });
+        let update_event = context_node_event(
+            original.node_id,
+            CONTEXT_NODE_DESCRIPTOR_UPDATED_V1,
+            "context-node-descriptor-updated",
+            &descriptor_update,
+            "update-local-context-node",
+            update_data.clone(),
+        );
+        let updated = store
+            .update_context_node_descriptor_with_event(1, &descriptor_update, &update_event)
+            .await
+            .unwrap();
+        assert!(!updated.replayed);
+
+        let mut suspended = descriptor_update.clone();
+        suspended.revision = 3;
+        suspended.status = ContextNodeStatus::Suspended;
+        suspended.updated_at = Utc::now();
+        let transition_data = serde_json::json!({
+            "node_id": suspended.node_id,
+            "revision": suspended.revision,
+            "from_status": ContextNodeStatus::Active.as_str(),
+            "to_status": suspended.status.as_str(),
+            "record_digest": suspended.semantic_digest(),
+        });
+        let transition_event = context_node_event(
+            original.node_id,
+            CONTEXT_NODE_LIFECYCLE_TRANSITIONED_V1,
+            "context-node-lifecycle-transitioned",
+            &suspended,
+            "suspend-local-context-node",
+            transition_data,
+        );
+        store
+            .transition_context_node_with_event(2, &suspended, &transition_event)
+            .await
+            .unwrap();
+
+        let retry_event = context_node_event(
+            original.node_id,
+            CONTEXT_NODE_DESCRIPTOR_UPDATED_V1,
+            "context-node-descriptor-updated",
+            &descriptor_update,
+            "update-local-context-node",
+            update_data,
+        );
+        let replay = store
+            .update_context_node_descriptor_with_event(1, &descriptor_update, &retry_event)
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.event.id, update_event.id);
+        assert_eq!(replay.context_node, descriptor_update);
+        assert_eq!(
+            store
+                .get_context_node(original.node_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            suspended
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_context_node_transition_leaves_no_event_or_mutation() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let original = register_local_context_node(&store).await;
+        let mut retired = original.clone();
+        retired.revision = 2;
+        retired.status = ContextNodeStatus::Retired;
+        retired.updated_at = Utc::now();
+        let data = serde_json::json!({
+            "node_id": retired.node_id,
+            "revision": retired.revision,
+            "from_status": original.status.as_str(),
+            "to_status": retired.status.as_str(),
+            "record_digest": retired.semantic_digest(),
+        });
+        let event = context_node_event(
+            original.node_id,
+            CONTEXT_NODE_LIFECYCLE_TRANSITIONED_V1,
+            "context-node-lifecycle-transitioned",
+            &retired,
+            "reject-context-node-lifecycle-skip",
+            data,
+        );
+        assert!(matches!(
+            store
+                .transition_context_node_with_event(1, &retired, &event)
+                .await,
+            Err(MvError::InvalidInput(message)) if message.contains("not allowed")
+        ));
+        assert_eq!(
+            store.get_context_node(original.node_id).await.unwrap(),
+            Some(original)
+        );
+        assert!(store.get_outbox_event(event.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn sealed_context_node_payload_hides_descriptor_details() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("context-node-sealed.sqlite");
+        let _reset = install_scoped_runtime_key(&db_path, [21u8; 32]);
+        let store = SqliteNodeStore::open_with_mode(&db_path, true).unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let marker = format!("sealed-context-marker-{}", Uuid::now_v7());
+        let manifest = ContextCapabilityManifest::new(
+            vec![ContextCapability::Discover],
+            vec![ContextProtocolProfile {
+                protocol: "mcp".into(),
+                version: "2025-11-25".into(),
+                roles: vec!["server".into()],
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+        let mut context_node = ContextNodeRecord::discovered(
+            local_node_id,
+            ContextNodeType::Personal,
+            StableUri::principal(local_node_id, Uuid::now_v7()),
+            StableUri::node(local_node_id),
+            marker.clone(),
+            manifest,
+        )
+        .unwrap();
+        context_node.trust_class = ContextNodeTrustClass::local();
+        context_node.status = ContextNodeStatus::Active;
+        context_node.endpoints = vec![ContextNodeEndpoint {
+            protocol: "mcp".into(),
+            uri: format!("https://example.invalid/{marker}"),
+        }];
+        context_node.public_keys = vec![ContextNodePublicKey {
+            key_id: "primary".into(),
+            algorithm: "ed25519".into(),
+            public_key_multibase: format!("z{marker}"),
+        }];
+        let data = serde_json::json!({
+            "node_id": context_node.node_id,
+            "node_type": context_node.node_type.as_str(),
+            "status": context_node.status.as_str(),
+            "record_digest": context_node.semantic_digest(),
+            "capability_digest": context_node.capability_manifest.content_digest,
+        });
+        let event = context_node_event(
+            local_node_id,
+            CONTEXT_NODE_REGISTERED_V1,
+            "context-node-registered",
+            &context_node,
+            "register-sealed-local-context-node",
+            data,
+        );
+        store
+            .commit_context_node_with_event(&context_node, &event)
+            .await
+            .unwrap();
+
+        let (payload, format, wrapped): (Vec<u8>, String, Option<String>) = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT record_payload, payload_format, payload_wrapped_dek
+                         FROM interoperability_context_nodes WHERE node_id = ?1",
+                        params![local_node_id.to_string()],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(|err| MvError::Storage(err.to_string()))
+            })
+            .unwrap();
+        assert_eq!(format, "mvenc-v1");
+        assert!(wrapped.is_some());
+        assert!(!bytes_contains(&payload, marker.as_bytes()));
+        assert_eq!(
+            store.get_context_node(local_node_id).await.unwrap(),
+            Some(context_node)
+        );
+    }
+
+    #[tokio::test]
+    async fn authority_grant_issuance_is_atomic_queryable_and_idempotent() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let context_node = register_local_context_node(&store).await;
+        let grantee = StableUri::principal(Uuid::now_v7(), Uuid::now_v7());
+        let target = StableUri::knowledge_node(context_node.node_id, Uuid::now_v7());
+        let grant = AuthorityGrant::new_context(
+            context_node.node_uri.clone(),
+            StableUri::principal(context_node.node_id, Uuid::now_v7()),
+            grantee.clone(),
+            vec![target.clone()],
+            vec![ContextCapability::Read],
+            "Read one governed knowledge node",
+            Utc::now() + chrono::Duration::hours(1),
+        )
+        .unwrap();
+
+        let mut invalid_grantor = grant.clone();
+        invalid_grantor.grantor = StableUri::parse(format!(
+            "mindvault://{}/identity/principal/{}/delegated",
+            context_node.node_id,
+            Uuid::now_v7()
+        ))
+        .unwrap();
+        let invalid_event = authority_grant_event(
+            context_node.node_id,
+            AUTHORITY_GRANT_ISSUED_V1,
+            "authority-grant-issued",
+            &invalid_grantor,
+            "reject-noncanonical-root-grantor",
+            serde_json::json!({
+                "grant_id": invalid_grantor.grant_id,
+                "grant_kind": invalid_grantor.kind.as_str(),
+                "grantee_uri": invalid_grantor.grantee.as_str(),
+                "governing_node_uri": invalid_grantor.governing_node.as_str(),
+                "record_digest": invalid_grantor.semantic_digest(),
+            }),
+        );
+        assert!(matches!(
+            store
+                .commit_authority_grant_with_event(&invalid_grantor, &invalid_event)
+                .await,
+            Err(MvError::InvalidInput(message)) if message.contains("local principal")
+        ));
+        assert!(store
+            .get_outbox_event(invalid_event.id)
+            .await
+            .unwrap()
+            .is_none());
+
+        let data = serde_json::json!({
+            "grant_id": grant.grant_id,
+            "grant_kind": grant.kind.as_str(),
+            "grantee_uri": grant.grantee.as_str(),
+            "governing_node_uri": grant.governing_node.as_str(),
+            "record_digest": grant.semantic_digest(),
+        });
+        let event = authority_grant_event(
+            context_node.node_id,
+            AUTHORITY_GRANT_ISSUED_V1,
+            "authority-grant-issued",
+            &grant,
+            "issue-context-grant-idempotently",
+            data.clone(),
+        );
+
+        let first = store
+            .commit_authority_grant_with_event(&grant, &event)
+            .await
+            .unwrap();
+        assert!(!first.replayed);
+        assert_eq!(
+            store.get_authority_grant(grant.grant_id).await.unwrap(),
+            Some(grant.clone())
+        );
+        assert_eq!(
+            store
+                .list_authority_grants(
+                    Some(&grantee),
+                    Some(AuthorityGrantKind::Context),
+                    Some(AuthorityGrantStatus::Active),
+                )
+                .await
+                .unwrap(),
+            vec![grant.clone()]
+        );
+        assert_eq!(
+            store
+                .find_authorizing_grant(GrantQuery {
+                    grantee: &grantee,
+                    kind: AuthorityGrantKind::Context,
+                    target: &target,
+                    capability: ContextCapability::Read,
+                    sensitivity: Sensitivity::Internal,
+                    retention: RetentionClass::Operational,
+                    at: Utc::now(),
+                })
+                .await
+                .unwrap(),
+            Some(grant.clone())
+        );
+        assert!(store
+            .find_authorizing_grant(GrantQuery {
+                grantee: &grantee,
+                kind: AuthorityGrantKind::Tool,
+                target: &target,
+                capability: ContextCapability::Read,
+                sensitivity: Sensitivity::Internal,
+                retention: RetentionClass::Operational,
+                at: Utc::now(),
+            })
+            .await
+            .unwrap()
+            .is_none());
+
+        let retry_event = authority_grant_event(
+            context_node.node_id,
+            AUTHORITY_GRANT_ISSUED_V1,
+            "authority-grant-issued",
+            &grant,
+            "issue-context-grant-idempotently",
+            data,
+        );
+        let replay = store
+            .commit_authority_grant_with_event(&grant, &retry_event)
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.event.id, first.event.id);
+        assert_eq!(replay.grant, grant);
+    }
+
+    #[tokio::test]
+    async fn parent_suspension_invalidates_delegated_authority() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let context_node = register_local_context_node(&store).await;
+        let delegate = StableUri::principal(Uuid::now_v7(), Uuid::now_v7());
+        let recipient = StableUri::principal(Uuid::now_v7(), Uuid::now_v7());
+        let target = StableUri::knowledge_node(context_node.node_id, Uuid::now_v7());
+        let parent_expiry = Utc::now() + chrono::Duration::hours(2);
+        let mut parent = AuthorityGrant::new_context(
+            context_node.node_uri.clone(),
+            StableUri::principal(context_node.node_id, Uuid::now_v7()),
+            delegate.clone(),
+            vec![target.clone()],
+            vec![ContextCapability::Query, ContextCapability::Read],
+            "Delegate bounded knowledge access",
+            parent_expiry,
+        )
+        .unwrap();
+        parent.delegation_depth_remaining = 2;
+        parent.validate().unwrap();
+        let parent_event = authority_grant_event(
+            context_node.node_id,
+            AUTHORITY_GRANT_ISSUED_V1,
+            "authority-grant-issued",
+            &parent,
+            "issue-parent-context-grant",
+            serde_json::json!({
+                "grant_id": parent.grant_id,
+                "grant_kind": parent.kind.as_str(),
+                "grantee_uri": parent.grantee.as_str(),
+                "governing_node_uri": parent.governing_node.as_str(),
+                "record_digest": parent.semantic_digest(),
+            }),
+        );
+        store
+            .commit_authority_grant_with_event(&parent, &parent_event)
+            .await
+            .unwrap();
+
+        let mut child = AuthorityGrant::new_context(
+            context_node.node_uri.clone(),
+            delegate,
+            recipient.clone(),
+            vec![target.clone()],
+            vec![ContextCapability::Read],
+            "Read through one bounded delegation",
+            parent_expiry - chrono::Duration::minutes(30),
+        )
+        .unwrap();
+        child.parent_grant_id = Some(parent.grant_id);
+        child.delegation_depth_remaining = 1;
+        child.validate().unwrap();
+        let child_event = authority_grant_event(
+            context_node.node_id,
+            AUTHORITY_GRANT_ISSUED_V1,
+            "authority-grant-issued",
+            &child,
+            "issue-child-context-grant",
+            serde_json::json!({
+                "grant_id": child.grant_id,
+                "grant_kind": child.kind.as_str(),
+                "grantee_uri": child.grantee.as_str(),
+                "governing_node_uri": child.governing_node.as_str(),
+                "record_digest": child.semantic_digest(),
+            }),
+        );
+        store
+            .commit_authority_grant_with_event(&child, &child_event)
+            .await
+            .unwrap();
+        assert!(store
+            .find_authorizing_grant(GrantQuery {
+                grantee: &recipient,
+                kind: AuthorityGrantKind::Context,
+                target: &target,
+                capability: ContextCapability::Read,
+                sensitivity: Sensitivity::Internal,
+                retention: RetentionClass::Operational,
+                at: Utc::now(),
+            })
+            .await
+            .unwrap()
+            .is_some());
+
+        let mut suspended = parent.clone();
+        suspended.revision = 2;
+        suspended.status = AuthorityGrantStatus::Suspended;
+        suspended.status_reason = Some("Delegation under review".into());
+        suspended.updated_at = Utc::now();
+        let transition_event = authority_grant_event(
+            context_node.node_id,
+            AUTHORITY_GRANT_LIFECYCLE_TRANSITIONED_V1,
+            "authority-grant-lifecycle-transitioned",
+            &suspended,
+            "suspend-parent-context-grant",
+            serde_json::json!({
+                "grant_id": suspended.grant_id,
+                "revision": suspended.revision,
+                "from_status": parent.status.as_str(),
+                "to_status": suspended.status.as_str(),
+                "record_digest": suspended.semantic_digest(),
+            }),
+        );
+        store
+            .transition_authority_grant_with_event(1, &suspended, &transition_event)
+            .await
+            .unwrap();
+
+        assert!(store
+            .find_authorizing_grant(GrantQuery {
+                grantee: &recipient,
+                kind: AuthorityGrantKind::Context,
+                target: &target,
+                capability: ContextCapability::Read,
+                sensitivity: Sensitivity::Internal,
+                retention: RetentionClass::Operational,
+                at: Utc::now(),
+            })
+            .await
+            .unwrap()
+            .is_none());
+        let archived_revisions: i64 = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM interoperability_authority_grant_history
+                         WHERE grant_id = ?1",
+                        params![parent.grant_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .map_err(|err| MvError::Storage(err.to_string()))
+            })
+            .unwrap();
+        assert_eq!(archived_revisions, 1);
+    }
+
+    #[tokio::test]
+    async fn sealed_authority_grant_payload_hides_sensitive_terms() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("authority-grant-sealed.sqlite");
+        let _reset = install_scoped_runtime_key(&db_path, [23u8; 32]);
+        let store = SqliteNodeStore::open_with_mode(&db_path, true).unwrap();
+        let context_node = register_local_context_node(&store).await;
+        let marker = format!("sealed-grant-purpose-{}", Uuid::now_v7());
+        let grant = AuthorityGrant::new_tool(
+            context_node.node_uri.clone(),
+            StableUri::principal(context_node.node_id, Uuid::now_v7()),
+            StableUri::principal(Uuid::now_v7(), Uuid::now_v7()),
+            vec![StableUri::knowledge_node(
+                context_node.node_id,
+                Uuid::now_v7(),
+            )],
+            vec![ContextCapability::Execute],
+            marker.clone(),
+            Utc::now() + chrono::Duration::hours(1),
+        )
+        .unwrap();
+        let event = authority_grant_event(
+            context_node.node_id,
+            AUTHORITY_GRANT_ISSUED_V1,
+            "authority-grant-issued",
+            &grant,
+            "issue-sealed-tool-grant",
+            serde_json::json!({
+                "grant_id": grant.grant_id,
+                "grant_kind": grant.kind.as_str(),
+                "grantee_uri": grant.grantee.as_str(),
+                "governing_node_uri": grant.governing_node.as_str(),
+                "record_digest": grant.semantic_digest(),
+            }),
+        );
+        store
+            .commit_authority_grant_with_event(&grant, &event)
+            .await
+            .unwrap();
+
+        let (payload, format, wrapped): (Vec<u8>, String, Option<String>) = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT record_payload, payload_format, payload_wrapped_dek
+                         FROM interoperability_authority_grants WHERE grant_id = ?1",
+                        params![grant.grant_id.to_string()],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(|err| MvError::Storage(err.to_string()))
+            })
+            .unwrap();
+        assert_eq!(format, "mvenc-v1");
+        assert!(wrapped.is_some());
+        assert!(!bytes_contains(&payload, marker.as_bytes()));
+        assert_eq!(
+            store.get_authority_grant(grant.grant_id).await.unwrap(),
+            Some(grant)
+        );
+    }
+
+    #[tokio::test]
+    async fn public_schema_registration_is_immutable_atomic_and_idempotent() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let bootstrap_reference = SchemaReference::new(
+            StableUri::schema("knowledge-node-created").unwrap(),
+            "1.0.0",
+        )
+        .unwrap();
+        let bootstrap = store
+            .get_public_schema(&bootstrap_reference)
+            .await
+            .unwrap()
+            .expect("bootstrap event schema");
+        assert_eq!(
+            bootstrap.definition["x-mindvault-event-type"],
+            KNOWLEDGE_NODE_CREATED_V1
+        );
+
+        let schema = PublicSchemaRecord::new(
+            SchemaReference::new(
+                StableUri::schema("portable-source-record").unwrap(),
+                "1.0.0",
+            )
+            .unwrap(),
+            serde_json::json!({
+                "$schema": JSON_SCHEMA_DRAFT_2020_12,
+                "type": "object",
+                "required": ["resource_uri"],
+            }),
+            StableUri::node(local_node_id),
+        )
+        .unwrap();
+        let subject =
+            StableUri::schema_version(&schema.schema.uri, &schema.schema.version).unwrap();
+        let data = serde_json::json!({
+            "schema_uri": schema.schema.uri.as_str(),
+            "schema_version": schema.schema.version,
+            "content_digest": schema.content_digest,
+        });
+        let event = governance_event(
+            local_node_id,
+            PUBLIC_SCHEMA_REGISTERED_V1,
+            "public-schema-registered",
+            subject.clone(),
+            "register-portable-source-record",
+            data.clone(),
+        );
+
+        let first = store
+            .commit_public_schema_with_event(&schema, &event)
+            .await
+            .unwrap();
+        assert!(!first.replayed);
+        assert_eq!(
+            store.get_public_schema(&schema.schema).await.unwrap(),
+            Some(schema.clone())
+        );
+
+        let retry = governance_event(
+            local_node_id,
+            PUBLIC_SCHEMA_REGISTERED_V1,
+            "public-schema-registered",
+            subject,
+            "register-portable-source-record",
+            data,
+        );
+        let replay = store
+            .commit_public_schema_with_event(&schema, &retry)
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.event.id, first.event.id);
+        assert_eq!(
+            store
+                .list_public_schema_versions(&schema.schema.uri)
+                .await
+                .unwrap(),
+            vec![schema.clone()]
+        );
+        let immutable_update = store.with_conn(|connection| {
+            connection
+                .execute(
+                    "UPDATE interoperability_public_schemas
+                     SET owner_uri = 'mindvault://schemas/other-owner'
+                     WHERE schema_uri = ?1 AND schema_version = ?2",
+                    params![schema.schema.uri.as_str(), &schema.schema.version],
+                )
+                .map(|_| ())
+                .map_err(|err| MvError::Storage(err.to_string()))
+        });
+        assert!(matches!(immutable_update, Err(MvError::Storage(message))
+            if message.contains("immutable")));
+
+        let mut changed = schema.clone();
+        changed.definition["type"] = serde_json::json!("array");
+        assert!(matches!(
+            store
+                .commit_public_schema_with_event(&changed, &retry)
+                .await,
+            Err(MvError::InvalidInput(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn outbox_schema_admission_rejects_a_mismatched_event_type() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let subject =
+            StableUri::schema_version(&StableUri::schema("portable-mismatch").unwrap(), "1.0.0")
+                .unwrap();
+        let event = governance_event(
+            local_node_id,
+            PUBLIC_SCHEMA_REGISTERED_V1,
+            "public-schema-registered",
+            subject,
+            "reject-mismatched-event-schema",
+            serde_json::json!({
+                "schema_uri": "mindvault://schemas/portable-mismatch",
+                "schema_version": "1.0.0",
+                "content_digest": "a".repeat(64),
+            }),
+        );
+        let envelope_json = serde_json::to_string(&event).unwrap();
+        let mismatched_schema = StableUri::schema("knowledge-node-created").unwrap();
+
+        let result = store.with_conn(|connection| {
+            connection
+                .execute(
+                    "INSERT INTO interoperability_outbox
+                     (event_id, source_uri, principal_uri, event_type, subject_uri, schema_uri,
+                      schema_version, correlation_id, causation_id, idempotency_key,
+                      payload_digest, envelope_json, created_at, next_attempt_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                             ?13, ?13)",
+                    params![
+                        event.id.to_string(),
+                        event.source.as_str(),
+                        event.principal.as_str(),
+                        &event.event_type,
+                        event.subject.as_str(),
+                        mismatched_schema.as_str(),
+                        &event.schema.version,
+                        event.correlation_id.to_string(),
+                        event.causation_id.map(|id| id.to_string()),
+                        event.idempotency_key.as_str(),
+                        &event.payload_digest,
+                        envelope_json,
+                        event.occurred_at.to_rfc3339(),
+                    ],
+                )
+                .map(|_| ())
+                .map_err(|err| MvError::Storage(err.to_string()))
+        });
+
+        assert!(matches!(result, Err(MvError::Storage(message))
+            if message.contains("not admitted")));
+        assert!(store.get_outbox_event(event.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn source_binding_requires_an_active_registered_context_node() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let binding = test_source_binding(local_node_id, "account-unregistered", "event-1");
+        let event = governance_event(
+            local_node_id,
+            SOURCE_BINDING_REGISTERED_V1,
+            "source-binding-registered",
+            StableUri::source_binding(local_node_id, binding.binding_id),
+            "reject-unregistered-context-node",
+            serde_json::json!({
+                "binding_id": binding.binding_id,
+                "resource_uri": binding.resource_uri.as_str(),
+                "external_system": binding.external_system,
+                "materialization_mode": binding.materialization_mode.as_str(),
+            }),
+        );
+        assert!(matches!(
+            store.commit_source_binding_with_event(&binding, &event).await,
+            Err(MvError::InvalidInput(message)) if message.contains("not registered")
+        ));
+        assert!(store.get_outbox_event(event.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn duplicate_active_binding_is_rejected_without_an_orphan_event() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = register_local_context_node(&store).await.node_id;
+        let binding = test_source_binding(local_node_id, "account-1", "event-1");
+        let event_data = serde_json::json!({
+            "binding_id": binding.binding_id,
+            "resource_uri": binding.resource_uri.as_str(),
+            "external_system": binding.external_system,
+            "materialization_mode": binding.materialization_mode.as_str(),
+        });
+        let event = governance_event(
+            local_node_id,
+            SOURCE_BINDING_REGISTERED_V1,
+            "source-binding-registered",
+            StableUri::source_binding(local_node_id, binding.binding_id),
+            "register-calendar-event-1",
+            event_data,
+        );
+        store
+            .commit_source_binding_with_event(&binding, &event)
+            .await
+            .unwrap();
+
+        let duplicate = test_source_binding(local_node_id, "account-1", "event-1");
+        let duplicate_data = serde_json::json!({
+            "binding_id": duplicate.binding_id,
+            "resource_uri": duplicate.resource_uri.as_str(),
+            "external_system": duplicate.external_system,
+            "materialization_mode": duplicate.materialization_mode.as_str(),
+        });
+        let duplicate_event = governance_event(
+            local_node_id,
+            SOURCE_BINDING_REGISTERED_V1,
+            "source-binding-registered",
+            StableUri::source_binding(local_node_id, duplicate.binding_id),
+            "duplicate-calendar-event-1",
+            duplicate_data,
+        );
+        assert!(store
+            .commit_source_binding_with_event(&duplicate, &duplicate_event)
+            .await
+            .is_err());
+        assert!(store
+            .get_outbox_event(duplicate_event.id)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store
+                .find_active_source_binding(
+                    &StableUri::node(local_node_id),
+                    "account-1",
+                    "event-1",
+                )
+                .await
+                .unwrap(),
+            Some(binding)
+        );
+    }
+
+    #[tokio::test]
+    async fn rebinding_is_atomic_and_preserves_the_active_predecessor_revision() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = register_local_context_node(&store).await.node_id;
+        let binding = test_source_binding(local_node_id, "account-2", "event-2");
+        let create_event = governance_event(
+            local_node_id,
+            SOURCE_BINDING_REGISTERED_V1,
+            "source-binding-registered",
+            StableUri::source_binding(local_node_id, binding.binding_id),
+            "register-calendar-event-2",
+            serde_json::json!({
+                "binding_id": binding.binding_id,
+                "resource_uri": binding.resource_uri.as_str(),
+                "external_system": binding.external_system,
+                "materialization_mode": binding.materialization_mode.as_str(),
+            }),
+        );
+        store
+            .commit_source_binding_with_event(&binding, &create_event)
+            .await
+            .unwrap();
+
+        let mut replacement = test_source_binding(local_node_id, "account-2", "event-2");
+        replacement.resource_uri = binding.resource_uri.clone();
+        replacement.supersedes_binding_id = Some(binding.binding_id);
+        let rebind_data = serde_json::json!({
+            "binding_id": replacement.binding_id,
+            "supersedes_binding_id": binding.binding_id,
+        });
+        let rebind_event = governance_event(
+            local_node_id,
+            SOURCE_BINDING_REBOUND_V1,
+            "source-binding-rebound",
+            StableUri::source_binding(local_node_id, replacement.binding_id),
+            "rebind-calendar-event-2",
+            rebind_data.clone(),
+        );
+        let committed = store
+            .rebind_source_with_event(binding.binding_id, &replacement, &rebind_event)
+            .await
+            .unwrap();
+        assert!(!committed.replayed);
+
+        let retired = store
+            .get_source_binding(binding.binding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retired.status, SourceBindingStatus::Migrated);
+        assert_eq!(retired.revision, 2);
+        assert_eq!(
+            store
+                .find_active_source_binding(
+                    &StableUri::node(local_node_id),
+                    "account-2",
+                    "event-2",
+                )
+                .await
+                .unwrap(),
+            Some(replacement.clone())
+        );
+
+        store
+            .with_conn(|connection| {
+                let archived: (u64, String) = connection
+                    .query_row(
+                        "SELECT revision, status
+                         FROM interoperability_source_binding_history
+                         WHERE binding_id = ?1",
+                        params![binding.binding_id.to_string()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(|err| MvError::Storage(err.to_string()))?;
+                assert_eq!(archived, (1, "active".into()));
+                Ok(())
+            })
+            .unwrap();
+
+        let retry = governance_event(
+            local_node_id,
+            SOURCE_BINDING_REBOUND_V1,
+            "source-binding-rebound",
+            StableUri::source_binding(local_node_id, replacement.binding_id),
+            "rebind-calendar-event-2",
+            rebind_data,
+        );
+        let replay = store
+            .rebind_source_with_event(binding.binding_id, &replacement, &retry)
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.event.id, committed.event.id);
+    }
+
+    #[tokio::test]
+    async fn sealed_source_binding_payload_hides_external_identifiers_and_cursor() {
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("sealed_source_binding.sqlite");
+        let _reset = install_scoped_runtime_key(&db_path, [31u8; 32]);
+        let store = SqliteNodeStore::open_with_mode(&db_path, true).unwrap();
+        let local_node_id = register_local_context_node(&store).await.node_id;
+        let marker = format!("private-account-{}", Uuid::now_v7());
+        let cursor = format!("private-cursor-{}", Uuid::now_v7());
+        let mut binding = test_source_binding(local_node_id, &marker, "private-event");
+        binding.last_sync_cursor = Some(cursor.clone());
+        let event = governance_event(
+            local_node_id,
+            SOURCE_BINDING_REGISTERED_V1,
+            "source-binding-registered",
+            StableUri::source_binding(local_node_id, binding.binding_id),
+            "register-sealed-source-binding",
+            serde_json::json!({
+                "binding_id": binding.binding_id,
+                "resource_uri": binding.resource_uri.as_str(),
+                "external_system": binding.external_system,
+                "materialization_mode": binding.materialization_mode.as_str(),
+            }),
+        );
+        store
+            .commit_source_binding_with_event(&binding, &event)
+            .await
+            .unwrap();
+
+        store
+            .with_conn(|connection| {
+                let (payload, payload_format, account_key): (Vec<u8>, String, String) = connection
+                    .query_row(
+                        "SELECT record_payload, payload_format, external_account_key
+                         FROM interoperability_source_bindings
+                         WHERE binding_id = ?1",
+                        params![binding.binding_id.to_string()],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(|err| MvError::Storage(err.to_string()))?;
+                assert_eq!(payload_format, "mvenc-v1");
+                assert!(!bytes_contains(&payload, marker.as_bytes()));
+                assert!(!bytes_contains(&payload, cursor.as_bytes()));
+                assert_eq!(account_key, store.source_lookup_key(&marker).unwrap());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            store.get_source_binding(binding.binding_id).await.unwrap(),
+            Some(binding)
+        );
+    }
+
+    #[tokio::test]
+    async fn interoperable_node_create_is_atomic_and_idempotent() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        assert_eq!(store.local_context_node_id().await.unwrap(), local_node_id);
+
+        let node =
+            KnowledgeNode::new(NodeKind::Fact, "portable fact").with_namespace("interoperability");
+        let event = node_created_event(
+            local_node_id,
+            node.id,
+            "create-portable-fact",
+            &"a".repeat(64),
+        );
+        let first = store
+            .commit_node_create_with_event(&node, &event)
+            .await
+            .unwrap();
+        assert!(!first.replayed);
+        assert_eq!(first.node.id, node.id);
+
+        let preflight = store
+            .find_node_create_replay(
+                &event.source,
+                &event.principal,
+                &event.idempotency_key,
+                &event.payload_digest,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(preflight.replayed);
+        assert_eq!(preflight.node.id, first.node.id);
+        assert_eq!(preflight.event.id, first.event.id);
+
+        let retry_node =
+            KnowledgeNode::new(NodeKind::Fact, "portable fact").with_namespace("interoperability");
+        let retry_event = node_created_event(
+            local_node_id,
+            retry_node.id,
+            "create-portable-fact",
+            &"a".repeat(64),
+        );
+        let replay = store
+            .commit_node_create_with_event(&retry_node, &retry_event)
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.node.id, first.node.id);
+        assert_eq!(replay.event.id, first.event.id);
+
+        let pending = store.list_pending_outbox_events(10).await.unwrap();
+        assert_eq!(pending, vec![first.event.clone()]);
+        assert_eq!(
+            store.get_outbox_event(first.event.id).await.unwrap(),
+            Some(first.event)
+        );
+
+        let conflicting_event = node_created_event(
+            local_node_id,
+            retry_node.id,
+            "create-portable-fact",
+            &"b".repeat(64),
+        );
+        assert!(matches!(
+            store
+                .commit_node_create_with_event(&retry_node, &conflicting_event)
+                .await,
+            Err(MvError::IdempotencyConflict(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn outbox_delivery_retries_then_publishes_with_immutable_receipts() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let node = KnowledgeNode::new(NodeKind::Fact, "dispatch lifecycle")
+            .with_namespace("interoperability");
+        let event = node_created_event(
+            local_node_id,
+            node.id,
+            "dispatch-lifecycle",
+            &"d".repeat(64),
+        );
+        store
+            .commit_node_create_with_event(&node, &event)
+            .await
+            .unwrap();
+
+        let executor = StableUri::parse("mindvault://dispatchers/local").unwrap();
+        let destination = StableUri::parse("mindvault://destinations/test").unwrap();
+        let first_claimed_at = event.occurred_at + chrono::Duration::seconds(1);
+        let first = store
+            .claim_outbox_events(
+                &executor,
+                &destination,
+                first_claimed_at,
+                first_claimed_at + chrono::Duration::minutes(5),
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].attempt, 1);
+        assert!(store
+            .claim_outbox_events(
+                &executor,
+                &destination,
+                first_claimed_at,
+                first_claimed_at + chrono::Duration::minutes(5),
+                10,
+            )
+            .await
+            .unwrap()
+            .is_empty());
+
+        let receiptless_completion = store.with_conn(|connection| {
+            connection
+                .execute(
+                    "UPDATE interoperability_outbox
+                     SET delivery_state = 'published', published_at = ?2,
+                         lease_id = NULL, lease_owner_uri = NULL,
+                         lease_destination_uri = NULL, lease_expires_at = NULL,
+                         updated_at = ?2
+                     WHERE event_id = ?1",
+                    params![
+                        event.id.to_string(),
+                        (first_claimed_at + chrono::Duration::seconds(1)).to_rfc3339(),
+                    ],
+                )
+                .map(|_| ())
+                .map_err(|err| MvError::Storage(err.to_string()))
+        });
+        assert!(
+            matches!(receiptless_completion, Err(MvError::Storage(message))
+            if message.contains("invalid outbox delivery completion"))
+        );
+
+        let retry_at = first_claimed_at + chrono::Duration::seconds(30);
+        let retry = OutboxDeliveryCompletion {
+            event_id: event.id,
+            lease_id: first[0].lease_id,
+            attempt: first[0].attempt,
+            completed_at: first_claimed_at + chrono::Duration::seconds(2),
+            result: OutboxDeliveryResult::RetryScheduled {
+                retry_at,
+                error_code: "destination_unavailable".into(),
+                error_summary: "temporary provider failure".into(),
+            },
+        };
+        let retry_receipt = store
+            .complete_outbox_delivery(&first[0], &retry)
+            .await
+            .unwrap();
+        assert_eq!(retry_receipt.outcome, ActionReceiptOutcome::RetryScheduled);
+        let retry_status = store
+            .get_outbox_delivery_status(event.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry_status.state, OutboxDeliveryState::Pending);
+        assert_eq!(retry_status.attempts, 1);
+        assert_eq!(retry_status.next_attempt_at, retry_at);
+        assert_eq!(
+            retry_status.last_error_code.as_deref(),
+            Some("destination_unavailable")
+        );
+        assert!(store
+            .claim_outbox_events(
+                &executor,
+                &destination,
+                retry_at - chrono::Duration::milliseconds(1),
+                retry_at + chrono::Duration::minutes(5),
+                10,
+            )
+            .await
+            .unwrap()
+            .is_empty());
+
+        let second = store
+            .claim_outbox_events(
+                &executor,
+                &destination,
+                retry_at,
+                retry_at + chrono::Duration::minutes(5),
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].attempt, 2);
+        let published = OutboxDeliveryCompletion {
+            event_id: event.id,
+            lease_id: second[0].lease_id,
+            attempt: second[0].attempt,
+            completed_at: retry_at + chrono::Duration::seconds(1),
+            result: OutboxDeliveryResult::Published {
+                delivery_reference: "test-message-42".into(),
+                response_digest: Some("e".repeat(64)),
+            },
+        };
+        let published_receipt = store
+            .complete_outbox_delivery(&second[0], &published)
+            .await
+            .unwrap();
+        let replayed_receipt = store
+            .complete_outbox_delivery(&second[0], &published)
+            .await
+            .unwrap();
+        assert_eq!(replayed_receipt, published_receipt);
+
+        let published_status = store
+            .get_outbox_delivery_status(event.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(published_status.state, OutboxDeliveryState::Published);
+        assert_eq!(published_status.attempts, 2);
+        assert_eq!(
+            store.list_action_receipts(event.id, 10).await.unwrap(),
+            vec![retry_receipt, published_receipt.clone()]
+        );
+        assert_eq!(
+            store
+                .get_action_receipt(published_receipt.receipt_id)
+                .await
+                .unwrap(),
+            Some(published_receipt.clone())
+        );
+
+        let immutable_update = store.with_conn(|connection| {
+            connection
+                .execute(
+                    "UPDATE interoperability_action_receipts
+                     SET outcome = 'dead_lettered'
+                     WHERE receipt_id = ?1",
+                    params![published_receipt.receipt_id.to_string()],
+                )
+                .map(|_| ())
+                .map_err(|err| MvError::Storage(err.to_string()))
+        });
+        assert!(matches!(immutable_update, Err(MvError::Storage(message))
+            if message.contains("immutable")));
+    }
+
+    #[tokio::test]
+    async fn expired_outbox_claim_is_recoverable_and_stale_completion_is_rejected() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let node = KnowledgeNode::new(NodeKind::Fact, "expired dispatch")
+            .with_namespace("interoperability");
+        let event = node_created_event(local_node_id, node.id, "expired-dispatch", &"f".repeat(64));
+        store
+            .commit_node_create_with_event(&node, &event)
+            .await
+            .unwrap();
+
+        let executor = StableUri::parse("mindvault://dispatchers/local").unwrap();
+        let destination = StableUri::parse("mindvault://destinations/test").unwrap();
+        let first_claimed_at = event.occurred_at + chrono::Duration::seconds(1);
+        let first = store
+            .claim_outbox_events(
+                &executor,
+                &destination,
+                first_claimed_at,
+                first_claimed_at + chrono::Duration::seconds(10),
+                1,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        let second_claimed_at = first.lease_expires_at;
+        let second = store
+            .claim_outbox_events(
+                &executor,
+                &destination,
+                second_claimed_at,
+                second_claimed_at + chrono::Duration::minutes(1),
+                1,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(second.attempt, 2);
+        assert_ne!(second.lease_id, first.lease_id);
+
+        let stale_completion = OutboxDeliveryCompletion {
+            event_id: event.id,
+            lease_id: first.lease_id,
+            attempt: first.attempt,
+            completed_at: first.claimed_at + chrono::Duration::seconds(1),
+            result: OutboxDeliveryResult::Published {
+                delivery_reference: "stale-message".into(),
+                response_digest: None,
+            },
+        };
+        assert!(matches!(
+            store
+                .complete_outbox_delivery(&first, &stale_completion)
+                .await,
+            Err(MvError::IdempotencyConflict(_))
+        ));
+        assert!(store
+            .list_action_receipts(event.id, 10)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let dead_letter = OutboxDeliveryCompletion {
+            event_id: event.id,
+            lease_id: second.lease_id,
+            attempt: second.attempt,
+            completed_at: second.claimed_at + chrono::Duration::seconds(1),
+            result: OutboxDeliveryResult::DeadLettered {
+                error_code: "invalid_destination".into(),
+                error_summary: "destination is permanently invalid".into(),
+            },
+        };
+        let receipt = store
+            .complete_outbox_delivery(&second, &dead_letter)
+            .await
+            .unwrap();
+        assert_eq!(receipt.outcome, ActionReceiptOutcome::DeadLettered);
+        assert_eq!(
+            store
+                .get_outbox_delivery_status(event.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            OutboxDeliveryState::DeadLetter
+        );
+        assert!(store
+            .claim_outbox_events(
+                &executor,
+                &destination,
+                dead_letter.completed_at + chrono::Duration::seconds(1),
+                dead_letter.completed_at + chrono::Duration::minutes(1),
+                1,
+            )
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn sealed_action_receipt_payload_hides_provider_details() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("sealed-action-receipt.sqlite");
+        let _reset = install_scoped_runtime_key(&db_path, [37u8; 32]);
+        let store = SqliteNodeStore::open_with_mode(&db_path, true).unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let node = KnowledgeNode::new(NodeKind::Fact, "sealed dispatch")
+            .with_namespace("interoperability");
+        let event = node_created_event(local_node_id, node.id, "sealed-dispatch", &"1".repeat(64));
+        store
+            .commit_node_create_with_event(&node, &event)
+            .await
+            .unwrap();
+
+        let claimed_at = event.occurred_at + chrono::Duration::seconds(1);
+        let claim = store
+            .claim_outbox_events(
+                &StableUri::parse("mindvault://dispatchers/local").unwrap(),
+                &StableUri::parse("mindvault://destinations/test").unwrap(),
+                claimed_at,
+                claimed_at + chrono::Duration::minutes(1),
+                1,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        let secret_summary = "provider-token-redacted-marker";
+        let completion = OutboxDeliveryCompletion {
+            event_id: event.id,
+            lease_id: claim.lease_id,
+            attempt: claim.attempt,
+            completed_at: claimed_at + chrono::Duration::seconds(1),
+            result: OutboxDeliveryResult::DeadLettered {
+                error_code: "provider_rejected".into(),
+                error_summary: secret_summary.into(),
+            },
+        };
+        let receipt = store
+            .complete_outbox_delivery(&claim, &completion)
+            .await
+            .unwrap();
+
+        let (payload, format, wrapped): (Vec<u8>, String, Option<String>) = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT payload, payload_format, payload_wrapped_dek
+                         FROM interoperability_action_receipts
+                         WHERE receipt_id = ?1",
+                        params![receipt.receipt_id.to_string()],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(|err| MvError::Storage(err.to_string()))
+            })
+            .unwrap();
+        assert_eq!(format, "mvenc-v1");
+        assert!(wrapped.is_some());
+        assert!(!bytes_contains(&payload, secret_summary.as_bytes()));
+        assert_eq!(
+            store.get_action_receipt(receipt.receipt_id).await.unwrap(),
+            Some(receipt)
+        );
+    }
+
+    #[tokio::test]
+    async fn consumer_inbox_retries_then_applies_with_checkpointed_receipts() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let event = node_created_event(
+            local_node_id,
+            Uuid::now_v7(),
+            "consumer-inbox-retry",
+            &"2".repeat(64),
+        );
+        let consumer = StableUri::parse("mindvault://consumers/local-index").unwrap();
+        let processor = StableUri::parse("mindvault://processors/local-index").unwrap();
+        let received_at = event.occurred_at + chrono::Duration::seconds(1);
+
+        let admission = store
+            .admit_consumer_event(&consumer, &event, received_at)
+            .await
+            .unwrap();
+        assert!(!admission.replayed);
+        let replay = store
+            .admit_consumer_event(
+                &consumer,
+                &event,
+                received_at + chrono::Duration::seconds(1),
+            )
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.inbox_sequence, admission.inbox_sequence);
+        assert_eq!(replay.received_at, received_at);
+
+        let first = store
+            .claim_consumer_events(
+                &consumer,
+                &processor,
+                received_at,
+                received_at + chrono::Duration::minutes(1),
+                10,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(first.attempt, 1);
+
+        let receiptless_completion = store.with_conn(|connection| {
+            connection
+                .execute(
+                    "UPDATE interoperability_consumer_inbox
+                     SET state = 'applied', applied_at = ?2,
+                         lease_id = NULL, lease_processor_uri = NULL,
+                         lease_expires_at = NULL, updated_at = ?2
+                     WHERE inbox_sequence = ?1",
+                    params![
+                        first.inbox_sequence,
+                        (first.claimed_at + chrono::Duration::seconds(1)).to_rfc3339(),
+                    ],
+                )
+                .map(|_| ())
+                .map_err(|err| MvError::Storage(err.to_string()))
+        });
+        assert!(
+            matches!(receiptless_completion, Err(MvError::Storage(message))
+            if message.contains("invalid consumer inbox completion"))
+        );
+
+        let retry_at = received_at + chrono::Duration::seconds(20);
+        let retry = ConsumerApplicationCompletion {
+            inbox_sequence: first.inbox_sequence,
+            event_id: event.id,
+            lease_id: first.lease_id,
+            attempt: first.attempt,
+            completed_at: received_at + chrono::Duration::seconds(2),
+            result: ConsumerApplicationResult::RetryScheduled {
+                retry_at,
+                error_code: "index_unavailable".into(),
+                error_summary: "local index is temporarily unavailable".into(),
+            },
+        };
+        let retry_receipt = store.complete_consumer_event(&first, &retry).await.unwrap();
+        assert_eq!(
+            retry_receipt.outcome,
+            ConsumerApplicationOutcome::RetryScheduled
+        );
+        assert_eq!(retry_receipt.claim_id, first.lease_id);
+        assert!(store
+            .get_consumer_checkpoint(&consumer, &event.source)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .claim_consumer_events(
+                &consumer,
+                &processor,
+                retry_at - chrono::Duration::milliseconds(1),
+                retry_at + chrono::Duration::minutes(1),
+                10,
+            )
+            .await
+            .unwrap()
+            .is_empty());
+
+        let second = store
+            .claim_consumer_events(
+                &consumer,
+                &processor,
+                retry_at,
+                retry_at + chrono::Duration::minutes(1),
+                10,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(second.attempt, 2);
+        assert_ne!(second.lease_id, first.lease_id);
+
+        let applied = ConsumerApplicationCompletion {
+            inbox_sequence: second.inbox_sequence,
+            event_id: event.id,
+            lease_id: second.lease_id,
+            attempt: second.attempt,
+            completed_at: retry_at + chrono::Duration::seconds(1),
+            result: ConsumerApplicationResult::Applied {
+                application_reference: "local-index-entry-42".into(),
+                effect_digest: Some("3".repeat(64)),
+            },
+        };
+        let applied_receipt = store
+            .complete_consumer_event(&second, &applied)
+            .await
+            .unwrap();
+        let replayed_receipt = store
+            .complete_consumer_event(&second, &applied)
+            .await
+            .unwrap();
+        assert_eq!(replayed_receipt, applied_receipt);
+        assert_eq!(applied_receipt.claim_id, second.lease_id);
+
+        let status = store
+            .get_consumer_inbox_status(&consumer, event.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.state, ConsumerInboxState::Applied);
+        assert_eq!(status.attempts, 2);
+        assert_eq!(status.applied_at, Some(applied.completed_at));
+        let checkpoint = store
+            .get_consumer_checkpoint(&consumer, &event.source)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            checkpoint.last_dispositioned_sequence,
+            admission.inbox_sequence
+        );
+        assert_eq!(checkpoint.last_dispositioned_event_id, event.id);
+        assert_eq!(
+            checkpoint.last_applied_sequence,
+            Some(admission.inbox_sequence)
+        );
+        assert_eq!(checkpoint.last_applied_event_id, Some(event.id));
+        assert_eq!(checkpoint.applied_count, 1);
+        assert_eq!(checkpoint.dead_letter_count, 0);
+        assert_eq!(
+            store
+                .list_consumer_application_receipts(&consumer, event.id, 10)
+                .await
+                .unwrap(),
+            vec![retry_receipt, applied_receipt.clone()]
+        );
+        assert_eq!(
+            store
+                .get_consumer_application_receipt(applied_receipt.receipt_id)
+                .await
+                .unwrap(),
+            Some(applied_receipt.clone())
+        );
+
+        let immutable_update = store.with_conn(|connection| {
+            connection
+                .execute(
+                    "UPDATE interoperability_consumer_application_receipts
+                     SET outcome = 'dead_lettered'
+                     WHERE receipt_id = ?1",
+                    params![applied_receipt.receipt_id.to_string()],
+                )
+                .map(|_| ())
+                .map_err(|err| MvError::Storage(err.to_string()))
+        });
+        assert!(matches!(immutable_update, Err(MvError::Storage(message))
+            if message.contains("immutable")));
+    }
+
+    #[tokio::test]
+    async fn consumer_inbox_orders_each_source_and_checkpoints_dead_letters() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let first_event = node_created_event(
+            local_node_id,
+            Uuid::now_v7(),
+            "consumer-order-first",
+            &"4".repeat(64),
+        );
+        let second_event = node_created_event(
+            local_node_id,
+            Uuid::now_v7(),
+            "consumer-order-second",
+            &"5".repeat(64),
+        );
+        let consumer = StableUri::parse("mindvault://consumers/ordered-index").unwrap();
+        let processor = StableUri::parse("mindvault://processors/ordered-index").unwrap();
+        let received_at = first_event.occurred_at + chrono::Duration::seconds(1);
+        let first_admission = store
+            .admit_consumer_event(&consumer, &first_event, received_at)
+            .await
+            .unwrap();
+        let second_admission = store
+            .admit_consumer_event(
+                &consumer,
+                &second_event,
+                received_at + chrono::Duration::milliseconds(1),
+            )
+            .await
+            .unwrap();
+
+        let mut conflicting_event = first_event.clone();
+        conflicting_event.data["namespace"] = serde_json::json!("conflicting-replay");
+        assert!(matches!(
+            store
+                .admit_consumer_event(
+                    &consumer,
+                    &conflicting_event,
+                    received_at + chrono::Duration::seconds(1),
+                )
+                .await,
+            Err(MvError::IdempotencyConflict(_))
+        ));
+
+        let first_claims = store
+            .claim_consumer_events(
+                &consumer,
+                &processor,
+                received_at + chrono::Duration::seconds(2),
+                received_at + chrono::Duration::minutes(1),
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first_claims.len(), 1);
+        assert_eq!(
+            first_claims[0].inbox_sequence,
+            first_admission.inbox_sequence
+        );
+        assert!(store
+            .claim_consumer_events(
+                &consumer,
+                &processor,
+                received_at + chrono::Duration::seconds(3),
+                received_at + chrono::Duration::minutes(1),
+                10,
+            )
+            .await
+            .unwrap()
+            .is_empty());
+
+        let first_claim = &first_claims[0];
+        let first_completion = ConsumerApplicationCompletion {
+            inbox_sequence: first_claim.inbox_sequence,
+            event_id: first_claim.event.id,
+            lease_id: first_claim.lease_id,
+            attempt: first_claim.attempt,
+            completed_at: first_claim.claimed_at + chrono::Duration::seconds(1),
+            result: ConsumerApplicationResult::Applied {
+                application_reference: "ordered-index-entry-1".into(),
+                effect_digest: Some("6".repeat(64)),
+            },
+        };
+        store
+            .complete_consumer_event(first_claim, &first_completion)
+            .await
+            .unwrap();
+
+        let second_claim = store
+            .claim_consumer_events(
+                &consumer,
+                &processor,
+                first_completion.completed_at + chrono::Duration::seconds(1),
+                first_completion.completed_at + chrono::Duration::minutes(1),
+                10,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(second_claim.inbox_sequence, second_admission.inbox_sequence);
+        let second_completion = ConsumerApplicationCompletion {
+            inbox_sequence: second_claim.inbox_sequence,
+            event_id: second_claim.event.id,
+            lease_id: second_claim.lease_id,
+            attempt: second_claim.attempt,
+            completed_at: second_claim.claimed_at + chrono::Duration::seconds(1),
+            result: ConsumerApplicationResult::DeadLettered {
+                error_code: "unsupported_projection".into(),
+                error_summary: "the consumer cannot project this event".into(),
+            },
+        };
+        store
+            .complete_consumer_event(&second_claim, &second_completion)
+            .await
+            .unwrap();
+
+        let checkpoint = store
+            .get_consumer_checkpoint(&consumer, &first_event.source)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            checkpoint.last_dispositioned_sequence,
+            second_admission.inbox_sequence
+        );
+        assert_eq!(
+            checkpoint.last_dispositioned_event_id,
+            second_admission.event.id
+        );
+        assert_eq!(
+            checkpoint.last_applied_sequence,
+            Some(first_admission.inbox_sequence)
+        );
+        assert_eq!(
+            checkpoint.last_applied_event_id,
+            Some(first_admission.event.id)
+        );
+        assert_eq!(checkpoint.applied_count, 1);
+        assert_eq!(checkpoint.dead_letter_count, 1);
+        assert_eq!(
+            store
+                .get_consumer_inbox_status(&consumer, second_event.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            ConsumerInboxState::DeadLetter
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_consumer_claim_is_recoverable_and_stale_completion_is_rejected() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let event = node_created_event(
+            local_node_id,
+            Uuid::now_v7(),
+            "consumer-expired-claim",
+            &"7".repeat(64),
+        );
+        let consumer = StableUri::parse("mindvault://consumers/recoverable-index").unwrap();
+        let processor = StableUri::parse("mindvault://processors/recoverable-index").unwrap();
+        let received_at = event.occurred_at + chrono::Duration::seconds(1);
+        store
+            .admit_consumer_event(&consumer, &event, received_at)
+            .await
+            .unwrap();
+
+        let first = store
+            .claim_consumer_events(
+                &consumer,
+                &processor,
+                received_at,
+                received_at + chrono::Duration::minutes(1),
+                1,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        let second = store
+            .claim_consumer_events(
+                &consumer,
+                &processor,
+                first.lease_expires_at,
+                first.lease_expires_at + chrono::Duration::minutes(1),
+                1,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(second.attempt, 2);
+        assert_ne!(second.lease_id, first.lease_id);
+
+        let stale_completion = ConsumerApplicationCompletion {
+            inbox_sequence: first.inbox_sequence,
+            event_id: event.id,
+            lease_id: first.lease_id,
+            attempt: first.attempt,
+            completed_at: first.claimed_at + chrono::Duration::seconds(30),
+            result: ConsumerApplicationResult::Applied {
+                application_reference: "stale-index-entry".into(),
+                effect_digest: None,
+            },
+        };
+        assert!(matches!(
+            store
+                .complete_consumer_event(&first, &stale_completion)
+                .await,
+            Err(MvError::IdempotencyConflict(_))
+        ));
+        assert!(store
+            .list_consumer_application_receipts(&consumer, event.id, 10)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let recovered_completion = ConsumerApplicationCompletion {
+            inbox_sequence: second.inbox_sequence,
+            event_id: event.id,
+            lease_id: second.lease_id,
+            attempt: second.attempt,
+            completed_at: second.claimed_at + chrono::Duration::seconds(1),
+            result: ConsumerApplicationResult::DeadLettered {
+                error_code: "application_rejected".into(),
+                error_summary: "the recovered attempt rejected the event".into(),
+            },
+        };
+        let receipt = store
+            .complete_consumer_event(&second, &recovered_completion)
+            .await
+            .unwrap();
+        assert_eq!(receipt.outcome, ConsumerApplicationOutcome::DeadLettered);
+        assert_eq!(
+            store
+                .get_consumer_checkpoint(&consumer, &event.source)
+                .await
+                .unwrap()
+                .unwrap()
+                .dead_letter_count,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn sealed_consumer_records_hide_event_and_application_details() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("sealed-consumer-inbox.sqlite");
+        let _reset = install_scoped_runtime_key(&db_path, [41u8; 32]);
+        let store = SqliteNodeStore::open_with_mode(&db_path, true).unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let event_marker = "consumer-event-sensitive-marker";
+        let error_marker = "consumer-application-sensitive-marker";
+        let mut event = node_created_event(
+            local_node_id,
+            Uuid::now_v7(),
+            "sealed-consumer-event",
+            &"8".repeat(64),
+        );
+        event.data["sensitive_marker"] = serde_json::json!(event_marker);
+        let consumer = StableUri::parse("mindvault://consumers/sealed-index").unwrap();
+        let processor = StableUri::parse("mindvault://processors/sealed-index").unwrap();
+        let received_at = event.occurred_at + chrono::Duration::seconds(1);
+        let admission = store
+            .admit_consumer_event(&consumer, &event, received_at)
+            .await
+            .unwrap();
+
+        let (event_payload, event_format, event_wrapped): (Vec<u8>, String, Option<String>) = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT envelope_payload, payload_format, payload_wrapped_dek
+                         FROM interoperability_consumer_inbox
+                         WHERE inbox_sequence = ?1",
+                        params![admission.inbox_sequence],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(|err| MvError::Storage(err.to_string()))
+            })
+            .unwrap();
+        assert_eq!(event_format, "mvenc-v1");
+        assert!(event_wrapped.is_some());
+        assert!(!bytes_contains(&event_payload, event_marker.as_bytes()));
+
+        let claim = store
+            .claim_consumer_events(
+                &consumer,
+                &processor,
+                received_at + chrono::Duration::seconds(1),
+                received_at + chrono::Duration::minutes(1),
+                1,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        let completion = ConsumerApplicationCompletion {
+            inbox_sequence: claim.inbox_sequence,
+            event_id: event.id,
+            lease_id: claim.lease_id,
+            attempt: claim.attempt,
+            completed_at: claim.claimed_at + chrono::Duration::seconds(1),
+            result: ConsumerApplicationResult::DeadLettered {
+                error_code: "sealed_rejection".into(),
+                error_summary: error_marker.into(),
+            },
+        };
+        let receipt = store
+            .complete_consumer_event(&claim, &completion)
+            .await
+            .unwrap();
+
+        let (receipt_payload, receipt_format, receipt_wrapped): (Vec<u8>, String, Option<String>) =
+            store
+                .with_conn(|connection| {
+                    connection
+                        .query_row(
+                            "SELECT payload, payload_format, payload_wrapped_dek
+                         FROM interoperability_consumer_application_receipts
+                         WHERE receipt_id = ?1",
+                            params![receipt.receipt_id.to_string()],
+                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                        )
+                        .map_err(|err| MvError::Storage(err.to_string()))
+                })
+                .unwrap();
+        assert_eq!(receipt_format, "mvenc-v1");
+        assert!(receipt_wrapped.is_some());
+        assert!(!bytes_contains(&receipt_payload, error_marker.as_bytes()));
+        assert_eq!(
+            store
+                .get_consumer_application_receipt(receipt.receipt_id)
+                .await
+                .unwrap(),
+            Some(receipt)
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_node_insert_does_not_leave_an_outbox_event() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let node =
+            KnowledgeNode::new(NodeKind::Fact, "duplicate").with_namespace("interoperability");
+        store.insert(&node).await.unwrap();
+        let event = node_created_event(local_node_id, node.id, "duplicate-node", &"c".repeat(64));
+
+        assert!(store
+            .commit_node_create_with_event(&node, &event)
+            .await
+            .is_err());
+        assert!(store.get_outbox_event(event.id).await.unwrap().is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Governed agent execution graph
+    // -----------------------------------------------------------------------
+
+    fn work_order_fixture(local_node_id: Uuid, budget: WorkOrderBudget) -> WorkOrder {
+        let work_order_id = Uuid::now_v7();
+        let principal = StableUri::principal(
+            local_node_id,
+            Uuid::new_v5(&local_node_id, b"governance-test-principal"),
+        );
+        let now = Utc::now();
+        WorkOrder {
+            work_order_id,
+            revision: 1,
+            work_order_uri: StableUri::work_order(local_node_id, work_order_id),
+            principal: principal.clone(),
+            actor: principal,
+            governing_node: StableUri::node(local_node_id),
+            goal: "summarize the meeting into candidate decisions".into(),
+            non_goals: vec!["do not contact external services".into()],
+            anchors: Vec::new(),
+            success_criteria: vec!["candidate decisions exist with provenance".into()],
+            prohibited_outcomes: Vec::new(),
+            budget,
+            remaining: budget,
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Operational,
+            correlation_id: Uuid::now_v7(),
+            causation_id: None,
+            idempotency_key: format!("wo-{work_order_id}"),
+            status: WorkOrderStatus::Draft,
+            status_reason: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn node_fixture(
+        local_node_id: Uuid,
+        work_order_id: Uuid,
+        writes: &[&str],
+        tier: RiskTier,
+    ) -> WorkOrderNode {
+        let node_id = Uuid::now_v7();
+        let now = Utc::now();
+        WorkOrderNode {
+            node_id,
+            work_order_id,
+            node_uri: StableUri::work_order_node(local_node_id, work_order_id, node_id),
+            purpose: "extract candidate decisions".into(),
+            executor_kind: ExecutorKind::Engine,
+            risk_tier: tier,
+            status: WorkOrderNodeStatus::Pending,
+            read_scope: Vec::new(),
+            write_scope: writes
+                .iter()
+                .map(|value| StableUri::parse(*value).unwrap())
+                .collect(),
+            inputs: Vec::new(),
+            timeout_secs: 600,
+            max_attempts: 3,
+            authorizing_grant_id: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn run_fixture(
+        local_node_id: Uuid,
+        work_order: &WorkOrder,
+        node: &WorkOrderNode,
+        actor_seed: &str,
+    ) -> AgentRun {
+        let run_id = Uuid::now_v7();
+        let now = Utc::now();
+        AgentRun {
+            run_id,
+            run_uri: StableUri::agent_run(local_node_id, run_id),
+            work_order_id: work_order.work_order_id,
+            node_id: node.node_id,
+            attempt_no: 1,
+            status: AgentRunStatus::Ready,
+            failure_class: None,
+            principal: work_order.principal.clone(),
+            actor: StableUri::principal(
+                local_node_id,
+                Uuid::new_v5(&local_node_id, actor_seed.as_bytes()),
+            ),
+            correlation_id: work_order.correlation_id,
+            causation_id: None,
+            started_at: None,
+            ended_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn work_order_admitted_event(
+        local_node_id: Uuid,
+        work_order: &WorkOrder,
+        nodes: usize,
+        edges: usize,
+        key: &str,
+    ) -> EventEnvelope {
+        let data = serde_json::json!({
+            "work_order_id": work_order.work_order_id,
+            "node_count": nodes,
+            "edge_count": edges,
+            "governing_node_uri": work_order.governing_node.as_str(),
+            "record_digest": "a".repeat(64),
+        });
+        let mut event = governance_event(
+            local_node_id,
+            WORK_ORDER_ADMITTED_V1,
+            "work-order-admitted",
+            work_order.work_order_uri.clone(),
+            key,
+            data,
+        );
+        event.principal = work_order.principal.clone();
+        event.actor = work_order.actor.clone();
+        event
+    }
+
+    fn agent_run_started_event(local_node_id: Uuid, run: &AgentRun, key: &str) -> EventEnvelope {
+        let data = serde_json::json!({
+            "run_id": run.run_id,
+            "work_order_id": run.work_order_id,
+            "node_id": run.node_id,
+            "attempt_no": run.attempt_no,
+            "record_digest": "b".repeat(64),
+        });
+        let mut event = governance_event(
+            local_node_id,
+            AGENT_RUN_STARTED_V1,
+            "agent-run-started",
+            run.run_uri.clone(),
+            key,
+            data,
+        );
+        event.principal = run.principal.clone();
+        event.actor = run.principal.clone();
+        event
+    }
+
+    fn agent_run_transition_event(
+        local_node_id: Uuid,
+        run: &AgentRun,
+        from: AgentRunStatus,
+        key: &str,
+    ) -> EventEnvelope {
+        let data = serde_json::json!({
+            "run_id": run.run_id,
+            "from_status": from.as_str(),
+            "to_status": run.status.as_str(),
+            "record_digest": "c".repeat(64),
+        });
+        let mut event = governance_event(
+            local_node_id,
+            AGENT_RUN_LIFECYCLE_TRANSITIONED_V1,
+            "agent-run-lifecycle-transitioned",
+            run.run_uri.clone(),
+            key,
+            data,
+        );
+        event.principal = run.principal.clone();
+        event.actor = run.principal.clone();
+        event
+    }
+
+    /// Admit a one-contract work order and start one run against it.
+    async fn admitted_run(
+        store: &SqliteNodeStore,
+        local_node_id: Uuid,
+        writes: &[&str],
+        tier: RiskTier,
+        budget: WorkOrderBudget,
+        seed: &str,
+    ) -> (WorkOrder, WorkOrderNode, AgentRun) {
+        let work_order = work_order_fixture(local_node_id, budget);
+        let node = node_fixture(local_node_id, work_order.work_order_id, writes, tier);
+        let event =
+            work_order_admitted_event(local_node_id, &work_order, 1, 0, &format!("admit-{seed}"));
+        store
+            .commit_work_order_with_event(&work_order, std::slice::from_ref(&node), &[], &event)
+            .await
+            .unwrap();
+
+        let run = run_fixture(local_node_id, &work_order, &node, seed);
+        let start = agent_run_started_event(local_node_id, &run, &format!("start-{seed}"));
+        store
+            .commit_agent_run_with_event(&run, &WorkOrderSpend::one_run_attempt(), &start)
+            .await
+            .unwrap();
+        (work_order, node, run)
+    }
+
+    #[tokio::test]
+    async fn work_order_admission_round_trips_with_contracts_and_edges() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 3600,
+            run_attempts: 5,
+            model_tokens: 100_000,
+            effect_actions: 10,
+        };
+        let work_order = work_order_fixture(local_node_id, budget);
+        let first = node_fixture(
+            local_node_id,
+            work_order.work_order_id,
+            &["mindvault://schemas/alpha"],
+            RiskTier::Standard,
+        );
+        let second = node_fixture(
+            local_node_id,
+            work_order.work_order_id,
+            &["mindvault://schemas/beta"],
+            RiskTier::Low,
+        );
+        let edge = WorkOrderEdge {
+            edge_id: Uuid::now_v7(),
+            work_order_id: work_order.work_order_id,
+            from_node_id: first.node_id,
+            to_node_id: second.node_id,
+            kind: EdgeKind::Data,
+            derived: false,
+            detail: None,
+            created_at: work_order.created_at,
+        };
+        let event = work_order_admitted_event(local_node_id, &work_order, 2, 1, "admit-round-trip");
+
+        let commit = store
+            .commit_work_order_with_event(
+                &work_order,
+                &[first.clone(), second.clone()],
+                std::slice::from_ref(&edge),
+                &event,
+            )
+            .await
+            .unwrap();
+        assert!(!commit.replayed);
+
+        let stored = store
+            .get_work_order(work_order.work_order_id)
+            .await
+            .unwrap()
+            .expect("work order");
+        assert_eq!(stored.goal, work_order.goal);
+        assert_eq!(stored.non_goals, work_order.non_goals);
+
+        let contracts = store
+            .list_work_order_nodes(work_order.work_order_id)
+            .await
+            .unwrap();
+        assert_eq!(contracts.len(), 2);
+        let edges = store
+            .list_work_order_edges(work_order.work_order_id)
+            .await
+            .unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].kind, EdgeKind::Data);
+
+        // The admission event is durable in the same transaction (law 4).
+        assert!(store.get_outbox_event(event.id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn admission_rejects_intersecting_write_scopes_without_a_conflict_edge() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 60,
+            run_attempts: 2,
+            model_tokens: 100,
+            effect_actions: 1,
+        };
+        let work_order = work_order_fixture(local_node_id, budget);
+        let first = node_fixture(
+            local_node_id,
+            work_order.work_order_id,
+            &["mindvault://schemas/shared"],
+            RiskTier::Low,
+        );
+        let second = node_fixture(
+            local_node_id,
+            work_order.work_order_id,
+            &["mindvault://schemas/shared"],
+            RiskTier::Low,
+        );
+        let nodes = vec![first, second];
+        let event = work_order_admitted_event(local_node_id, &work_order, 2, 0, "admit-conflict");
+
+        // Omitting the derived edge must fail closed rather than admit an
+        // unguarded overlap.
+        let err = store
+            .commit_work_order_with_event(&work_order, &nodes, &[], &event)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("conflict edge"), "got: {err}");
+
+        // Supplying it succeeds.
+        let derived =
+            derive_conflict_edges(work_order.work_order_id, &nodes, work_order.created_at);
+        assert_eq!(derived.len(), 1);
+        store
+            .commit_work_order_with_event(&work_order, &nodes, &derived, &event)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn admission_rejects_a_dependency_cycle() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 60,
+            run_attempts: 2,
+            model_tokens: 100,
+            effect_actions: 1,
+        };
+        let work_order = work_order_fixture(local_node_id, budget);
+        let first = node_fixture(
+            local_node_id,
+            work_order.work_order_id,
+            &["mindvault://schemas/alpha"],
+            RiskTier::Low,
+        );
+        let second = node_fixture(
+            local_node_id,
+            work_order.work_order_id,
+            &["mindvault://schemas/beta"],
+            RiskTier::Low,
+        );
+        let edges = vec![
+            WorkOrderEdge {
+                edge_id: Uuid::now_v7(),
+                work_order_id: work_order.work_order_id,
+                from_node_id: first.node_id,
+                to_node_id: second.node_id,
+                kind: EdgeKind::Data,
+                derived: false,
+                detail: None,
+                created_at: work_order.created_at,
+            },
+            WorkOrderEdge {
+                edge_id: Uuid::now_v7(),
+                work_order_id: work_order.work_order_id,
+                from_node_id: second.node_id,
+                to_node_id: first.node_id,
+                kind: EdgeKind::Data,
+                derived: false,
+                detail: None,
+                created_at: work_order.created_at,
+            },
+        ];
+        let event = work_order_admitted_event(local_node_id, &work_order, 2, 2, "admit-cycle");
+
+        let err = store
+            .commit_work_order_with_event(&work_order, &[first, second], &edges, &event)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cycle"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn a_second_run_cannot_claim_a_held_write_target() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 3600,
+            run_attempts: 5,
+            model_tokens: 1000,
+            effect_actions: 5,
+        };
+        let target = "mindvault://schemas/contested";
+        let digest = target_digest(&StableUri::parse(target).unwrap());
+
+        let (_, _, first_run) = admitted_run(
+            &store,
+            local_node_id,
+            &[target],
+            RiskTier::Low,
+            budget,
+            "first",
+        )
+        .await;
+        let (_, _, second_run) = admitted_run(
+            &store,
+            local_node_id,
+            &[target],
+            RiskTier::Low,
+            budget,
+            "second",
+        )
+        .await;
+
+        let now = Utc::now();
+        let expires = now + chrono::Duration::minutes(30);
+        let held = store
+            .claim_write_leases(
+                first_run.run_id,
+                std::slice::from_ref(&digest),
+                now,
+                expires,
+            )
+            .await
+            .unwrap();
+        assert_eq!(held.len(), 1);
+
+        let blocked = store
+            .claim_write_leases(
+                second_run.run_id,
+                std::slice::from_ref(&digest),
+                now,
+                expires,
+            )
+            .await;
+        assert!(blocked.is_err(), "an unexpired lease must block the claim");
+
+        let conflicts = store
+            .conflicting_write_targets(second_run.run_id, std::slice::from_ref(&digest), now)
+            .await
+            .unwrap();
+        assert_eq!(conflicts, vec![digest.clone()]);
+
+        // The holder does not conflict with itself.
+        assert!(store
+            .conflicting_write_targets(first_run.run_id, &[digest], now)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_run_awaiting_approval_releases_its_leases_and_unblocks_others() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 3600,
+            run_attempts: 5,
+            model_tokens: 1000,
+            effect_actions: 5,
+        };
+        let target = "mindvault://schemas/approval-target";
+        let digest = target_digest(&StableUri::parse(target).unwrap());
+
+        let (_, _, mut run) = admitted_run(
+            &store,
+            local_node_id,
+            &[target],
+            RiskTier::High,
+            budget,
+            "parked",
+        )
+        .await;
+        let (_, _, other) = admitted_run(
+            &store,
+            local_node_id,
+            &[target],
+            RiskTier::Low,
+            budget,
+            "waiting",
+        )
+        .await;
+
+        let now = Utc::now();
+        let expires = now + chrono::Duration::minutes(30);
+        store
+            .claim_write_leases(run.run_id, std::slice::from_ref(&digest), now, expires)
+            .await
+            .unwrap();
+
+        // ready -> leased -> running -> awaiting_approval
+        for (next, key) in [
+            (AgentRunStatus::Leased, "to-leased"),
+            (AgentRunStatus::Running, "to-running"),
+            (AgentRunStatus::AwaitingApproval, "to-approval"),
+        ] {
+            let from = run.status;
+            run.status = next;
+            run.updated_at = Utc::now();
+            if next == AgentRunStatus::Running {
+                run.started_at = Some(run.updated_at);
+            }
+            let event = agent_run_transition_event(local_node_id, &run, from, key);
+            store
+                .transition_agent_run_with_event(&run, None, &event)
+                .await
+                .unwrap();
+        }
+
+        // Approval is unbounded, so the parked run must hold nothing.
+        let leases = store.list_write_leases(run.run_id).await.unwrap();
+        assert!(
+            leases.iter().all(|lease| !lease.is_active()),
+            "a run awaiting approval must hold no write leases"
+        );
+        assert_eq!(
+            leases[0].release_reason,
+            Some(LeaseReleaseReason::AwaitingApproval)
+        );
+
+        // The other run can now proceed rather than waiting on a human.
+        let claimed = store
+            .claim_write_leases(
+                other.run_id,
+                &[digest],
+                Utc::now(),
+                Utc::now() + chrono::Duration::minutes(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].attempt_no, 2, "the claim counter advances");
+    }
+
+    #[tokio::test]
+    async fn an_expired_lease_is_replaced_and_its_history_is_kept() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 3600,
+            run_attempts: 5,
+            model_tokens: 1000,
+            effect_actions: 5,
+        };
+        let target = "mindvault://schemas/abandoned";
+        let digest = target_digest(&StableUri::parse(target).unwrap());
+
+        let (_, _, crashed) = admitted_run(
+            &store,
+            local_node_id,
+            &[target],
+            RiskTier::Low,
+            budget,
+            "crashed",
+        )
+        .await;
+        let (_, _, successor) = admitted_run(
+            &store,
+            local_node_id,
+            &[target],
+            RiskTier::Low,
+            budget,
+            "successor",
+        )
+        .await;
+
+        // A lease that already expired: the crashed run never released it.
+        let claimed_at = Utc::now() - chrono::Duration::minutes(90);
+        store
+            .claim_write_leases(
+                crashed.run_id,
+                std::slice::from_ref(&digest),
+                claimed_at,
+                claimed_at + chrono::Duration::minutes(30),
+            )
+            .await
+            .unwrap();
+
+        // Without replacement the target would be locked forever.
+        let now = Utc::now();
+        let replacement = store
+            .claim_write_leases(
+                successor.run_id,
+                std::slice::from_ref(&digest),
+                now,
+                now + chrono::Duration::minutes(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replacement[0].attempt_no, 2);
+
+        let history = store.list_write_leases(crashed.run_id).await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0].release_reason,
+            Some(LeaseReleaseReason::ExpiredReplaced),
+            "the reaped lease is retained as history, not deleted"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lease_longer_than_one_hour_is_refused() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 3600,
+            run_attempts: 5,
+            model_tokens: 1000,
+            effect_actions: 5,
+        };
+        let target = "mindvault://schemas/bounded";
+        let digest = target_digest(&StableUri::parse(target).unwrap());
+        let (_, _, run) = admitted_run(
+            &store,
+            local_node_id,
+            &[target],
+            RiskTier::Low,
+            budget,
+            "bounded",
+        )
+        .await;
+
+        let now = Utc::now();
+        assert!(store
+            .claim_write_leases(
+                run.run_id,
+                std::slice::from_ref(&digest),
+                now,
+                now + chrono::Duration::minutes(61)
+            )
+            .await
+            .is_err());
+        assert!(store
+            .claim_write_leases(
+                run.run_id,
+                &[digest],
+                now,
+                now + chrono::Duration::minutes(60)
+            )
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn budget_exhaustion_blocks_a_further_run_rather_than_reducing_scope() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        // Exactly one run attempt is affordable.
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 3600,
+            run_attempts: 1,
+            model_tokens: 1000,
+            effect_actions: 5,
+        };
+        let work_order = work_order_fixture(local_node_id, budget);
+        let node = node_fixture(
+            local_node_id,
+            work_order.work_order_id,
+            &["mindvault://schemas/budgeted"],
+            RiskTier::Low,
+        );
+        let event = work_order_admitted_event(local_node_id, &work_order, 1, 0, "admit-budget");
+        store
+            .commit_work_order_with_event(&work_order, std::slice::from_ref(&node), &[], &event)
+            .await
+            .unwrap();
+
+        let first = run_fixture(local_node_id, &work_order, &node, "budget-first");
+        store
+            .commit_agent_run_with_event(
+                &first,
+                &WorkOrderSpend::one_run_attempt(),
+                &agent_run_started_event(local_node_id, &first, "budget-start-1"),
+            )
+            .await
+            .unwrap();
+
+        let spent = store
+            .get_work_order(work_order.work_order_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(spent.remaining.run_attempts, 0);
+        assert_eq!(spent.budget.run_attempts, 1, "the ceiling is immutable");
+        assert_eq!(spent.revision, 2, "the spend advanced the revision");
+
+        let mut second = run_fixture(local_node_id, &work_order, &node, "budget-second");
+        second.attempt_no = 2;
+        let err = store
+            .commit_agent_run_with_event(
+                &second,
+                &WorkOrderSpend::one_run_attempt(),
+                &agent_run_started_event(local_node_id, &second, "budget-start-2"),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("exhausted"), "got: {err}");
+
+        // The refused run left nothing behind.
+        assert!(store.get_agent_run(second.run_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_run_cannot_record_its_own_g5() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 3600,
+            run_attempts: 5,
+            model_tokens: 1000,
+            effect_actions: 5,
+        };
+        let (work_order, _, run) = admitted_run(
+            &store,
+            local_node_id,
+            &["mindvault://schemas/reviewed"],
+            RiskTier::High,
+            budget,
+            "reviewed",
+        )
+        .await;
+
+        let mut result = GateResult {
+            result_id: Uuid::now_v7(),
+            run_id: run.run_id,
+            work_order_id: work_order.work_order_id,
+            gate: GateId::G5,
+            outcome: GateOutcome::Pass,
+            evaluator_actor: run.actor.clone(),
+            evidence_digest: "d".repeat(64),
+            detail: None,
+            evaluated_at: Utc::now(),
+            created_at: Utc::now(),
+        };
+        assert!(store.record_gate_result(&result).await.is_err());
+
+        result.evaluator_actor = work_order.principal.clone();
+        store.record_gate_result(&result).await.unwrap();
+
+        let recorded = store.list_gate_results(run.run_id).await.unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].gate, GateId::G5);
+        assert_eq!(missing_gates(RiskTier::Low, &recorded).len(), 4);
+    }
+
+    #[tokio::test]
+    async fn an_artifact_digest_must_describe_its_stored_bytes() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 3600,
+            run_attempts: 5,
+            model_tokens: 1000,
+            effect_actions: 5,
+        };
+        let (work_order, _, run) = admitted_run(
+            &store,
+            local_node_id,
+            &["mindvault://schemas/produced"],
+            RiskTier::Low,
+            budget,
+            "artifact",
+        )
+        .await;
+
+        let payload = b"candidate decision summary";
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        let digest = format!("{:x}", hasher.finalize());
+        let artifact_id = Uuid::now_v7();
+        let anchor = StableUri::parse("mindvault://schemas/meeting-source").unwrap();
+
+        let mut artifact = RunArtifact {
+            artifact_id,
+            artifact_uri: StableUri::run_artifact(local_node_id, artifact_id),
+            run_id: run.run_id,
+            work_order_id: work_order.work_order_id,
+            artifact_kind: "decision-summary".into(),
+            content_digest: "e".repeat(64),
+            schema: None,
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Operational,
+            provenance: vec![ProvenanceReference {
+                resource: anchor.clone(),
+                relation: ProvenanceRelation::WasDerivedFrom,
+            }],
+            created_at: Utc::now(),
+        };
+
+        // A mismatched digest would make G2 verify a claim, not the content.
+        assert!(store.record_run_artifact(&artifact, payload).await.is_err());
+
+        artifact.content_digest = digest.clone();
+        store.record_run_artifact(&artifact, payload).await.unwrap();
+
+        let stored = store.get_run_artifact(artifact_id).await.unwrap().unwrap();
+        assert_eq!(stored.content_digest, digest);
+        // Derived knowledge never erases the authority of its evidence.
+        assert_eq!(stored.provenance.len(), 1);
+        assert_eq!(stored.provenance[0].resource, anchor);
+        assert_eq!(
+            stored.provenance[0].relation,
+            ProvenanceRelation::WasDerivedFrom
+        );
+
+        // The bytes must come back. A write-only artifact store would let G2
+        // compare a recorded digest against itself, and would make the
+        // portability guarantee unmeetable.
+        let read_back = store
+            .read_run_artifact_payload(artifact_id)
+            .await
+            .unwrap()
+            .expect("recorded artifact content must be readable");
+        assert_eq!(read_back.as_slice(), payload);
+
+        assert!(store
+            .read_run_artifact_payload(Uuid::now_v7())
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn artifact_content_survives_arbitrary_bytes_and_is_not_json_inflated() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 3600,
+            run_attempts: 5,
+            model_tokens: 1000,
+            effect_actions: 5,
+        };
+        let (work_order, _, run) = admitted_run(
+            &store,
+            local_node_id,
+            &["mindvault://schemas/produced"],
+            RiskTier::Low,
+            budget,
+            "artifact-bytes",
+        )
+        .await;
+
+        // Every byte value, including NUL and invalid UTF-8 sequences. An
+        // artifact is opaque content, not a string.
+        let payload: Vec<u8> = (0u16..=255).map(|b| b as u8).collect();
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let digest = format!("{:x}", hasher.finalize());
+        let artifact_id = Uuid::now_v7();
+
+        let artifact = RunArtifact {
+            artifact_id,
+            artifact_uri: StableUri::run_artifact(local_node_id, artifact_id),
+            run_id: run.run_id,
+            work_order_id: work_order.work_order_id,
+            artifact_kind: "binary-diff".into(),
+            content_digest: digest,
+            schema: None,
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Operational,
+            provenance: vec![ProvenanceReference {
+                resource: StableUri::parse("mindvault://schemas/binary-source").unwrap(),
+                relation: ProvenanceRelation::WasDerivedFrom,
+            }],
+            created_at: Utc::now(),
+        };
+        store
+            .record_run_artifact(&artifact, &payload)
+            .await
+            .unwrap();
+
+        let read_back = store
+            .read_run_artifact_payload(artifact_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(read_back, payload, "content must round-trip byte for byte");
+
+        // Stored size tracks content size. Serializing through serde_json would
+        // store `[0,1,2,...]` — several bytes per byte of content.
+        let stored_len: i64 = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT length(payload) FROM agent_run_artifacts WHERE artifact_id = ?1",
+                        params![artifact_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .map_err(|err| MvError::Storage(err.to_string()))
+            })
+            .unwrap();
+        assert_eq!(
+            stored_len,
+            payload.len() as i64,
+            "unsealed artifact content is stored verbatim"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_artifact_without_provenance_is_refused() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 3600,
+            run_attempts: 5,
+            model_tokens: 1000,
+            effect_actions: 5,
+        };
+        let (work_order, _, run) = admitted_run(
+            &store,
+            local_node_id,
+            &["mindvault://schemas/unsourced"],
+            RiskTier::Low,
+            budget,
+            "unsourced",
+        )
+        .await;
+
+        let payload = b"unsourced claim";
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        let artifact_id = Uuid::now_v7();
+        let artifact = RunArtifact {
+            artifact_id,
+            artifact_uri: StableUri::run_artifact(local_node_id, artifact_id),
+            run_id: run.run_id,
+            work_order_id: work_order.work_order_id,
+            artifact_kind: "decision-summary".into(),
+            content_digest: format!("{:x}", hasher.finalize()),
+            schema: None,
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Operational,
+            provenance: Vec::new(),
+            created_at: Utc::now(),
+        };
+        assert!(store.record_run_artifact(&artifact, payload).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn admission_replay_returns_the_original_work_order() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 60,
+            run_attempts: 2,
+            model_tokens: 100,
+            effect_actions: 1,
+        };
+        let work_order = work_order_fixture(local_node_id, budget);
+        let node = node_fixture(
+            local_node_id,
+            work_order.work_order_id,
+            &["mindvault://schemas/idempotent"],
+            RiskTier::Low,
+        );
+        let event = work_order_admitted_event(local_node_id, &work_order, 1, 0, "admit-replay");
+
+        let first = store
+            .commit_work_order_with_event(&work_order, std::slice::from_ref(&node), &[], &event)
+            .await
+            .unwrap();
+        assert!(!first.replayed);
+
+        let replay = store
+            .commit_work_order_with_event(&work_order, &[node], &[], &event)
+            .await
+            .unwrap();
+        assert!(replay.replayed, "retrying admission must not duplicate");
+        assert_eq!(replay.work_order.work_order_id, work_order.work_order_id);
+        assert_eq!(replay.work_order.revision, 1);
+    }
+
+    #[tokio::test]
+    async fn sealed_storage_does_not_expose_work_order_scope_or_goal() {
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("sealed_work_order.sqlite");
+        let _reset = install_scoped_runtime_key(&db_path, [11u8; 32]);
+        let store = SqliteNodeStore::open_with_mode(&db_path, true).unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        register_local_context_node(&store).await;
+
+        let budget = WorkOrderBudget {
+            wall_clock_secs: 60,
+            run_attempts: 2,
+            model_tokens: 100,
+            effect_actions: 1,
+        };
+        let mut work_order = work_order_fixture(local_node_id, budget);
+        work_order.goal = "secret-goal-text".into();
+        let node = node_fixture(
+            local_node_id,
+            work_order.work_order_id,
+            &["mindvault://schemas/secret-target"],
+            RiskTier::Low,
+        );
+        let event = work_order_admitted_event(local_node_id, &work_order, 1, 0, "admit-sealed");
+        store
+            .commit_work_order_with_event(&work_order, &[node], &[], &event)
+            .await
+            .unwrap();
+
+        let (payload, digest_row): (Vec<u8>, String) = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT w.record_payload, t.target_digest
+                     FROM work_orders w
+                     JOIN work_order_node_write_targets t ON t.work_order_id = w.work_order_id
+                     WHERE w.work_order_id = ?1",
+                    params![work_order.work_order_id.to_string()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))
+            })
+            .unwrap();
+
+        assert!(
+            !bytes_contains(&payload, b"secret-goal-text"),
+            "a sealed work order must not store its goal in plaintext"
+        );
+        assert!(
+            !digest_row.contains("secret-target"),
+            "write scope is indexed as a digest, never as a readable target"
+        );
+
+        // It still round-trips for an authorized reader.
+        let reopened = store
+            .get_work_order(work_order.work_order_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reopened.goal, "secret-goal-text");
     }
 }

@@ -1,3 +1,17 @@
+//! Superseded plan endpoints.
+//!
+//! Superseded by: `docs/adr/012-governed-agent-execution-graph.md`.
+//! Replacement: `crates/mv-server/src/rest/work_orders.rs`.
+//!
+//! The previous implementation reported unconditional success: `approve_plan`
+//! returned `{"status": "approved"}` for any identifier without performing a
+//! lookup, and `get_plan` always reported not found. Nothing read or wrote the
+//! `plans` tables, so an approval reported success for work that never
+//! happened — the false canonical success `PROTOCOL_BOUNDARIES.md` prohibits.
+//!
+//! These endpoints now fail explicitly and name their replacement. An honest
+//! `410 Gone` is a better contract than a fabricated `200`.
+
 use std::sync::Arc;
 
 use axum::{
@@ -17,7 +31,28 @@ pub struct CreatePlanRequest {
     pub goal: String,
 }
 
-/// POST /api/v1/plans — Create a new plan from a goal
+/// Response for every superseded plan operation.
+fn superseded(operation: &str) -> impl IntoResponse {
+    (
+        StatusCode::GONE,
+        Json(serde_json::json!({
+            "error": format!("the plan API is superseded; {operation} is unavailable"),
+            "superseded_by": "/api/v1/work-orders",
+            "decision_record": "docs/adr/012-governed-agent-execution-graph.md",
+            "reason": "plan approval reported success without executing or \
+                       persisting anything; Work Orders record governed intent \
+                       with declared scope, typed edges, budgets, and gate \
+                       evidence"
+        })),
+    )
+}
+
+/// POST /api/v1/plans — decompose a goal into a candidate plan.
+///
+/// Retained as a read-only planning aid: it returns a suggested decomposition
+/// and persists nothing. Turning a suggestion into governed work means
+/// admitting it as a Work Order, where its scope is resolved against a Tool
+/// Grant before anything becomes schedulable.
 pub async fn create_plan(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreatePlanRequest>,
@@ -36,31 +71,24 @@ pub async fn create_plan(
     }
 
     let plan = planner.create_plan(&req.goal).await;
-    (StatusCode::CREATED, Json(&plan)).into_response()
-}
-
-/// POST /api/v1/plans/:id/approve — Approve a draft plan for execution
-pub async fn approve_plan(Path(id): Path<String>) -> impl IntoResponse {
-    // In a full implementation, this would look up the plan from the store,
-    // verify it's in Draft status, and transition to Approved.
-    // For now, return success to show the API shape.
     (
         StatusCode::OK,
         Json(serde_json::json!({
-            "id": id,
-            "status": "approved",
-            "message": "plan approved for execution"
+            "plan": plan,
+            "persisted": false,
+            "note": "a suggestion only; admit it at /api/v1/work-orders to \
+                     obtain governed execution"
         })),
     )
         .into_response()
 }
 
-/// GET /api/v1/plans/:id — Get plan details
-pub async fn get_plan(Path(id): Path<String>) -> impl IntoResponse {
-    // Placeholder — in full implementation, look up from PlanStore
-    (
-        StatusCode::NOT_FOUND,
-        Json(serde_json::json!({"error": format!("plan {id} not found")})),
-    )
-        .into_response()
+/// POST /api/v1/plans/:id/approve — superseded.
+pub async fn approve_plan(Path(_id): Path<String>) -> impl IntoResponse {
+    superseded("plan approval").into_response()
+}
+
+/// GET /api/v1/plans/:id — superseded.
+pub async fn get_plan(Path(_id): Path<String>) -> impl IntoResponse {
+    superseded("plan retrieval").into_response()
 }

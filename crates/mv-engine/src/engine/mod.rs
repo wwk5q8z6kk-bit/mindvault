@@ -11,6 +11,15 @@ mod search_ops;
 mod security_ops;
 mod social_ops;
 mod sync_ops;
+mod work_order_ops;
+mod workspace_ops;
+mod workspace_projection_ops;
+
+pub use work_order_ops::{
+    AdmissionRefusal, ProposedEdge, ProposedNode, ProposedWorkOrder, RunReadiness,
+};
+pub use workspace_ops::WorkspaceMountResult;
+pub use workspace_projection_ops::WorkspaceProjectionOutcome;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -55,6 +64,7 @@ const TASK_ESTIMATE_MINUTES_METADATA_KEY: &str = "task_estimate_minutes";
 const TASK_ESTIMATE_MINUTES_ALT_METADATA_KEY: &str = "task_estimate_min";
 const TASK_ESTIMATE_MIN_METADATA_KEY: &str = "estimate_min";
 const SEALED_BLOB_MAGIC: &[u8; 4] = b"MVB1";
+pub(crate) const WORKSPACE_PROJECTION_METADATA_KEY: &str = "mindvault.workspace_projection";
 
 // ── Public Types ─────────────────────────────────────────────────────
 

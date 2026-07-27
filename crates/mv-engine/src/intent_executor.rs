@@ -8,6 +8,7 @@ use mv_core::*;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::admission::EffectAdmission;
 use crate::engine::MindVaultEngine;
 
 /// Result of executing an intent
@@ -60,7 +61,19 @@ impl IntentExecutor {
     }
 
     /// Execute an intent and return the result.
-    pub async fn execute(&self, intent: &CapturedIntent) -> MvResult<ExecutionResult> {
+    ///
+    /// The `_admission` argument is the structural half of the human-led
+    /// guarantee: an [`EffectAdmission`] has no public constructor, so this
+    /// method cannot be reached without first passing the autonomy gate (or
+    /// recording explicit owner authorization). Before this parameter existed,
+    /// the gate was caller-invoked and `apply_intent` did not call it.
+    ///
+    /// See `crate::admission` and System Principles 1 and 3.
+    pub async fn execute(
+        &self,
+        intent: &CapturedIntent,
+        _admission: &EffectAdmission,
+    ) -> MvResult<ExecutionResult> {
         match intent.intent_type {
             IntentType::ScheduleReminder => self.execute_schedule_reminder(intent).await,
             IntentType::ExtractTask => self.execute_extract_task(intent).await,

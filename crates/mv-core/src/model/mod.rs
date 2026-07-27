@@ -2,12 +2,18 @@ pub mod consumer;
 pub use consumer::*;
 pub mod exchange;
 pub use exchange::*;
+pub mod interoperability;
+pub use interoperability::*;
 pub mod keychain;
 pub use keychain::*;
 pub mod policy;
 pub use policy::*;
 pub mod proxy;
 pub use proxy::*;
+pub mod work_order;
+pub use work_order::*;
+pub mod workspace;
+pub use workspace::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -875,6 +881,8 @@ pub struct ChangeNotification {
     pub operation: String,
     pub timestamp: String,
     pub namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<EventEnvelope>,
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,18 @@
 -- Phase 3: Agent planning framework.
 -- Plans and steps with status state machine.
+--
+-- SUPERSEDED by migration 038 (Work Orders, Agent Runs, Artifacts) per
+-- docs/adr/012-governed-agent-execution-graph.md.
+--
+-- These tables are retained but unused. Verified before superseding: no code
+-- reads or writes `plans` or `plan_steps`, and no store trait exposes them, so
+-- no data migration is required. `plan_steps` models a linear `step_order`
+-- sequence with no typed edges, declared scope, budgets, or gate evidence, and
+-- its `action` vocabulary does not compose with `IntentType`.
+--
+-- Do not add readers or writers here. New orchestration belongs in the
+-- governed execution graph, where declared write scope resolves against an
+-- AuthorityGrant before anything becomes schedulable.
 
 CREATE TABLE IF NOT EXISTS plans (
     id TEXT PRIMARY KEY,

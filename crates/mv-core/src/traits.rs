@@ -590,6 +590,456 @@ pub trait AdapterPollStore: Send + Sync {
 
 fn _assert_adapter_poll_store_object_safe(_: &dyn AdapterPollStore) {}
 
+/// Persistence boundary for the managed knowledge-workspace manifest.
+///
+/// This contract intentionally has no filesystem mutation methods. Canonical
+/// file writes belong to the separately authorized workspace mutation service.
+#[async_trait]
+pub trait KnowledgeWorkspaceManifestStore: Send + Sync {
+    async fn insert_knowledge_workspace(&self, workspace: &KnowledgeWorkspace) -> MvResult<()>;
+    async fn get_knowledge_workspace(&self, id: Uuid) -> MvResult<Option<KnowledgeWorkspace>>;
+    async fn list_knowledge_workspaces(
+        &self,
+        namespace: Option<&str>,
+    ) -> MvResult<Vec<KnowledgeWorkspace>>;
+
+    /// Replace a workspace record only when its persisted revision matches
+    /// `expected_revision`. The replacement must advance the revision by one.
+    async fn update_knowledge_workspace(
+        &self,
+        workspace: &KnowledgeWorkspace,
+        expected_revision: u64,
+    ) -> MvResult<bool>;
+
+    async fn insert_workspace_document(
+        &self,
+        document: &KnowledgeWorkspaceDocument,
+    ) -> MvResult<()>;
+    async fn get_workspace_document(
+        &self,
+        id: Uuid,
+    ) -> MvResult<Option<KnowledgeWorkspaceDocument>>;
+    async fn get_workspace_document_by_path_token(
+        &self,
+        workspace_id: Uuid,
+        path_token: &str,
+    ) -> MvResult<Option<KnowledgeWorkspaceDocument>>;
+    async fn list_workspace_documents(
+        &self,
+        workspace_id: Uuid,
+    ) -> MvResult<Vec<KnowledgeWorkspaceDocument>>;
+
+    /// Replace a document record only when its persisted revision matches
+    /// `expected_revision`. The replacement must advance the revision by one.
+    async fn update_workspace_document(
+        &self,
+        document: &KnowledgeWorkspaceDocument,
+        expected_revision: u64,
+    ) -> MvResult<bool>;
+
+    /// Apply one authoritative reconciliation as a single transaction.
+    ///
+    /// Returns `false` without committing any mutation when the workspace or
+    /// any document revision is stale.
+    async fn apply_workspace_reconciliation(
+        &self,
+        reconciliation: &WorkspaceManifestReconciliation,
+    ) -> MvResult<bool>;
+}
+
+fn _assert_knowledge_workspace_manifest_store_object_safe(_: &dyn KnowledgeWorkspaceManifestStore) {
+}
+
+/// One authorization question: who is asking, to do what, against which target,
+/// under which handling class, at what moment.
+///
+/// Grouped into a single type rather than passed as seven positional arguments
+/// because every field is load-bearing and several share a type — two
+/// `StableUri` values and two handling classes. Positionally, transposing
+/// `grantee` and `target`, or `sensitivity` and `retention`, still compiles and
+/// silently asks a different question of a fail-closed authorization check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GrantQuery<'a> {
+    /// The principal whose authority is being resolved.
+    pub grantee: &'a StableUri,
+    /// Context grants authorize reads; Tool grants authorize effects. The two
+    /// capability sets are disjoint.
+    pub kind: AuthorityGrantKind,
+    /// Exact stable-URI target. Wildcards and prefixes are not grant targets.
+    pub target: &'a StableUri,
+    pub capability: ContextCapability,
+    pub sensitivity: Sensitivity,
+    pub retention: RetentionClass,
+    /// Evaluation instant, checked against the grant's validity window.
+    pub at: DateTime<Utc>,
+}
+
+/// Atomic persistence boundary for interoperable mutations.
+///
+/// Implementations must commit the domain mutation and event envelope in the
+/// same transaction. A replay with the same source, principal, and idempotency
+/// key returns the original result; reusing that scope with a different payload
+/// digest fails.
+#[async_trait]
+pub trait InteroperabilityStore: Send + Sync {
+    /// Return the persistent identity of this local MindVault context node.
+    async fn local_context_node_id(&self) -> MvResult<Uuid>;
+
+    /// Atomically register a governed Context Node descriptor and its event.
+    async fn commit_context_node_with_event(
+        &self,
+        context_node: &ContextNodeRecord,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentContextNodeCommit>;
+
+    async fn get_context_node(&self, node_id: Uuid) -> MvResult<Option<ContextNodeRecord>>;
+
+    async fn list_context_nodes(
+        &self,
+        status: Option<ContextNodeStatus>,
+    ) -> MvResult<Vec<ContextNodeRecord>>;
+
+    /// Replace an existing descriptor while preserving stable identity and
+    /// lifecycle state.
+    async fn update_context_node_descriptor_with_event(
+        &self,
+        expected_revision: u64,
+        replacement: &ContextNodeRecord,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentContextNodeCommit>;
+
+    /// Apply one allowed lifecycle transition without changing the descriptor.
+    async fn transition_context_node_with_event(
+        &self,
+        expected_revision: u64,
+        replacement: &ContextNodeRecord,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentContextNodeCommit>;
+
+    /// Atomically issue one active Context or Tool Grant and its event.
+    async fn commit_authority_grant_with_event(
+        &self,
+        grant: &AuthorityGrant,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentAuthorityGrantCommit>;
+
+    async fn get_authority_grant(&self, grant_id: Uuid) -> MvResult<Option<AuthorityGrant>>;
+
+    async fn list_authority_grants(
+        &self,
+        grantee: Option<&StableUri>,
+        kind: Option<AuthorityGrantKind>,
+        status: Option<AuthorityGrantStatus>,
+    ) -> MvResult<Vec<AuthorityGrant>>;
+
+    /// Resolve one effective grant, including its complete parent chain.
+    async fn find_authorizing_grant(
+        &self,
+        query: GrantQuery<'_>,
+    ) -> MvResult<Option<AuthorityGrant>>;
+
+    /// Apply one lifecycle transition without changing immutable grant terms.
+    async fn transition_authority_grant_with_event(
+        &self,
+        expected_revision: u64,
+        replacement: &AuthorityGrant,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentAuthorityGrantCommit>;
+
+    /// Atomically register an immutable public schema and its event.
+    async fn commit_public_schema_with_event(
+        &self,
+        schema: &PublicSchemaRecord,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentSchemaCommit>;
+
+    async fn get_public_schema(
+        &self,
+        reference: &SchemaReference,
+    ) -> MvResult<Option<PublicSchemaRecord>>;
+
+    async fn list_public_schema_versions(
+        &self,
+        schema_uri: &StableUri,
+    ) -> MvResult<Vec<PublicSchemaRecord>>;
+
+    /// Atomically register one active source binding and its event.
+    async fn commit_source_binding_with_event(
+        &self,
+        binding: &SourceBinding,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentSourceBindingCommit>;
+
+    async fn get_source_binding(&self, binding_id: Uuid) -> MvResult<Option<SourceBinding>>;
+
+    async fn find_active_source_binding(
+        &self,
+        context_node: &StableUri,
+        external_account_id: &str,
+        external_object_id: &str,
+    ) -> MvResult<Option<SourceBinding>>;
+
+    /// Retire one active binding and install its explicit successor atomically.
+    async fn rebind_source_with_event(
+        &self,
+        previous_binding_id: Uuid,
+        replacement: &SourceBinding,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentSourceBindingCommit>;
+
+    /// Atomically create a knowledge node and enqueue its event envelope.
+    async fn commit_node_create_with_event(
+        &self,
+        node: &KnowledgeNode,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentNodeCommit>;
+
+    /// Resolve a previously committed node-create command before mutable
+    /// admission checks such as quotas are applied.
+    async fn find_node_create_replay(
+        &self,
+        source: &StableUri,
+        principal: &StableUri,
+        idempotency_key: &IdempotencyKey,
+        payload_digest: &str,
+    ) -> MvResult<Option<IdempotentNodeCommit>>;
+
+    async fn get_outbox_event(&self, event_id: Uuid) -> MvResult<Option<EventEnvelope>>;
+
+    /// Return all nonterminal events in stable creation order for inspection.
+    ///
+    /// This administrative view includes scheduled and currently leased
+    /// events. Dispatchers must use `claim_outbox_events`.
+    async fn list_pending_outbox_events(&self, limit: usize) -> MvResult<Vec<EventEnvelope>>;
+
+    async fn get_outbox_delivery_status(
+        &self,
+        event_id: Uuid,
+    ) -> MvResult<Option<OutboxDeliveryStatus>>;
+
+    /// Atomically lease dispatchable events to one executor and destination.
+    async fn claim_outbox_events(
+        &self,
+        executor: &StableUri,
+        destination: &StableUri,
+        claimed_at: DateTime<Utc>,
+        lease_expires_at: DateTime<Utc>,
+        limit: usize,
+    ) -> MvResult<Vec<OutboxDeliveryClaim>>;
+
+    /// Atomically complete one lease and append its immutable action receipt.
+    async fn complete_outbox_delivery(
+        &self,
+        claim: &OutboxDeliveryClaim,
+        completion: &OutboxDeliveryCompletion,
+    ) -> MvResult<ActionReceipt>;
+
+    async fn get_action_receipt(&self, receipt_id: Uuid) -> MvResult<Option<ActionReceipt>>;
+
+    async fn list_action_receipts(
+        &self,
+        event_id: Uuid,
+        limit: usize,
+    ) -> MvResult<Vec<ActionReceipt>>;
+
+    /// Durably admit one event for a consumer. An exact redelivery returns the
+    /// original local sequence with `replayed = true`; the same event ID with
+    /// different envelope content fails closed.
+    async fn admit_consumer_event(
+        &self,
+        consumer: &StableUri,
+        event: &EventEnvelope,
+        received_at: DateTime<Utc>,
+    ) -> MvResult<ConsumerInboxAdmission>;
+
+    async fn get_consumer_inbox_status(
+        &self,
+        consumer: &StableUri,
+        event_id: Uuid,
+    ) -> MvResult<Option<ConsumerInboxStatus>>;
+
+    /// Claim at most one eligible event from each consumer/source stream.
+    /// Local admission order is preserved within a stream.
+    async fn claim_consumer_events(
+        &self,
+        consumer: &StableUri,
+        processor: &StableUri,
+        claimed_at: DateTime<Utc>,
+        lease_expires_at: DateTime<Utc>,
+        limit: usize,
+    ) -> MvResult<Vec<ConsumerInboxClaim>>;
+
+    async fn complete_consumer_event(
+        &self,
+        claim: &ConsumerInboxClaim,
+        completion: &ConsumerApplicationCompletion,
+    ) -> MvResult<ConsumerApplicationReceipt>;
+
+    async fn get_consumer_checkpoint(
+        &self,
+        consumer: &StableUri,
+        source: &StableUri,
+    ) -> MvResult<Option<ConsumerCheckpoint>>;
+
+    async fn get_consumer_application_receipt(
+        &self,
+        receipt_id: Uuid,
+    ) -> MvResult<Option<ConsumerApplicationReceipt>>;
+
+    async fn list_consumer_application_receipts(
+        &self,
+        consumer: &StableUri,
+        event_id: Uuid,
+        limit: usize,
+    ) -> MvResult<Vec<ConsumerApplicationReceipt>>;
+
+    // -----------------------------------------------------------------------
+    // Governed agent execution graph
+    //
+    // Contract: `docs/architecture/WORK_ORDER_MODEL.md`.
+    // Isolation: `docs/architecture/EXECUTION_ISOLATION_MODEL.md`.
+    // -----------------------------------------------------------------------
+
+    /// Atomically admit one Work Order with its node contracts, derived
+    /// conflict edges, authored edges, and event.
+    ///
+    /// Admission is all-or-nothing: a Work Order is never partially admitted.
+    /// The caller must have resolved every node's declared write scope against
+    /// an effective Tool Grant first; this method records the outcome and does
+    /// not itself authorize scope.
+    async fn commit_work_order_with_event(
+        &self,
+        work_order: &WorkOrder,
+        nodes: &[WorkOrderNode],
+        edges: &[WorkOrderEdge],
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentWorkOrderCommit>;
+
+    async fn get_work_order(&self, work_order_id: Uuid) -> MvResult<Option<WorkOrder>>;
+
+    async fn list_work_orders(
+        &self,
+        status: Option<WorkOrderStatus>,
+        limit: usize,
+    ) -> MvResult<Vec<WorkOrder>>;
+
+    async fn list_work_order_nodes(&self, work_order_id: Uuid) -> MvResult<Vec<WorkOrderNode>>;
+
+    async fn list_work_order_edges(&self, work_order_id: Uuid) -> MvResult<Vec<WorkOrderEdge>>;
+
+    /// Apply one allowed Work Order lifecycle transition.
+    async fn transition_work_order_with_event(
+        &self,
+        expected_revision: u64,
+        replacement: &WorkOrder,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentWorkOrderCommit>;
+
+    /// Start one bounded execution attempt, decrementing the Work Order budget
+    /// in the same immediate transaction as the run insertion and its event.
+    ///
+    /// A `CHECK` constraint prevents a negative balance; only this shared
+    /// transaction prevents two concurrent runs from both passing a read-time
+    /// check and both committing.
+    async fn commit_agent_run_with_event(
+        &self,
+        run: &AgentRun,
+        spend: &WorkOrderSpend,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentAgentRunCommit>;
+
+    async fn get_agent_run(&self, run_id: Uuid) -> MvResult<Option<AgentRun>>;
+
+    async fn list_agent_runs(&self, work_order_id: Uuid, limit: usize) -> MvResult<Vec<AgentRun>>;
+
+    /// Apply one allowed run lifecycle transition.
+    ///
+    /// Entering `awaiting_approval` releases every write lease the run holds,
+    /// because approval is unbounded and a parked run must not block others.
+    async fn transition_agent_run_with_event(
+        &self,
+        run: &AgentRun,
+        release_reason: Option<LeaseReleaseReason>,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentAgentRunCommit>;
+
+    /// Atomically claim exclusive write leases for every declared target.
+    ///
+    /// All-or-nothing: a partial claim would let a run begin writing part of
+    /// its scope while another run holds the rest. Expired leases on the same
+    /// targets are released and replaced with an advancing attempt number.
+    async fn claim_write_leases(
+        &self,
+        run_id: Uuid,
+        target_digests: &[String],
+        claimed_at: DateTime<Utc>,
+        lease_expires_at: DateTime<Utc>,
+    ) -> MvResult<Vec<WriteLease>>;
+
+    async fn release_write_leases(
+        &self,
+        run_id: Uuid,
+        reason: LeaseReleaseReason,
+        released_at: DateTime<Utc>,
+    ) -> MvResult<usize>;
+
+    async fn list_write_leases(&self, run_id: Uuid) -> MvResult<Vec<WriteLease>>;
+
+    /// Target digests currently held by an unreleased, unexpired lease held by
+    /// some run other than `excluding_run`. Used to evaluate conflict edges.
+    async fn conflicting_write_targets(
+        &self,
+        excluding_run: Uuid,
+        target_digests: &[String],
+        at: DateTime<Utc>,
+    ) -> MvResult<Vec<String>>;
+
+    /// Record immutable gate evidence. A run can never satisfy its own G5.
+    async fn record_gate_result(&self, result: &GateResult) -> MvResult<GateResult>;
+
+    async fn list_gate_results(&self, run_id: Uuid) -> MvResult<Vec<GateResult>>;
+
+    /// Record an immutable artifact and its provenance references.
+    async fn record_run_artifact(
+        &self,
+        artifact: &RunArtifact,
+        payload: &[u8],
+    ) -> MvResult<RunArtifact>;
+
+    async fn get_run_artifact(&self, artifact_id: Uuid) -> MvResult<Option<RunArtifact>>;
+
+    async fn list_run_artifacts(&self, work_order_id: Uuid) -> MvResult<Vec<RunArtifact>>;
+
+    /// Read back artifact content, verifying it against the recorded digest.
+    ///
+    /// Without this, [`Self::record_run_artifact`] would be write-only: gate G2
+    /// could compare a recorded digest against a recorded digest but never
+    /// against retrievable content, and a portable export could not round-trip
+    /// the bytes it claims to carry.
+    ///
+    /// Implementations MUST re-verify the digest on read rather than trusting
+    /// the stored column, so silent corruption surfaces as an error instead of
+    /// as a passing gate.
+    async fn read_run_artifact_payload(&self, artifact_id: Uuid) -> MvResult<Option<Vec<u8>>>;
+
+    /// Restore a complete exported Work Order graph in one transaction.
+    ///
+    /// `artifact_payloads` holds the decoded bytes for `export.artifacts`, in
+    /// the same order; the caller verifies each against its recorded digest
+    /// before calling.
+    ///
+    /// All-or-nothing by construction: a partially restored graph would leave
+    /// gate evidence referring to runs that do not exist, which is worse than
+    /// no restore at all.
+    async fn restore_work_order_graph(
+        &self,
+        export: &WorkOrderExport,
+        artifact_payloads: &[Vec<u8>],
+    ) -> MvResult<()>;
+}
+
+fn _assert_interoperability_store_object_safe(_: &dyn InteroperabilityStore) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
