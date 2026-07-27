@@ -249,8 +249,12 @@ before projection recovery can be considered complete.
   authentication signatures.
 - The event contains stable identities and policy metadata but excludes node
   content.
-- Existing REST authorization and quota checks remain in place; the new grant
-  resolver is not yet wired to public command admission.
+- Existing REST authorization and quota checks remain in place. The grant
+  resolver is now wired to public command admission on `POST /api/v1/nodes`,
+  behind `MINDVAULT_COMMAND_ADMISSION_MODE` (`off` by default). Admission is
+  additive — it never replaces the role, namespace, or quota checks — and runs
+  after the idempotent-replay lookup and before the quota check. See
+  `AUTHORITY_GRANT_MODEL.md` § Command admission.
 - Unknown envelope versions, invalid schema-version tokens, malformed URIs,
   invalid digests, empty provenance, non-object data, and unregistered or
   mismatched event schemas fail closed.
