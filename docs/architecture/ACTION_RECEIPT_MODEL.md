@@ -63,3 +63,28 @@ signature, or itself prove consumer application. Public action-envelope
 admission must resolve an effective Tool Grant and policy decision before any
 live publisher is enabled. Consumer application is represented separately by
 the durable inbox, application receipt, and checkpoint contract.
+
+### Command admission does not write an action receipt
+
+`interoperability_action_receipts` is evidence of **publication attempts only**,
+and it is closed to anything else by construction: the
+`enforce_action_receipt_claim_binding` trigger requires a matching active outbox
+claim, and `ActionReceipt::from_outbox_delivery` is the sole constructor. The
+only legal write path is `claim_outbox_events` → `complete_outbox_delivery`.
+
+A command-admission decision therefore **must not** be recorded here, and must
+not be forced in by self-claiming the event with executor and destination both
+set to the local node. Doing so would burn attempt #1 of the real delivery
+budget, set `published_at` and make the event terminal so a future publisher
+could never deliver it, and assert a destination acknowledgement that never
+happened.
+
+An admitted command records its decision in the durable event envelope instead —
+committed in the same transaction as the mutation, so laws 4 and 5 hold without
+a new table — plus the audit trail and metrics. A denied command produces no
+mutation and therefore, correctly, no event; law 4 covers *committed* mutations,
+and the denial is recorded in the audit trail.
+
+Making denials durable requires a separate append-only table with its own
+immutability triggers. That is deferred because it needs a migration, the one
+change class that is not trivially reversible on a running vault.
