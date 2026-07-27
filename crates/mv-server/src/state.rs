@@ -294,11 +294,21 @@ impl AppState {
             http_client,
             sealed_blocked_requests: AtomicU64::new(0),
             workspace_root_policy: WorkspaceRootPolicy::from_env(),
+            command_admission: CommandAdmissionPolicy::from_env(),
         }
     }
 
     pub fn with_workspace_allowed_roots(mut self, roots: Vec<PathBuf>) -> Self {
         self.workspace_root_policy = WorkspaceRootPolicy::new(roots);
+        self
+    }
+
+    /// Set the admission mode without touching process-global environment.
+    ///
+    /// Server tests share one process, so a test that set the environment
+    /// variable would leak enforcement into unrelated tests as mysterious 403s.
+    pub fn with_command_admission(mut self, mode: CommandAdmissionMode) -> Self {
+        self.command_admission = CommandAdmissionPolicy::new(mode);
         self
     }
 
