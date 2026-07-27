@@ -12075,6 +12075,12 @@ mod tests {
         config.embedding.provider = provider.to_string();
         config.embedding.model = model.to_string();
         config.sealed_mode = sealed_mode;
+        // Keep tests hermetic. `LlmConfig::auto_detect` defaults to true and probes
+        // http://localhost:11434/v1, so on a developer machine running Ollama the
+        // engine acquires a real LLM provider and AI handlers take the LLM branch
+        // instead of the deterministic heuristic one. CI has no Ollama, so leaving
+        // this on makes local and CI disagree.
+        config.llm.auto_detect = false;
 
         let engine = MindVaultEngine::init(config)
             .await
