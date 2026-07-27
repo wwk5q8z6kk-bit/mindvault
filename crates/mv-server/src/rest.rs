@@ -12507,7 +12507,13 @@ mod tests {
         assert_eq!(response.mode, "native");
         assert!(response.grounded);
         assert!(!response.sources.is_empty());
-        assert!(response.answer.contains("[1]"));
+        assert!(
+            response.answer.contains("[1]"),
+            "expected a citation marker; provider={} sources={} answer={:?}",
+            response.provider,
+            response.sources.len(),
+            response.answer
+        );
         assert!(response
             .sources
             .iter()
