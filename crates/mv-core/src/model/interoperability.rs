@@ -2963,4 +2963,150 @@ mod tests {
             .unwrap_err()
             .contains("expired lease"));
     }
+
+    fn admission_request(
+        kind: AuthorityGrantKind,
+        operation: ContextCapability,
+    ) -> CommandAdmissionRequest {
+        let node_id = Uuid::now_v7();
+        let resource_id = Uuid::now_v7();
+        let principal_id = Uuid::now_v7();
+        CommandAdmissionRequest {
+            request_id: Uuid::now_v7(),
+            correlation_id: Uuid::now_v7(),
+            causation_id: None,
+            principal: StableUri::principal(node_id, principal_id),
+            actor: StableUri::principal(node_id, principal_id),
+            governing_node: StableUri::node(node_id),
+            resource: StableUri::node(node_id),
+            subject: StableUri::knowledge_node(node_id, resource_id),
+            operation,
+            required_grant_kind: kind,
+            idempotency_key: IdempotencyKey::parse("admission-test").expect("idempotency key"),
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Durable,
+            requested_at: Utc::now(),
+        }
+    }
+
+    /// Law 8: context access and action authority are separate axes.
+    #[test]
+    fn a_context_grant_cannot_be_requested_for_an_effectful_capability() {
+        let request = admission_request(AuthorityGrantKind::Context, ContextCapability::Command);
+        let error = request
+            .validate()
+            .expect_err("a mutation is not observational");
+        assert!(error.contains("effectful"), "unexpected error: {error}");
+
+        let request = admission_request(AuthorityGrantKind::Tool, ContextCapability::Read);
+        let error = request.validate().expect_err("a read is not effectful");
+        assert!(error.contains("observational"), "unexpected error: {error}");
+
+        admission_request(AuthorityGrantKind::Tool, ContextCapability::Command)
+            .validate()
+            .expect("a tool grant may carry a command capability");
+        admission_request(AuthorityGrantKind::Context, ContextCapability::Read)
+            .validate()
+            .expect("a context grant may carry a read capability");
+    }
+
+    /// A recorded decision must not leak the terms of the grant that allowed it.
+    #[test]
+    fn admission_metadata_records_the_decision_without_grant_terms() {
+        let node_id = Uuid::now_v7();
+        let grant_id = Uuid::now_v7();
+        let decision = AdmissionDecision::Admitted {
+            grant_id,
+            grant_uri: StableUri::authority_grant(node_id, grant_id),
+            grant_kind: AuthorityGrantKind::Tool,
+            capability: ContextCapability::Command,
+            delegation_depth_remaining: 0,
+            decided_at: Utc::now(),
+        };
+
+        let metadata = decision.policy_metadata().to_string();
+        assert!(decision.is_admitted());
+        assert!(metadata.contains("admitted"));
+        assert!(metadata.contains("grant_uri"));
+        for leaked in ["purpose", "targets", "grantee", "grantor", "capabilities"] {
+            assert!(
+                !metadata.contains(leaked),
+                "policy metadata must not carry grant terms, found {leaked}: {metadata}"
+            );
+        }
+
+        let denied = AdmissionDecision::Denied {
+            reason: AdmissionDenialReason::NoEffectiveGrant,
+            decided_at: Utc::now(),
+        };
+        assert!(!denied.is_admitted());
+        assert!(denied
+            .policy_metadata()
+            .to_string()
+            .contains("no_effective_grant"));
+    }
+
+    /// A default-constructed Tool Grant denies a durable node create.
+    ///
+    /// `new_tool` defaults `retention_ceiling` to `Operational` while the
+    /// node-create envelope declares `Durable`, so the issuer must raise the
+    /// ceiling explicitly. Pinned because it is the least obvious way for a
+    /// correctly-targeted grant to refuse.
+    #[test]
+    fn default_tool_grant_ceilings_deny_durable_retention() {
+        let node_id = Uuid::now_v7();
+        let node_uri = StableUri::node(node_id);
+        let grantee = StableUri::principal(node_id, Uuid::now_v7());
+        let mut grant = AuthorityGrant::new_tool(
+            node_uri.clone(),
+            node_uri.clone(),
+            grantee,
+            vec![node_uri.clone()],
+            vec![ContextCapability::Command],
+            "admission test",
+            Utc::now() + chrono::Duration::hours(1),
+        )
+        .expect("tool grant should construct");
+
+        let at = Utc::now();
+        assert!(
+            !grant.allows(
+                AuthorityGrantKind::Tool,
+                &node_uri,
+                ContextCapability::Command,
+                Sensitivity::Internal,
+                RetentionClass::Durable,
+                at,
+            ),
+            "the default Operational retention ceiling must refuse a Durable command"
+        );
+
+        grant.retention_ceiling = RetentionClass::Durable;
+        assert!(
+            grant.allows(
+                AuthorityGrantKind::Tool,
+                &node_uri,
+                ContextCapability::Command,
+                Sensitivity::Internal,
+                RetentionClass::Durable,
+                at,
+            ),
+            "raising the ceiling should admit the same command"
+        );
+    }
+
+    /// The admission digest is stable and distinguishes different questions.
+    #[test]
+    fn admission_digest_is_stable_and_question_specific() {
+        let request = admission_request(AuthorityGrantKind::Tool, ContextCapability::Command);
+        assert_eq!(request.admission_digest(), request.admission_digest());
+
+        let mut other = request.clone();
+        other.operation = ContextCapability::Execute;
+        assert_ne!(
+            request.admission_digest(),
+            other.admission_digest(),
+            "a different capability is a different admission question"
+        );
+    }
 }
