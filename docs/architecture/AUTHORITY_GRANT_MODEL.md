@@ -46,6 +46,29 @@ provider-specific identifiers are not grant targets. New grants default to
 internal sensitivity, operational retention, no redistribution, no model
 training, no delegation, and active status.
 
+### Creates target the governing node
+
+Exact matching has a direct consequence for creation. A created resource's
+identifier is minted while the command is being admitted, so no pre-existing
+grant can name it. The only satisfiable target for a create is therefore the
+governing Context Node URI, `mindvault://{node}/node`.
+
+This is a stated property, not an accident of implementation: **a node-scoped
+Tool Grant authorizes creating any resource under that node.** It is coarse by
+construction. Per-resource scoping for creates remains with the existing
+namespace checks, which are unchanged and still run. Expressing a finer create
+scope would require namespace-typed targets or a create-under-collection target
+form — a change to this model, not a change to the caller.
+
+Two corollaries worth stating because both are easy to trip over:
+
+- A grant issued with the defaults **cannot** admit a node create. Defaults set
+  operational retention, while a node create declares durable retention, and
+  rule 4 below refuses it. The issuer must raise `retention_ceiling` explicitly.
+- The sensitivity and retention a caller declares must match the envelope the
+  command will emit. If they drift apart, a grant could admit a command whose
+  declared ceilings it does not actually cover.
+
 ## Delegation
 
 A delegated grant is valid only when it is a strict subset of its parent:
