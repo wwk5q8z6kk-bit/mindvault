@@ -449,7 +449,7 @@ Operational validation is tracked in `IMPLEMENTATION_BACKLOG.md`.
 | Relay Engine        | `relay.rs`             | Complete                   | /api/v1/relay/\*               |
 | MultiModal Pipeline | `multimodal/`          | Complete (audio/image/pdf) | /api/v1/multimodal/status      |
 | Sync Engine         | `sync/`                | Complete                   | /api/v1/sync/\*                |
-| Federation Engine   | `federation.rs`        | Complete (REST transport)  | /api/v1/federation/\*          |
+| Federation Engine   | `federation.rs`        | Gated (see FED-000)        | /api/v1/federation/\*          |
 | Metrics Collector   | `metrics_collector.rs` | Complete                   | /api/v1/metrics/\*             |
 | Intent Executor     | `intent_executor.rs`   | Complete                   | On-demand via apply_intent()   |
 

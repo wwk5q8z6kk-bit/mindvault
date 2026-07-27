@@ -94,6 +94,7 @@
 				{ label: 'Review', href: '/review' },
 				{ label: 'Sync', href: '/sync' },
 				{ label: 'Plugins', href: '/plugins' },
+				{ label: 'Work Orders', href: '/work-orders' },
 				{ label: 'Autonomy', href: '/autonomy' },
 				{ label: 'Settings', href: '/settings' }
 			]
@@ -251,6 +252,11 @@
 			href: '/trash',
 			title: 'Trash',
 			subtitle: 'Recover deleted tasks and notes or remove them permanently.'
+		},
+		{
+			href: '/work-orders',
+			title: 'Work Orders',
+			subtitle: 'Governed agent runs, gate evidence, and verified artifacts.'
 		},
 		{
 			href: '/autonomy',

@@ -10,7 +10,7 @@
 ## What this file is
 
 Every explicitly deferred, gated, or blocked work item stated by the ratified
-constitution, ADRs 008-011, and the thirteen supporting architecture contracts,
+constitution, ADRs 008-012, and the supporting architecture contracts,
 in one place, each traceable to the sentence that mandates it.
 
 ## Definition of done

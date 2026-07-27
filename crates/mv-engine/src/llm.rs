@@ -748,3 +748,74 @@ pub fn extract_context_snippets(results: &[mv_core::SearchResult], limit: usize)
         })
         .collect()
 }
+
+#[cfg(test)]
+mod cloud_fallback_tests {
+    use super::*;
+    use crate::config::LocalLlmConfig;
+
+    /// A disabled LLM plus a discovered API key must not yield a provider.
+    ///
+    /// API keys resolve through the credential store, whose backend chain ends in
+    /// environment variables, so without the opt-in gate an ambient
+    /// `OPENAI_API_KEY` would silently route vault content to a remote service on
+    /// a vault configured for local-only operation.
+    #[tokio::test]
+    async fn a_discovered_api_key_does_not_enable_a_cloud_provider_by_default() {
+        let config = LlmConfig {
+            auto_detect: false,
+            ..Default::default()
+        };
+        assert!(!config.allow_cloud_fallback, "cloud fallback is opt-in");
+
+        let provider = init_llm_provider_with_local(
+            &config,
+            &LocalLlmConfig::default(),
+            Some("sk-test-key-not-used".to_string()),
+        )
+        .await;
+
+        assert!(
+            provider.is_none(),
+            "an ambient API key must not create a remote provider while \
+             llm.allow_cloud_fallback is false"
+        );
+    }
+
+    /// Opting in restores the documented fallback behaviour.
+    #[tokio::test]
+    async fn opting_into_cloud_fallback_enables_the_remote_provider() {
+        let config = LlmConfig {
+            auto_detect: false,
+            allow_cloud_fallback: true,
+            ..Default::default()
+        };
+
+        let provider = init_llm_provider_with_local(
+            &config,
+            &LocalLlmConfig::default(),
+            Some("sk-test-key-not-used".to_string()),
+        )
+        .await;
+
+        assert!(
+            provider.is_some(),
+            "an explicit opt-in plus a key should produce a provider"
+        );
+    }
+
+    /// No key means no provider regardless of the gate.
+    #[tokio::test]
+    async fn opting_in_without_a_key_still_yields_no_provider() {
+        let config = LlmConfig {
+            auto_detect: false,
+            allow_cloud_fallback: true,
+            ..Default::default()
+        };
+
+        let provider =
+            init_llm_provider_with_local(&config, &LocalLlmConfig::default(), None).await;
+
+        assert!(provider.is_none(), "no key means no remote provider");
+    }
+}

@@ -360,6 +360,57 @@ async fn agent_run_transitions_reach_the_live_observation_stream() {
     }
 }
 
+/// Item 4, continued — stream delivery fails closed for scoped sessions.
+///
+/// The governed execution graph is not namespace-partitioned: a Work Order is
+/// bounded by its governing node and its AuthorityGrant. So a namespace-scoped
+/// socket receives no execution-graph events at all, and must poll the query
+/// API where its authorization is checked per request.
+///
+/// That exclusion has to be deliberate. A scoped token asserts "limit me to
+/// this namespace" and may belong to a delegate rather than the owner (System
+/// Principle 8); pushing vault-wide governance signal to it would widen access
+/// beyond what was asked for. Pinned here so a future refactor cannot quietly
+/// start delivering.
+#[test]
+fn execution_graph_events_are_withheld_from_namespace_scoped_sessions() {
+    use mv_server::state::AgentNotification;
+
+    let transition = AgentNotification::AgentRunTransitioned {
+        run_id: "11111111-1111-1111-1111-111111111111".into(),
+        work_order_id: "22222222-2222-2222-2222-222222222222".into(),
+        status: "awaiting_approval".into(),
+        failure_class: None,
+        namespace: None,
+    };
+    let gate = AgentNotification::AgentRunGateRecorded {
+        run_id: "11111111-1111-1111-1111-111111111111".into(),
+        work_order_id: "22222222-2222-2222-2222-222222222222".into(),
+        gate: "g2".into(),
+        outcome: "pass".into(),
+        namespace: None,
+    };
+
+    for notification in [&transition, &gate] {
+        // An unscoped session — the owner's own — receives them.
+        assert!(notification.deliverable_to(None));
+        // Any scoped session does not, whatever the namespace.
+        assert!(!notification.deliverable_to(Some("research")));
+        assert!(!notification.deliverable_to(Some("")));
+    }
+
+    // The rule is about carrying a matching namespace, not about being an
+    // execution-graph event: a namespaced notification still reaches its own
+    // scope, so this is a filter and not a blanket block.
+    let namespaced = AgentNotification::NodeEnriched {
+        node_id: "33333333-3333-3333-3333-333333333333".into(),
+        namespace: Some("research".into()),
+    };
+    assert!(namespaced.deliverable_to(Some("research")));
+    assert!(!namespaced.deliverable_to(Some("other")));
+    assert!(namespaced.deliverable_to(None));
+}
+
 /// Item 5 — permission and grant definitions.
 ///
 /// Declared write scope is the AuthorityGrant target set. A capability that

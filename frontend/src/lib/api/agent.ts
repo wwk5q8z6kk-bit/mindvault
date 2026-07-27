@@ -32,9 +32,120 @@ export const chronicles = writable<ChronicleEntry[]>([]);
 export const intents = writable<CapturedIntent[]>([]);
 export const insights = writable<ProactiveInsight[]>([]);
 
+/** Identifiers and status only — never artifact bytes or declared write scope. */
+export type AgentRunTransitionObservation = {
+    kind: 'transition';
+    run_id: string;
+    work_order_id: string;
+    status: string;
+    failure_class: string | null;
+};
+
+export type AgentRunGateObservation = {
+    kind: 'gate';
+    run_id: string;
+    work_order_id: string;
+    gate: string;
+    outcome: string;
+};
+
+export type AgentRunObservation = AgentRunTransitionObservation | AgentRunGateObservation;
+
+/**
+ * Latest governed-run observation from `/ws/agent`.
+ *
+ * `seq` is monotonic so identical successive statuses still notify subscribers.
+ * Namespace-scoped sockets never receive these events (server filter); those
+ * clients must poll the query API — see WORK_ORDER_MODEL.md.
+ */
+export const agentRunObservations = writable<{
+    seq: number;
+    event: AgentRunObservation;
+} | null>(null);
+
+let agentRunObservationSeq = 0;
+
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let stopped = false;
+
+/** Pure dispatcher for unit tests and the live WebSocket handler. */
+export function dispatchAgentNotification(data: unknown): void {
+    if (!data || typeof data !== 'object') return;
+    const message = data as Record<string, unknown>;
+    const type = message.type;
+
+    if (type === 'related_context') {
+        agentStore.update((state) => ({
+            ...state,
+            relatedNodes: (message.nodes as RelatedNode[]) ?? []
+        }));
+        return;
+    }
+    if (type === 'node_enriched' && typeof message.node_id === 'string') {
+        enrichedNodes.update((s) => {
+            const next = new Set(s);
+            next.add(message.node_id as string);
+            return next;
+        });
+        return;
+    }
+    if (type === 'chronicle' && message.entry) {
+        chronicles.update((list) => [message.entry as ChronicleEntry, ...list].slice(0, 100));
+        return;
+    }
+    if (type === 'intent' && message.intent) {
+        const intent = message.intent as CapturedIntent;
+        intents.update((list) => {
+            const filtered = list.filter((i) => i.id !== intent.id);
+            return [intent, ...filtered];
+        });
+        return;
+    }
+    if (type === 'insight_discovered' && message.insight) {
+        insights.update((list) => [message.insight as ProactiveInsight, ...list]);
+        return;
+    }
+    if (
+        type === 'agent_run_transitioned' &&
+        typeof message.run_id === 'string' &&
+        typeof message.work_order_id === 'string' &&
+        typeof message.status === 'string'
+    ) {
+        agentRunObservationSeq += 1;
+        agentRunObservations.set({
+            seq: agentRunObservationSeq,
+            event: {
+                kind: 'transition',
+                run_id: message.run_id,
+                work_order_id: message.work_order_id,
+                status: message.status,
+                failure_class:
+                    typeof message.failure_class === 'string' ? message.failure_class : null
+            }
+        });
+        return;
+    }
+    if (
+        type === 'agent_run_gate_recorded' &&
+        typeof message.run_id === 'string' &&
+        typeof message.work_order_id === 'string' &&
+        typeof message.gate === 'string' &&
+        typeof message.outcome === 'string'
+    ) {
+        agentRunObservationSeq += 1;
+        agentRunObservations.set({
+            seq: agentRunObservationSeq,
+            event: {
+                kind: 'gate',
+                run_id: message.run_id,
+                work_order_id: message.work_order_id,
+                gate: message.gate,
+                outcome: message.outcome
+            }
+        });
+    }
+}
 
 export function connectAgentStream() {
     if (!browser || socket) return;
@@ -47,28 +158,7 @@ export function connectAgentStream() {
 
     socket.onmessage = (event: MessageEvent) => {
         try {
-            const data = JSON.parse(event.data);
-            if (data.type === 'related_context') {
-                agentStore.update(state => ({
-                    ...state,
-                    relatedNodes: data.nodes
-                }));
-            } else if (data.type === 'node_enriched') {
-                enrichedNodes.update(s => {
-                    const newSet = new Set(s);
-                    newSet.add(data.node_id);
-                    return newSet;
-                });
-            } else if (data.type === 'chronicle') {
-                chronicles.update(list => [data.entry, ...list].slice(0, 100));
-            } else if (data.type === 'intent') {
-                intents.update(list => {
-                    const filtered = list.filter(i => i.id !== data.intent.id);
-                    return [data.intent, ...filtered];
-                });
-            } else if (data.type === 'insight_discovered') {
-                insights.update(list => [data.insight, ...list]);
-            }
+            dispatchAgentNotification(JSON.parse(event.data));
         } catch (e) {
             console.warn('[ws/agent] Failed to parse message:', e);
         }

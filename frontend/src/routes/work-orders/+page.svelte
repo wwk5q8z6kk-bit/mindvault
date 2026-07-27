@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { agentRunObservations } from '$lib/api/agent';
 	import { pushToast } from '$lib/stores/toast';
 	import {
 		approveRun,
@@ -25,6 +26,8 @@
 	let artifacts: ArtifactView[] = [];
 	let loading = true;
 	let busyRunId = '';
+	let liveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+	let lastNotifiedApprovalRunId = '';
 
 	$: awaitingApproval = runs.filter((run) => run.status === AWAITING_APPROVAL);
 	$: artifactsByRun = artifacts.reduce<Record<string, ArtifactView[]>>((acc, artifact) => {
@@ -32,7 +35,25 @@
 		return acc;
 	}, {});
 
-	onMount(loadWorkOrders);
+	onMount(() => {
+		void loadWorkOrders();
+		const unsub = agentRunObservations.subscribe((observation) => {
+			if (!observation) return;
+			scheduleLiveRefresh(observation.event.work_order_id);
+			if (
+				observation.event.kind === 'transition' &&
+				observation.event.status === AWAITING_APPROVAL &&
+				observation.event.run_id !== lastNotifiedApprovalRunId
+			) {
+				lastNotifiedApprovalRunId = observation.event.run_id;
+				pushToast('A run is awaiting your approval', 'info');
+			}
+		});
+		return () => {
+			unsub();
+			if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
+		};
+	});
 
 	async function loadWorkOrders() {
 		loading = true;
@@ -69,6 +90,29 @@
 		if (!selected) return;
 		selected = await getWorkOrder(selected.work_order_id);
 		await selectOrder(selected);
+	}
+
+	/** Coalesce bursty transition+gate pairs into one detail reload. */
+	function scheduleLiveRefresh(workOrderId: string) {
+		if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
+		liveRefreshTimer = setTimeout(() => {
+			liveRefreshTimer = null;
+			void (async () => {
+				try {
+					workOrders = await listWorkOrders();
+					if (selected?.work_order_id === workOrderId) {
+						await refreshSelected();
+					} else if (selected) {
+						const updated = workOrders.find(
+							(order) => order.work_order_id === selected?.work_order_id
+						);
+						if (updated) selected = updated;
+					}
+				} catch {
+					// Live refresh is best-effort; Refresh remains the explicit path.
+				}
+			})();
+		}, 150);
 	}
 
 	async function handleApprove(run: AgentRunView) {
@@ -158,11 +202,13 @@
 			<h1 class="text-2xl font-bold text-[rgb(var(--mv-text))]">Work Orders</h1>
 			<p class="text-sm text-[rgb(var(--mv-muted))]">
 				Governed agent execution: declared scope, run attempts, gate evidence, and artifacts.
+				Live updates arrive on the agent stream when your session is not namespace-scoped.
 			</p>
 		</div>
 		<button
 			class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:bg-[rgb(var(--mv-panel-strong))]"
 			on:click={loadWorkOrders}
+			title="Always available — required if your auth token is namespace-scoped"
 		>
 			Refresh
 		</button>

@@ -245,6 +245,20 @@ output is a candidate Work Order subject to admission.
 
 `plans` and `plan_steps` are superseded per ADR 012.
 
+## Observation surface
+
+Run transitions and gate recordings are announced on `/ws/agent` as
+`agent_run_transitioned` and `agent_run_gate_recorded`. The stream carries
+identifiers and status only — never artifact content or declared write scope.
+Those are governed detail and belong behind the query API.
+
+Work Orders are not namespace-scoped. Notifications therefore emit with
+`namespace: None`. A namespace-scoped WebSocket client is filtered by
+`handle_agent_socket` and receives none of them; that client must use the query
+API (or the operator UI Refresh control). Unscoped clients receive the events.
+This is deliberate: broadening the filter would push cross-scope signal to a
+client that asked to be limited.
+
 ## Explicit non-claims
 
 This contract governs internal runs. It does not run an external dispatcher,
