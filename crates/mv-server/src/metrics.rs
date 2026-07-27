@@ -923,9 +923,11 @@ mod tests {
 
     #[test]
     fn health_report_unhealthy_on_critical_latency_and_migration_failure() {
-        let mut thresholds = AlertThresholds::default();
-        thresholds.min_samples_for_latency_alerts = 1;
-        thresholds.p95_latency_ms_critical = 100.0;
+        let thresholds = AlertThresholds {
+            min_samples_for_latency_alerts: 1,
+            p95_latency_ms_critical: 100.0,
+            ..Default::default()
+        };
 
         let counters = MetricsCounters::default();
         counters.incr_rest_request();
