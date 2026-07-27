@@ -36,12 +36,14 @@
 	import NotesCanvasView from '$lib/components/NotesCanvasView.svelte';
 	import NotesPdfView from '$lib/components/NotesPdfView.svelte';
 	import NotesMediaView from '$lib/components/NotesMediaView.svelte';
+	import LibraryWorkspaceBrowser from '$lib/components/LibraryWorkspaceBrowser.svelte';
 	import { fade } from 'svelte/transition';
 
-	const currentView = createViewMode('list', ['list', 'graph', 'canvas', 'pdf', 'media']);
+	const currentView = createViewMode('list', ['list', 'files', 'graph', 'canvas', 'pdf', 'media']);
 
 	const notesViews = [
 		{ key: 'list', label: 'List' },
+		{ key: 'files', label: 'Files' },
 		{ key: 'graph', label: 'Graph' },
 		{ key: 'canvas', label: 'Canvas' },
 		{ key: 'pdf', label: 'PDF' },
@@ -869,6 +871,10 @@
 		on:change={handleViewChange}
 	/>
 </div>
+
+{#if $currentView === 'files'}
+	<LibraryWorkspaceBrowser />
+{/if}
 
 {#if $currentView === 'list'}
 	<div class="mt-4 grid gap-4 lg:grid-cols-12 lg:gap-6">
