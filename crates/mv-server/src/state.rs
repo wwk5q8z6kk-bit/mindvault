@@ -27,6 +27,8 @@ pub struct AppState {
     pub sealed_blocked_requests: AtomicU64,
     /// Filesystem roots beneath which an administrator may mount workspaces.
     pub workspace_root_policy: WorkspaceRootPolicy,
+    /// Whether public commands must resolve an authorizing grant.
+    pub command_admission: CommandAdmissionPolicy,
 }
 
 /// Notification for task reminders.
