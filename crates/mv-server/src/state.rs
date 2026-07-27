@@ -550,6 +550,7 @@ mod tests {
         assert!(enforce.is_active() && enforce.enforces());
     }
 
+    #[test]
     fn workspace_root_policy_is_disabled_until_explicitly_allowlisted() {
         let directory = tempdir().unwrap();
         let error = WorkspaceRootPolicy::default()
