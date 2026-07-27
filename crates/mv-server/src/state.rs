@@ -218,7 +218,11 @@ impl CommandAdmissionPolicy {
     /// enforcing on a typo would refuse every write on a running vault.
     pub fn from_env() -> Self {
         Self {
-            mode: Self::parse_mode(std::env::var("MINDVAULT_COMMAND_ADMISSION_MODE").ok().as_deref()),
+            mode: Self::parse_mode(
+                std::env::var("MINDVAULT_COMMAND_ADMISSION_MODE")
+                    .ok()
+                    .as_deref(),
+            ),
         }
     }
 
@@ -498,7 +502,54 @@ mod tests {
         assert_eq!(notification.namespace(), Some("ops"));
     }
 
+    /// Admission is opt-in, and an unrecognized value must not enforce.
+    ///
+    /// A typo in the environment is a configuration fault, not evidence that
+    /// the caller lacks authority; failing to `Enforce` on one would refuse
+    /// every write on a running vault.
     #[test]
+    fn command_admission_defaults_to_off_and_rejects_unknown_values() {
+        assert_eq!(
+            CommandAdmissionPolicy::parse_mode(None),
+            CommandAdmissionMode::Off
+        );
+        assert_eq!(
+            CommandAdmissionPolicy::parse_mode(Some("")),
+            CommandAdmissionMode::Off
+        );
+        assert_eq!(
+            CommandAdmissionPolicy::parse_mode(Some("off")),
+            CommandAdmissionMode::Off
+        );
+        assert_eq!(
+            CommandAdmissionPolicy::parse_mode(Some("observe")),
+            CommandAdmissionMode::Observe
+        );
+        assert_eq!(
+            CommandAdmissionPolicy::parse_mode(Some("  ENFORCE  ")),
+            CommandAdmissionMode::Enforce
+        );
+        for unknown in ["yes", "true", "1", "enforced", "enforce-all"] {
+            assert_eq!(
+                CommandAdmissionPolicy::parse_mode(Some(unknown)),
+                CommandAdmissionMode::Off,
+                "{unknown} must not enable enforcement"
+            );
+        }
+    }
+
+    #[test]
+    fn command_admission_predicates_match_their_mode() {
+        let off = CommandAdmissionPolicy::new(CommandAdmissionMode::Off);
+        assert!(!off.is_active() && !off.enforces());
+
+        let observe = CommandAdmissionPolicy::new(CommandAdmissionMode::Observe);
+        assert!(observe.is_active() && !observe.enforces());
+
+        let enforce = CommandAdmissionPolicy::new(CommandAdmissionMode::Enforce);
+        assert!(enforce.is_active() && enforce.enforces());
+    }
+
     fn workspace_root_policy_is_disabled_until_explicitly_allowlisted() {
         let directory = tempdir().unwrap();
         let error = WorkspaceRootPolicy::default()
