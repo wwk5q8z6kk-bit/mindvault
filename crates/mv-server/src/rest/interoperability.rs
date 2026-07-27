@@ -20,7 +20,7 @@ use axum::{
 };
 use chrono::{Duration, Utc};
 use mv_core::{
-    AdmissionDecision, AuthorityGrant, AuthorityGrantKind, AuthorityGrantStatus,
+    ActionEnvelope, AdmissionDecision, AuthorityGrant, AuthorityGrantKind, AuthorityGrantStatus,
     CommandAdmissionRequest, ContextCapability, ContextNodeRecord, IdempotencyKey,
     InteroperabilityStore, MvError, RetentionClass, Sensitivity, StableUri,
 };
@@ -85,7 +85,7 @@ impl CommandIdentity {
 /// `sensitivity` and `retention` mirror the node-create envelope exactly. If
 /// they drifted, a grant could admit a command whose declared ceilings it does
 /// not actually cover.
-pub(crate) fn node_create_admission_request(
+pub(crate) fn node_command_admission_request(
     identity: &CommandIdentity,
     local_node_id: Uuid,
     subject: StableUri,
@@ -111,6 +111,26 @@ pub(crate) fn node_create_admission_request(
     }
 }
 
+
+/// Backward-compatible name for create admission (same shape as update/delete).
+pub(crate) fn node_create_admission_request(
+    identity: &CommandIdentity,
+    local_node_id: Uuid,
+    subject: StableUri,
+    idempotency_key: IdempotencyKey,
+    correlation_id: Uuid,
+    causation_id: Option<Uuid>,
+) -> CommandAdmissionRequest {
+    node_command_admission_request(
+        identity,
+        local_node_id,
+        subject,
+        idempotency_key,
+        correlation_id,
+        causation_id,
+    )
+}
+
 /// Resolve admission according to the configured mode.
 ///
 /// Returns `Ok(None)` when the mode is `Off`, so the caller emits an event that
@@ -119,7 +139,7 @@ pub(crate) fn node_create_admission_request(
 pub(crate) async fn admit_command(
     state: &AppState,
     request: &CommandAdmissionRequest,
-) -> Result<Option<AdmissionDecision>, (StatusCode, String)> {
+) -> Result<Option<ActionEnvelope>, (StatusCode, String)> {
     if !state.command_admission.is_active() {
         return Ok(None);
     }
@@ -159,7 +179,14 @@ pub(crate) async fn admit_command(
         }
     }
 
-    Ok(Some(decision))
+    let envelope = ActionEnvelope::from_admission(request, &decision).map_err(|message| {
+        tracing::error!(%message, "action envelope construction failed");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "action_envelope_invalid".to_string(),
+        )
+    })?;
+    Ok(Some(envelope))
 }
 
 #[cfg(test)]

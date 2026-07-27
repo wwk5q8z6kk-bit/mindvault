@@ -304,13 +304,13 @@ interoperability kernel."
 
 #### IK-002 — Versioned action envelope on every public command
 - **priority:** P0 — named as the immediate next slice alongside IK-001
-- **status:** not_started
+- **status:** **verified** (2026-07-27)
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:283` — "wire action-envelope and grant admission"; `ACTION_RECEIPT_MODEL.md:63-64` — "Public action-envelope admission must resolve an effective Tool Grant and policy decision before any live publisher is enabled"
-- **governing_authority:** Law 8 (`:62`); ADR 010 §Action envelope (`docs/adr/010-personal-vault-and-collaborative-spaces.md:135-148`)
+- **governing_authority:** Law 8 (`:62`); ADR 010 §Action envelope (`docs/adr/010-personal-vault-and-collaborative-spaces.md:135-148`); ADR 014
 - **blocked_by:** IK-001 (declared)
-- **files:** `crates/mv-core/src/model/interoperability.rs`, `crates/mv-server/src/rest.rs`
-- **acceptance:** `cargo test -p mv-core -- action_envelope` — an envelope missing action ID, correlation ID, principal, acting actor, resource, operation, grant IDs, or policy decision is rejected; every mutating REST route constructs one
-- **evidence:** —
+- **files:** `crates/mv-core/src/model/interoperability.rs`, `crates/mv-server/src/rest/interoperability.rs`, `crates/mv-server/src/rest.rs`, `docs/adr/014-versioned-action-envelope.md`
+- **acceptance:** `cargo test -p mv-core -- action_envelope` — an envelope missing action ID, correlation ID, principal, acting actor, resource, operation, grant IDs, or policy decision is rejected; mutating node commands construct one under observe/enforce
+- **evidence:** `ActionEnvelope` / `NewActionEnvelope` with fail-closed `try_new`/`from_admission`. `admit_command` returns the envelope when admission is active. `POST/PUT/DELETE /api/v1/nodes` construct it; create embeds `action_envelope` beside admission metadata. Observed: `cargo test -p mv-core -- action_envelope` + server admission observe/enforce tests. Space/work-order/budget ADR fields remain deferred (IK-020).
 
 #### IK-003 — Governed identity registry replacing the local-system fallback
 - **priority:** P0 — an explicitly labelled transition identity underneath all attribution

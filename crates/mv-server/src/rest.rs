@@ -9196,6 +9196,7 @@ async fn install_template_pack(
             let Json(updated) = update_node(
                 Extension(auth.clone()),
                 State(Arc::clone(&state)),
+                HeaderMap::new(),
                 Path(existing_template.id.to_string()),
                 Json(updated_payload),
             )
@@ -10834,8 +10835,9 @@ async fn store_node(
             });
             // Present only when the resolver ran, so `off` stays byte-identical.
             // Credential-free and content-free: identities and enum tokens only.
-            if let Some(decision) = &admission {
-                data["admission"] = decision.policy_metadata();
+            if let Some(envelope) = &admission {
+                data["admission"] = envelope.policy_decision.policy_metadata();
+                data["action_envelope"] = envelope.attribution_metadata();
             }
             data
         },
@@ -10889,6 +10891,7 @@ async fn get_node(
 async fn update_node(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(mut node): Json<KnowledgeNode>,
 ) -> Result<Json<KnowledgeNode>, (StatusCode, String)> {
@@ -10903,6 +10906,26 @@ async fn update_node(
         .ok_or((StatusCode::NOT_FOUND, "node not found".into()))?;
 
     authorize_namespace(&auth, &existing.namespace)?;
+
+    let local_node_id = state
+        .engine
+        .local_context_node_id()
+        .await
+        .map_err(map_mv_error)?;
+    let identity = interoperability::CommandIdentity::derive(&auth, local_node_id);
+    let subject = StableUri::knowledge_node(local_node_id, uuid);
+    let _action_envelope = interoperability::admit_command(
+        &state,
+        &interoperability::node_command_admission_request(
+            &identity,
+            local_node_id,
+            subject,
+            request_idempotency_key(&headers)?,
+            optional_uuid_header(&headers, CORRELATION_ID_HEADER)?.unwrap_or_else(Uuid::now_v7),
+            optional_uuid_header(&headers, CAUSATION_ID_HEADER)?,
+        ),
+    )
+    .await?;
 
     node.id = uuid;
     if !auth.is_admin() {
@@ -10972,6 +10995,7 @@ async fn update_node(
 async fn delete_node(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     authorize_write(&auth)?;
@@ -10981,6 +11005,26 @@ async fn delete_node(
     if let Some(node) = existing.as_ref() {
         authorize_namespace(&auth, &node.namespace)?;
     }
+
+    let local_node_id = state
+        .engine
+        .local_context_node_id()
+        .await
+        .map_err(map_mv_error)?;
+    let identity = interoperability::CommandIdentity::derive(&auth, local_node_id);
+    let subject = StableUri::knowledge_node(local_node_id, uuid);
+    let _action_envelope = interoperability::admit_command(
+        &state,
+        &interoperability::node_command_admission_request(
+            &identity,
+            local_node_id,
+            subject,
+            request_idempotency_key(&headers)?,
+            optional_uuid_header(&headers, CORRELATION_ID_HEADER)?.unwrap_or_else(Uuid::now_v7),
+            optional_uuid_header(&headers, CAUSATION_ID_HEADER)?,
+        ),
+    )
+    .await?;
 
     let deleted = state.engine.delete_node(uuid).await.map_err(map_mv_error)?;
 
@@ -13304,6 +13348,7 @@ mod tests {
         let Json(updated) = update_node(
             Extension(AuthContext::system_admin()),
             State(Arc::clone(&state)),
+            HeaderMap::new(),
             Path(template.id.to_string()),
             Json(edited_template),
         )
@@ -13381,6 +13426,7 @@ mod tests {
         let _updated = update_node(
             Extension(AuthContext::system_admin()),
             State(Arc::clone(&state)),
+            HeaderMap::new(),
             Path(template.id.to_string()),
             Json(edited_template),
         )
@@ -16392,6 +16438,7 @@ mod tests {
         let Json(updated) = update_node(
             Extension(AuthContext::system_admin()),
             State(Arc::clone(&state)),
+            HeaderMap::new(),
             Path(stored.id.to_string()),
             Json(edited),
         )
@@ -16670,6 +16717,14 @@ mod tests {
             .expect("observe mode records the decision");
         assert_eq!(admission["decision"], "denied");
         assert_eq!(admission["reason"], "no_effective_grant");
+        let action_envelope = envelope
+            .data
+            .get("action_envelope")
+            .expect("observe mode constructs an action envelope");
+        assert_eq!(action_envelope["envelope_version"], "mindvault.action-envelope/v1");
+        assert!(action_envelope.get("action_id").is_some());
+        assert!(action_envelope.get("correlation_id").is_some());
+        assert_eq!(action_envelope["policy_decision"]["decision"], "denied");
         // Credential-free and content-free.
         let rendered = admission.to_string();
         for leaked in ["purpose", "targets", "grantee", "grantor"] {

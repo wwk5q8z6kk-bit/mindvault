@@ -8,6 +8,7 @@ use super::KnowledgeNode;
 
 pub const EVENT_ENVELOPE_V1: &str = "mindvault.event-envelope/v1";
 pub const ACTION_RECEIPT_V1: &str = "mindvault.action-receipt/v1";
+pub const ACTION_ENVELOPE_V1: &str = "mindvault.action-envelope/v1";
 pub const CONSUMER_APPLICATION_RECEIPT_V1: &str = "mindvault.consumer-application-receipt/v1";
 pub const JSON_SCHEMA_DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 pub const EVENT_TYPE_SCHEMA_EXTENSION: &str = "x-mindvault-event-type";
@@ -2250,12 +2251,12 @@ pub fn canonical_json_sha256(value: &serde_json::Value) -> String {
 // requires action authority to be a separate axis, so reading never implies
 // authority to mutate, execute, transmit, or spend.
 //
-// Deliberately NOT named `ActionEnvelope`. ADR 010:136-152 defines that record
-// as carrying Space and work-order identity, approval references and budgets,
-// none of which exist yet, and states that "none is a substitute until it
-// carries the complete envelope and is durable by default". That name stays
-// reserved for the complete Trust Ledger record rather than being claimed here
-// by a partial one.
+// `ActionEnvelope` (IK-002) is the versioned command-attribution record required
+// before a public mutation proceeds under observe/enforce. ADR 010:136-152 also
+// lists Space, work-order, approval, budget, and outcome fields; those remain
+// deferred to Trust Ledger / Space slices (IK-020 and successors). This type
+// validates the acceptance-required attribution fields now, without inventing
+// the deferred foreign keys.
 // ---------------------------------------------------------------------------
 
 /// One authorization question, asked before a public command mutates anything.
@@ -2414,6 +2415,203 @@ impl AdmissionDecision {
                 "decided_at": decided_at.to_rfc3339(),
             }),
         }
+    }
+}
+
+/// Versioned attribution record for one public command (IK-002).
+///
+/// Built from a [`CommandAdmissionRequest`] and its [`AdmissionDecision`]. Fail
+/// closed: construction rejects missing action ID, correlation ID, principal,
+/// acting actor, resource, operation, grant IDs (when admitted), or policy
+/// decision. Space / work-order / budget / outcome fields from ADR 010 stay out
+/// until those registries exist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionEnvelope {
+    pub envelope_version: String,
+    pub action_id: Uuid,
+    pub correlation_id: Uuid,
+    pub causation_id: Option<Uuid>,
+    /// Accountable principal.
+    pub principal: StableUri,
+    /// Acting actor (may equal principal until the identity registry ships).
+    pub actor: StableUri,
+    /// Exact grant target consulted for admission.
+    pub resource: StableUri,
+    /// Resource the command affects or creates.
+    pub subject: StableUri,
+    pub operation: ContextCapability,
+    /// Grant IDs that authorized the command. Non-empty iff admitted.
+    pub grant_ids: Vec<Uuid>,
+    pub policy_decision: AdmissionDecision,
+    pub idempotency_key: IdempotencyKey,
+    pub requested_at: DateTime<Utc>,
+}
+
+/// Builder input that allows tests to omit required fields one at a time.
+#[derive(Debug, Clone)]
+pub struct NewActionEnvelope {
+    pub action_id: Option<Uuid>,
+    pub correlation_id: Option<Uuid>,
+    pub causation_id: Option<Uuid>,
+    pub principal: Option<StableUri>,
+    pub actor: Option<StableUri>,
+    pub resource: Option<StableUri>,
+    pub subject: Option<StableUri>,
+    pub operation: Option<ContextCapability>,
+    pub grant_ids: Option<Vec<Uuid>>,
+    pub policy_decision: Option<AdmissionDecision>,
+    pub idempotency_key: Option<IdempotencyKey>,
+    pub requested_at: Option<DateTime<Utc>>,
+}
+
+impl ActionEnvelope {
+    /// Construct from an admission question and its resolver answer.
+    pub fn from_admission(
+        request: &CommandAdmissionRequest,
+        decision: &AdmissionDecision,
+    ) -> Result<Self, String> {
+        let grant_ids = match decision {
+            AdmissionDecision::Admitted { grant_id, .. } => vec![*grant_id],
+            AdmissionDecision::Denied { .. } => Vec::new(),
+        };
+        Self::try_new(NewActionEnvelope {
+            action_id: Some(request.request_id),
+            correlation_id: Some(request.correlation_id),
+            causation_id: request.causation_id,
+            principal: Some(request.principal.clone()),
+            actor: Some(request.actor.clone()),
+            resource: Some(request.resource.clone()),
+            subject: Some(request.subject.clone()),
+            operation: Some(request.operation),
+            grant_ids: Some(grant_ids),
+            policy_decision: Some(decision.clone()),
+            idempotency_key: Some(request.idempotency_key.clone()),
+            requested_at: Some(request.requested_at),
+        })
+    }
+
+    /// Fail-closed constructor used by tests and callers that assemble fields
+    /// manually. Nil UUIDs and absent Options count as missing.
+    pub fn try_new(input: NewActionEnvelope) -> Result<Self, String> {
+        let action_id = match input.action_id {
+            Some(id) if !id.is_nil() => id,
+            _ => return Err("action_id is required".into()),
+        };
+        let correlation_id = match input.correlation_id {
+            Some(id) if !id.is_nil() => id,
+            _ => return Err("correlation_id is required".into()),
+        };
+        let principal = input
+            .principal
+            .ok_or_else(|| "principal is required".to_string())?;
+        let actor = input
+            .actor
+            .ok_or_else(|| "acting actor is required".to_string())?;
+        let resource = input
+            .resource
+            .ok_or_else(|| "resource is required".to_string())?;
+        let subject = input
+            .subject
+            .ok_or_else(|| "subject is required".to_string())?;
+        let operation = input
+            .operation
+            .ok_or_else(|| "operation is required".to_string())?;
+        let grant_ids = input
+            .grant_ids
+            .ok_or_else(|| "grant_ids are required".to_string())?;
+        let policy_decision = input
+            .policy_decision
+            .ok_or_else(|| "policy_decision is required".to_string())?;
+        let idempotency_key = input
+            .idempotency_key
+            .ok_or_else(|| "idempotency_key is required".to_string())?;
+        let requested_at = input
+            .requested_at
+            .ok_or_else(|| "requested_at is required".to_string())?;
+
+        match &policy_decision {
+            AdmissionDecision::Admitted { grant_id, .. } => {
+                if grant_ids.is_empty() {
+                    return Err("grant_ids are required for an admitted action".into());
+                }
+                if !grant_ids.contains(grant_id) {
+                    return Err("grant_ids must include the admitted grant".into());
+                }
+            }
+            AdmissionDecision::Denied { .. } => {
+                if !grant_ids.is_empty() {
+                    return Err("denied actions must not carry grant_ids".into());
+                }
+            }
+        }
+
+        let envelope = Self {
+            envelope_version: ACTION_ENVELOPE_V1.into(),
+            action_id,
+            correlation_id,
+            causation_id: input.causation_id,
+            principal,
+            actor,
+            resource,
+            subject,
+            operation,
+            grant_ids,
+            policy_decision,
+            idempotency_key,
+            requested_at,
+        };
+        envelope.validate()?;
+        Ok(envelope)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.envelope_version != ACTION_ENVELOPE_V1 {
+            return Err(format!(
+                "unsupported action envelope version: {}",
+                self.envelope_version
+            ));
+        }
+        if self.action_id.is_nil() {
+            return Err("action_id is required".into());
+        }
+        if self.correlation_id.is_nil() {
+            return Err("correlation_id is required".into());
+        }
+        match &self.policy_decision {
+            AdmissionDecision::Admitted { grant_id, .. } => {
+                if self.grant_ids.is_empty() {
+                    return Err("grant_ids are required for an admitted action".into());
+                }
+                if !self.grant_ids.contains(grant_id) {
+                    return Err("grant_ids must include the admitted grant".into());
+                }
+            }
+            AdmissionDecision::Denied { .. } => {
+                if !self.grant_ids.is_empty() {
+                    return Err("denied actions must not carry grant_ids".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Compact metadata safe to embed beside an event's admission block.
+    pub fn attribution_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "envelope_version": self.envelope_version,
+            "action_id": self.action_id,
+            "correlation_id": self.correlation_id,
+            "causation_id": self.causation_id,
+            "principal": self.principal.as_str(),
+            "actor": self.actor.as_str(),
+            "resource": self.resource.as_str(),
+            "subject": self.subject.as_str(),
+            "operation": self.operation.as_str(),
+            "grant_ids": self.grant_ids,
+            "policy_decision": self.policy_decision.policy_metadata(),
+            "idempotency_key": self.idempotency_key.as_str(),
+            "requested_at": self.requested_at.to_rfc3339(),
+        })
     }
 }
 
@@ -3048,6 +3246,145 @@ mod tests {
             .policy_metadata()
             .to_string()
             .contains("no_effective_grant"));
+    }
+
+    /// IK-002: ActionEnvelope rejects each required attribution field when missing.
+    #[test]
+    fn action_envelope_rejects_missing_required_fields() {
+        let node_id = Uuid::now_v7();
+        let grant_id = Uuid::now_v7();
+        let principal = StableUri::principal(node_id, Uuid::now_v7());
+        let resource = StableUri::node(node_id);
+        let subject = StableUri::knowledge_node(node_id, Uuid::now_v7());
+        let decision = AdmissionDecision::Admitted {
+            grant_id,
+            grant_uri: StableUri::authority_grant(node_id, grant_id),
+            grant_kind: AuthorityGrantKind::Tool,
+            capability: ContextCapability::Command,
+            delegation_depth_remaining: 0,
+            decided_at: Utc::now(),
+        };
+        let complete = NewActionEnvelope {
+            action_id: Some(Uuid::now_v7()),
+            correlation_id: Some(Uuid::now_v7()),
+            causation_id: None,
+            principal: Some(principal.clone()),
+            actor: Some(principal.clone()),
+            resource: Some(resource.clone()),
+            subject: Some(subject.clone()),
+            operation: Some(ContextCapability::Command),
+            grant_ids: Some(vec![grant_id]),
+            policy_decision: Some(decision),
+            idempotency_key: Some(IdempotencyKey::parse("action-envelope").unwrap()),
+            requested_at: Some(Utc::now()),
+        };
+        ActionEnvelope::try_new(complete.clone()).expect("complete envelope must validate");
+
+        let mut missing_action = complete.clone();
+        missing_action.action_id = None;
+        assert!(ActionEnvelope::try_new(missing_action)
+            .unwrap_err()
+            .contains("action_id"));
+
+        let mut missing_correlation = complete.clone();
+        missing_correlation.correlation_id = None;
+        assert!(ActionEnvelope::try_new(missing_correlation)
+            .unwrap_err()
+            .contains("correlation_id"));
+
+        let mut missing_principal = complete.clone();
+        missing_principal.principal = None;
+        assert!(ActionEnvelope::try_new(missing_principal)
+            .unwrap_err()
+            .contains("principal"));
+
+        let mut missing_actor = complete.clone();
+        missing_actor.actor = None;
+        assert!(ActionEnvelope::try_new(missing_actor)
+            .unwrap_err()
+            .contains("acting actor"));
+
+        let mut missing_resource = complete.clone();
+        missing_resource.resource = None;
+        assert!(ActionEnvelope::try_new(missing_resource)
+            .unwrap_err()
+            .contains("resource"));
+
+        let mut missing_operation = complete.clone();
+        missing_operation.operation = None;
+        assert!(ActionEnvelope::try_new(missing_operation)
+            .unwrap_err()
+            .contains("operation"));
+
+        let mut missing_grants = complete.clone();
+        missing_grants.grant_ids = None;
+        assert!(ActionEnvelope::try_new(missing_grants)
+            .unwrap_err()
+            .contains("grant_ids"));
+
+        let mut empty_grants = complete.clone();
+        empty_grants.grant_ids = Some(Vec::new());
+        assert!(ActionEnvelope::try_new(empty_grants)
+            .unwrap_err()
+            .contains("grant_ids"));
+
+        let mut missing_policy = complete;
+        missing_policy.policy_decision = None;
+        assert!(ActionEnvelope::try_new(missing_policy)
+            .unwrap_err()
+            .contains("policy_decision"));
+    }
+
+    /// Nil UUIDs count as missing; denied decisions carry empty grant_ids.
+    #[test]
+    fn action_envelope_rejects_nil_ids_and_builds_from_admission() {
+        let request = admission_request(AuthorityGrantKind::Tool, ContextCapability::Command);
+        let node_id = Uuid::now_v7();
+        let grant_id = Uuid::now_v7();
+        let principal = StableUri::principal(node_id, Uuid::now_v7());
+        let decision = AdmissionDecision::Admitted {
+            grant_id,
+            grant_uri: StableUri::authority_grant(node_id, grant_id),
+            grant_kind: AuthorityGrantKind::Tool,
+            capability: ContextCapability::Command,
+            delegation_depth_remaining: 0,
+            decided_at: Utc::now(),
+        };
+        let mut nil_action = NewActionEnvelope {
+            action_id: Some(Uuid::nil()),
+            correlation_id: Some(Uuid::now_v7()),
+            causation_id: None,
+            principal: Some(principal.clone()),
+            actor: Some(principal.clone()),
+            resource: Some(StableUri::node(node_id)),
+            subject: Some(StableUri::knowledge_node(node_id, Uuid::now_v7())),
+            operation: Some(ContextCapability::Command),
+            grant_ids: Some(vec![grant_id]),
+            policy_decision: Some(decision.clone()),
+            idempotency_key: Some(IdempotencyKey::parse("nil-action").unwrap()),
+            requested_at: Some(Utc::now()),
+        };
+        assert!(ActionEnvelope::try_new(nil_action.clone())
+            .unwrap_err()
+            .contains("action_id"));
+        nil_action.action_id = Some(Uuid::now_v7());
+        nil_action.correlation_id = Some(Uuid::nil());
+        assert!(ActionEnvelope::try_new(nil_action)
+            .unwrap_err()
+            .contains("correlation_id"));
+
+        let admitted = ActionEnvelope::from_admission(&request, &decision).unwrap();
+        assert_eq!(admitted.grant_ids, vec![grant_id]);
+        assert_eq!(admitted.envelope_version, ACTION_ENVELOPE_V1);
+        assert!(admitted.attribution_metadata()["policy_decision"]["decision"] == "admitted");
+
+        let denied = AdmissionDecision::Denied {
+            reason: AdmissionDenialReason::NoEffectiveGrant,
+            decided_at: Utc::now(),
+        };
+        let envelope = ActionEnvelope::from_admission(&request, &denied).unwrap();
+        assert!(envelope.grant_ids.is_empty());
+        assert!(!envelope.policy_decision.is_admitted());
     }
 
     /// A default-constructed Tool Grant denies a durable node create.

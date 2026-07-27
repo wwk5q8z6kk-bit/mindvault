@@ -42,3 +42,7 @@ under `docs/adr/`.
     after local Context Node registration
     `docs/adr/013-admin-authority-grant-apis.md`
 
+14. **014-versioned-action-envelope** — Kernel-scoped action envelope validating
+    action/correlation IDs, principal, actor, resource, operation, grant IDs,
+    and policy decision on mutating node commands (IK-002)
+    `docs/adr/014-versioned-action-envelope.md`

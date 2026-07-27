@@ -294,6 +294,12 @@ run `enforce` on a real vault after registering the local node and issuing a
 Tool Grant to the acting principal. `observe` remains the recommended rollout
 position.
 
+Versioned action envelopes (`IK-002`, ADR 014) are constructed for node create,
+update, and delete whenever command admission is active. The envelope carries
+action/correlation IDs, principal, acting actor, resource, operation, grant IDs,
+and the policy decision. Space, work-order, budget, and outcome fields from
+ADR 010 remain deferred to the Trust Ledger slice.
+
 The next gated slice is the outbox dispatcher and its first authenticated
 publisher. End-to-end completion may be claimed only when authenticated delivery
 can be joined to the independently queryable consumer application receipt and
