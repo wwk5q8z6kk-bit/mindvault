@@ -1,9 +1,9 @@
 # MindVault Implementation Backlog
 
 - **Status:** Authoritative execution tracker
-- **Created:** 2026-07-26
+- **Created:** 2026-07-26 · **Last recount:** 2026-07-27
 - **Branch:** `feat/product-evolution-session`
-- **Governing law:** `INTEROPERABILITY_CONSTITUTION.md`, then `docs/adr/011-sovereign-interoperability-fabric.md`
+- **Governing law:** `INTEROPERABILITY_CONSTITUTION.md`, then `docs/adr/011-sovereign-interoperability-fabric.md`, then `docs/adr/012-governed-agent-execution-graph.md`
 - **Supersedes for execution tracking:** `DEVELOPMENT_PLAN.md` sections
   "Master Program Board", "Phase 0-4", and "Remaining Work"
 
