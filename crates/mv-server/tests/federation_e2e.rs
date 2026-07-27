@@ -41,6 +41,7 @@ async fn spawn_vault(name: &str) -> (SocketAddr, Arc<MindVaultEngine>, TempDir) 
         "MINDVAULT_JWT_SECRET",
         "MINDVAULT_JWT_ISSUER",
         "MINDVAULT_JWT_AUDIENCE",
+        "MINDVAULT_COMMAND_ADMISSION_MODE",
     ] {
         std::env::remove_var(key);
     }

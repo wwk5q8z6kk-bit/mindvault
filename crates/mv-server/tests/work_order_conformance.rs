@@ -41,6 +41,7 @@ async fn setup() -> (axum::Router, Arc<MindVaultEngine>, Arc<AppState>, TempDir)
         "MINDVAULT_AUTH_ROLE",
         "MINDVAULT_AUTH_NAMESPACE",
         "MINDVAULT_JWT_SECRET",
+        "MINDVAULT_COMMAND_ADMISSION_MODE",
     ] {
         std::env::remove_var(key);
     }

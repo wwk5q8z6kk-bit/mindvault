@@ -12081,6 +12081,7 @@ async fn diagnostics_health(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::CommandAdmissionMode;
     use axum::body::{to_bytes, Body};
     use axum::http::Request;
     use chrono::TimeZone;
@@ -16507,6 +16508,215 @@ mod tests {
             .node
             .metadata
             .contains_key(TASK_DUE_AT_METADATA_KEY));
+    }
+
+    /// One engine, many states: lets a test change admission mode between calls
+    /// against the same vault, which is how the replay-ordering case is proven.
+    async fn admission_engine() -> (Arc<MindVaultEngine>, TempDir) {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let mut config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        config.embedding.provider = "unknown-provider".to_string();
+        config.embedding.model = "any".to_string();
+        config.llm.auto_detect = false;
+        let engine = MindVaultEngine::init(config)
+            .await
+            .expect("test engine should initialize");
+        (Arc::new(engine), temp_dir)
+    }
+
+    fn admission_state(engine: &Arc<MindVaultEngine>, mode: CommandAdmissionMode) -> Arc<AppState> {
+        Arc::new(AppState::new(Arc::clone(engine)).with_command_admission(mode))
+    }
+
+    fn admission_request(content: &str) -> StoreNodeRequest {
+        StoreNodeRequest {
+            kind: "fact".to_string(),
+            content: content.to_string(),
+            title: Some("Admission".to_string()),
+            source: None,
+            namespace: Some("ops".to_string()),
+            tags: None,
+            importance: None,
+            metadata: None,
+        }
+    }
+
+    fn admission_headers(key: &'static str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(IDEMPOTENCY_KEY_HEADER, HeaderValue::from_static(key));
+        headers
+    }
+
+    /// The regression guard for every pre-existing test: `off` changes nothing.
+    #[tokio::test]
+    async fn store_node_is_byte_identical_when_admission_is_off() {
+        let (engine, _tmp) = admission_engine().await;
+        let state = admission_state(&engine, CommandAdmissionMode::Off);
+        let mut change_rx = state.change_tx.subscribe();
+
+        let (status, Json(_node)) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            admission_headers("admission-off"),
+            Json(admission_request("off mode")),
+        )
+        .await
+        .expect("create should succeed");
+
+        assert_eq!(status, StatusCode::CREATED);
+        let envelope = change_rx
+            .recv()
+            .await
+            .expect("notification")
+            .event
+            .expect("envelope");
+        assert!(
+            envelope.data.get("admission").is_none(),
+            "off mode must not add an admission key: {}",
+            envelope.data
+        );
+    }
+
+    /// Fail closed: no grant, no mutation, no event.
+    #[tokio::test]
+    async fn store_node_fails_closed_without_an_effective_grant() {
+        let (engine, _tmp) = admission_engine().await;
+        let state = admission_state(&engine, CommandAdmissionMode::Enforce);
+
+        let (status, message) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            admission_headers("admission-enforce"),
+            Json(admission_request("enforced")),
+        )
+        .await
+        .expect_err("an ungranted command must be refused");
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // The bounded denial reason is audit-only; leaking it would let a caller
+        // distinguish "no grant" from "grant expired".
+        assert_eq!(message, "command_admission_denied");
+        for leaked in ["no_effective_grant", "expired", "grant_kind"] {
+            assert!(!message.contains(leaked), "leaked {leaked}: {message}");
+        }
+
+        let pending = engine
+            .store
+            .nodes
+            .list_pending_outbox_events(10)
+            .await
+            .unwrap();
+        assert!(pending.is_empty(), "a refused command must emit no event");
+    }
+
+    /// Observe records the decision and lets the command through.
+    ///
+    /// This is the mode that actually proves the resolver ran: under `enforce`
+    /// a 403 is also what a crashed resolver or an unparsed flag would produce.
+    #[tokio::test]
+    async fn store_node_observe_mode_records_a_denial_without_blocking() {
+        let (engine, _tmp) = admission_engine().await;
+        let state = admission_state(&engine, CommandAdmissionMode::Observe);
+        let mut change_rx = state.change_tx.subscribe();
+
+        let (status, Json(_node)) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            admission_headers("admission-observe"),
+            Json(admission_request("observed")),
+        )
+        .await
+        .expect("observe must not block");
+
+        assert_eq!(status, StatusCode::CREATED);
+        let envelope = change_rx
+            .recv()
+            .await
+            .expect("notification")
+            .event
+            .expect("envelope");
+        let admission = envelope
+            .data
+            .get("admission")
+            .expect("observe mode records the decision");
+        assert_eq!(admission["decision"], "denied");
+        assert_eq!(admission["reason"], "no_effective_grant");
+        // Credential-free and content-free.
+        let rendered = admission.to_string();
+        for leaked in ["purpose", "targets", "grantee", "grantor"] {
+            assert!(!rendered.contains(leaked), "leaked {leaked}: {rendered}");
+        }
+    }
+
+    /// A replay is not re-admitted.
+    ///
+    /// The original commit already succeeded, and the replay lookup is
+    /// principal-scoped and performs no mutation. Refusing the retry would hand
+    /// the caller a false view of the world.
+    #[tokio::test]
+    async fn a_replay_is_not_re_admitted_after_enforcement_is_enabled() {
+        let (engine, _tmp) = admission_engine().await;
+
+        let permissive = admission_state(&engine, CommandAdmissionMode::Off);
+        let (created_status, Json(created)) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&permissive)),
+            admission_headers("admission-replay"),
+            Json(admission_request("replay me")),
+        )
+        .await
+        .expect("first create should succeed");
+        assert_eq!(created_status, StatusCode::CREATED);
+
+        // Same vault, same idempotency key, now enforcing.
+        let strict = admission_state(&engine, CommandAdmissionMode::Enforce);
+        let (replay_status, Json(replayed)) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&strict)),
+            admission_headers("admission-replay"),
+            Json(admission_request("replay me")),
+        )
+        .await
+        .expect("a replay must not be refused");
+
+        assert_eq!(replay_status, StatusCode::OK);
+        assert_eq!(replayed.id, created.id);
+    }
+
+    /// Grants are an additional axis, not a replacement for RBAC.
+    #[tokio::test]
+    async fn admission_runs_after_the_role_check_and_before_the_quota_check() {
+        let (engine, _tmp) = admission_engine().await;
+        let state = admission_state(&engine, CommandAdmissionMode::Enforce);
+
+        // A reader is refused by authorize_write, before admission is consulted.
+        let mut reader = AuthContext::system_admin();
+        reader.role = crate::auth::AuthRole::Read;
+        let (reader_status, _) = store_node(
+            Extension(reader),
+            State(Arc::clone(&state)),
+            admission_headers("admission-role"),
+            Json(admission_request("reader")),
+        )
+        .await
+        .expect_err("a reader cannot write");
+        assert_eq!(reader_status, StatusCode::FORBIDDEN);
+
+        // A writer without a grant is refused by admission, and never reaches
+        // quota accounting: the status is 403, not the quota's 429.
+        let (writer_status, message) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            admission_headers("admission-order"),
+            Json(admission_request("writer")),
+        )
+        .await
+        .expect_err("an ungranted writer is refused");
+        assert_eq!(writer_status, StatusCode::FORBIDDEN);
+        assert_eq!(message, "command_admission_denied");
     }
 
     #[tokio::test]

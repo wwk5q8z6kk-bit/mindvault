@@ -94,6 +94,17 @@ timeout_secs = 30
 # are unaffected. Override: MINDVAULT_LLM_ALLOW_CLOUD_FALLBACK=true
 allow_cloud_fallback = false
 
+[interoperability]
+# Whether public commands must resolve an authorizing Tool Grant before they
+# mutate. Additive: role, namespace and quota checks always still apply.
+#   off      - resolver does not run (default; byte-identical to pre-admission)
+#   observe  - resolver runs and the decision is recorded, but never blocks
+#   enforce  - an unauthorized command is refused with 403
+# Enforce needs a registered local Context Node and an issued Tool Grant; until
+# grant issuance is exposed it is a test and staging mode.
+# Override: MINDVAULT_COMMAND_ADMISSION_MODE
+command_admission_mode = "off"
+
 [ai_sidecar]
 enabled = false
 base_url = "http://127.0.0.1:8100"

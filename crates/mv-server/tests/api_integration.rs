@@ -46,6 +46,7 @@ async fn setup() -> (axum::Router, TempDir) {
         "MINDVAULT_JWT_AUDIENCE",
         "MINDVAULT_NAMESPACE_NODE_QUOTA",
         "MINDVAULT_WORKSPACE_ALLOWED_ROOTS",
+        "MINDVAULT_COMMAND_ADMISSION_MODE",
     ] {
         std::env::remove_var(key);
     }
@@ -71,6 +72,7 @@ async fn setup_with_workspace_root() -> (axum::Router, TempDir, std::path::PathB
         "MINDVAULT_JWT_AUDIENCE",
         "MINDVAULT_NAMESPACE_NODE_QUOTA",
         "MINDVAULT_WORKSPACE_ALLOWED_ROOTS",
+        "MINDVAULT_COMMAND_ADMISSION_MODE",
     ] {
         std::env::remove_var(key);
     }

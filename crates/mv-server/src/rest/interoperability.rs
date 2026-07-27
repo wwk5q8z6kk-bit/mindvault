@@ -128,10 +128,7 @@ pub(crate) async fn admit_command(
         Err(error) => {
             tracing::error!(%error, "command admission resolver failed");
             if enforcing {
-                return Err((
-                    StatusCode::FORBIDDEN,
-                    COMMAND_ADMISSION_DENIED.to_string(),
-                ));
+                return Err((StatusCode::FORBIDDEN, COMMAND_ADMISSION_DENIED.to_string()));
             }
             return Ok(None);
         }
@@ -148,10 +145,7 @@ pub(crate) async fn admit_command(
             "command admission denied"
         );
         if enforcing {
-            return Err((
-                StatusCode::FORBIDDEN,
-                COMMAND_ADMISSION_DENIED.to_string(),
-            ));
+            return Err((StatusCode::FORBIDDEN, COMMAND_ADMISSION_DENIED.to_string()));
         }
     }
 
