@@ -1670,7 +1670,6 @@ async fn namespace_node_quota_allows_update_when_at_limit() {
     assert_eq!(body["content"], "updated while at quota");
 }
 
-
 // ---------------------------------------------------------------------------
 // Metrics / observability
 // ---------------------------------------------------------------------------
@@ -1735,7 +1734,10 @@ async fn metrics_summary_includes_alert_oriented_health_hints() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
 
-    assert!(body.get("health").is_some(), "missing health object: {body}");
+    assert!(
+        body.get("health").is_some(),
+        "missing health object: {body}"
+    );
     assert!(body["health"].get("status").is_some());
     assert!(body["health"].get("hints").is_some());
     assert!(body["health"].get("thresholds").is_some());

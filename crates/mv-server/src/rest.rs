@@ -11731,7 +11731,12 @@ async fn metrics_summary(
     let latency_by_api_group: serde_json::Map<String, serde_json::Value> = health
         .latency_by_api_group
         .iter()
-        .map(|(group, snap)| (group.clone(), serde_json::to_value(snap).unwrap_or_default()))
+        .map(|(group, snap)| {
+            (
+                group.clone(),
+                serde_json::to_value(snap).unwrap_or_default(),
+            )
+        })
         .collect();
 
     Ok(Json(serde_json::json!({
