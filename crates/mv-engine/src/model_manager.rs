@@ -78,11 +78,7 @@ impl ModelManager {
         let entries = std::fs::read_dir(&self.models_dir)
             .map_err(|e| format!("failed to read models dir: {e}"))?;
 
-        let active_path = self
-            .config
-            .model_path
-            .as_ref()
-            .map(PathBuf::from);
+        let active_path = self.config.model_path.as_ref().map(PathBuf::from);
 
         let mut models = Vec::new();
         for entry in entries {
@@ -93,8 +89,7 @@ impl ModelManager {
                 continue;
             }
 
-            let metadata = std::fs::metadata(&path)
-                .map_err(|e| format!("metadata error: {e}"))?;
+            let metadata = std::fs::metadata(&path).map_err(|e| format!("metadata error: {e}"))?;
 
             let filename = path
                 .file_name()
@@ -108,10 +103,7 @@ impl ModelManager {
                 .map(|t| t.into())
                 .unwrap_or_else(|_| Utc::now());
 
-            let is_active = active_path
-                .as_ref()
-                .map(|ap| ap == &path)
-                .unwrap_or(false);
+            let is_active = active_path.as_ref().map(|ap| ap == &path).unwrap_or(false);
 
             models.push(LocalModel {
                 filename,
@@ -149,8 +141,7 @@ impl ModelManager {
             return Err("refusing to delete file outside models directory".to_string());
         }
 
-        std::fs::remove_file(&path)
-            .map_err(|e| format!("failed to delete model: {e}"))?;
+        std::fs::remove_file(&path).map_err(|e| format!("failed to delete model: {e}"))?;
 
         info!(filename = filename, "model deleted");
         Ok(())
@@ -163,7 +154,8 @@ impl ModelManager {
     ///
     /// This is a blocking operation that should be run via `spawn_blocking`.
     pub async fn download_model(&self, model_id: &str) -> DownloadStatus {
-        self.ensure_dir().unwrap_or_else(|e| warn!("dir creation: {e}"));
+        self.ensure_dir()
+            .unwrap_or_else(|e| warn!("dir creation: {e}"));
 
         // Parse model_id: "user/repo/file.gguf" or "user/repo"
         let parts: Vec<&str> = model_id.splitn(3, '/').collect();
@@ -174,7 +166,9 @@ impl ModelManager {
                 status: "error".to_string(),
                 size_bytes: None,
                 path: None,
-                error: Some("invalid model_id: expected 'org/repo' or 'org/repo/file.gguf'".to_string()),
+                error: Some(
+                    "invalid model_id: expected 'org/repo' or 'org/repo/file.gguf'".to_string(),
+                ),
             };
         }
 
@@ -186,9 +180,7 @@ impl ModelManager {
             format!("{}.gguf", parts[1])
         };
 
-        let url = format!(
-            "https://huggingface.co/{repo}/resolve/main/{filename}"
-        );
+        let url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
         let dest = self.models_dir.join(&filename);
 
         if dest.exists() {
@@ -264,11 +256,7 @@ impl ModelManager {
             let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
             for line in meminfo.lines() {
                 if line.starts_with("MemAvailable:") {
-                    let kb: u64 = line
-                        .split_whitespace()
-                        .nth(1)?
-                        .parse()
-                        .ok()?;
+                    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
                     return Some(kb * 1024);
                 }
             }

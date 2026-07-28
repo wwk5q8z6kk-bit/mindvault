@@ -11,10 +11,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.91.1
+        with:
+          components: rustfmt, clippy
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Install protoc
+        run: sudo apt-get install -y protobuf-compiler
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -23,7 +28,14 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --workspace
+        run: |
+          cargo test --workspace --exclude mv-server --exclude mv-index
+          # Sealed tantivy runtime keys can race under parallel lib tests.
+          cargo test -p mv-index --lib -- --test-threads=1
+          cargo test -p mv-server --lib
+          # Integration tests mutate process env (auth/quota/sealed failpoints);
+          # serialize them to avoid cross-test leakage under cargo's default parallelism.
+          cargo test -p mv-server --tests -- --test-threads=1
 
   sealed-gates:
     runs-on: ubuntu-latest
@@ -31,7 +43,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.91.1
+        with:
+          components: rustfmt, clippy
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -49,6 +63,9 @@ jobs:
         run: |
           cargo test -p mv-server --test api_integration sealed_mode_unseal_failure_injected_at_migrate_reseals_vault -- --nocapture --test-threads=1
           cargo test -p mv-server --test api_integration sealed_mode_unseal_failure_injected_at_rebuild_reseals_vault -- --nocapture --test-threads=1
+
+      - name: Transport Parity REST/gRPC
+        run: cargo test -p mv-server --test transport_parity -- --nocapture --test-threads=1
 
   connectors:
     runs-on: ubuntu-latest
@@ -73,5 +90,5 @@ jobs:
       - name: OpenClaw Plugin Install & Typecheck
         working-directory: connectors/openclaw-plugin
         run: |
-          npm install --save-dev typescript @types/node
-          npx tsc --noEmit --esModuleInterop --moduleResolution node --target ES2022 --module ES2022 index.ts client.ts
+          npm install --save-dev typescript@5.8.3 @types/node@20
+          npx tsc --noEmit --skipLibCheck --esModuleInterop --moduleResolution bundler --module preserve --target ES2022 --allowImportingTsExtensions index.ts client.ts

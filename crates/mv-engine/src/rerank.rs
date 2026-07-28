@@ -32,11 +32,7 @@ impl LlmReranker {
 
 #[async_trait::async_trait]
 impl Reranker for LlmReranker {
-    async fn rerank(
-        &self,
-        query: &str,
-        documents: &[String],
-    ) -> MvResult<Vec<f64>> {
+    async fn rerank(&self, query: &str, documents: &[String]) -> MvResult<Vec<f64>> {
         if documents.is_empty() {
             return Ok(vec![]);
         }
@@ -124,11 +120,7 @@ pub struct NoOpReranker;
 
 #[async_trait::async_trait]
 impl Reranker for NoOpReranker {
-    async fn rerank(
-        &self,
-        _query: &str,
-        documents: &[String],
-    ) -> MvResult<Vec<f64>> {
+    async fn rerank(&self, _query: &str, documents: &[String]) -> MvResult<Vec<f64>> {
         // Return descending scores to preserve original ordering
         Ok((0..documents.len())
             .map(|i| 1.0 - (i as f64 * 0.001))

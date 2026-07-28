@@ -76,12 +76,7 @@ impl InMemorySessionStore {
     }
 
     /// Record a query+result turn in the session.
-    pub async fn add_turn(
-        &self,
-        session_id: &str,
-        query: &str,
-        result_summary: &str,
-    ) {
+    pub async fn add_turn(&self, session_id: &str, query: &str, result_summary: &str) {
         if !self.config.enabled {
             return;
         }
@@ -96,11 +91,7 @@ impl InMemorySessionStore {
     }
 
     /// Get recent turns for a session (newest last).
-    pub async fn get_context(
-        &self,
-        session_id: &str,
-        limit: usize,
-    ) -> Vec<(String, String)> {
+    pub async fn get_context(&self, session_id: &str, limit: usize) -> Vec<(String, String)> {
         if !self.config.enabled {
             return vec![];
         }
@@ -170,8 +161,12 @@ mod tests {
     async fn add_and_retrieve_turns() {
         let store = InMemorySessionStore::new(test_config());
 
-        store.add_turn("s1", "what is rust?", "Rust is a systems language").await;
-        store.add_turn("s1", "how about memory safety?", "Rust uses ownership").await;
+        store
+            .add_turn("s1", "what is rust?", "Rust is a systems language")
+            .await;
+        store
+            .add_turn("s1", "how about memory safety?", "Rust uses ownership")
+            .await;
 
         let context = store.get_context("s1", 10).await;
         assert_eq!(context.len(), 2);
@@ -226,7 +221,9 @@ mod tests {
         let store = InMemorySessionStore::new(test_config());
 
         store.add_turn("s1", "what is X?", "X is a thing").await;
-        store.add_turn("s1", "tell me more", "More details about X").await;
+        store
+            .add_turn("s1", "tell me more", "More details about X")
+            .await;
 
         let ctx = store.build_context_string("s1", 5).await;
         assert!(ctx.is_some());

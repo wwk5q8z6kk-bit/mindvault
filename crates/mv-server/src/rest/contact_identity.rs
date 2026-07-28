@@ -76,10 +76,8 @@ pub async fn list_identities(
 
     match state.engine.list_contact_identities(contact_id).await {
         Ok(identities) => {
-            let items: Vec<ContactIdentityResponse> = identities
-                .into_iter()
-                .map(identity_to_response)
-                .collect();
+            let items: Vec<ContactIdentityResponse> =
+                identities.into_iter().map(identity_to_response).collect();
             Json(items).into_response()
         }
         Err(e) => (
@@ -105,13 +103,7 @@ pub async fn add_identity(
 
     let identity_type: IdentityType = match req.identity_type.parse() {
         Ok(t) => t,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorBody { error: e }),
-            )
-                .into_response()
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: e })).into_response(),
     };
 
     let identity = ContactIdentity {
@@ -249,10 +241,16 @@ pub async fn set_trust_model(
     let model = TrustModel {
         contact_id,
         can_query: req.can_query.unwrap_or(existing.can_query),
-        can_inject_context: req.can_inject_context.unwrap_or(existing.can_inject_context),
+        can_inject_context: req
+            .can_inject_context
+            .unwrap_or(existing.can_inject_context),
         can_auto_reply: req.can_auto_reply.unwrap_or(existing.can_auto_reply),
-        allowed_namespaces: req.allowed_namespaces.unwrap_or(existing.allowed_namespaces),
-        max_confidence_override: req.max_confidence_override.or(existing.max_confidence_override),
+        allowed_namespaces: req
+            .allowed_namespaces
+            .unwrap_or(existing.allowed_namespaces),
+        max_confidence_override: req
+            .max_confidence_override
+            .or(existing.max_confidence_override),
         updated_at: chrono::Utc::now(),
     };
 

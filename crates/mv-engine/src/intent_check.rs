@@ -89,9 +89,7 @@ pub fn check_intent_rules(intent: &str) -> IntentCheckResult {
     for pattern in SUSPICIOUS_PATTERNS {
         if lower.contains(pattern) {
             return IntentCheckResult::DeniedByRules {
-                reason: format!(
-                    "intent contains suspicious pattern: '{pattern}'"
-                ),
+                reason: format!("intent contains suspicious pattern: '{pattern}'"),
             };
         }
     }
@@ -129,11 +127,8 @@ pub async fn check_intent_llm(
         ..Default::default()
     };
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        llm.complete(&messages, &params),
-    )
-    .await;
+    let result =
+        tokio::time::timeout(Duration::from_secs(5), llm.complete(&messages, &params)).await;
 
     match result {
         Ok(Ok(response)) => {
@@ -221,7 +216,9 @@ mod tests {
 
     #[test]
     fn rules_allow_normal_operations() {
-        assert!(!check_intent_rules("list all pull requests for the mindvault repository").is_denied());
+        assert!(
+            !check_intent_rules("list all pull requests for the mindvault repository").is_denied()
+        );
         assert!(!check_intent_rules("create a new issue in the project tracker").is_denied());
         assert!(!check_intent_rules("fetch weather data from the OpenWeather API").is_denied());
     }

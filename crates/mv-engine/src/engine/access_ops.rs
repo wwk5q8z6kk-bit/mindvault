@@ -2,7 +2,10 @@ use chrono::{DateTime, Utc};
 use mv_core::*;
 use uuid::Uuid;
 
-use super::{generate_access_token, generate_share_token, hash_access_token, hash_share_token, MindVaultEngine};
+use super::{
+    generate_access_token, generate_share_token, hash_access_token, hash_share_token,
+    MindVaultEngine,
+};
 
 impl MindVaultEngine {
     // ── Permission Templates & Access Keys ─────────────────────────

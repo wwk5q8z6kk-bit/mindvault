@@ -141,11 +141,7 @@ pub async fn get_mcp_connector(
     let connector_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
         Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                err_json("invalid connector id"),
-            )
-                .into_response()
+            return (StatusCode::BAD_REQUEST, err_json("invalid connector id")).into_response()
         }
     };
 
@@ -174,18 +170,10 @@ pub async fn create_mcp_connector(
     }
 
     if req.name.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            err_json("name cannot be empty"),
-        )
-            .into_response();
+        return (StatusCode::BAD_REQUEST, err_json("name cannot be empty")).into_response();
     }
     if req.version.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            err_json("version cannot be empty"),
-        )
-            .into_response();
+        return (StatusCode::BAD_REQUEST, err_json("version cannot be empty")).into_response();
     }
 
     let config_schema = req.config_schema.unwrap_or_else(|| serde_json::json!({}));
@@ -233,17 +221,15 @@ pub async fn update_mcp_connector(
     let connector_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
         Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                err_json("invalid connector id"),
-            )
-                .into_response()
+            return (StatusCode::BAD_REQUEST, err_json("invalid connector id")).into_response()
         }
     };
 
     let mut connector = match state.engine.get_mcp_connector(connector_id).await {
         Ok(Some(connector)) => connector,
-        Ok(None) => return (StatusCode::NOT_FOUND, err_json("connector not found")).into_response(),
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, err_json("connector not found")).into_response()
+        }
         Err(err) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -255,11 +241,7 @@ pub async fn update_mcp_connector(
 
     if let Some(name) = req.name {
         if name.trim().is_empty() {
-            return (
-                StatusCode::BAD_REQUEST,
-                err_json("name cannot be empty"),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, err_json("name cannot be empty")).into_response();
         }
         connector.name = name;
     }
@@ -271,11 +253,7 @@ pub async fn update_mcp_connector(
     }
     if let Some(version) = req.version {
         if version.trim().is_empty() {
-            return (
-                StatusCode::BAD_REQUEST,
-                err_json("version cannot be empty"),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, err_json("version cannot be empty")).into_response();
         }
         connector.version = version;
     }
@@ -324,11 +302,7 @@ pub async fn delete_mcp_connector(
     let connector_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
         Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                err_json("invalid connector id"),
-            )
-                .into_response()
+            return (StatusCode::BAD_REQUEST, err_json("invalid connector id")).into_response()
         }
     };
 

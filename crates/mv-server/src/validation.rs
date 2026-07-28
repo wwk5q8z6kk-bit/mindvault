@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use mv_core::{HttpProxyRequest, ExecProxyRequest, NodeKind};
+use mv_core::{ExecProxyRequest, HttpProxyRequest, NodeKind};
 use mv_engine::recurrence::validate_recurrence_metadata_for_kind;
 use serde_json::Value;
 
@@ -77,9 +77,7 @@ const MAX_PROXY_INTENT_LEN: usize = 500;
 const MAX_PROXY_SECRET_REF_LEN: usize = 256;
 const MAX_PROXY_COMMAND_LEN: usize = 256;
 
-const ALLOWED_HTTP_METHODS: &[&str] = &[
-    "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS",
-];
+const ALLOWED_HTTP_METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
 #[allow(clippy::too_many_arguments)]
 pub fn validate_node_payload(
@@ -187,9 +185,7 @@ pub fn validate_depth(depth: usize) -> Result<(), ValidationError> {
 
 fn validate_required_text(name: &str, value: &str, max_len: usize) -> Result<(), ValidationError> {
     if value.trim().is_empty() {
-        return Err(ValidationError::Empty {
-            field: name.into(),
-        });
+        return Err(ValidationError::Empty { field: name.into() });
     }
 
     if value.len() > max_len {
@@ -468,7 +464,9 @@ mod tests {
             None,
         )
         .expect_err("importance should fail");
-        assert!(matches!(err, ValidationError::OutOfRange { ref field, .. } if field == "importance"));
+        assert!(
+            matches!(err, ValidationError::OutOfRange { ref field, .. } if field == "importance")
+        );
     }
 
     #[test]

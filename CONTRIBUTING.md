@@ -116,4 +116,4 @@ Open a GitHub issue with:
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [Apache-2.0 License](LICENSE).
+MindVault is proprietary software (see [LICENSE](LICENSE)), not an open source project. By contributing, you agree that your contributions become the property of the copyright holder and are licensed to the project under the same terms as the rest of the codebase.

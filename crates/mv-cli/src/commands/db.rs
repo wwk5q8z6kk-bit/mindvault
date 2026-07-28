@@ -2,9 +2,9 @@
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
+use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::env;
 
 use super::load_config;
 use mv_core::{Embedder, NodeStore, QueryFilters};
@@ -238,8 +238,10 @@ pub async fn rebuild_vectors(
     let timestamp = Utc::now().format("%Y%m%d%H%M%S").to_string();
     let rebuild_dir = data_dir.join(format!("lancedb-rebuild-{timestamp}"));
 
-    let node_store =
-        mv_storage::sqlite::SqliteNodeStore::open_read_only_with_mode(&sqlite_path, config.sealed_mode)?;
+    let node_store = mv_storage::sqlite::SqliteNodeStore::open_read_only_with_mode(
+        &sqlite_path,
+        config.sealed_mode,
+    )?;
     let total_nodes = node_store.count(&QueryFilters::default()).await?;
 
     println!("Vector rebuild plan");
@@ -318,13 +320,8 @@ pub async fn rebuild_vectors(
         }
 
         let mut items = Vec::with_capacity(batch.len());
-        for (node, embedding) in batch.into_iter().zip(embeddings.into_iter()) {
-            items.push((
-                node.id,
-                embedding,
-                node.content,
-                Some(node.namespace),
-            ));
+        for (node, embedding) in batch.into_iter().zip(embeddings) {
+            items.push((node.id, embedding, node.content, Some(node.namespace)));
         }
 
         vectors.upsert_batch(&items).await?;
@@ -451,11 +448,8 @@ fn resolve_embedder_for_rebuild(config: &EngineConfig) -> EmbedderRuntime {
             } else {
                 config.embedding.model.clone()
             };
-            let embedder = OpenAiEmbedder::for_ollama(
-                Some(base_url),
-                model.clone(),
-                configured_dimensions,
-            );
+            let embedder =
+                OpenAiEmbedder::for_ollama(Some(base_url), model.clone(), configured_dimensions);
             let reason = if model != configured_model {
                 Some(format!(
                     "model '{configured_model}' auto-mapped to '{model}' for ollama"

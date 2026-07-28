@@ -147,8 +147,7 @@ impl SyncEngine {
         stats: &mut SyncStats,
     ) -> MvResult<()> {
         // Use vector clocks when both sides have clock data
-        let has_clock_data = !snapshot.clock.clocks.is_empty()
-            && !local_clock.clocks.is_empty();
+        let has_clock_data = !snapshot.clock.clocks.is_empty() && !local_clock.clocks.is_empty();
 
         if has_clock_data {
             if snapshot.clock.happens_before(local_clock) {

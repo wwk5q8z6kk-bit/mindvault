@@ -2,7 +2,12 @@
 	import { onMount, tick } from 'svelte';
 	import { page } from '$app/stores';
 	import { get } from 'svelte/store';
-	import { chat, type ChatMessage, type ChatSource } from '$lib/api/chat';
+	import {
+		chat,
+		type ChatMessage,
+		type ChatProgressStage,
+		type ChatSource
+	} from '$lib/api/chat';
 	import {
 		listConversations,
 		createConversation,
@@ -13,6 +18,17 @@
 	} from '$lib/api/conversations';
 	import { getNeighbors, type GraphNeighbor } from '$lib/api/graph';
 	import { pushToast } from '$lib/stores/toast';
+	import EmptyState from '$lib/components/EmptyState.svelte';
+	import {
+		formatRelevanceScore,
+		sourceHref,
+		splitCitationSegments
+	} from '$lib/chat/citations';
+	import { describeChatFailure } from '$lib/chat/errors';
+	import { cacheChatSources, readCachedChatSources } from '$lib/chat/source-cache';
+	import { resolveMessageSources } from '$lib/chat/message-sources';
+
+	const HISTORY_WINDOW = 12;
 
 	let conversations: ConversationListItem[] = [];
 	let conversationsLoading = false;
@@ -20,9 +36,11 @@
 	let messages: ChatMessage[] = [];
 	let input = '';
 	let loading = false;
+	let loadingStage: ChatProgressStage | null = null;
 	let loadingConversation = false;
 	let messagesContainer: HTMLDivElement | null = null;
 	let inputEl: HTMLTextAreaElement | null = null;
+	let highlightedSource: number | null = null;
 
 	let noteContextId: string | null = null;
 	let noteContextLabel = '';
@@ -45,14 +63,15 @@
 
 	function buildHistory(): Array<{ role: 'user' | 'assistant'; content: string }> {
 		return messages
-			.slice(-12)
+			.filter((m) => !m.isError)
+			.slice(-HISTORY_WINDOW)
 			.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 	}
 
 	async function scrollToBottom() {
 		await tick();
 		if (messagesContainer) {
-			messagesContainer.scrollTop = messagesContainer.scrollHeight;
+			messagesContainer.scrollTo({ top: messagesContainer.scrollHeight, behavior: 'smooth' });
 		}
 	}
 
@@ -95,14 +114,20 @@
 		activeConversationId = id;
 		loadingConversation = true;
 		relatedNodes = [];
+		highlightedSource = null;
 		try {
 			const history = await listConversationMessages(id, 200);
 			messages = history.map((message) => ({
 				id: message.id,
 				role: message.role === 'assistant' ? 'assistant' : 'user',
 				content: message.content,
-				timestamp: message.created_at
+				timestamp: message.created_at,
+				sources: resolveMessageSources(message.sources, readCachedChatSources(message.id))
 			}));
+			const lastWithSources = [...messages].reverse().find((m) => m.sources && m.sources.length > 0);
+			if (lastWithSources?.sources) {
+				void loadRelatedNodesFromSources(lastWithSources.sources);
+			}
 			await scrollToBottom();
 		} catch {
 			pushToast('Failed to load conversation', 'danger');
@@ -115,6 +140,7 @@
 		activeConversationId = '';
 		messages = [];
 		relatedNodes = [];
+		highlightedSource = null;
 		const id = await ensureConversation();
 		if (id) {
 			activeConversationId = id;
@@ -130,18 +156,33 @@
 				activeConversationId = '';
 				messages = [];
 				relatedNodes = [];
+				highlightedSource = null;
 			}
 		} catch {
 			pushToast('Failed to delete conversation', 'danger');
 		}
 	}
 
-	async function persistMessage(role: 'user' | 'assistant', content: string) {
-		if (!activeConversationId) return;
+	async function persistMessage(
+		role: 'user' | 'assistant',
+		content: string,
+		sources?: ChatSource[]
+	): Promise<string | null> {
+		if (!activeConversationId) return null;
 		try {
-			await appendConversationMessage(activeConversationId, role, content);
+			const saved = await appendConversationMessage(
+				activeConversationId,
+				role,
+				content,
+				sources
+			);
+			// Keep local cache as a compatibility fallback for older clients/servers.
+			if (sources && sources.length > 0 && saved.id) {
+				cacheChatSources(saved.id, sources);
+			}
+			return saved.id;
 		} catch {
-			// Non-fatal: chat still works without persistence.
+			return null;
 		}
 	}
 
@@ -178,6 +219,8 @@
 		messages = [...messages, userMsg];
 		input = '';
 		loading = true;
+		loadingStage = 'retrieving';
+		highlightedSource = null;
 		await scrollToBottom();
 		void persistMessage('user', text);
 
@@ -186,17 +229,27 @@
 			const query = noteContextId
 				? `Context node id: ${noteContextId}\nQuestion: ${text}`
 				: text;
-			const response = await chat(query, history);
+			const response = await chat(query, history, (stage) => {
+				loadingStage = stage;
+			});
 			const assistantMsg: ChatMessage = {
 				id: generateId(),
 				role: 'assistant',
 				content: response.answer,
 				sources: response.sources,
-				timestamp: new Date().toISOString()
+				timestamp: new Date().toISOString(),
+				mode: response.mode
 			};
 			messages = [...messages, assistantMsg];
-			void persistMessage('assistant', response.answer);
+			const persistedId = await persistMessage('assistant', response.answer, response.sources);
+			if (persistedId) {
+				assistantMsg.id = persistedId;
+				messages = messages.map((m) => (m === assistantMsg ? { ...assistantMsg } : m));
+			}
 			void loadRelatedNodesFromSources(response.sources);
+			if (!response.grounded) {
+				pushToast('No matching vault sources found for that question', 'warning');
+			}
 			if (activeConversationId) {
 				conversations = conversations.map((conv) =>
 					conv.id === activeConversationId
@@ -204,17 +257,20 @@
 						: conv
 				);
 			}
-		} catch {
-			pushToast('Failed to get response. Check your connection.', 'danger');
+		} catch (error) {
+			const detail = describeChatFailure(error);
+			pushToast(detail, 'danger');
 			const errorMsg: ChatMessage = {
 				id: generateId(),
 				role: 'assistant',
-				content: 'Sorry, I was unable to process your question. Please try again.',
-				timestamp: new Date().toISOString()
+				content: detail,
+				timestamp: new Date().toISOString(),
+				isError: true
 			};
 			messages = [...messages, errorMsg];
 		} finally {
 			loading = false;
+			loadingStage = null;
 			await scrollToBottom();
 			inputEl?.focus();
 		}
@@ -223,6 +279,7 @@
 	function clearCurrentMessages() {
 		messages = [];
 		relatedNodes = [];
+		highlightedSource = null;
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
@@ -249,10 +306,15 @@
 		return kind === 'fact' ? 'note' : kind;
 	}
 
-	function sourceLink(source: ChatSource): string {
-		if (source.kind === 'task') return `/tasks?task=${source.node_id}`;
-		if (source.kind === 'fact') return `/notes?note=${source.node_id}`;
-		return `/search?q=${encodeURIComponent(source.title)}`;
+	function focusSource(index: number) {
+		highlightedSource = index;
+		const el = document.getElementById(`chat-source-${index}`);
+		el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+	}
+
+	function applySuggestion(text: string) {
+		input = text;
+		inputEl?.focus();
 	}
 
 	function formatRelativeTime(dateStr: string): string {
@@ -264,6 +326,12 @@
 		if (hours < 24) return `${hours}h`;
 		return `${Math.floor(hours / 24)}d`;
 	}
+
+	$: historyTruncated = messages.filter((m) => !m.isError).length > HISTORY_WINDOW;
+	$: loadingLabel =
+		loadingStage === 'generating'
+			? 'Writing an answer from your sources…'
+			: 'Searching your knowledge base…';
 </script>
 
 <div class="grid gap-4 lg:grid-cols-[260px_1fr_280px]">
@@ -283,14 +351,14 @@
 			<p class="text-xs text-[rgb(var(--mv-muted))]/70">No saved conversations yet.</p>
 		{:else}
 			<div class="space-y-1.5">
-					{#each conversations as conv (conv.id)}
-						<div
-							role="button"
-							tabindex="0"
-							class={`w-full rounded-lg border px-2.5 py-2 text-left transition ${activeConversationId === conv.id ? 'border-sky-500/40 bg-sky-500/10' : 'border-[rgb(var(--mv-border))] hover:bg-[rgb(var(--mv-panel-strong))]/40'}`}
-							on:click={() => selectConversation(conv.id)}
-							on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && selectConversation(conv.id)}
-						>
+				{#each conversations as conv (conv.id)}
+					<div
+						role="button"
+						tabindex="0"
+						class={`w-full rounded-lg border px-2.5 py-2 text-left transition ${activeConversationId === conv.id ? 'border-sky-500/40 bg-sky-500/10' : 'border-[rgb(var(--mv-border))] hover:bg-[rgb(var(--mv-panel-strong))]/40'}`}
+						on:click={() => selectConversation(conv.id)}
+						on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && selectConversation(conv.id)}
+					>
 						<div class="flex items-center justify-between gap-2">
 							<p class="truncate text-xs font-medium text-[rgb(var(--mv-text))]">
 								{conv.title || `Conversation ${conv.id.slice(0, 8)}`}
@@ -306,8 +374,8 @@
 								Delete
 							</button>
 						</div>
-						</div>
-					{/each}
+					</div>
+				{/each}
 			</div>
 		{/if}
 	</aside>
@@ -316,7 +384,9 @@
 		<div class="flex items-center justify-between gap-3">
 			<div>
 				<h2 class="text-lg font-semibold text-[rgb(var(--mv-text))]">AI Chat</h2>
-				<p class="text-xs text-[rgb(var(--mv-muted))]/60">Ask questions grounded in your notes and tasks with source citations.</p>
+				<p class="text-xs text-[rgb(var(--mv-muted))]/60">
+					Ask questions grounded in your notes and tasks with clickable source citations.
+				</p>
 			</div>
 			<div class="flex items-center gap-2">
 				{#if noteContextId}
@@ -341,6 +411,12 @@
 			</div>
 		</div>
 
+		{#if historyTruncated}
+			<div class="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-100">
+				Using the latest {HISTORY_WINDOW} messages as model context. Older turns stay visible but are not resent.
+			</div>
+		{/if}
+
 		<div
 			class="mt-3 flex-1 overflow-y-auto rounded-2xl border border-[rgb(var(--mv-border))]/60 bg-[rgb(var(--mv-panel))]/30 p-4"
 			bind:this={messagesContainer}
@@ -348,16 +424,25 @@
 			{#if loadingConversation}
 				<div class="flex h-full items-center justify-center text-xs text-[rgb(var(--mv-muted))]/70">Loading conversation...</div>
 			{:else if messages.length === 0}
-				<div class="flex h-full flex-col items-center justify-center text-center">
-					<div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-sky-500/10 text-sky-300">
-						<svg class="h-8 w-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-								d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-						</svg>
-					</div>
-					<h3 class="mt-4 text-sm font-semibold text-[rgb(var(--mv-text))]">Start a conversation</h3>
-					<p class="mt-2 max-w-md text-xs text-[rgb(var(--mv-muted))]/60">Ask about projects, deadlines, or synthesize insights across your notes.</p>
-				</div>
+				<EmptyState
+					icon="search"
+					tone="sky"
+					title="Ask your vault"
+					description="Hybrid search finds relevant notes and tasks, then the assistant answers with citations you can open."
+				>
+					<button
+						class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:border-sky-500/40 hover:text-[rgb(var(--mv-text))]"
+						on:click={() => applySuggestion('What am I working on this week?')}
+					>
+						What am I working on this week?
+					</button>
+					<button
+						class="rounded-lg border border-[rgb(var(--mv-border))] px-3 py-1.5 text-xs text-[rgb(var(--mv-muted))] hover:border-sky-500/40 hover:text-[rgb(var(--mv-text))]"
+						on:click={() => applySuggestion('Summarize open decisions in my notes')}
+					>
+						Summarize open decisions
+					</button>
+				</EmptyState>
 			{:else}
 				<div class="flex flex-col gap-4">
 					{#each messages as message (message.id)}
@@ -367,30 +452,90 @@
 									MV
 								</div>
 							{/if}
-							<div class="max-w-[80%] {message.role === 'user'
-								? 'rounded-2xl rounded-tr-md bg-sky-500/20 px-4 py-3 text-sky-100'
-								: 'rounded-2xl rounded-tl-md bg-[rgb(var(--mv-panel-strong))]/60 px-4 py-3 text-[rgb(var(--mv-text))]/80'}">
-								<div class="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</div>
-
-								{#if message.sources && message.sources.length > 0}
-									<div class="mt-3 border-t border-[rgb(var(--mv-border))]/40 pt-2">
-										<p class="text-[10px] font-medium uppercase tracking-wider text-[rgb(var(--mv-muted))]/60">Sources</p>
-										<div class="mt-1.5 flex flex-col gap-1.5">
-											{#each message.sources as source, i}
-												<a
-													href={sourceLink(source)}
-													class="flex items-center gap-2 rounded-lg border border-[rgb(var(--mv-border))]/40 bg-[rgb(var(--mv-panel))]/40 px-2.5 py-1.5 text-[11px] transition hover:border-sky-500/30"
+							<div
+								class="max-w-[80%] {message.role === 'user'
+									? 'rounded-2xl rounded-tr-md bg-sky-500/20 px-4 py-3 text-sky-100'
+									: message.isError
+										? 'rounded-2xl rounded-tl-md border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-rose-100'
+										: 'rounded-2xl rounded-tl-md bg-[rgb(var(--mv-panel-strong))]/60 px-4 py-3 text-[rgb(var(--mv-text))]/80'}"
+							>
+								{#if message.role === 'assistant' && !message.isError}
+									<div class="whitespace-pre-wrap text-sm leading-relaxed">
+										{#each splitCitationSegments(message.content) as segment, segIdx (segIdx)}
+											{#if segment.type === 'text'}
+												{segment.value}
+											{:else if message.sources && message.sources[segment.index - 1]}
+												<button
+													type="button"
+													class="mx-0.5 inline-flex translate-y-[-1px] items-center rounded bg-sky-500/20 px-1 py-0.5 font-mono text-[10px] font-semibold text-sky-300 underline decoration-sky-400/50 underline-offset-2 hover:bg-sky-500/30"
+													title={`Open source ${segment.index}: ${message.sources[segment.index - 1].title}`}
+													on:click={() => focusSource(segment.index)}
 												>
-													<span class="font-mono text-[rgb(var(--mv-muted))]/60">[{i + 1}]</span>
-													<span class="rounded px-1.5 py-0.5 text-[9px] font-medium {kindBadgeClass(source.kind)}">
-														{kindLabel(source.kind)}
-													</span>
-													<span class="truncate text-[rgb(var(--mv-muted))]">{source.title}</span>
-													<span class="ml-auto text-[9px] text-[rgb(var(--mv-muted))]/40">{(source.score * 100).toFixed(0)}%</span>
-												</a>
-											{/each}
-										</div>
+													{segment.raw}
+												</button>
+											{:else}
+												<span class="font-mono text-[10px] text-[rgb(var(--mv-muted))]">{segment.raw}</span>
+											{/if}
+										{/each}
 									</div>
+								{:else}
+									<div class="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</div>
+								{/if}
+
+								{#if message.role === 'assistant' && !message.isError}
+									{#if message.sources && message.sources.length > 0}
+										<div class="mt-3 border-t border-[rgb(var(--mv-border))]/40 pt-2">
+											<div class="flex items-center justify-between gap-2">
+												<p class="text-[10px] font-medium uppercase tracking-wider text-[rgb(var(--mv-muted))]/60">
+													Sources ({message.sources.length})
+												</p>
+												{#if message.mode}
+													<span class="text-[9px] uppercase tracking-wide text-[rgb(var(--mv-muted))]/40">
+														{message.mode === 'native' ? 'native chat' : 'hybrid recall'}
+													</span>
+												{/if}
+											</div>
+											<div class="mt-1.5 flex flex-col gap-1.5">
+												{#each message.sources as source, i}
+													{@const relevance = formatRelevanceScore(source.score)}
+													<a
+														id={`chat-source-${i + 1}`}
+														href={sourceHref(source.kind, source.node_id, source.title)}
+														class={`group flex items-start gap-2 rounded-lg border px-2.5 py-2 text-[11px] transition ${
+															highlightedSource === i + 1
+																? 'border-sky-500/50 bg-sky-500/10'
+																: 'border-[rgb(var(--mv-border))]/40 bg-[rgb(var(--mv-panel))]/40 hover:border-sky-500/40'
+														}`}
+													>
+														<span class="mt-0.5 font-mono text-[rgb(var(--mv-muted))]/60">[{i + 1}]</span>
+														<div class="min-w-0 flex-1">
+															<div class="flex items-center gap-2">
+																<span class="rounded px-1.5 py-0.5 text-[9px] font-medium {kindBadgeClass(source.kind)}">
+																	{kindLabel(source.kind)}
+																</span>
+																<span class="truncate font-medium text-[rgb(var(--mv-text))] underline-offset-2 group-hover:underline">
+																	{source.title}
+																</span>
+																<span class="ml-auto text-[rgb(var(--mv-muted))]/50 transition group-hover:text-sky-300">↗</span>
+															</div>
+															{#if source.preview}
+																<p class="mt-1 line-clamp-2 text-[10px] text-[rgb(var(--mv-muted))]/70">
+																	{source.preview}
+																</p>
+															{/if}
+														</div>
+														{#if relevance}
+															<span class="mt-0.5 shrink-0 text-[9px] text-[rgb(var(--mv-muted))]/40">{relevance}</span>
+														{/if}
+													</a>
+												{/each}
+											</div>
+										</div>
+									{:else}
+										<div class="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-100">
+											No grounding sources were attached to this answer. Treat it as unverified.
+										</div>
+									{/if}
 								{/if}
 							</div>
 							{#if message.role === 'user'}
@@ -407,10 +552,13 @@
 								MV
 							</div>
 							<div class="rounded-2xl rounded-tl-md bg-[rgb(var(--mv-panel-strong))]/60 px-4 py-3">
-								<div class="flex items-center gap-1.5" role="status" aria-label="Searching your knowledge base">
-									<div class="h-2 w-2 animate-pulse rounded-full bg-sky-400"></div>
-									<div class="h-2 w-2 animate-pulse rounded-full bg-sky-400" style="animation-delay: 0.15s"></div>
-									<div class="h-2 w-2 animate-pulse rounded-full bg-sky-400" style="animation-delay: 0.3s"></div>
+								<div class="flex items-center gap-2" role="status" aria-live="polite" aria-label={loadingLabel}>
+									<div class="flex items-center gap-1.5">
+										<div class="h-2 w-2 animate-pulse rounded-full bg-sky-400"></div>
+										<div class="h-2 w-2 animate-pulse rounded-full bg-sky-400" style="animation-delay: 0.15s"></div>
+										<div class="h-2 w-2 animate-pulse rounded-full bg-sky-400" style="animation-delay: 0.3s"></div>
+									</div>
+									<span class="text-xs text-[rgb(var(--mv-muted))]">{loadingLabel}</span>
 								</div>
 							</div>
 						</div>
@@ -446,11 +594,11 @@
 			{#if relatedLoading}
 				<p class="text-xs text-[rgb(var(--mv-muted))]/70">Loading graph neighbors…</p>
 			{:else if relatedNodes.length === 0}
-				<p class="text-xs text-[rgb(var(--mv-muted))]/70">Send a question to populate related context.</p>
+				<p class="text-xs text-[rgb(var(--mv-muted))]/70">Cited sources will populate related context here.</p>
 			{:else}
 				{#each relatedNodes.slice(0, 12) as neighbor (neighbor.node.id + neighbor.relationship_kind)}
 					<a
-						href={`/notes?note=${neighbor.node.id}`}
+						href={sourceHref(neighbor.node.kind, neighbor.node.id, neighbor.node.title)}
 						class="block rounded-lg border border-[rgb(var(--mv-border))] bg-[rgb(var(--mv-panel-strong))]/30 px-3 py-2 text-xs transition hover:border-sky-500/30"
 					>
 						<div class="flex items-center gap-2">

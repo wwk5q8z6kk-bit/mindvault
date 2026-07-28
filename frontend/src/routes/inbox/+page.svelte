@@ -10,6 +10,7 @@
 
 	import { notesStore, loadNotes } from '$lib/stores/notes';
 	import { pushToast } from '$lib/stores/toast';
+	import EmptyState from '$lib/components/EmptyState.svelte';
 	import type { TaskRecord } from '$lib/db';
 	import type { Note } from '$lib/api/notes';
 	import type { TaskStatus } from '$lib/api/tasks';
@@ -779,26 +780,12 @@
 				Loading inbox...
 			</div>
 		{:else if items.length === 0}
-			<div class="rounded-xl border border-dashed border-[rgb(var(--mv-border))] p-8 text-center">
-				<div class="flex justify-center">
-					<div
-						class="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-300"
-					>
-						<svg class="h-7 w-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="1.5"
-								d="M5 13l4 4L19 7"
-							/>
-						</svg>
-					</div>
-				</div>
-				<h3 class="mt-3 text-sm font-semibold text-[rgb(var(--mv-text))]">Inbox zero</h3>
-				<p class="mt-1 text-xs text-[rgb(var(--mv-muted))]">
-					All items have been triaged. New captures will appear here.
-				</p>
-			</div>
+			<EmptyState
+				icon="inbox"
+				tone="emerald"
+				title="Inbox zero"
+				description="All items have been triaged. New captures will appear here."
+			/>
 		{:else}
 			<div
 				bind:this={inboxListParentRef}

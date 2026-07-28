@@ -16,7 +16,10 @@ use {
         EmbeddingModel, ImageEmbedding, ImageEmbeddingModel, ImageInitOptions, TextEmbedding,
         TextInitOptions,
     },
-    std::{str::FromStr, sync::{Mutex, OnceLock}},
+    std::{
+        str::FromStr,
+        sync::{Mutex, OnceLock},
+    },
 };
 
 use super::{ModalityProcessor, ModalityStatus, ProcessingResult};
@@ -138,10 +141,7 @@ impl ClipTagger {
         let text_model = EmbeddingModel::from_str(&text_model_name)
             .map_err(|e| format!("invalid text embedding model: {e}"))?;
 
-        let labels = parse_label_list(
-            "MINDVAULT_IMAGE_EMBEDDING_LABELS",
-            DEFAULT_CLIP_LABELS,
-        );
+        let labels = parse_label_list("MINDVAULT_IMAGE_EMBEDDING_LABELS", DEFAULT_CLIP_LABELS);
         if labels.is_empty() {
             return Err("no image labels configured".to_string());
         }
@@ -157,17 +157,15 @@ impl ClipTagger {
             .unwrap_or(DEFAULT_CLIP_TOP_K)
             .max(1);
 
-        let show_download_progress =
-            env_flag("MINDVAULT_IMAGE_EMBEDDING_SHOW_DOWNLOAD_PROGRESS");
+        let show_download_progress = env_flag("MINDVAULT_IMAGE_EMBEDDING_SHOW_DOWNLOAD_PROGRESS");
 
         let cache_dir = std::env::var("MINDVAULT_IMAGE_EMBEDDING_CACHE_DIR")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .map(std::path::PathBuf::from);
 
-        let mut image_options = ImageInitOptions::new(image_model).with_show_download_progress(
-            show_download_progress,
-        );
+        let mut image_options =
+            ImageInitOptions::new(image_model).with_show_download_progress(show_download_progress);
         if let Some(cache_dir) = cache_dir.clone() {
             image_options = image_options.with_cache_dir(cache_dir);
         }
@@ -241,7 +239,11 @@ impl ClipTagger {
             })
             .collect();
 
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok(scored
             .into_iter()
@@ -316,7 +318,12 @@ fn clip_status_details() -> Option<ClipStatusDetails> {
 fn env_flag(name: &str) -> bool {
     std::env::var(name)
         .ok()
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -414,12 +421,11 @@ fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
         }
         let marker = data[i + 1];
         // SOF0 (0xC0) or SOF2 (0xC2) contain dimensions
-        if (marker == 0xC0 || marker == 0xC2)
-            && i + 9 <= data.len() {
-                let h = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
-                let w = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
-                return Some((w, h));
-            }
+        if (marker == 0xC0 || marker == 0xC2) && i + 9 <= data.len() {
+            let h = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
+            let w = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
+            return Some((w, h));
+        }
         if i + 3 < data.len() {
             let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
             if len == 0 {
@@ -443,7 +449,8 @@ fn webp_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     if chunk.starts_with(b"VP8 ") && data.len() >= 30 {
         // VP8 bitstream: 3-byte frame tag + 3-byte start code (0x9D 0x01 0x2A) + 2-byte width + 2-byte height
         let vp8_data = &data[20..]; // skip RIFF(4)+size(4)+WEBP(4)+VP8_(4)+size(4)
-        if vp8_data.len() >= 10 && vp8_data[3] == 0x9D && vp8_data[4] == 0x01 && vp8_data[5] == 0x2A {
+        if vp8_data.len() >= 10 && vp8_data[3] == 0x9D && vp8_data[4] == 0x01 && vp8_data[5] == 0x2A
+        {
             let w = u16::from_le_bytes([vp8_data[6], vp8_data[7]]) & 0x3FFF;
             let h = u16::from_le_bytes([vp8_data[8], vp8_data[9]]) & 0x3FFF;
             return Some((w as u32, h as u32));
@@ -603,9 +610,7 @@ impl ModalityProcessor for ImageProcessor {
             .metadata
             .insert("file_size".into(), serde_json::json!(file_size));
         if let Some((w, h)) = dimensions {
-            result
-                .metadata
-                .insert("width".into(), serde_json::json!(w));
+            result.metadata.insert("width".into(), serde_json::json!(w));
             result
                 .metadata
                 .insert("height".into(), serde_json::json!(h));
@@ -623,7 +628,9 @@ impl ModalityProcessor for ImageProcessor {
                         result
                             .metadata
                             .insert("clip_labels".into(), serde_json::json!(label_text));
-                        result.text_content.push_str(&format!("\nLabels: {label_text}"));
+                        result
+                            .text_content
+                            .push_str(&format!("\nLabels: {label_text}"));
                         for tag in tags {
                             result.suggested_tags.push(format!("image:{}", tag.label));
                         }
@@ -741,7 +748,7 @@ mod tests {
         data.extend_from_slice(b"VP8X");
         data.extend_from_slice(&10u32.to_le_bytes()); // chunk size
         data.extend_from_slice(&[0; 4]); // flags (4 bytes) — pad to offset 24
-        // Canvas width-1 (3 bytes LE) = 799 → width 800
+                                         // Canvas width-1 (3 bytes LE) = 799 → width 800
         data.push(0x1F);
         data.push(0x03);
         data.push(0x00);
@@ -886,6 +893,9 @@ mod tests {
         let p = ImageProcessor::new();
         let status = p.status();
         assert!(status.available);
-        assert_eq!(status.details["metadata_extraction"], serde_json::json!(true));
+        assert_eq!(
+            status.details["metadata_extraction"],
+            serde_json::json!(true)
+        );
     }
 }

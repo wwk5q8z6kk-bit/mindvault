@@ -142,10 +142,7 @@ impl ExternalAdapter for EmailAdapter {
         }
     }
 
-    async fn poll(
-        &self,
-        cursor: Option<&str>,
-    ) -> MvResult<(Vec<AdapterInboundMessage>, String)> {
+    async fn poll(&self, cursor: Option<&str>) -> MvResult<(Vec<AdapterInboundMessage>, String)> {
         // Email polling (IMAP) is a complex protocol requiring a dedicated
         // connection. For now, inbound email is not supported — users should
         // configure email forwarding to a webhook endpoint instead.
@@ -173,7 +170,11 @@ impl ExternalAdapter for EmailAdapter {
     }
 
     fn status(&self) -> AdapterStatus {
-        let error = self.last_error.lock().expect("last_error mutex poisoned").clone();
+        let error = self
+            .last_error
+            .lock()
+            .expect("last_error mutex poisoned")
+            .clone();
         let last_send = *self.last_send.lock().expect("last_send mutex poisoned");
         AdapterStatus {
             adapter_type: AdapterType::Email,
@@ -342,7 +343,9 @@ impl EmailAdapter {
             inbound_content
         };
 
-        let query = MemoryQuery::new(query_text).with_limit(6).with_min_score(0.0);
+        let query = MemoryQuery::new(query_text)
+            .with_limit(6)
+            .with_min_score(0.0);
 
         let results = match engine.recall(&query).await {
             Ok(r) => r,
@@ -454,11 +457,13 @@ impl EmailAdapter {
             .unwrap_or("")
             .to_string();
 
-        let proposal =
-            Proposal::new(ProposalSender::Agent, ProposalAction::Custom("email_reply".into()))
-                .with_confidence(confidence)
-                .with_diff(reply_content)
-                .with_payload(payload);
+        let proposal = Proposal::new(
+            ProposalSender::Agent,
+            ProposalAction::Custom("email_reply".into()),
+        )
+        .with_confidence(confidence)
+        .with_diff(reply_content)
+        .with_payload(payload);
 
         Ok(Some(proposal))
     }

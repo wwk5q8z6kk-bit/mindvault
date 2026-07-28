@@ -166,12 +166,48 @@ impl RequestRateLimiter {
 
 static RATE_LIMITER: OnceLock<RequestRateLimiter> = OnceLock::new();
 static PROXY_RATE_LIMITER: OnceLock<RequestRateLimiter> = OnceLock::new();
-static NAMESPACE_NODE_QUOTA: OnceLock<Option<usize>> = OnceLock::new();
 
 pub fn enforce_rate_limit(auth: &AuthContext) -> Result<RateLimitStatus, RateLimitExceeded> {
     let key = rate_limit_key(auth);
     RATE_LIMITER
         .get_or_init(|| RequestRateLimiter::new(RateLimitConfig::from_env()))
+        .check(&key)
+}
+
+const ENV_AI_RATE_LIMIT_REQUESTS: &str = "MINDVAULT_AI_RATE_LIMIT_REQUESTS";
+const ENV_AI_RATE_LIMIT_WINDOW_SECS: &str = "MINDVAULT_AI_RATE_LIMIT_WINDOW_SECS";
+const DEFAULT_AI_RATE_LIMIT_REQUESTS: usize = 60;
+const DEFAULT_AI_RATE_LIMIT_WINDOW_SECS: u64 = 60;
+
+static AI_RATE_LIMITER: OnceLock<RequestRateLimiter> = OnceLock::new();
+
+/// Per-subject throttle for expensive AI endpoints (chat + assist).
+///
+/// Local system admin (auth disabled / no subject) is exempt; the global
+/// request rate limiter still applies via middleware.
+pub fn enforce_ai_rate_limit(auth: &AuthContext) -> Result<RateLimitStatus, RateLimitExceeded> {
+    if auth.subject.is_none() && auth.is_admin() {
+        return Ok(RateLimitStatus {
+            limit: 0,
+            remaining: 0,
+            reset_secs: 0,
+        });
+    }
+
+    let key = format!("ai|{}", rate_limit_key(auth));
+    AI_RATE_LIMITER
+        .get_or_init(|| {
+            let max_requests = read_env_usize(ENV_AI_RATE_LIMIT_REQUESTS)
+                .unwrap_or(DEFAULT_AI_RATE_LIMIT_REQUESTS);
+            let window_secs = read_env_u64(ENV_AI_RATE_LIMIT_WINDOW_SECS)
+                .filter(|value| *value > 0)
+                .unwrap_or(DEFAULT_AI_RATE_LIMIT_WINDOW_SECS);
+            RequestRateLimiter::new(RateLimitConfig {
+                enabled: max_requests > 0,
+                max_requests,
+                window: Duration::from_secs(window_secs),
+            })
+        })
         .check(&key)
 }
 
@@ -323,10 +359,12 @@ pub async fn enforce_namespace_quota(
 }
 
 fn namespace_node_quota() -> Option<usize> {
-    *NAMESPACE_NODE_QUOTA.get_or_init(|| read_env_usize(ENV_NAMESPACE_NODE_QUOTA))
+    // Read on each call so tests/ops can change MINDVAULT_NAMESPACE_NODE_QUOTA
+    // without process restart (quota checks are infrequent write-path only).
+    read_env_usize(ENV_NAMESPACE_NODE_QUOTA)
 }
 
-fn rate_limit_key(auth: &AuthContext) -> String {
+pub(crate) fn rate_limit_key(auth: &AuthContext) -> String {
     let subject = auth.subject.as_deref().unwrap_or("system");
     let namespace = auth.namespace.as_deref().unwrap_or("*");
     format!("{subject}|{}|{namespace}", role_as_str(auth.role))
@@ -359,6 +397,14 @@ fn read_env_u64(key: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock")
+    }
 
     #[test]
     fn rate_limiter_blocks_after_capacity() {
@@ -443,6 +489,86 @@ mod tests {
             assert!(limiter
                 .check_at("k", now + Duration::from_millis(i))
                 .is_ok());
+        }
+    }
+
+    #[test]
+    fn rate_limit_key_isolates_subjects_and_namespaces() {
+        let alice_a = AuthContext {
+            subject: Some("alice".into()),
+            role: AuthRole::Read,
+            namespace: Some("team-a".into()),
+            consumer_name: None,
+        };
+        let alice_b = AuthContext {
+            subject: Some("alice".into()),
+            role: AuthRole::Read,
+            namespace: Some("team-b".into()),
+            consumer_name: None,
+        };
+        let bob_a = AuthContext {
+            subject: Some("bob".into()),
+            role: AuthRole::Read,
+            namespace: Some("team-a".into()),
+            consumer_name: None,
+        };
+
+        assert_ne!(rate_limit_key(&alice_a), rate_limit_key(&alice_b));
+        assert_ne!(rate_limit_key(&alice_a), rate_limit_key(&bob_a));
+        assert_eq!(rate_limit_key(&alice_a), "alice|read|team-a");
+    }
+
+    #[test]
+    fn ai_rate_limit_exempts_local_system_admin() {
+        let status = enforce_ai_rate_limit(&AuthContext::system_admin())
+            .expect("system admin should be exempt");
+        assert_eq!(status.limit, 0);
+    }
+
+    #[test]
+    fn ai_rate_limit_bucket_keys_isolate_subjects() {
+        let limiter = RequestRateLimiter::new(RateLimitConfig {
+            enabled: true,
+            max_requests: 2,
+            window: Duration::from_secs(60),
+        });
+        let now = Instant::now();
+        let key_a = "ai|alice|read|team-a";
+        let key_b = "ai|bob|read|team-a";
+
+        assert!(limiter.check_at(key_a, now).is_ok());
+        assert!(limiter
+            .check_at(key_a, now + Duration::from_millis(1))
+            .is_ok());
+        assert!(limiter
+            .check_at(key_a, now + Duration::from_millis(2))
+            .is_err());
+        assert!(limiter.check_at(key_b, now).is_ok());
+    }
+
+    #[test]
+    fn namespace_node_quota_reads_env_each_call() {
+        let _guard = env_test_lock();
+        let key = ENV_NAMESPACE_NODE_QUOTA;
+        let original = std::env::var(key).ok();
+        std::env::remove_var(key);
+        assert_eq!(namespace_node_quota(), None);
+
+        std::env::set_var(key, "3");
+        assert_eq!(namespace_node_quota(), Some(3));
+
+        std::env::set_var(key, "1");
+        assert_eq!(namespace_node_quota(), Some(1));
+
+        std::env::set_var(key, "");
+        assert_eq!(namespace_node_quota(), None);
+
+        std::env::set_var(key, "not-a-number");
+        assert_eq!(namespace_node_quota(), None);
+
+        match original {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
         }
     }
 }

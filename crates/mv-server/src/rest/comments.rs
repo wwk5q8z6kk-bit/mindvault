@@ -73,13 +73,7 @@ pub async fn create_node_comment(
 
     let node_id = match Uuid::parse_str(&node_id) {
         Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                err_json("invalid node id"),
-            )
-                .into_response()
-        }
+        Err(_) => return (StatusCode::BAD_REQUEST, err_json("invalid node id")).into_response(),
     };
 
     let node = match state.engine.store.nodes.get(node_id).await {
@@ -134,13 +128,7 @@ pub async fn list_node_comments(
 
     let node_id = match Uuid::parse_str(&node_id) {
         Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                err_json("invalid node id"),
-            )
-                .into_response()
-        }
+        Err(_) => return (StatusCode::BAD_REQUEST, err_json("invalid node id")).into_response(),
     };
 
     let node = match state.engine.store.nodes.get(node_id).await {
@@ -192,23 +180,11 @@ pub async fn resolve_node_comment(
 
     let node_id = match Uuid::parse_str(&node_id) {
         Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                err_json("invalid node id"),
-            )
-                .into_response()
-        }
+        Err(_) => return (StatusCode::BAD_REQUEST, err_json("invalid node id")).into_response(),
     };
     let comment_id = match Uuid::parse_str(&comment_id) {
         Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                err_json("invalid comment id"),
-            )
-                .into_response()
-        }
+        Err(_) => return (StatusCode::BAD_REQUEST, err_json("invalid comment id")).into_response(),
     };
 
     let node = match state.engine.store.nodes.get(node_id).await {
@@ -274,23 +250,11 @@ pub async fn delete_node_comment(
 
     let node_id = match Uuid::parse_str(&node_id) {
         Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                err_json("invalid node id"),
-            )
-                .into_response()
-        }
+        Err(_) => return (StatusCode::BAD_REQUEST, err_json("invalid node id")).into_response(),
     };
     let comment_id = match Uuid::parse_str(&comment_id) {
         Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                err_json("invalid comment id"),
-            )
-                .into_response()
-        }
+        Err(_) => return (StatusCode::BAD_REQUEST, err_json("invalid comment id")).into_response(),
     };
 
     let node = match state.engine.store.nodes.get(node_id).await {

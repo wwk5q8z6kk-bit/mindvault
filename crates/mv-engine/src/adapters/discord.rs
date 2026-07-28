@@ -94,10 +94,7 @@ impl ExternalAdapter for DiscordAdapter {
         Ok(())
     }
 
-    async fn poll(
-        &self,
-        cursor: Option<&str>,
-    ) -> MvResult<(Vec<AdapterInboundMessage>, String)> {
+    async fn poll(&self, cursor: Option<&str>) -> MvResult<(Vec<AdapterInboundMessage>, String)> {
         // If a bot_token and channel_id are configured, use the Discord REST
         // API to poll for messages. Otherwise, fall back to empty (webhook-only).
         let bot_token = match self.config.get_setting("bot_token") {
@@ -111,9 +108,7 @@ impl ExternalAdapter for DiscordAdapter {
         };
 
         // Discord GET /channels/{channel_id}/messages?after={snowflake}&limit=50
-        let url = format!(
-            "https://discord.com/api/v10/channels/{channel_id}/messages"
-        );
+        let url = format!("https://discord.com/api/v10/channels/{channel_id}/messages");
 
         let mut params: Vec<(&str, String)> = vec![("limit", "50".into())];
         if let Some(after_id) = cursor {
@@ -182,7 +177,10 @@ impl ExternalAdapter for DiscordAdapter {
             .unwrap_or_else(|| cursor.unwrap_or("0").to_string());
 
         if !messages.is_empty() {
-            *self.last_receive.lock().expect("last_receive mutex poisoned") = Some(Utc::now());
+            *self
+                .last_receive
+                .lock()
+                .expect("last_receive mutex poisoned") = Some(Utc::now());
         }
 
         Ok((messages, new_cursor))
@@ -206,9 +204,16 @@ impl ExternalAdapter for DiscordAdapter {
     }
 
     fn status(&self) -> AdapterStatus {
-        let error = self.last_error.lock().expect("last_error mutex poisoned").clone();
+        let error = self
+            .last_error
+            .lock()
+            .expect("last_error mutex poisoned")
+            .clone();
         let last_send = *self.last_send.lock().expect("last_send mutex poisoned");
-        let last_receive = *self.last_receive.lock().expect("last_receive mutex poisoned");
+        let last_receive = *self
+            .last_receive
+            .lock()
+            .expect("last_receive mutex poisoned");
         AdapterStatus {
             adapter_type: AdapterType::Discord,
             name: self.config.name.clone(),
@@ -236,7 +241,10 @@ mod tests {
         let result = DiscordAdapter::new(config);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("webhook_url"), "expected webhook_url error, got: {err}");
+        assert!(
+            err.contains("webhook_url"),
+            "expected webhook_url error, got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -282,8 +290,7 @@ mod tests {
 
     #[tokio::test]
     async fn poll_without_channel_id_returns_empty() {
-        let config = discord_config_with_webhook()
-            .with_setting("bot_token", "test-bot-token");
+        let config = discord_config_with_webhook().with_setting("bot_token", "test-bot-token");
         let adapter = DiscordAdapter::new(config).unwrap();
         let (messages, cursor) = adapter.poll(Some("123")).await.unwrap();
         assert!(messages.is_empty());

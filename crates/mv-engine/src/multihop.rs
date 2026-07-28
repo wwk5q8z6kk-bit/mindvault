@@ -131,14 +131,13 @@ impl MultiHopRetriever {
     ) -> Vec<String> {
         let mut candidates: Vec<String> = Vec::new();
         let stop_words: HashSet<&str> = [
-            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-            "have", "has", "had", "do", "does", "did", "will", "would", "could",
-            "should", "may", "might", "shall", "can", "must", "need", "this",
-            "that", "these", "those", "it", "its", "they", "them", "their",
-            "we", "our", "you", "your", "he", "she", "his", "her", "i", "my",
-            "me", "for", "of", "in", "on", "at", "to", "from", "with", "by",
-            "as", "if", "or", "and", "but", "not", "no", "so", "than", "too",
-            "very", "just", "about", "also", "more", "some", "any", "all",
+            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has",
+            "had", "do", "does", "did", "will", "would", "could", "should", "may", "might",
+            "shall", "can", "must", "need", "this", "that", "these", "those", "it", "its", "they",
+            "them", "their", "we", "our", "you", "your", "he", "she", "his", "her", "i", "my",
+            "me", "for", "of", "in", "on", "at", "to", "from", "with", "by", "as", "if", "or",
+            "and", "but", "not", "no", "so", "than", "too", "very", "just", "about", "also",
+            "more", "some", "any", "all",
         ]
         .into_iter()
         .collect();
@@ -239,11 +238,9 @@ mod tests {
     #[tokio::test]
     async fn heuristic_extracts_entities() {
         let retriever = MultiHopRetriever::new(None, test_config());
-        let contents = vec![
-            "The Authentication Module handles OAuth tokens. \
+        let contents = vec!["The Authentication Module handles OAuth tokens. \
              The Performance Monitor tracks response times."
-                .into(),
-        ];
+            .into()];
         let follow_ups = retriever
             .plan_follow_ups("auth perf", &contents, &HashSet::new())
             .await;

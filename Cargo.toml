@@ -19,7 +19,7 @@ exclude = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0"
+license-file = "LICENSE"
 authors = ["MindVault Contributors"]
 description = "A local-first knowledge memory system for humans and AI agents"
 homepage = "https://github.com/wwk5q8z6kk-bit/mindvault"
@@ -30,10 +30,10 @@ keywords = ["knowledge-graph", "memory", "local-first", "ai", "vault"]
 [workspace.dependencies]
 # Internal crates
 mv-core = { path = "crates/mv-core" }
-mv-storage = { path = "crates/mv-storage" }
+mv-storage = { path = "crates/mv-storage", default-features = false }
 mv-index = { path = "crates/mv-index" }
 mv-graph = { path = "crates/mv-graph" }
-mv-engine = { path = "crates/mv-engine" }
+mv-engine = { path = "crates/mv-engine", default-features = false }
 mv-server = { path = "crates/mv-server" }
 mv-mcp = { path = "crates/mv-mcp" }
 mv-plugin = { path = "crates/mv-plugin" }
@@ -44,6 +44,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time",
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+unicode-normalization-alignments = "0.1.12"
 
 # Web / API
 axum = { version = "0.7", features = ["ws", "multipart"] }
@@ -93,6 +94,7 @@ reqwest = { version = "0.12", features = ["json", "multipart"] }
 
 # System / low-level
 libc = "0.2"
+notify = "8.2"
 
 # URL parsing
 url = "2"
@@ -127,3 +129,6 @@ wasmtime-wasi = "27"
 [profile.release]
 lto = "thin"
 strip = true
+
+[patch.crates-io]
+lance = { path = "third_party/lance" }

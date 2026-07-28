@@ -2,7 +2,7 @@
 name = "mv-engine"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 authors.workspace = true
 description = "Orchestration engine combining all MindVault backends"
 repository.workspace = true
@@ -16,7 +16,7 @@ wip = []
 
 [dependencies]
 mv-core = { workspace = true }
-mv-storage = { workspace = true }
+mv-storage = { workspace = true, default-features = false }
 mv-index = { workspace = true }
 mv-graph = { workspace = true }
 serde = { workspace = true }

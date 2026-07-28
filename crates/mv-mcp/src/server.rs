@@ -160,11 +160,7 @@ impl McpServer {
             }
         };
 
-        let caller_key = self
-            .context
-            .key_id()
-            .unwrap_or("anonymous")
-            .to_string();
+        let caller_key = self.context.key_id().unwrap_or("anonymous").to_string();
 
         if let Err(e) = self.rate_limiter.check(&caller_key) {
             return JsonRpcResponse::error(id, -32000, e);

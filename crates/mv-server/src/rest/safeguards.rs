@@ -294,4 +294,3 @@ pub async fn remove_auto_approve_rule(
 
     Ok(Json(serde_json::json!({ "id": id, "removed": true })))
 }
-

@@ -115,6 +115,8 @@ export class MindVaultAdmin {
     constructor() {
         this.loadSettings();
         this.apiBase = this.getApiBase();
+        this.connectionStatus = 'connecting'; // live | degraded | offline | connecting
+        this.consecutiveApiFailures = 0;
         this.currentPage = 1;
         this.pageSize = 20;
         this.currentFilters = {};
@@ -216,6 +218,7 @@ export class MindVaultAdmin {
             return;
         }
         this.initialized = true;
+        this.renderConnectionStatus();
         this.bindEvents();
         this.initializeFormStatePersistence();
         this.initSettingsControls();
@@ -2995,6 +2998,38 @@ export class MindVaultAdmin {
         this.dailyLinkedItems.innerHTML = `<p>${this.escapeHtml(message)}</p>`;
     }
 
+    markConnectionSuccess() {
+        this.consecutiveApiFailures = 0;
+        this.connectionStatus = 'live';
+        this.renderConnectionStatus();
+    }
+
+    markConnectionFailure(kind = 'offline') {
+        this.consecutiveApiFailures += 1;
+        this.connectionStatus = kind === 'server' ? 'degraded' : 'offline';
+        this.renderConnectionStatus();
+    }
+
+    renderConnectionStatus() {
+        const el = document.getElementById('global-connection-status');
+        if (!el) {
+            return;
+        }
+        const status = this.connectionStatus || 'connecting';
+        const labels = {
+            live: 'Live',
+            degraded: 'Degraded',
+            offline: 'Offline',
+            connecting: 'Connecting'
+        };
+        el.dataset.state = status;
+        el.setAttribute('aria-label', `Connection status: ${labels[status] || status}`);
+        const text = el.querySelector('.status-text');
+        if (text) {
+            text.textContent = labels[status] || status;
+        }
+    }
+
     async apiCall(endpoint, options = {}) {
         const { silent = false, ...requestOptions } = options;
         const url = `${this.apiBase}${endpoint}`;
@@ -3009,16 +3044,69 @@ export class MindVaultAdmin {
         try {
             const response = await fetch(url, config);
             if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                let detail = response.statusText || 'Request failed';
+                try {
+                    const raw = await response.text();
+                    if (raw && raw.trim()) {
+                        try {
+                            const parsed = JSON.parse(raw);
+                            detail =
+                                parsed.error ||
+                                parsed.message ||
+                                (typeof parsed === 'string' ? parsed : raw.slice(0, 200));
+                        } catch {
+                            // Non-JSON error bodies are common when the proxy/backend is down.
+                            detail = raw.slice(0, 200);
+                        }
+                    }
+                } catch {
+                    // Ignore body read failures; status text is enough.
+                }
+                if (response.status >= 500) {
+                    this.markConnectionFailure('server');
+                } else if (response.status === 0) {
+                    this.markConnectionFailure('offline');
+                }
+                throw new Error(`HTTP ${response.status}: ${detail}`);
             }
 
             if (response.status === 204) {
+                this.markConnectionSuccess();
                 return null;
             }
-            return await response.json();
+
+            const raw = await response.text();
+            if (!raw || !raw.trim()) {
+                this.markConnectionSuccess();
+                return null;
+            }
+
+            try {
+                const data = JSON.parse(raw);
+                this.markConnectionSuccess();
+                return data;
+            } catch (parseError) {
+                this.markConnectionFailure('server');
+                const err = new Error('Invalid JSON response from API');
+                err.cause = parseError;
+                throw err;
+            }
         } catch (error) {
+            const message = error?.message || String(error);
+            const alreadyMarked =
+                /Invalid JSON response from API|HTTP 5\d\d:/.test(message);
+            const looksNetwork =
+                error instanceof TypeError ||
+                /Failed to fetch|NetworkError|Load failed|ECONNREFUSED|Backend unavailable/i.test(
+                    message
+                );
+            if (!alreadyMarked && looksNetwork) {
+                this.markConnectionFailure('offline');
+            }
             if (!silent) {
-                this.showNotification(`API Error: ${error.message}`, 'error');
+                this.showNotification(`API Error: ${message}`, 'error');
+            } else {
+                console.warn(`API warning (${endpoint}):`, message);
             }
             throw error;
         }

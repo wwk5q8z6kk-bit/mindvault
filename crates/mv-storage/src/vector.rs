@@ -206,7 +206,11 @@ impl LanceVectorStore {
         Self::open_with_mode(path, dimensions, false).await
     }
 
-    pub async fn open_with_mode(path: &Path, dimensions: usize, sealed_mode: bool) -> MvResult<Self> {
+    pub async fn open_with_mode(
+        path: &Path,
+        dimensions: usize,
+        sealed_mode: bool,
+    ) -> MvResult<Self> {
         let (db, sealed_snapshot) = if sealed_mode {
             let sealed_snapshot = SealedLanceSnapshotStore::open(path)?;
             let memory_uri = format!("memory://mindvault-{}", Uuid::now_v7());
@@ -1122,8 +1126,7 @@ fn fastembed_embedding_model_from_name(model_name: &str) -> Option<EmbeddingMode
 mod tests {
     use super::*;
     use crate::sealed_runtime::{
-        clear_runtime_root_key_for_scope, runtime_scope_from_parent,
-        set_runtime_root_key_for_scope,
+        clear_runtime_root_key_for_scope, runtime_scope_from_parent, set_runtime_root_key_for_scope,
     };
     use tempfile::tempdir;
 
@@ -1131,7 +1134,9 @@ mod tests {
         if needle.is_empty() || haystack.len() < needle.len() {
             return false;
         }
-        haystack.windows(needle.len()).any(|window| window == needle)
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
     }
 
     struct SealedRuntimeReset {
@@ -1200,12 +1205,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert(
-                id,
-                vec![0.9, 0.1, 0.0],
-                &marker,
-                Some("default"),
-            )
+            .upsert(id, vec![0.9, 0.1, 0.0], &marker, Some("default"))
             .await
             .unwrap();
 

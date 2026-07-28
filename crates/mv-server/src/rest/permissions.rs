@@ -118,14 +118,15 @@ type ParsedTemplateRequest = (
 fn parse_template_request(
     request: PermissionTemplateRequest,
 ) -> Result<ParsedTemplateRequest, (StatusCode, String)> {
-    validate_text_input("name", &request.name).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_text_input("name", &request.name)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     validate_namespace_input(request.scope_namespace.as_deref())
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let scope_tags = request.scope_tags.unwrap_or_default();
     validate_tags_input(&scope_tags).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
-    let tier =
-        PermissionTier::from_str(&request.tier).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    let tier = PermissionTier::from_str(&request.tier)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let mut allow_kinds = Vec::new();
     if let Some(kinds) = request.allow_kinds {

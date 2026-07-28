@@ -20,7 +20,10 @@ use crate::llm::{ChatMessage, CompletionParams, LlmProvider};
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DistillRequest {
     /// Summarize all knowledge in a namespace.
-    Namespace { namespace: String, max_nodes: Option<usize> },
+    Namespace {
+        namespace: String,
+        max_nodes: Option<usize>,
+    },
     /// Temporal digest for a time range.
     Temporal {
         #[serde(default = "default_days")]

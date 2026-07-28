@@ -36,6 +36,12 @@ pub enum MvError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
+    #[error("idempotency conflict: {0}")]
+    IdempotencyConflict(String),
+
+    #[error("canonical source conflict: {0}")]
+    CanonicalSourceConflict(String),
+
     #[error("auth error: {0}")]
     Auth(String),
 
@@ -71,6 +77,15 @@ pub enum MvError {
 
     #[error("federation error: {0}")]
     Federation(String),
+
+    #[error("not found: {0}")]
+    NotFound(String),
+
+    /// A governed resource is exclusively held by another holder — notably a
+    /// write lease on a target URI. Distinct from `IdempotencyConflict`, which
+    /// means a key was reused for different content.
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 pub type MvResult<T> = Result<T, MvError>;

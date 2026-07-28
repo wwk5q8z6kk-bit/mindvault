@@ -210,9 +210,7 @@ impl RecallPipeline {
 
         // --- Phase 3: Cross-Encoder Reranking ---
         if self.config.rerank.enabled && !fused.is_empty() {
-            fused = self
-                .apply_rerank(search_text, &fused, fetch_limit)
-                .await;
+            fused = self.apply_rerank(search_text, &fused, fetch_limit).await;
         }
 
         // --- Phase 3: Multi-Hop Retrieval ---
@@ -420,12 +418,11 @@ impl RecallPipeline {
                                 original_query.filters.namespace.as_deref(),
                             )
                             .await?;
-                        hop_results =
-                            mv_index::hybrid::reciprocal_rank_fusion(
-                                &[hop_results, vec_results],
-                                self.config.search.rrf_k,
-                                fetch_limit,
-                            );
+                        hop_results = mv_index::hybrid::reciprocal_rank_fusion(
+                            &[hop_results, vec_results],
+                            self.config.search.rrf_k,
+                            fetch_limit,
+                        );
                     }
                 }
 

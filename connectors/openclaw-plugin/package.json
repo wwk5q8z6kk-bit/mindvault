@@ -2,10 +2,16 @@
   "name": "@openclaw-user/knowledgevault",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "description": "KnowledgeVault memory plugin for OpenClaw — knowledge graph connector",
   "type": "module",
   "openclaw": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
-  "dependencies": {}
+  "devDependencies": {
+    "@types/node": "^20.17.50",
+    "typescript": "^5.8.3"
+  }
 }

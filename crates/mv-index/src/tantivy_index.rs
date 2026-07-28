@@ -469,8 +469,7 @@ impl FullTextIndex for TantivyFullTextIndex {
 mod tests {
     use super::*;
     use mv_storage::sealed_runtime::{
-        clear_runtime_root_key_for_scope, runtime_scope_from_parent,
-        set_runtime_root_key_for_scope,
+        clear_runtime_root_key_for_scope, runtime_scope_from_parent, set_runtime_root_key_for_scope,
     };
     use tempfile::tempdir;
     use uuid::Uuid;
@@ -489,7 +488,9 @@ mod tests {
         if needle.is_empty() || haystack.len() < needle.len() {
             return false;
         }
-        haystack.windows(needle.len()).any(|window| window == needle)
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
     }
 
     #[test]
@@ -599,6 +600,9 @@ mod tests {
             }
         }
 
-        assert!(scanned_files > 0, "expected sealed index files to be created");
+        assert!(
+            scanned_files > 0,
+            "expected sealed index files to be created"
+        );
     }
 }

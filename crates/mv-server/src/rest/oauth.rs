@@ -110,7 +110,12 @@ fn parse_rfc3339(
     let Some(value) = value else { return Ok(None) };
     DateTime::parse_from_rfc3339(&value)
         .map(|dt| Some(dt.with_timezone(&Utc)))
-        .map_err(|_| (StatusCode::BAD_REQUEST, format!("invalid {field} timestamp")))
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("invalid {field} timestamp"),
+            )
+        })
 }
 
 fn constant_time_eq(a: &str, b: &str) -> bool {
@@ -132,7 +137,9 @@ fn extract_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
         return None;
     }
     let encoded = auth_str.trim_start_matches(prefix);
-    let decoded = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
     let decoded = String::from_utf8(decoded).ok()?;
     let mut parts = decoded.splitn(2, ':');
     let client_id = parts.next()?.to_string();
@@ -205,13 +212,19 @@ async fn ensure_template_exists(
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     if template.is_none() {
-        return Err((StatusCode::BAD_REQUEST, "permission template not found".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "permission template not found".into(),
+        ));
     }
     Ok(())
 }
 
 async fn oauth_domain_id(engine: &MindVaultEngine) -> Result<Uuid, MvError> {
-    engine.keychain.find_or_create_domain(OAUTH_CLIENT_DOMAIN, "system").await
+    engine
+        .keychain
+        .find_or_create_domain(OAUTH_CLIENT_DOMAIN, "system")
+        .await
 }
 
 async fn revoke_oauth_access_keys(
@@ -222,10 +235,9 @@ async fn revoke_oauth_access_keys(
     let label = format!("oauth:{client_id}");
     let mut revoked = 0;
     for key in keys {
-        if key.name.as_deref() == Some(label.as_str())
-            && engine.revoke_access_key(key.id).await? {
-                revoked += 1;
-            }
+        if key.name.as_deref() == Some(label.as_str()) && engine.revoke_access_key(key.id).await? {
+            revoked += 1;
+        }
     }
     Ok(revoked)
 }
@@ -241,7 +253,8 @@ pub async fn create_oauth_client(
 ) -> Result<Json<OAuthClientCreateResponse>, (StatusCode, String)> {
     require_admin(&auth)?;
 
-    validate_text_input("name", &payload.name).map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    validate_text_input("name", &payload.name)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     let template_id = Uuid::parse_str(&payload.template_id)
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid template_id".into()))?;
@@ -286,9 +299,7 @@ pub async fn create_oauth_client(
     }
     metadata.insert(
         METADATA_TOKEN_TTL_SECS.to_string(),
-        Value::Number(
-            (payload.token_ttl_seconds.unwrap_or(DEFAULT_TOKEN_TTL_SECS)).into(),
-        ),
+        Value::Number((payload.token_ttl_seconds.unwrap_or(DEFAULT_TOKEN_TTL_SECS)).into()),
     );
 
     let updated = state
@@ -317,7 +328,10 @@ pub async fn create_oauth_client(
 
     let chronicle = ChronicleEntry::new(
         "oauth.client_create",
-        format!("Created OAuth client '{}' (id: {})", payload.name, updated.name),
+        format!(
+            "Created OAuth client '{}' (id: {})",
+            payload.name, updated.name
+        ),
     );
     let _ = state.engine.log_chronicle(&chronicle).await;
 
@@ -418,7 +432,10 @@ pub async fn revoke_oauth_client(
                 "Revoked OAuth client '{}' and {} access key(s)",
                 client_id, count
             ),
-            None => format!("Revoked OAuth client '{}' (access key revocation failed)", client_id),
+            None => format!(
+                "Revoked OAuth client '{}' (access key revocation failed)",
+                client_id
+            ),
         },
     );
     let _ = state.engine.log_chronicle(&chronicle).await;
@@ -436,20 +453,17 @@ pub async fn oauth_token(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let mut params: OAuthTokenRequest = if content_type.starts_with("application/x-www-form-urlencoded")
-    {
-        serde_urlencoded::from_bytes(&body)
-            .map_err(|_| (StatusCode::BAD_REQUEST, "invalid form payload".into()))?
-    } else {
-        serde_json::from_slice(&body)
-            .map_err(|_| (StatusCode::BAD_REQUEST, "invalid json payload".into()))?
-    };
+    let mut params: OAuthTokenRequest =
+        if content_type.starts_with("application/x-www-form-urlencoded") {
+            serde_urlencoded::from_bytes(&body)
+                .map_err(|_| (StatusCode::BAD_REQUEST, "invalid form payload".into()))?
+        } else {
+            serde_json::from_slice(&body)
+                .map_err(|_| (StatusCode::BAD_REQUEST, "invalid json payload".into()))?
+        };
 
     if params.grant_type != "client_credentials" {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "unsupported grant_type".into(),
-        ));
+        return Err((StatusCode::BAD_REQUEST, "unsupported grant_type".into()));
     }
 
     let (client_id, client_secret) = if let Some((id, secret)) = extract_basic_auth(&headers) {
@@ -690,20 +704,18 @@ mod tests {
     fn build_client_response_populates_fields() {
         let mut metadata = HashMap::new();
         metadata.insert(METADATA_TEMPLATE_ID.into(), Value::String("tmpl-1".into()));
-        metadata.insert(METADATA_DISPLAY_NAME.into(), Value::String("My Client".into()));
+        metadata.insert(
+            METADATA_DISPLAY_NAME.into(),
+            Value::String("My Client".into()),
+        );
         metadata.insert(METADATA_TOKEN_TTL_SECS.into(), Value::Number(7200.into()));
-        metadata.insert(METADATA_DESCRIPTION.into(), Value::String("A test client".into()));
+        metadata.insert(
+            METADATA_DESCRIPTION.into(),
+            Value::String("A test client".into()),
+        );
 
         let now = Utc::now();
-        let resp = build_client_response(
-            "client-123".into(),
-            &metadata,
-            now,
-            now,
-            now,
-            None,
-            None,
-        );
+        let resp = build_client_response("client-123".into(), &metadata, now, now, now, None, None);
 
         assert_eq!(resp.client_id, "client-123");
         assert_eq!(resp.name, "My Client");
@@ -792,8 +804,14 @@ mod tests {
         assert_eq!(revoked, 1);
 
         let keys = engine.list_access_keys().await.expect("keys should load");
-        let key_a = keys.iter().find(|k| k.id == key_a.id).expect("key A present");
-        let key_b = keys.iter().find(|k| k.id == key_b.id).expect("key B present");
+        let key_a = keys
+            .iter()
+            .find(|k| k.id == key_a.id)
+            .expect("key A present");
+        let key_b = keys
+            .iter()
+            .find(|k| k.id == key_b.id)
+            .expect("key B present");
         assert!(key_a.revoked_at.is_some());
         assert!(key_b.revoked_at.is_none());
     }

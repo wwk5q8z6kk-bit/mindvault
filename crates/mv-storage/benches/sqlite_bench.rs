@@ -18,11 +18,7 @@ fn bench_sizes(default: &[usize]) -> Vec<usize> {
     }
 
     let mut sizes = default.to_vec();
-    if std::env::var("MINDVAULT_BENCH_LARGE")
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
+    if std::env::var("MINDVAULT_BENCH_LARGE").ok().as_deref() == Some("1") {
         sizes.extend([100_000, 1_000_000]);
     }
     sizes.sort_unstable();
@@ -81,7 +77,13 @@ fn bench_list_with_filters(c: &mut Criterion) {
 fn bench_batch_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_insert");
     for size in bench_sizes(&[100, 1_000, 10_000]) {
-        let sample_size = if size >= 100_000 { 5 } else if size >= 10_000 { 10 } else { 100 };
+        let sample_size = if size >= 100_000 {
+            5
+        } else if size >= 10_000 {
+            10
+        } else {
+            100
+        };
         group.sample_size(sample_size);
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
             let rt = Runtime::new().unwrap();
@@ -117,16 +119,12 @@ fn bench_list_large(c: &mut Criterion) {
         });
 
         group.sample_size(if size >= 100_000 { 5 } else { 10 });
-        group.bench_with_input(
-            BenchmarkId::new("unfiltered", size),
-            &size,
-            |b, _| {
-                let filters = QueryFilters::default();
-                b.iter(|| {
-                    rt.block_on(async { store.list(&filters, 100, 0).await.unwrap() });
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("unfiltered", size), &size, |b, _| {
+            let filters = QueryFilters::default();
+            b.iter(|| {
+                rt.block_on(async { store.list(&filters, 100, 0).await.unwrap() });
+            });
+        });
     }
     group.finish();
 }
@@ -135,10 +133,7 @@ fn bench_get_by_id_large(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let store = SqliteNodeStore::open_in_memory().unwrap();
 
-    let size = bench_sizes(&[10_000])
-        .into_iter()
-        .max()
-        .unwrap_or(10_000);
+    let size = bench_sizes(&[10_000]).into_iter().max().unwrap_or(10_000);
     // Pre-populate with N nodes, grab IDs from different positions
     let mut ids = Vec::new();
     rt.block_on(async {

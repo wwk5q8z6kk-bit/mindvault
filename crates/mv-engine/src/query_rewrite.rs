@@ -41,11 +41,7 @@ impl QueryRewriter {
     /// Rewrite a query according to the given strategy.
     /// Returns the original query wrapped in a RewriteResult if rewriting is
     /// disabled or no LLM is available.
-    pub async fn rewrite(
-        &self,
-        query: &str,
-        strategy: Option<RewriteStrategy>,
-    ) -> RewriteResult {
+    pub async fn rewrite(&self, query: &str, strategy: Option<RewriteStrategy>) -> RewriteResult {
         let strategy = strategy.unwrap_or_else(|| {
             if !self.config.enabled {
                 return RewriteStrategy::None;
@@ -193,7 +189,11 @@ impl QueryRewriter {
         match llm.complete(&messages, &params).await {
             Ok(hyde_doc) => {
                 let hyde_doc = hyde_doc.trim().to_string();
-                debug!(original = query, hyde_len = hyde_doc.len(), "HyDE document generated");
+                debug!(
+                    original = query,
+                    hyde_len = hyde_doc.len(),
+                    "HyDE document generated"
+                );
 
                 RewriteResult {
                     queries: vec![query.to_string()],
@@ -271,10 +271,7 @@ impl QueryRewriter {
             // Only expand if the abbreviation appears as a whole word
             let query_upper = query.to_uppercase();
             let abbrev_upper = abbrev.to_uppercase();
-            if query_upper
-                .split_whitespace()
-                .any(|w| w == abbrev_upper)
-            {
+            if query_upper.split_whitespace().any(|w| w == abbrev_upper) {
                 expanded = format!("{expanded} {expansion}");
                 break; // Only expand one abbreviation to avoid noise
             }
@@ -377,9 +374,7 @@ mod tests {
             ..Default::default()
         };
         let rewriter = QueryRewriter::new(None, config);
-        let result = rewriter
-            .rewrite("API", Some(RewriteStrategy::Auto))
-            .await;
+        let result = rewriter.rewrite("API", Some(RewriteStrategy::Auto)).await;
         assert_eq!(result.applied_strategy, RewriteStrategy::Expand);
     }
 

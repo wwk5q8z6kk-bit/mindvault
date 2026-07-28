@@ -83,10 +83,7 @@ pub async fn list() -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<38} {:<20} {:<10} Created",
-        "ID", "Name", "Status"
-    );
+    println!("{:<38} {:<20} {:<10} Created", "ID", "Name", "Status");
     println!("{}", "-".repeat(90));
 
     for c in &consumers {
@@ -95,7 +92,10 @@ pub async fn list() -> Result<()> {
         } else {
             "active"
         };
-        println!("{:<38} {:<20} {:<10} {}", c.id, c.name, status, c.created_at);
+        println!(
+            "{:<38} {:<20} {:<10} {}",
+            c.id, c.name, status, c.created_at
+        );
     }
 
     Ok(())

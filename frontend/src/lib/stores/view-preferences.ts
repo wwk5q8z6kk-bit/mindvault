@@ -10,6 +10,10 @@ interface ViewPreferences {
 	review: string;
 	resources: string;
 	sidebarCollapsed: string[];
+	/** Notes page list/sidebar collapsed for denser editing. */
+	notesListCollapsed: boolean;
+	/** Notes list filter tab: all | pinned | node kind. */
+	notesListTab: string;
 }
 
 const defaults: ViewPreferences = {
@@ -17,7 +21,9 @@ const defaults: ViewPreferences = {
 	notes: 'list',
 	review: 'digest',
 	resources: 'bookmarks',
-	sidebarCollapsed: ['System']
+	sidebarCollapsed: ['System'],
+	notesListCollapsed: false,
+	notesListTab: 'all'
 };
 
 function normalizeViewValue(value: unknown, fallback: string): string {
@@ -54,7 +60,9 @@ export function normalizeViewPreferences(raw: unknown): ViewPreferences {
 		notes: normalizeViewValue(parsed.notes, defaults.notes),
 		review: normalizeViewValue(parsed.review, defaults.review),
 		resources: normalizeViewValue(parsed.resources, defaults.resources),
-		sidebarCollapsed: normalizeCollapsedGroups(parsed.sidebarCollapsed)
+		sidebarCollapsed: normalizeCollapsedGroups(parsed.sidebarCollapsed),
+		notesListCollapsed: parsed.notesListCollapsed === true,
+		notesListTab: normalizeViewValue(parsed.notesListTab, defaults.notesListTab)
 	};
 }
 
@@ -92,8 +100,27 @@ if (browser) {
 /**
  * Update a single view preference.
  */
-export function setViewPreference(key: keyof Omit<ViewPreferences, 'sidebarCollapsed'>, value: string) {
+export function setViewPreference(
+	key: keyof Omit<ViewPreferences, 'sidebarCollapsed' | 'notesListCollapsed'>,
+	value: string
+) {
 	viewPreferences.update((prefs) => ({ ...prefs, [key]: value }));
+}
+
+export function setNotesListCollapsed(collapsed: boolean) {
+	viewPreferences.update((prefs) => ({ ...prefs, notesListCollapsed: collapsed }));
+}
+
+export function toggleNotesListCollapsed() {
+	viewPreferences.update((prefs) => ({
+		...prefs,
+		notesListCollapsed: !prefs.notesListCollapsed
+	}));
+}
+
+export function setNotesListTab(tab: string) {
+	const normalized = normalizeViewValue(tab, defaults.notesListTab);
+	viewPreferences.update((prefs) => ({ ...prefs, notesListTab: normalized }));
 }
 
 /**

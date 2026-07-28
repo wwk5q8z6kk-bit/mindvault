@@ -70,11 +70,7 @@ pub async fn create_consumer(
     Json(req): Json<CreateConsumerRequest>,
 ) -> impl IntoResponse {
     if let Err(err) = authorize_write(&auth) {
-        return (
-            err.0,
-            Json(ErrorBody { error: err.1 }),
-        )
-            .into_response();
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
     }
 
     let name = req.name.trim();
@@ -122,11 +118,7 @@ pub async fn list_consumers(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     if let Err(err) = authorize_read(&auth) {
-        return (
-            err.0,
-            Json(ErrorBody { error: err.1 }),
-        )
-            .into_response();
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
     }
 
     match state.engine.list_consumers().await {
@@ -154,11 +146,7 @@ pub async fn get_consumer(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     if let Err(err) = authorize_read(&auth) {
-        return (
-            err.0,
-            Json(ErrorBody { error: err.1 }),
-        )
-            .into_response();
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
     }
 
     match state.engine.get_consumer(id).await {
@@ -190,11 +178,7 @@ pub async fn revoke_consumer(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     if let Err(err) = authorize_write(&auth) {
-        return (
-            err.0,
-            Json(ErrorBody { error: err.1 }),
-        )
-            .into_response();
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
     }
 
     match state.engine.revoke_consumer(id).await {
@@ -235,22 +219,19 @@ pub async fn whoami(
     };
 
     match state.engine.list_consumers().await {
-        Ok(consumers) => {
-            match consumers.into_iter().find(|c| c.name == consumer_name) {
-                Some(consumer) => {
-                    let summary =
-                        ConsumerSummaryResponse::from(ConsumerProfileSummary::from(consumer));
-                    Json(summary).into_response()
-                }
-                None => (
-                    StatusCode::NOT_FOUND,
-                    Json(ErrorBody {
-                        error: format!("consumer '{consumer_name}' not found"),
-                    }),
-                )
-                    .into_response(),
+        Ok(consumers) => match consumers.into_iter().find(|c| c.name == consumer_name) {
+            Some(consumer) => {
+                let summary = ConsumerSummaryResponse::from(ConsumerProfileSummary::from(consumer));
+                Json(summary).into_response()
             }
-        }
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: format!("consumer '{consumer_name}' not found"),
+                }),
+            )
+                .into_response(),
+        },
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorBody {

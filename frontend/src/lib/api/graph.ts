@@ -52,6 +52,62 @@ export interface NodeRelationshipsResponse {
 	outgoing: NodeRelationship[];
 }
 
+export interface NodeBacklinkEdge {
+	relationship_id: string;
+	relation_kind: string;
+	direction: string;
+	related_node_id: string;
+	related_node_title?: string | null;
+	related_node_kind: string;
+	related_node_namespace: string;
+	weight: number;
+	created_at: string;
+	auto_managed: boolean;
+	auto_source?: string | null;
+}
+
+export interface NodeBacklinksResponse {
+	node_id: string;
+	total_backlinks: number;
+	returned_backlinks: number;
+	has_more: boolean;
+	offset: number;
+	limit: number;
+	backlinks: NodeBacklinkEdge[];
+}
+
+export type NodeBacklinksParams = {
+	limit?: number;
+	offset?: number;
+	include_auto?: boolean;
+	include_manual?: boolean;
+	source?: string;
+};
+
+/**
+ * Get paginated Reference backlinks for a node (dedicated backlinks API).
+ */
+export async function getNodeBacklinks(
+	nodeId: string,
+	params: NodeBacklinksParams = {}
+): Promise<NodeBacklinksResponse> {
+	const searchParams = new URLSearchParams();
+	if (params.limit !== undefined) searchParams.set('limit', String(params.limit));
+	if (params.offset !== undefined) searchParams.set('offset', String(params.offset));
+	if (params.include_auto !== undefined) {
+		searchParams.set('include_auto', String(params.include_auto));
+	}
+	if (params.include_manual !== undefined) {
+		searchParams.set('include_manual', String(params.include_manual));
+	}
+	if (params.source) searchParams.set('source', params.source);
+
+	const qs = searchParams.toString();
+	return await fetchJson<NodeBacklinksResponse>(
+		`/api/v1/nodes/${nodeId}/backlinks${qs ? `?${qs}` : ''}`
+	);
+}
+
 /**
  * Get all relationships for a node (both incoming and outgoing).
  */

@@ -87,6 +87,23 @@ model = "llama3.2"
 max_tokens = 512
 temperature = 0.3
 timeout_secs = 30
+# Opt in before a discovered API key may enable a remote cloud provider.
+# Keys resolve through the credential store, which falls back to environment
+# variables, so leaving this false keeps an ambient OPENAI_API_KEY from sending
+# vault content off-device. Local providers (llama.cpp, auto-detected Ollama)
+# are unaffected. Override: MINDVAULT_LLM_ALLOW_CLOUD_FALLBACK=true
+allow_cloud_fallback = false
+
+[interoperability]
+# Whether public commands must resolve an authorizing Tool Grant before they
+# mutate. Additive: role, namespace and quota checks always still apply.
+#   off      - resolver does not run (default; byte-identical to pre-admission)
+#   observe  - resolver runs and the decision is recorded, but never blocks
+#   enforce  - an unauthorized command is refused with 403
+# Enforce needs a registered local Context Node and an issued Tool Grant; until
+# grant issuance is exposed it is a test and staging mode.
+# Override: MINDVAULT_COMMAND_ADMISSION_MODE
+command_admission_mode = "off"
 
 [ai_sidecar]
 enabled = false
@@ -197,6 +214,8 @@ enabled = false
 # - MINDVAULT_ALLOW_INSECURE_BIND (set true to allow non-local bind without auth)
 # - MINDVAULT_RATE_LIMIT_REQUESTS (requests per window, default 120; 0 disables)
 # - MINDVAULT_RATE_LIMIT_WINDOW_SECS (window size, default 60)
+# - MINDVAULT_AI_RATE_LIMIT_REQUESTS (chat/assist per subject, default 60; 0 disables)
+# - MINDVAULT_AI_RATE_LIMIT_WINDOW_SECS (AI window size, default 60)
 # - MINDVAULT_NAMESPACE_NODE_QUOTA (max nodes per namespace, optional)
 
 [logging]

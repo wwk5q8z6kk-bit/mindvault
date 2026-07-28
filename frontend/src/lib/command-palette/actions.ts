@@ -628,7 +628,7 @@ export function buildDynamicActions(query: string, ctx: CommandContext): Command
 						await createSavedSearch({
 							name: searchName.trim(),
 							query: searchQuery.trim(),
-							search_type: 'fulltext',
+							search_type: 'hybrid',
 							limit: 50
 						});
 						invalidateSavedSearchesCache();

@@ -279,7 +279,11 @@ impl FederationEngine {
             .map_err(|e| MvError::Federation(format!("invalid identity response: {e}")))?;
 
         // Reject if the peer's vault_id collides with an existing peer
-        if self.find_peer_by_vault_id(&identity.vault_id).await.is_some() {
+        if self
+            .find_peer_by_vault_id(&identity.vault_id)
+            .await
+            .is_some()
+        {
             return Err(MvError::Federation(format!(
                 "peer with vault_id '{}' is already registered",
                 identity.vault_id
@@ -629,7 +633,10 @@ mod tests {
         let mut peer = FederationPeer::new("v", "n", "http://localhost");
         peer.shared_secret = Some("top-secret".into());
         let json = serde_json::to_string(&peer).unwrap();
-        assert!(!json.contains("shared_secret"), "secret must not appear in JSON");
+        assert!(
+            !json.contains("shared_secret"),
+            "secret must not appear in JSON"
+        );
         assert!(!json.contains("top-secret"), "secret value must not leak");
     }
 
@@ -661,11 +668,7 @@ mod tests {
             .await;
 
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = Arc::new(
-            UnifiedStore::open(tmp.path(), 384)
-                .await
-                .unwrap(),
-        );
+        let store = Arc::new(UnifiedStore::open(tmp.path(), 384).await.unwrap());
         let engine = FederationEngine::new(store);
 
         let peer = engine
@@ -704,11 +707,7 @@ mod tests {
             .await;
 
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = Arc::new(
-            UnifiedStore::open(tmp.path(), 384)
-                .await
-                .unwrap(),
-        );
+        let store = Arc::new(UnifiedStore::open(tmp.path(), 384).await.unwrap());
         let engine = FederationEngine::new(store);
 
         // First handshake succeeds
@@ -722,11 +721,7 @@ mod tests {
     #[tokio::test]
     async fn handshake_fails_on_unreachable_peer() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = Arc::new(
-            UnifiedStore::open(tmp.path(), 384)
-                .await
-                .unwrap(),
-        );
+        let store = Arc::new(UnifiedStore::open(tmp.path(), 384).await.unwrap());
         let engine = FederationEngine::new(store);
 
         let err = engine
@@ -746,11 +741,7 @@ mod tests {
             .await;
 
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = Arc::new(
-            UnifiedStore::open(tmp.path(), 384)
-                .await
-                .unwrap(),
-        );
+        let store = Arc::new(UnifiedStore::open(tmp.path(), 384).await.unwrap());
         let engine = FederationEngine::new(store);
 
         let err = engine.handshake(&server.url(), None).await.unwrap_err();
@@ -762,11 +753,7 @@ mod tests {
     #[tokio::test]
     async fn find_peer_by_vault_id_returns_match() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = Arc::new(
-            UnifiedStore::open(tmp.path(), 384)
-                .await
-                .unwrap(),
-        );
+        let store = Arc::new(UnifiedStore::open(tmp.path(), 384).await.unwrap());
         let engine = FederationEngine::new(store);
 
         let peer = FederationPeer::new("vault-abc", "Alice", "http://alice");

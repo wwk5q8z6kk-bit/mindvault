@@ -6,7 +6,10 @@
 
 #[cfg(feature = "wasm-runtime")]
 mod inner {
-    use crate::abi::{HostRequest, HostResponse, HOST_LOG, HOST_READ_NODE, HOST_SEARCH, HOST_WRITE_NODE};
+    use crate::abi::{
+        HostRequest, HostResponse, HOST_LOG, HOST_READ_NODE, HOST_READ_WORK_ORDERS, HOST_SEARCH,
+        HOST_WRITE_NODE,
+    };
     use crate::sandbox::PermissionGate;
     use std::sync::Arc;
     use wasmtime::*;
@@ -57,11 +60,9 @@ mod inner {
 
                     // Check permissions
                     let state = caller.data();
-                    if let Err(_) = state.gate.check(&request.method) {
-                        let resp = HostResponse::err(format!(
-                            "permission denied: {}",
-                            request.method
-                        ));
+                    if state.gate.check(&request.method).is_err() {
+                        let resp =
+                            HostResponse::err(format!("permission denied: {}", request.method));
                         return write_response_to_guest(&mut caller, &resp);
                     }
 
@@ -79,10 +80,7 @@ mod inner {
 
     /// Write a `HostResponse` JSON back into guest memory via `mv_alloc`.
     /// Returns packed `(ptr << 32 | len)` or `0` on failure.
-    fn write_response_to_guest(
-        caller: &mut Caller<'_, HostState>,
-        response: &HostResponse,
-    ) -> i64 {
+    fn write_response_to_guest(caller: &mut Caller<'_, HostState>, response: &HostResponse) -> i64 {
         let json = match serde_json::to_vec(response) {
             Ok(j) => j,
             Err(_) => return 0,
@@ -125,15 +123,28 @@ mod inner {
     /// Create a default dispatch function that handles the standard host methods.
     /// This is a simple implementation that logs calls but delegates actual
     /// store operations to the provided callbacks.
+    /// Build the host dispatch table.
+    ///
+    /// Every method here routes through a host-supplied closure that is
+    /// expected to call the same governed command and query API a first-party
+    /// client uses. Constitutional law 3 forbids extensions reaching the
+    /// database directly, so a dispatch entry that opened a connection would
+    /// violate the boundary regardless of what the permission gate allowed.
+    ///
+    /// `read_work_orders` is a query. There is intentionally no
+    /// `write_work_orders`: an extension that could record gate evidence or
+    /// approve a run would be producing the very governance that constrains it.
     pub fn create_dispatch(
         read_node: impl Fn(&serde_json::Value) -> HostResponse + Send + Sync + 'static,
         write_node: impl Fn(&serde_json::Value) -> HostResponse + Send + Sync + 'static,
         search: impl Fn(&serde_json::Value) -> HostResponse + Send + Sync + 'static,
+        read_work_orders: impl Fn(&serde_json::Value) -> HostResponse + Send + Sync + 'static,
     ) -> Arc<dyn Fn(&HostRequest) -> HostResponse + Send + Sync> {
         Arc::new(move |req: &HostRequest| match req.method.as_str() {
             HOST_READ_NODE => read_node(&req.params),
             HOST_WRITE_NODE => write_node(&req.params),
             HOST_SEARCH => search(&req.params),
+            HOST_READ_WORK_ORDERS => read_work_orders(&req.params),
             HOST_LOG => {
                 if let Some(msg) = req.params.as_str() {
                     tracing::info!(plugin_log = msg, "plugin log");

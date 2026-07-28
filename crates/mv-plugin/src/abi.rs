@@ -5,34 +5,34 @@ use serde::{Deserialize, Serialize};
 /// Request from plugin to host.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HostRequest {
-	pub method: String,
-	pub params: serde_json::Value,
+    pub method: String,
+    pub params: serde_json::Value,
 }
 
 /// Response from host to plugin.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HostResponse {
-	pub success: bool,
-	pub data: serde_json::Value,
-	pub error: Option<String>,
+    pub success: bool,
+    pub data: serde_json::Value,
+    pub error: Option<String>,
 }
 
 impl HostResponse {
-	pub fn ok(data: serde_json::Value) -> Self {
-		Self {
-			success: true,
-			data,
-			error: None,
-		}
-	}
+    pub fn ok(data: serde_json::Value) -> Self {
+        Self {
+            success: true,
+            data,
+            error: None,
+        }
+    }
 
-	pub fn err(msg: impl Into<String>) -> Self {
-		Self {
-			success: false,
-			data: serde_json::Value::Null,
-			error: Some(msg.into()),
-		}
-	}
+    pub fn err(msg: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            data: serde_json::Value::Null,
+            error: Some(msg.into()),
+        }
+    }
 }
 
 /// Available host methods.
@@ -40,3 +40,6 @@ pub const HOST_READ_NODE: &str = "mv_read_node";
 pub const HOST_WRITE_NODE: &str = "mv_write_node";
 pub const HOST_SEARCH: &str = "mv_search";
 pub const HOST_LOG: &str = "mv_log";
+/// Query the governed execution graph. Read-only; see
+/// [`crate::manifest::PluginPermission::ReadWorkOrders`].
+pub const HOST_READ_WORK_ORDERS: &str = "mv_read_work_orders";

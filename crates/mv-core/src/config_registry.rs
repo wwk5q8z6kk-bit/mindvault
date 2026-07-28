@@ -111,11 +111,8 @@ impl ConfigRegistry {
     /// Find TOML keys that no section claimed.
     /// Keys should be in "section.field" format.
     pub fn find_unhandled_keys(&self, toml_keys: &[String]) -> Vec<String> {
-        let section_keys: HashMap<&str, &[&str]> = self
-            .entries
-            .values()
-            .map(|e| (e.name, e.keys))
-            .collect();
+        let section_keys: HashMap<&str, &[&str]> =
+            self.entries.values().map(|e| (e.name, e.keys)).collect();
 
         toml_keys
             .iter()
@@ -244,32 +241,144 @@ pub struct SectionInfo {
 
 /// Canonical list of MindVault config sections and their known keys.
 const BUILTIN_SECTIONS: &[(&str, &[&str])] = &[
-    ("server", &["bind_host", "rest_port", "grpc_port", "socket_path", "cors_allowed_origins"]),
+    (
+        "server",
+        &[
+            "bind_host",
+            "rest_port",
+            "grpc_port",
+            "socket_path",
+            "cors_allowed_origins",
+        ],
+    ),
     ("storage", &["data_dir"]),
-    ("profile", &["display_name", "primary_email", "timezone", "signature"]),
-    ("embedding", &["provider", "model", "dimensions", "base_url"]),
-    ("search", &["default_limit", "default_strategy", "min_score", "vector_weight", "fulltext_weight", "rrf_k"]),
+    (
+        "profile",
+        &["display_name", "primary_email", "timezone", "signature"],
+    ),
+    (
+        "embedding",
+        &["provider", "model", "dimensions", "base_url"],
+    ),
+    (
+        "search",
+        &[
+            "default_limit",
+            "default_strategy",
+            "min_score",
+            "vector_weight",
+            "fulltext_weight",
+            "rrf_k",
+        ],
+    ),
     ("graph", &["default_traversal_depth", "graph_boost_factor"]),
-    ("ai", &["auto_tagging_enabled", "auto_tagging_max_generated_tags", "auto_tagging_max_total_tags", "auto_tagging_similarity_seed_limit", "auto_tagging_min_token_length"]),
-    ("watcher", &["enabled", "interval_secs", "lookback_hours", "max_nodes_per_cycle", "expiry_days"]),
+    (
+        "ai",
+        &[
+            "auto_tagging_enabled",
+            "auto_tagging_max_generated_tags",
+            "auto_tagging_max_total_tags",
+            "auto_tagging_similarity_seed_limit",
+            "auto_tagging_min_token_length",
+        ],
+    ),
+    (
+        "watcher",
+        &[
+            "enabled",
+            "interval_secs",
+            "lookback_hours",
+            "max_nodes_per_cycle",
+            "expiry_days",
+        ],
+    ),
     ("ai_sidecar", &["enabled", "base_url", "timeout_secs"]),
-    ("linking", &["auto_backlinks_enabled", "auto_backlinks_scan_limit", "auto_backlinks_max_targets"]),
-    ("daily_notes", &["enabled", "midnight_scheduler_enabled", "namespace", "title_template", "content_template", "default_importance"]),
-    ("recurrence", &["enabled", "scheduler_interval_secs", "max_instances_per_template"]),
-    ("encryption", &["sealed_mode", "enabled", "argon2_memory_kib", "argon2_iterations", "argon2_parallelism"]),
-    ("llm", &["enabled", "base_url", "model", "max_tokens", "temperature", "timeout_secs"]),
-    ("email", &[
-        "enabled", "namespace", "poll_interval_secs", "max_fetch",
-        "max_attachment_bytes", "mark_seen",
-        "imap_host", "imap_port", "imap_username", "imap_folder", "imap_starttls",
-        "smtp_host", "smtp_port", "smtp_username", "smtp_from", "smtp_starttls",
-    ]),
-    ("google_calendar", &[
-        "enabled", "namespace", "calendar_id", "sync_interval_secs",
-        "lookback_days", "lookahead_days", "max_results",
-        "import_events", "export_events",
-        "client_id", "client_secret", "refresh_token",
-    ]),
+    (
+        "linking",
+        &[
+            "auto_backlinks_enabled",
+            "auto_backlinks_scan_limit",
+            "auto_backlinks_max_targets",
+        ],
+    ),
+    (
+        "daily_notes",
+        &[
+            "enabled",
+            "midnight_scheduler_enabled",
+            "namespace",
+            "title_template",
+            "content_template",
+            "default_importance",
+        ],
+    ),
+    (
+        "recurrence",
+        &[
+            "enabled",
+            "scheduler_interval_secs",
+            "max_instances_per_template",
+        ],
+    ),
+    (
+        "encryption",
+        &[
+            "sealed_mode",
+            "enabled",
+            "argon2_memory_kib",
+            "argon2_iterations",
+            "argon2_parallelism",
+        ],
+    ),
+    (
+        "llm",
+        &[
+            "enabled",
+            "base_url",
+            "model",
+            "max_tokens",
+            "temperature",
+            "timeout_secs",
+        ],
+    ),
+    (
+        "email",
+        &[
+            "enabled",
+            "namespace",
+            "poll_interval_secs",
+            "max_fetch",
+            "max_attachment_bytes",
+            "mark_seen",
+            "imap_host",
+            "imap_port",
+            "imap_username",
+            "imap_folder",
+            "imap_starttls",
+            "smtp_host",
+            "smtp_port",
+            "smtp_username",
+            "smtp_from",
+            "smtp_starttls",
+        ],
+    ),
+    (
+        "google_calendar",
+        &[
+            "enabled",
+            "namespace",
+            "calendar_id",
+            "sync_interval_secs",
+            "lookback_days",
+            "lookahead_days",
+            "max_results",
+            "import_events",
+            "export_events",
+            "client_id",
+            "client_secret",
+            "refresh_token",
+        ],
+    ),
 ];
 
 #[cfg(test)]
@@ -364,10 +473,8 @@ mod tests {
     fn find_unhandled_keys_empty_for_valid() {
         let mut registry = ConfigRegistry::new();
         registry.register(TestSection);
-        let unhandled = registry.find_unhandled_keys(&[
-            "test.key_a".to_string(),
-            "test.key_b".to_string(),
-        ]);
+        let unhandled =
+            registry.find_unhandled_keys(&["test.key_a".to_string(), "test.key_b".to_string()]);
         assert!(unhandled.is_empty());
     }
 

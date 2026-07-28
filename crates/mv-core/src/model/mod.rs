@@ -2,12 +2,18 @@ pub mod consumer;
 pub use consumer::*;
 pub mod exchange;
 pub use exchange::*;
+pub mod interoperability;
+pub use interoperability::*;
 pub mod keychain;
 pub use keychain::*;
 pub mod policy;
 pub use policy::*;
 pub mod proxy;
 pub use proxy::*;
+pub mod work_order;
+pub use work_order::*;
+pub mod workspace;
+pub use workspace::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -875,6 +881,8 @@ pub struct ChangeNotification {
     pub operation: String,
     pub timestamp: String,
     pub namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<EventEnvelope>,
 }
 
 // ---------------------------------------------------------------------------
@@ -931,7 +939,13 @@ impl std::fmt::Display for ConflictType {
 }
 
 impl ConflictAlert {
-    pub fn new(node_a: Uuid, node_b: Uuid, conflict_type: ConflictType, score: f64, explanation: String) -> Self {
+    pub fn new(
+        node_a: Uuid,
+        node_b: Uuid,
+        conflict_type: ConflictType,
+        score: f64,
+        explanation: String,
+    ) -> Self {
         Self {
             id: Uuid::now_v7(),
             node_a,
@@ -1031,55 +1045,55 @@ impl Default for TrustModel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnerProfile {
-	pub display_name: String,
-	pub avatar_url: Option<String>,
-	pub bio: Option<String>,
-	pub email: Option<String>,
-	pub preferred_namespace: String,
-	pub default_node_kind: String,
-	pub preferred_llm_provider: Option<String>,
-	pub timezone: String,
-	pub signature_name: Option<String>,
-	pub signature_public_key: Option<String>,
-	pub metadata: HashMap<String, serde_json::Value>,
-	pub created_at: DateTime<Utc>,
-	pub updated_at: DateTime<Utc>,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub bio: Option<String>,
+    pub email: Option<String>,
+    pub preferred_namespace: String,
+    pub default_node_kind: String,
+    pub preferred_llm_provider: Option<String>,
+    pub timezone: String,
+    pub signature_name: Option<String>,
+    pub signature_public_key: Option<String>,
+    pub metadata: HashMap<String, serde_json::Value>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl Default for OwnerProfile {
-	fn default() -> Self {
-		let now = Utc::now();
-		Self {
-			display_name: String::new(),
-			avatar_url: None,
-			bio: None,
-			email: None,
-			preferred_namespace: "default".into(),
-			default_node_kind: "fact".into(),
-			preferred_llm_provider: None,
-			timezone: "UTC".into(),
-			signature_name: None,
-			signature_public_key: None,
-			metadata: HashMap::new(),
-			created_at: now,
-			updated_at: now,
-		}
-	}
+    fn default() -> Self {
+        let now = Utc::now();
+        Self {
+            display_name: String::new(),
+            avatar_url: None,
+            bio: None,
+            email: None,
+            preferred_namespace: "default".into(),
+            default_node_kind: "fact".into(),
+            preferred_llm_provider: None,
+            timezone: "UTC".into(),
+            signature_name: None,
+            signature_public_key: None,
+            metadata: HashMap::new(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateProfileRequest {
-	pub display_name: Option<String>,
-	pub avatar_url: Option<String>,
-	pub bio: Option<String>,
-	pub email: Option<String>,
-	pub preferred_namespace: Option<String>,
-	pub default_node_kind: Option<String>,
-	pub preferred_llm_provider: Option<String>,
-	pub timezone: Option<String>,
-	pub signature_name: Option<String>,
-	pub signature_public_key: Option<String>,
-	pub metadata: Option<HashMap<String, serde_json::Value>>,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub bio: Option<String>,
+    pub email: Option<String>,
+    pub preferred_namespace: Option<String>,
+    pub default_node_kind: Option<String>,
+    pub preferred_llm_provider: Option<String>,
+    pub timezone: Option<String>,
+    pub signature_name: Option<String>,
+    pub signature_public_key: Option<String>,
+    pub metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
 #[cfg(test)]

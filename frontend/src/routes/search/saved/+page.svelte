@@ -20,7 +20,7 @@
 	let showCreateForm = false;
 	let formName = '';
 	let formQuery = '';
-	let formSearchType: 'fulltext' | 'hybrid' = 'fulltext';
+	let formSearchType: 'fulltext' | 'hybrid' = 'hybrid';
 	let formKinds: string[] = [];
 	let formLimit = 50;
 	let formSaving = false;
@@ -42,7 +42,7 @@
 		editingId = null;
 		formName = '';
 		formQuery = '';
-		formSearchType = 'fulltext';
+		formSearchType = 'hybrid';
 		formKinds = [];
 		formLimit = 50;
 		showCreateForm = true;
@@ -184,17 +184,17 @@
 					<div class="flex rounded-lg border border-slate-700 text-xs">
 						<button
 							type="button"
+							class={`flex-1 px-3 py-2 transition ${formSearchType === 'hybrid' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+							on:click={() => (formSearchType = 'hybrid')}
+						>
+							Hybrid
+						</button>
+						<button
+							type="button"
 							class={`flex-1 px-3 py-2 transition ${formSearchType === 'fulltext' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
 							on:click={() => (formSearchType = 'fulltext')}
 						>
 							Fulltext
-						</button>
-						<button
-							type="button"
-							class={`flex-1 px-3 py-2 transition ${formSearchType === 'hybrid' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
-							on:click={() => (formSearchType = 'hybrid')}
-						>
-							Hybrid (Semantic)
 						</button>
 					</div>
 				</fieldset>

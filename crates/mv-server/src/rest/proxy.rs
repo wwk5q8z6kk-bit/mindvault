@@ -9,7 +9,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use mv_core::{ApprovalDecision, ApprovalRequest, ExecProxyRequest, HttpProxyRequest, ProxyAuditEntry};
+use mv_core::{
+    ApprovalDecision, ApprovalRequest, ExecProxyRequest, HttpProxyRequest, ProxyAuditEntry,
+};
 use mv_engine::proxy::{ProxyEngine, ProxyError};
 
 use crate::auth::{authorize_read, authorize_write, AuthContext};
@@ -103,11 +105,7 @@ pub async fn proxy_http(
     Json(req): Json<HttpProxyRequest>,
 ) -> impl IntoResponse {
     if let Err(err) = authorize_write(&auth) {
-        return (
-            err.0,
-            Json(ErrorBody { error: err.1 }),
-        )
-            .into_response();
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
     }
 
     let consumer_name = match &auth.consumer_name {
@@ -126,7 +124,13 @@ pub async fn proxy_http(
 
     // Input validation
     if let Err(e) = validate_http_proxy_request(&req) {
-        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: e.to_string() })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: e.to_string(),
+            }),
+        )
+            .into_response();
     }
 
     // Per-consumer per-secret rate limiting
@@ -165,11 +169,7 @@ pub async fn proxy_exec(
     Json(req): Json<ExecProxyRequest>,
 ) -> impl IntoResponse {
     if let Err(err) = authorize_write(&auth) {
-        return (
-            err.0,
-            Json(ErrorBody { error: err.1 }),
-        )
-            .into_response();
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
     }
 
     let consumer_name = match &auth.consumer_name {
@@ -188,11 +188,22 @@ pub async fn proxy_exec(
 
     // Input validation
     if let Err(e) = validate_exec_proxy_request(&req) {
-        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: e.to_string() })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: e.to_string(),
+            }),
+        )
+            .into_response();
     }
 
     // Per-consumer rate limiting (use first secret_ref for key)
-    let primary_secret_ref = req.env_inject.values().next().map(|s| s.as_str()).unwrap_or("*");
+    let primary_secret_ref = req
+        .env_inject
+        .values()
+        .next()
+        .map(|s| s.as_str())
+        .unwrap_or("*");
     if let Err(exceeded) = enforce_proxy_rate_limit(&consumer_name, primary_secret_ref) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -227,11 +238,7 @@ pub async fn list_audit(
     Query(query): Query<AuditListQuery>,
 ) -> impl IntoResponse {
     if let Err(err) = authorize_read(&auth) {
-        return (
-            err.0,
-            Json(ErrorBody { error: err.1 }),
-        )
-            .into_response();
+        return (err.0, Json(ErrorBody { error: err.1 })).into_response();
     }
 
     // If authenticated as consumer, scope to their own entries
@@ -268,11 +275,9 @@ pub async fn list_audit(
 
 fn proxy_error_to_response(err: ProxyError) -> axum::response::Response {
     match err {
-        ProxyError::Denied(reason) => (
-            StatusCode::FORBIDDEN,
-            Json(ErrorBody { error: reason }),
-        )
-            .into_response(),
+        ProxyError::Denied(reason) => {
+            (StatusCode::FORBIDDEN, Json(ErrorBody { error: reason })).into_response()
+        }
         ProxyError::ApprovalRequired {
             approval_id,
             message,
@@ -285,11 +290,9 @@ fn proxy_error_to_response(err: ProxyError) -> axum::response::Response {
             }),
         )
             .into_response(),
-        ProxyError::Failed(reason) => (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorBody { error: reason }),
-        )
-            .into_response(),
+        ProxyError::Failed(reason) => {
+            (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: reason })).into_response()
+        }
     }
 }
 
@@ -464,7 +467,13 @@ pub async fn decide_approval(
             // Re-fetch to return updated state
             match state.engine.get_approval(id).await {
                 Ok(Some(approval)) => Json(ApprovalResponse::from(approval)).into_response(),
-                _ => (StatusCode::OK, Json(ErrorBody { error: "decided".into() })).into_response(),
+                _ => (
+                    StatusCode::OK,
+                    Json(ErrorBody {
+                        error: "decided".into(),
+                    }),
+                )
+                    .into_response(),
             }
         }
         Ok(false) => (

@@ -1,5 +1,12 @@
 <script lang="ts">
 	import { apiHealth } from '$lib/api/client';
+	import { wsStatus } from '$lib/stores/websocket';
+	import {
+		connectionStatusDescription,
+		connectionStatusLabel,
+		deriveConnectionStatus,
+		shouldShowConnectionBanner
+	} from '$lib/connection/status';
 	import { onDestroy } from 'svelte';
 
 	export let online = true;
@@ -7,19 +14,21 @@
 	let bannerVisible = false;
 	let bannerTimer: ReturnType<typeof setTimeout> | null = null;
 
-	$: status = $apiHealth.status;
+	$: connectionStatus = deriveConnectionStatus({
+		browserOnline: online,
+		apiStatus: $apiHealth.status,
+		wsStatus: $wsStatus
+	});
+	$: showBanner = shouldShowConnectionBanner(connectionStatus);
 	$: severityClass =
-		status === 'offline'
-			? 'border-rose-400/70 bg-rose-50 text-rose-900'
-			: 'border-amber-400/70 bg-amber-50 text-amber-900';
-	$: title = status === 'offline' ? 'Backend unavailable' : 'Backend degraded';
-	$: body =
-		status === 'offline'
-			? 'The API is unreachable. Local data remains available, but sync and AI features are temporarily paused.'
-			: 'The API is reachable but returning server errors. Some actions may fail.';
+		connectionStatus === 'offline'
+			? 'border-rose-500/40 bg-rose-500/10 text-rose-100'
+			: 'border-amber-500/40 bg-amber-500/10 text-amber-100';
+	$: title = connectionStatusLabel(connectionStatus);
+	$: body = connectionStatusDescription(connectionStatus);
 
 	$: {
-		if (!online || dismissed || (status !== 'offline' && status !== 'degraded')) {
+		if (!showBanner || dismissed) {
 			if (bannerTimer) {
 				clearTimeout(bannerTimer);
 				bannerTimer = null;
@@ -34,7 +43,7 @@
 		}
 	}
 
-	$: if (status === 'healthy') {
+	$: if (!showBanner) {
 		dismissed = false;
 		bannerVisible = false;
 		if (bannerTimer) {
@@ -68,11 +77,11 @@
 	>
 		<div class="min-w-0">
 			<p class="font-semibold">{title}</p>
-			<p class="text-xs">{body}</p>
+			<p class="text-xs opacity-90">{body}</p>
 		</div>
 		<button
 			type="button"
-			class="shrink-0 rounded-md border border-current/30 px-2 py-1 text-xs font-medium transition hover:bg-black/5"
+			class="shrink-0 rounded-md border border-current/30 px-2 py-1 text-xs font-medium transition hover:bg-white/5"
 			on:click={dismissBanner}
 			aria-label="Dismiss backend status notice"
 		>

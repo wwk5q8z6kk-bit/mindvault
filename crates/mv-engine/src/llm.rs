@@ -30,16 +30,21 @@ impl ChatMessage {
             content: content.into(),
         }
     }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.into(),
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CompletionParams {
     pub model: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
 }
-
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
@@ -354,7 +359,9 @@ pub async fn llm_action_items(
         .collect();
 
     if items.is_empty() {
-        Err(LlmError::ParseError("no action items extracted".to_string()))
+        Err(LlmError::ParseError(
+            "no action items extracted".to_string(),
+        ))
     } else {
         Ok(items)
     }
@@ -431,7 +438,9 @@ pub async fn llm_completion_suggestions(
         .collect();
 
     if suggestions.is_empty() {
-        Err(LlmError::ParseError("no completion suggestions extracted".to_string()))
+        Err(LlmError::ParseError(
+            "no completion suggestions extracted".to_string(),
+        ))
     } else {
         Ok(suggestions)
     }
@@ -652,8 +661,21 @@ pub async fn init_llm_provider_with_local(
         }
     }
 
-    // 4. Add OpenAI as fallback if API key present and not already the primary
-    if let Some(key) = api_key {
+    // 4. Add OpenAI as fallback if cloud fallback is opted into, an API key is
+    //    present, and OpenAI is not already the configured primary.
+    //
+    //    The opt-in gate matters because `api_key` is resolved through the
+    //    credential store, whose backend chain ends in environment variables. An
+    //    ambient OPENAI_API_KEY would otherwise route vault content to a remote
+    //    service on a vault whose config has `llm.enabled = false`.
+    if !config.allow_cloud_fallback {
+        if api_key.is_some() {
+            info!(
+                "Ignoring discovered LLM API key: llm.allow_cloud_fallback is false. \
+                 Set it to true to opt into a remote provider."
+            );
+        }
+    } else if let Some(key) = api_key {
         if !config.enabled || config.base_url != "https://api.openai.com/v1" {
             let openai_config = LlmConfig {
                 enabled: true,
@@ -677,6 +699,34 @@ pub async fn init_llm_provider_with_local(
     }
 }
 
+/// Grounded chat answer: cite vault sources with [1], [2], … markers.
+pub async fn llm_chat_answer(
+    llm: &dyn LlmProvider,
+    question: &str,
+    history: &[(String, String)],
+    numbered_context: &str,
+) -> Result<String, LlmError> {
+    let mut messages = vec![ChatMessage::system(
+        "You are MindVault, a local-first personal knowledge assistant. Answer using ONLY the numbered context sources. Cite evidence with [1], [2], etc. matching the source numbers. If the context is insufficient, say so clearly and avoid inventing facts. Keep answers concise and actionable.",
+    )];
+
+    let start = history.len().saturating_sub(6);
+    for (role, content) in &history[start..] {
+        let normalized = role.trim().to_ascii_lowercase();
+        if normalized == "assistant" {
+            messages.push(ChatMessage::assistant(content.clone()));
+        } else if normalized == "user" {
+            messages.push(ChatMessage::user(content.clone()));
+        }
+    }
+
+    messages.push(ChatMessage::user(format!(
+        "Context sources:\n{numbered_context}\n\nQuestion: {question}"
+    )));
+
+    llm.complete(&messages, &CompletionParams::default()).await
+}
+
 /// Extract context snippets from search results for LLM prompts.
 pub fn extract_context_snippets(results: &[mv_core::SearchResult], limit: usize) -> Vec<String> {
     results
@@ -697,4 +747,75 @@ pub fn extract_context_snippets(results: &[mv_core::SearchResult], limit: usize)
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod cloud_fallback_tests {
+    use super::*;
+    use crate::config::LocalLlmConfig;
+
+    /// A disabled LLM plus a discovered API key must not yield a provider.
+    ///
+    /// API keys resolve through the credential store, whose backend chain ends in
+    /// environment variables, so without the opt-in gate an ambient
+    /// `OPENAI_API_KEY` would silently route vault content to a remote service on
+    /// a vault configured for local-only operation.
+    #[tokio::test]
+    async fn a_discovered_api_key_does_not_enable_a_cloud_provider_by_default() {
+        let config = LlmConfig {
+            auto_detect: false,
+            ..Default::default()
+        };
+        assert!(!config.allow_cloud_fallback, "cloud fallback is opt-in");
+
+        let provider = init_llm_provider_with_local(
+            &config,
+            &LocalLlmConfig::default(),
+            Some("sk-test-key-not-used".to_string()),
+        )
+        .await;
+
+        assert!(
+            provider.is_none(),
+            "an ambient API key must not create a remote provider while \
+             llm.allow_cloud_fallback is false"
+        );
+    }
+
+    /// Opting in restores the documented fallback behaviour.
+    #[tokio::test]
+    async fn opting_into_cloud_fallback_enables_the_remote_provider() {
+        let config = LlmConfig {
+            auto_detect: false,
+            allow_cloud_fallback: true,
+            ..Default::default()
+        };
+
+        let provider = init_llm_provider_with_local(
+            &config,
+            &LocalLlmConfig::default(),
+            Some("sk-test-key-not-used".to_string()),
+        )
+        .await;
+
+        assert!(
+            provider.is_some(),
+            "an explicit opt-in plus a key should produce a provider"
+        );
+    }
+
+    /// No key means no provider regardless of the gate.
+    #[tokio::test]
+    async fn opting_in_without_a_key_still_yields_no_provider() {
+        let config = LlmConfig {
+            auto_detect: false,
+            allow_cloud_fallback: true,
+            ..Default::default()
+        };
+
+        let provider =
+            init_llm_provider_with_local(&config, &LocalLlmConfig::default(), None).await;
+
+        assert!(provider.is_none(), "no key means no remote provider");
+    }
 }

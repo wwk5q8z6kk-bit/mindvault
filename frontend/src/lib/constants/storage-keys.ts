@@ -10,6 +10,8 @@ export const STORAGE_KEYS = {
 	VIEW_PREFERENCES: 'mv-view-preferences',
 	ONBOARDING: 'mv_onboarding',
 	RECENT_ITEMS: 'mv_recent_items',
+	SEARCH_MODE: 'mv_search_mode',
+	CHAT_SOURCES: 'mv_chat_sources_v1',
 	ACTIVE_NAMESPACE: 'mv_active_namespace',
 	COMMAND_PALETTE_USAGE: 'mindvault.commandPalette.usage',
 	API_HEALTH_STATE: 'mv_api_health_state',

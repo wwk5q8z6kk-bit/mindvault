@@ -177,9 +177,7 @@ impl McpScope {
             return Err("node kind not permitted".into());
         }
 
-        if !self.tags.is_empty()
-            && !node.tags.iter().any(|tag| self.contains_tag(tag))
-        {
+        if !self.tags.is_empty() && !node.tags.iter().any(|tag| self.contains_tag(tag)) {
             return Err("node tags not permitted".into());
         }
 

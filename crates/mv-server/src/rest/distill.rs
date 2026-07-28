@@ -1,11 +1,6 @@
 use std::sync::Arc;
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 
 use mv_core::model::QueryFilters;
 use mv_core::traits::NodeStore;
@@ -22,7 +17,10 @@ pub async fn distill(
 
     // Gather content snippets based on the request type
     let snippets: Vec<ContentSnippet> = match &req {
-        DistillRequest::Namespace { namespace, max_nodes } => {
+        DistillRequest::Namespace {
+            namespace,
+            max_nodes,
+        } => {
             let limit = max_nodes.unwrap_or(50);
             let filters = QueryFilters {
                 namespace: Some(namespace.clone()),
@@ -75,8 +73,7 @@ pub async fn distill(
             }
         }
         DistillRequest::TopicDeepDive { topic } => {
-            let query = mv_core::model::MemoryQuery::new(topic.clone())
-                .with_limit(20);
+            let query = mv_core::model::MemoryQuery::new(topic.clone()).with_limit(20);
             match state.engine.recall.recall(&query).await {
                 Ok(results) => results
                     .into_iter()

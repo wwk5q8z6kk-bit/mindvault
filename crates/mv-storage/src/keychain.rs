@@ -70,9 +70,7 @@ impl SqliteKeychainStore {
         if let Err(e) = conn.execute_batch(shamir_sql) {
             let msg = e.to_string();
             if !msg.contains("duplicate column") {
-                return Err(MvError::Migration(format!(
-                    "shamir migration failed: {e}"
-                )));
+                return Err(MvError::Migration(format!("shamir migration failed: {e}")));
             }
         }
 
@@ -86,7 +84,9 @@ impl SqliteKeychainStore {
         if let Err(e) = conn.execute_batch(meta_enc_sql) {
             let msg = e.to_string();
             if !msg.contains("duplicate column") {
-                return Err(MvError::Migration(format!("metadata encryption migration failed: {e}")));
+                return Err(MvError::Migration(format!(
+                    "metadata encryption migration failed: {e}"
+                )));
             }
         }
 
@@ -100,7 +100,9 @@ impl SqliteKeychainStore {
         if let Err(e) = conn.execute_batch(shamir_rot_sql) {
             let msg = e.to_string();
             if !msg.contains("duplicate column") {
-                return Err(MvError::Migration(format!("shamir rotation migration failed: {e}")));
+                return Err(MvError::Migration(format!(
+                    "shamir rotation migration failed: {e}"
+                )));
             }
         }
 

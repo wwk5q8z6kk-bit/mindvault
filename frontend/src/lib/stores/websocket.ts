@@ -13,6 +13,14 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export type WsStatus = 'connected' | 'connecting' | 'disconnected';
 export const wsStatus = writable<WsStatus>('disconnected');
 
+export interface WorkspaceReconciliationEvent {
+	workspaceId: string;
+	namespace: string | null;
+	timestamp: string | null;
+}
+
+export const workspaceReconciliation = writable<WorkspaceReconciliationEvent | null>(null);
+
 let lastWsWarnTime = 0;
 function warnThrottled(msg: string, err: unknown) {
 	const now = Date.now();
@@ -37,8 +45,8 @@ function getWsUrl(path: string): string {
 function removeNodeFromCaches(nodeId: string) {
 	db.tasks.delete(nodeId);
 	db.notes.delete(nodeId);
-	tasksStore.update(items => items.filter(t => t.id !== nodeId));
-	notesStore.update(items => items.filter(n => n.id !== nodeId));
+	tasksStore.update((items) => items.filter((t) => t.id !== nodeId));
+	notesStore.update((items) => items.filter((n) => n.id !== nodeId));
 }
 
 function upsertNodeInCaches(node: KnowledgeNode, operation: 'create' | 'update' | 'enriched') {
@@ -46,9 +54,9 @@ function upsertNodeInCaches(node: KnowledgeNode, operation: 'create' | 'update' 
 		const task = nodeToTask(node);
 		db.tasks.put(task);
 		if (operation === 'create') {
-			tasksStore.update(items => [task, ...items.filter(t => t.id !== task.id)]);
+			tasksStore.update((items) => [task, ...items.filter((t) => t.id !== task.id)]);
 		} else {
-			tasksStore.update(items => items.map(t => t.id === task.id ? task : t));
+			tasksStore.update((items) => items.map((t) => (t.id === task.id ? task : t)));
 		}
 		return;
 	}
@@ -57,19 +65,21 @@ function upsertNodeInCaches(node: KnowledgeNode, operation: 'create' | 'update' 
 		const note = nodeToNote(node);
 		db.notes.put(note);
 		if (operation === 'create') {
-			notesStore.update(items => [note, ...items.filter(n => n.id !== note.id)]);
+			notesStore.update((items) => [note, ...items.filter((n) => n.id !== note.id)]);
 		} else {
-			notesStore.update(items => items.map(n => n.id === note.id ? note : n));
+			notesStore.update((items) => items.map((n) => (n.id === note.id ? note : n)));
 		}
 	}
 }
 
-async function handleChangeMessage(data: unknown) {
+export async function handleChangeMessage(data: unknown) {
 	const payload = data as {
 		type?: string;
 		node?: KnowledgeNode;
 		node_id?: string;
 		operation?: string;
+		namespace?: string | null;
+		timestamp?: string;
 	};
 
 	if (!payload || typeof payload.type !== 'string') return;
@@ -101,6 +111,14 @@ async function handleChangeMessage(data: unknown) {
 	}
 
 	const operation = (payload.operation ?? '').toLowerCase();
+	if (operation === 'workspace_reconciled') {
+		workspaceReconciliation.set({
+			workspaceId: payload.node_id,
+			namespace: typeof payload.namespace === 'string' ? payload.namespace : null,
+			timestamp: typeof payload.timestamp === 'string' ? payload.timestamp : null
+		});
+		return;
+	}
 	if (operation === 'delete') {
 		removeNodeFromCaches(payload.node_id);
 		return;
@@ -133,7 +151,9 @@ function connectChanges() {
 			try {
 				const data = JSON.parse(event.data);
 				void handleChangeMessage(data);
-			} catch (err) { warnThrottled('[ws:changes] message parse error', err); }
+			} catch (err) {
+				warnThrottled('[ws:changes] message parse error', err);
+			}
 		};
 
 		changesWs.onclose = () => {
@@ -159,7 +179,9 @@ function connectReminders() {
 	try {
 		remindersWs = new WebSocket(getWsUrl('/ws/reminders'));
 
-		remindersWs.onopen = () => { remindersRetryMs = 1000; };
+		remindersWs.onopen = () => {
+			remindersRetryMs = 1000;
+		};
 
 		remindersWs.onmessage = (event) => {
 			try {
@@ -171,7 +193,9 @@ function connectReminders() {
 					});
 				}
 				pushToast(data.title || 'Task reminder', 'info');
-			} catch (err) { warnThrottled('[ws:reminders] message parse error', err); }
+			} catch (err) {
+				warnThrottled('[ws:reminders] message parse error', err);
+			}
 		};
 
 		remindersWs.onclose = () => {
@@ -179,7 +203,9 @@ function connectReminders() {
 			remindersRetryMs = Math.min(remindersRetryMs * 2, 30000);
 		};
 
-		remindersWs.onerror = () => { remindersWs?.close(); };
+		remindersWs.onerror = () => {
+			remindersWs?.close();
+		};
 	} catch (err) {
 		warnThrottled('[ws:reminders] connection error', err);
 		remindersRetryTimer = setTimeout(connectReminders, remindersRetryMs);

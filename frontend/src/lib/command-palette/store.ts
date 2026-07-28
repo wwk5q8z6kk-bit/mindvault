@@ -3,7 +3,7 @@ import { goto } from '$app/navigation';
 import { tasksStore, loadTasks, syncQueue, updateTaskOptimistic } from '$lib/stores/tasks';
 import { quickAddFocus, selectedNoteId, selectedTaskId, taskModalState } from '$lib/stores/ui';
 import { pushToast } from '$lib/stores/toast';
-import { searchFts } from '$lib/api/search';
+import { searchHybrid } from '$lib/api/search';
 import type { CommandContext } from './types';
 import type { SearchResult } from './types';
 
@@ -55,7 +55,8 @@ export function buildCommandContext(query: string): CommandContext {
 			selectedTaskId.set(taskId);
 		},
 		searchFts: async (searchQuery: string): Promise<SearchResult[]> => {
-			const results = await searchFts(searchQuery);
+			// Prefer hybrid recall so Cmd+K matches the Search page default (ADR-003).
+			const results = await searchHybrid(searchQuery);
 			return results.map((r) => ({
 				object_type: r.node.kind,
 				object_id: r.node.id,

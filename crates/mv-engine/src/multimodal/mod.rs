@@ -18,10 +18,7 @@ pub const MAX_FILE_SIZE: u64 = 256 * 1024 * 1024;
 ///
 /// Spawns the command as a child process and waits up to `timeout` for it to
 /// complete.  If the timeout expires the child is killed and an error returned.
-pub fn run_command_with_timeout(
-    cmd: &mut Command,
-    timeout: Duration,
-) -> Result<Output, String> {
+pub fn run_command_with_timeout(cmd: &mut Command, timeout: Duration) -> Result<Output, String> {
     let mut child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -60,10 +57,7 @@ pub fn run_command_with_timeout(
                 if start.elapsed() > timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(format!(
-                        "command timed out after {}s",
-                        timeout.as_secs()
-                    ));
+                    return Err(format!("command timed out after {}s", timeout.as_secs()));
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -74,8 +68,8 @@ pub fn run_command_with_timeout(
 
 /// Check whether a file exceeds the processing size limit.
 pub fn check_file_size(file_path: &str) -> Result<u64, String> {
-    let meta = std::fs::metadata(file_path)
-        .map_err(|e| format!("cannot read file metadata: {e}"))?;
+    let meta =
+        std::fs::metadata(file_path).map_err(|e| format!("cannot read file metadata: {e}"))?;
     let size = meta.len();
     if size > MAX_FILE_SIZE {
         return Err(format!(
@@ -377,10 +371,7 @@ mod tests {
         assert_eq!(status.name, "test");
         assert!(status.available);
         assert_eq!(status.supported_types, vec!["a/b"]);
-        assert_eq!(
-            status.details.get("key"),
-            Some(&serde_json::json!("val"))
-        );
+        assert_eq!(status.details.get("key"), Some(&serde_json::json!("val")));
         assert_eq!(status.note.as_deref(), Some("note"));
     }
 }

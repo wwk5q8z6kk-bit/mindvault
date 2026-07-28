@@ -45,7 +45,7 @@ impl OutputSanitizer {
         }
 
         // Sort longest-first so longer needles are replaced before shorter ones
-        pairs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        pairs.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
 
         let mut result = output.to_string();
         let mut any_redacted = false;

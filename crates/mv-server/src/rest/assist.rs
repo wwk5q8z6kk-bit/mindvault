@@ -348,14 +348,7 @@ fn extract_decisions(input: &str, search_results: &[SearchResult], limit: usize)
     let mut decisions = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let keywords = [
-        "decided",
-        "decision",
-        "agreed",
-        "approved",
-        "resolved",
-        "we will",
-        "we'll",
-        "commit",
+        "decided", "decision", "agreed", "approved", "resolved", "we will", "we'll", "commit",
     ];
 
     let mut candidates = split_candidate_sentences(input);

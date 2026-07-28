@@ -6,24 +6,30 @@
 
 #[cfg(feature = "wasm-runtime")]
 pub(crate) mod abi;
+pub(crate) mod hooks;
 #[cfg(feature = "wasm-runtime")]
 pub(crate) mod host;
-pub(crate) mod hooks;
 pub(crate) mod manager;
 pub(crate) mod manifest;
 pub(crate) mod registry;
 pub(crate) mod runtime;
-#[cfg(feature = "wasm-runtime")]
-pub(crate) mod sandbox;
+// Deliberately not gated on `wasm-runtime`: the permission gate is the policy
+// that defines the extension boundary, and it depends only on the manifest. A
+// host must be able to reason about — and test — that boundary without
+// compiling the WASM runtime in.
+pub mod sandbox;
 #[cfg(feature = "wasm-runtime")]
 pub(crate) mod wasm_plugin;
 
 pub use hooks::{HookContext, HookPoint, HookResult};
+#[cfg(feature = "wasm-runtime")]
+pub use host::{create_dispatch, register_host_functions, HostState};
 pub use manager::PluginManager;
 pub use manifest::{PluginManifest, PluginPermission};
 pub use registry::PluginRegistry;
-pub use runtime::{PluginRuntime, PluginInfo};
-#[cfg(feature = "wasm-runtime")]
-pub use host::{HostState, register_host_functions, create_dispatch};
+pub use runtime::{PluginInfo, PluginRuntime};
+// The permission gate is the extension boundary itself, so a host wiring the
+// dispatch table needs to name it.
+pub use sandbox::PermissionGate;
 #[cfg(feature = "wasm-runtime")]
 pub use wasm_plugin::WasmPlugin;

@@ -266,7 +266,7 @@ async fn prompt_daily_briefing(
         role: "user".into(),
         content: PromptContent::Text {
             text: format!(
-                 "Generate a daily briefing for my MindVault knowledge base.\n\n\
+                "Generate a daily briefing for my MindVault knowledge base.\n\n\
 				 ## Vault Stats\n\
 				 - Total nodes: {total_nodes}\n\
 				 - Namespace: {namespace_label}\n\

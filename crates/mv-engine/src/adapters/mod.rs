@@ -187,11 +187,7 @@ impl AdapterRegistry {
     }
 
     /// Register a new adapter with its configuration.
-    pub async fn register(
-        &self,
-        config: AdapterConfig,
-        adapter: Arc<dyn ExternalAdapter>,
-    ) {
+    pub async fn register(&self, config: AdapterConfig, adapter: Arc<dyn ExternalAdapter>) {
         let id = config.id;
         self.configs.write().await.push(config);
         self.adapters.write().await.insert(id, adapter);
@@ -223,11 +219,7 @@ impl AdapterRegistry {
     }
 
     /// Send a message through a specific adapter.
-    pub async fn send(
-        &self,
-        adapter_id: Uuid,
-        message: &AdapterOutboundMessage,
-    ) -> MvResult<()> {
+    pub async fn send(&self, adapter_id: Uuid, message: &AdapterOutboundMessage) -> MvResult<()> {
         let adapters = self.adapters.read().await;
         match adapters.get(&adapter_id) {
             Some(adapter) => adapter.send(message).await,
@@ -574,7 +566,10 @@ mod tests {
         assert_eq!(AdapterType::Email.to_string(), "email");
 
         assert_eq!("slack".parse::<AdapterType>().unwrap(), AdapterType::Slack);
-        assert_eq!("discord".parse::<AdapterType>().unwrap(), AdapterType::Discord);
+        assert_eq!(
+            "discord".parse::<AdapterType>().unwrap(),
+            AdapterType::Discord
+        );
         assert_eq!("email".parse::<AdapterType>().unwrap(), AdapterType::Email);
     }
 
@@ -768,12 +763,7 @@ mod tests {
             &self,
             adapter_name: &str,
         ) -> MvResult<Option<mv_core::AdapterPollState>> {
-            Ok(self
-                .state
-                .lock()
-                .unwrap()
-                .get(adapter_name)
-                .cloned())
+            Ok(self.state.lock().unwrap().get(adapter_name).cloned())
         }
 
         async fn upsert_poll_state(
@@ -799,12 +789,7 @@ mod tests {
         }
 
         async fn delete_poll_state(&self, adapter_name: &str) -> MvResult<bool> {
-            Ok(self
-                .state
-                .lock()
-                .unwrap()
-                .remove(adapter_name)
-                .is_some())
+            Ok(self.state.lock().unwrap().remove(adapter_name).is_some())
         }
     }
 
@@ -967,10 +952,7 @@ mod tests {
     async fn poll_cycle_callbacks_invoked() {
         let registry = AdapterRegistry::new();
         let config = AdapterConfig::new(AdapterType::Slack, "cb-test");
-        let messages = vec![
-            make_inbound("m1", "first"),
-            make_inbound("m2", "second"),
-        ];
+        let messages = vec![make_inbound("m1", "first"), make_inbound("m2", "second")];
         let adapter = Arc::new(PollableMockAdapter::new("cb-test", messages, "99"));
         registry.register(config, adapter).await;
 

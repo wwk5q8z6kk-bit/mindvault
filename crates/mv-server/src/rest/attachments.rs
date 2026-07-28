@@ -739,7 +739,10 @@ mod tests {
 
     #[test]
     fn pdf_detection_accepts_content_type_with_parameters() {
-        assert!(is_pdf_attachment("file.bin", Some("application/pdf; charset=binary")));
+        assert!(is_pdf_attachment(
+            "file.bin",
+            Some("application/pdf; charset=binary")
+        ));
         assert!(is_pdf_attachment("report.PDF", None));
     }
 

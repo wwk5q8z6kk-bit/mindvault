@@ -197,8 +197,7 @@ pub async fn file_unlock(action: FileUnlockAction) -> Result<()> {
             if deleted_from.is_empty() {
                 println!("{key} not found in any backend");
             } else {
-                let sources: Vec<String> =
-                    deleted_from.iter().map(|s| s.to_string()).collect();
+                let sources: Vec<String> = deleted_from.iter().map(|s| s.to_string()).collect();
                 println!("deleted {key} from: {}", sources.join(", "));
             }
         }
@@ -243,12 +242,7 @@ fn http_client() -> reqwest::Client {
         .expect("failed to create HTTP client")
 }
 
-pub async fn policy_set(
-    key: &str,
-    consumer: &str,
-    allow: bool,
-    ttl: Option<i64>,
-) -> Result<()> {
+pub async fn policy_set(key: &str, consumer: &str, allow: bool, ttl: Option<i64>) -> Result<()> {
     let body = serde_json::json!({
         "secret_key": key,
         "consumer": consumer,
@@ -322,10 +316,11 @@ pub async fn policy_list(secret: Option<&str>, consumer: Option<&str>) -> Result
         } else {
             "no"
         };
-        let expires = p["expires_at"]
-            .as_str()
-            .unwrap_or("never");
-        println!("{:<38} {:<20} {:<20} {:<8} {}", id, secret_key, consumer_name, allowed, expires);
+        let expires = p["expires_at"].as_str().unwrap_or("never");
+        println!(
+            "{:<38} {:<20} {:<20} {:<8} {}",
+            id, secret_key, consumer_name, allowed, expires
+        );
     }
 
     Ok(())

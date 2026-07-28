@@ -12,9 +12,7 @@ use mv_engine::model_manager::ModelManager;
 use crate::state::AppState;
 
 /// GET /api/v1/models — List all local GGUF models.
-pub async fn list_models(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn list_models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mgr = ModelManager::new(&state.engine.config.local_llm);
     match mgr.list_models() {
         Ok(models) => Json(serde_json::json!({
@@ -80,9 +78,7 @@ pub async fn delete_model(
 }
 
 /// GET /api/v1/models/status — Model subsystem status.
-pub async fn model_status(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn model_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let config = &state.engine.config.local_llm;
     let mgr = ModelManager::new(config);
     let models = mgr.list_models().unwrap_or_default();

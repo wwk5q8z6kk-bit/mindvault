@@ -126,11 +126,22 @@ impl MindVaultEngine {
     }
 
     pub(crate) async fn auto_backlink_node_references_best_effort(&self, node: &KnowledgeNode) {
+        if let Err(err) = self.sync_node_references(node).await {
+            tracing::warn!(
+                node_id = %node.id,
+                namespace = %node.namespace,
+                error = %err,
+                "mindvault_backlink_auto_sync_failed"
+            );
+        }
+    }
+
+    pub(crate) async fn sync_node_references(&self, node: &KnowledgeNode) -> MvResult<()> {
         if !self.config.linking.auto_backlinks_enabled {
-            return;
+            return Ok(());
         }
         if is_template_node(node) {
-            return;
+            return Ok(());
         }
 
         let link_targets = extract_reference_targets_with_kind(
@@ -150,30 +161,14 @@ impl MindVaultEngine {
             {
                 Ok(index) => index,
                 Err(err) => {
-                    tracing::warn!(
-                        node_id = %node.id,
-                        namespace = %node.namespace,
-                        error = %err,
-                        "mindvault_backlink_auto_index_build_failed"
-                    );
-                    return;
+                    return Err(err);
                 }
             };
             resolve_reference_targets_with_kind(&link_targets, node.id, &index)
         };
 
-        if let Err(err) = self
-            .sync_auto_backlink_references(node.id, &resolved_target_ids)
-            .await
-        {
-            tracing::warn!(
-                node_id = %node.id,
-                namespace = %node.namespace,
-                error = %err,
-                "mindvault_backlink_auto_sync_failed"
-            );
-            return;
-        }
+        self.sync_auto_backlink_references(node.id, &resolved_target_ids)
+            .await?;
 
         tracing::debug!(
             node_id = %node.id,
@@ -182,6 +177,7 @@ impl MindVaultEngine {
             extracted_targets = link_targets.len(),
             "mindvault_backlink_auto_sync_applied"
         );
+        Ok(())
     }
 
     async fn build_backlink_resolution_index(

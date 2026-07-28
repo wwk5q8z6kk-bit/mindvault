@@ -184,7 +184,12 @@ pub async fn show(config_path: &str) -> Result<()> {
     println!("  mark_seen = {}", runtime.engine.email.mark_seen);
     println!(
         "  imap_host = {}",
-        runtime.engine.email.imap_host.as_deref().unwrap_or("<unset>")
+        runtime
+            .engine
+            .email
+            .imap_host
+            .as_deref()
+            .unwrap_or("<unset>")
     );
     println!("  imap_port = {}", runtime.engine.email.imap_port);
     println!(
@@ -200,7 +205,12 @@ pub async fn show(config_path: &str) -> Result<()> {
     println!("  imap_starttls = {}", runtime.engine.email.imap_starttls);
     println!(
         "  smtp_host = {}",
-        runtime.engine.email.smtp_host.as_deref().unwrap_or("<unset>")
+        runtime
+            .engine
+            .email
+            .smtp_host
+            .as_deref()
+            .unwrap_or("<unset>")
     );
     println!("  smtp_port = {}", runtime.engine.email.smtp_port);
     println!(
@@ -214,7 +224,12 @@ pub async fn show(config_path: &str) -> Result<()> {
     );
     println!(
         "  smtp_from = {}",
-        runtime.engine.email.smtp_from.as_deref().unwrap_or("<unset>")
+        runtime
+            .engine
+            .email
+            .smtp_from
+            .as_deref()
+            .unwrap_or("<unset>")
     );
     println!("  smtp_starttls = {}", runtime.engine.email.smtp_starttls);
 
@@ -286,11 +301,15 @@ pub async fn validate(config_path: &str) -> Result<()> {
                 _ => println!("  OPENAI_API_KEY: not set (vector search will be disabled)"),
             }
             match creds.get("MINDVAULT_EMAIL_IMAP_PASSWORD") {
-                Ok(Some(sv)) => println!("  MINDVAULT_EMAIL_IMAP_PASSWORD: set (via {})", sv.source()),
+                Ok(Some(sv)) => {
+                    println!("  MINDVAULT_EMAIL_IMAP_PASSWORD: set (via {})", sv.source())
+                }
                 _ => println!("  MINDVAULT_EMAIL_IMAP_PASSWORD: not set"),
             }
             match creds.get("MINDVAULT_EMAIL_SMTP_PASSWORD") {
-                Ok(Some(sv)) => println!("  MINDVAULT_EMAIL_SMTP_PASSWORD: set (via {})", sv.source()),
+                Ok(Some(sv)) => {
+                    println!("  MINDVAULT_EMAIL_SMTP_PASSWORD: set (via {})", sv.source())
+                }
                 _ => println!("  MINDVAULT_EMAIL_SMTP_PASSWORD: not set"),
             }
         }

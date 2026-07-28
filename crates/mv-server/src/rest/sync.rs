@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use axum::{extract::{Path, State}, http::StatusCode, Extension, Json};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Extension, Json,
+};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 

@@ -1,6 +1,13 @@
 # MindVault
 
-MindVault is a local-first knowledge memory system for humans and AI agents.
+MindVault is evolving from a local-first knowledge memory system into a
+sovereign, interoperable context fabric for humans, organizations,
+applications, devices, models, and agents. Personal knowledge remains
+local-first and owner-controlled; connected systems may remain authoritative
+for their own data.
+
+The governing product law is the
+[`INTEROPERABILITY_CONSTITUTION.md`](INTEROPERABILITY_CONSTITUTION.md).
 
 ## Components
 
@@ -92,6 +99,33 @@ Environment overrides are supported, including:
 - `MINDVAULT_RECURRENCE_ENABLED`
 - `MINDVAULT_RECURRENCE_SCHEDULER_INTERVAL_SECS`
 - `MINDVAULT_RECURRENCE_MAX_INSTANCES_PER_TEMPLATE`
+- `MINDVAULT_WORKSPACE_ALLOWED_ROOTS`
+- `MINDVAULT_WORKSPACE_WATCH_ENABLED`
+- `MINDVAULT_WORKSPACE_WATCH_DEBOUNCE_MS`
+- `MINDVAULT_WORKSPACE_WATCH_DISCOVERY_INTERVAL_SECS`
+- `MINDVAULT_WORKSPACE_FULL_SCAN_INTERVAL_SECS`
+
+`MINDVAULT_WORKSPACE_ALLOWED_ROOTS` is a host path list (`:`-separated on
+Unix, `;`-separated on Windows). REST-based Markdown workspace mounting is
+disabled when the list is empty; only administrators may mount an allowlisted
+root or one of its descendants.
+
+In the Notes **Files** view, choose **Add** to mount a Markdown folder. The
+desktop app provides a native folder chooser; the browser build accepts an
+absolute host path. Selection does not bypass server authorization: the chosen
+folder, or one of its parents, must already be present in
+`MINDVAULT_WORKSPACE_ALLOWED_ROOTS`.
+
+Mounted workspaces are watched recursively by default. Native filesystem
+events are debounced for 750 ms and trigger a read-only manifest
+reconciliation; the Notes **Files** view refreshes through the existing change
+WebSocket after reconciliation completes. MindVault also performs a full scan
+every 300 seconds because filesystem events are hints and can be dropped.
+Workspace discovery runs every 10 seconds so folders mounted after startup are
+registered without restarting the server. Set
+`MINDVAULT_WORKSPACE_WATCH_ENABLED=false` to disable both automatic paths, or
+tune the three interval variables above. Minimums are 50 ms for debounce, 2
+seconds for discovery, and 15 seconds for the full-scan fallback.
 
 ### Owner Profile
 
@@ -578,6 +612,7 @@ Due-task retrieval API:
 MindVault can generate a ranked focus list using deterministic heuristics (importance + due date + status + effort).
 
 Optional task metadata hints:
+
 - `task_priority` or `priority` (1-5; lower is higher priority)
 - `task_status` or `status` (`in_progress`, `planned`, `review`, `waiting`, `blocked`, `inbox`)
 - `task_estimate_minutes`, `task_estimate_min`, or `estimate_min` (numeric)

@@ -12,7 +12,9 @@ use uuid::Uuid;
 
 use mv_core::{KnowledgeNode, NodeKind, NodeStore, PublicShare, ShareStore};
 
-use crate::auth::{authorize_namespace, authorize_read, authorize_write, scoped_namespace, AuthContext};
+use crate::auth::{
+    authorize_namespace, authorize_read, authorize_write, scoped_namespace, AuthContext,
+};
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -136,10 +138,7 @@ fn html_response(status: StatusCode, body: String) -> Response {
         header::CACHE_CONTROL,
         HeaderValue::from_static("no-store, max-age=0"),
     );
-    headers.insert(
-        header::PRAGMA,
-        HeaderValue::from_static("no-cache"),
-    );
+    headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
     headers.insert(
         header::HeaderName::from_static("x-content-type-options"),
         HeaderValue::from_static("nosniff"),
@@ -374,20 +373,12 @@ pub async fn create_public_share(
 
     let node_id = match Uuid::parse_str(&req.node_id) {
         Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                err_json("invalid node_id"),
-            )
-                .into_response()
-        }
+        Err(_) => return (StatusCode::BAD_REQUEST, err_json("invalid node_id")).into_response(),
     };
 
     let node = match state.engine.store.nodes.get(node_id).await {
         Ok(Some(node)) => node,
-        Ok(None) => {
-            return (StatusCode::NOT_FOUND, err_json("node not found")).into_response()
-        }
+        Ok(None) => return (StatusCode::NOT_FOUND, err_json("node not found")).into_response(),
         Err(err) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -451,17 +442,17 @@ pub async fn list_public_shares(
         Some(id) => match Uuid::parse_str(&id) {
             Ok(id) => Some(id),
             Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    err_json("invalid node_id"),
-                )
-                    .into_response()
+                return (StatusCode::BAD_REQUEST, err_json("invalid node_id")).into_response()
             }
         },
         None => None,
     };
 
-    let shares = match state.engine.list_public_shares(node_id, include_revoked).await {
+    let shares = match state
+        .engine
+        .list_public_shares(node_id, include_revoked)
+        .await
+    {
         Ok(shares) => shares,
         Err(err) => {
             return (
@@ -519,20 +510,12 @@ pub async fn revoke_public_share(
 
     let share_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                err_json("invalid share id"),
-            )
-                .into_response()
-        }
+        Err(_) => return (StatusCode::BAD_REQUEST, err_json("invalid share id")).into_response(),
     };
 
     let share = match state.engine.store.nodes.get_public_share(share_id).await {
         Ok(Some(share)) => share,
-        Ok(None) => {
-            return (StatusCode::NOT_FOUND, err_json("share not found")).into_response()
-        }
+        Ok(None) => return (StatusCode::NOT_FOUND, err_json("share not found")).into_response(),
         Err(err) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -544,9 +527,7 @@ pub async fn revoke_public_share(
 
     let node = match state.engine.store.nodes.get(share.node_id).await {
         Ok(Some(node)) => node,
-        _ => {
-            return (StatusCode::NOT_FOUND, err_json("node not found")).into_response()
-        }
+        _ => return (StatusCode::NOT_FOUND, err_json("node not found")).into_response(),
     };
 
     if let Err((status, message)) = authorize_namespace(&auth, &node.namespace) {
@@ -556,7 +537,9 @@ pub async fn revoke_public_share(
     match state.engine.revoke_public_share(share_id).await {
         Ok(true) => {
             // Return post-revoke state when possible so clients see revoked_at immediately.
-            if let Ok(Some(updated_share)) = state.engine.store.nodes.get_public_share(share_id).await {
+            if let Ok(Some(updated_share)) =
+                state.engine.store.nodes.get_public_share(share_id).await
+            {
                 Json(share_summary(updated_share)).into_response()
             } else {
                 // Fallback: mark the preloaded share as revoked for response consistency.

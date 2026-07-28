@@ -1,4 +1,5 @@
 import { fetchJson } from './client';
+import type { ChatSource } from './chat';
 
 export interface ConversationListItem {
 	id: string;
@@ -11,6 +12,7 @@ export interface ConversationMessage {
 	role: 'user' | 'assistant' | string;
 	content: string;
 	created_at: string;
+	sources?: ChatSource[];
 }
 
 export async function listConversations(limit = 50, offset = 0): Promise<ConversationListItem[]> {
@@ -49,13 +51,20 @@ export async function listConversationMessages(
 export async function appendConversationMessage(
 	id: string,
 	role: 'user' | 'assistant',
-	content: string
-): Promise<{ id: string; conversation_id: string; role: string }> {
-	return await fetchJson<{ id: string; conversation_id: string; role: string }>(
-		`/api/v1/conversations/${encodeURIComponent(id)}/message`,
-		{
-			method: 'POST',
-			body: JSON.stringify({ role, content })
-		}
-	);
+	content: string,
+	sources?: ChatSource[]
+): Promise<{ id: string; conversation_id: string; role: string; sources?: ChatSource[] }> {
+	return await fetchJson<{
+		id: string;
+		conversation_id: string;
+		role: string;
+		sources?: ChatSource[];
+	}>(`/api/v1/conversations/${encodeURIComponent(id)}/message`, {
+		method: 'POST',
+		body: JSON.stringify({
+			role,
+			content,
+			...(sources && sources.length > 0 ? { sources } : {})
+		})
+	});
 }
