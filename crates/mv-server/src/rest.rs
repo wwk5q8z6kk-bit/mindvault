@@ -142,7 +142,9 @@ use crate::limits::{
     enforce_ai_rate_limit, enforce_namespace_quota, enforce_rate_limit, NamespaceQuotaError,
     RateLimitStatus,
 };
-use crate::metrics::{get_metrics, init_metrics, metrics_handler, metrics_middleware};
+use crate::metrics::{
+    get_metrics, init_metrics, metrics_handler, metrics_middleware, AlertThresholds,
+};
 use crate::openapi::swagger_ui;
 use crate::state::AppState;
 use crate::validation::{
@@ -12043,7 +12045,7 @@ async fn metrics_snapshot(
     Ok(Json(snapshot))
 }
 
-/// GET /api/v1/metrics/summary — Get overall system summary.
+/// GET /api/v1/metrics/summary — Get overall system summary with alert hints.
 async fn metrics_summary(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
@@ -12062,12 +12064,35 @@ async fn metrics_summary(
         .await
         .unwrap_or(0);
 
+    let health = get_metrics().health_report(AlertThresholds::default());
+    let latency_by_api_group: serde_json::Map<String, serde_json::Value> = health
+        .latency_by_api_group
+        .iter()
+        .map(|(group, snap)| {
+            (
+                group.clone(),
+                serde_json::to_value(snap).unwrap_or_default(),
+            )
+        })
+        .collect();
+
     Ok(Json(serde_json::json!({
         "total_nodes": total_nodes,
         "active_proposals": pending_proposals,
         "uptime_seconds": state.engine.metrics.uptime_seconds(),
         "counters": state.engine.metrics.get_counters().await,
         "gauges": state.engine.metrics.get_gauges().await,
+        "prometheus": get_metrics().snapshot(),
+        "latency": {
+            "overall": health.latency,
+            "by_api_group": latency_by_api_group,
+        },
+        "health": {
+            "status": health.status,
+            "rest_error_rate": health.rest_error_rate,
+            "hints": health.hints,
+            "thresholds": health.thresholds,
+        },
     })))
 }
 

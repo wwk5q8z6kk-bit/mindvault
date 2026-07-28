@@ -2052,6 +2052,91 @@ async fn namespace_node_quota_allows_update_when_at_limit() {
 }
 
 // ---------------------------------------------------------------------------
+// Metrics / observability
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn prometheus_metrics_include_api_group_latency_histograms() {
+    let (router, _tmp) = setup().await;
+
+    // Touch core endpoint groups so labeled histograms have samples.
+    let _ = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/health", None))
+        .await
+        .unwrap();
+    let _ = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/nodes", None))
+        .await
+        .unwrap();
+
+    let resp = router
+        .oneshot(json_request(Method::GET, "/metrics", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        text.contains("mindvault_rest_request_duration_seconds_bucket"),
+        "missing aggregate latency histogram"
+    );
+    assert!(
+        text.contains("mindvault_rest_request_duration_seconds_by_group_bucket"),
+        "missing per-api-group latency histogram"
+    );
+    assert!(
+        text.contains("api_group=\"health\""),
+        "missing health api_group label: {text}"
+    );
+    assert!(
+        text.contains("api_group=\"nodes\""),
+        "missing nodes api_group label"
+    );
+}
+
+#[tokio::test]
+async fn metrics_summary_includes_alert_oriented_health_hints() {
+    let (router, _tmp) = setup().await;
+
+    let _ = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/health", None))
+        .await
+        .unwrap();
+
+    let resp = router
+        .oneshot(json_request(Method::GET, "/api/v1/metrics/summary", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+
+    assert!(
+        body.get("health").is_some(),
+        "missing health object: {body}"
+    );
+    assert!(body["health"].get("status").is_some());
+    assert!(body["health"].get("hints").is_some());
+    assert!(body["health"].get("thresholds").is_some());
+    assert!(body.get("latency").is_some());
+    assert!(body["latency"].get("overall").is_some());
+    assert!(body["latency"].get("by_api_group").is_some());
+    assert!(body.get("prometheus").is_some());
+
+    let status = body["health"]["status"].as_str().unwrap_or_default();
+    assert!(
+        matches!(status, "healthy" | "degraded" | "unhealthy"),
+        "unexpected health status {status}"
+    );
+    let hints = body["health"]["hints"].as_array().expect("hints array");
+    assert!(!hints.is_empty(), "expected at least one health hint");
+}
+
+// ---------------------------------------------------------------------------
 // Governed agent execution graph
 //
 // Contract: docs/architecture/WORK_ORDER_MODEL.md

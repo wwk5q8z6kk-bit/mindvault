@@ -25,13 +25,15 @@ clear file-level anchors.
   - Done when: automated tests cover key rotation and corrupted key material handling.
   - Shipped: KeyManager env boot / restore / rotate / corruption matrix + VaultCrypto grace-epoch rotate/re-encrypt/restore-wrapped-key / wrong-password / grace-cap eviction (`cargo test -p mv-storage --test encryption_key_lifecycle`).
 
-- [ ] Expand metrics from counters/gauges to latency histograms for critical endpoints.
+- [x] Expand metrics from counters/gauges to latency histograms for critical endpoints.
   - Files: `crates/mv-server/src/metrics.rs`, `crates/mv-server/src/rest.rs`
   - Done when: `/metrics` includes request latency buckets for core API groups.
+  - Shipped: aggregate + per-`api_group` Prometheus histograms (`health`, `nodes`, `recall`, `search`, `keychain`, `metrics`, `other`) via `mindvault_rest_request_duration_seconds(_by_group)`.
 
-- [ ] Add alert-oriented metrics summaries for operational dashboards.
-  - Files: `crates/mv-server/src/rest.rs` (`/api/v1/metrics/summary`)
+- [x] Add alert-oriented metrics summaries for operational dashboards.
+  - Files: `crates/mv-server/src/rest.rs` (`/api/v1/metrics/summary`), `crates/mv-server/src/metrics.rs`
   - Done when: summary endpoint includes thresholds/health hints for degraded states.
+  - Shipped: `/api/v1/metrics/summary` returns `health.status` (`healthy`/`degraded`/`unhealthy`), thresholded hints (error rate, p95 latency, vault lifecycle), and latency snapshots by API group.
 
 - [x] Extend auth edge-case tests (namespace-scoped token + RBAC + quota/rate-limit interaction).
   - Files: `crates/mv-server/tests/api_integration.rs`, `crates/mv-server/tests/transport_parity.rs`, `crates/mv-server/src/auth.rs`, `crates/mv-server/src/limits.rs`
