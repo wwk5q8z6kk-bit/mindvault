@@ -2,8 +2,10 @@ mod access_ops;
 mod consumer_ops;
 mod graph_ops;
 mod intent_ops;
+mod interoperability_ops;
 mod mcp_ops;
 mod node_ops;
+mod outbox_dispatch;
 mod profile_ops;
 mod proposal_ops;
 mod relay_ops;
@@ -11,6 +13,23 @@ mod search_ops;
 mod security_ops;
 mod social_ops;
 mod sync_ops;
+mod work_order_ops;
+mod workspace_ops;
+mod workspace_projection_ops;
+
+pub use interoperability_ops::{
+    AuthorityGrantIssuance, AuthorityGrantTransition, IssueAuthorityGrantRequest,
+    LocalContextNodeRegistration,
+};
+pub use outbox_dispatch::{
+    spawn_outbox_dispatcher, LocalAckPublisher, OutboxDispatchTick, OutboxDispatcherConfig,
+    OutboxPublisher,
+};
+pub use work_order_ops::{
+    AdmissionRefusal, ProposedEdge, ProposedNode, ProposedWorkOrder, RunReadiness,
+};
+pub use workspace_ops::WorkspaceMountResult;
+pub use workspace_projection_ops::WorkspaceProjectionOutcome;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -55,6 +74,7 @@ const TASK_ESTIMATE_MINUTES_METADATA_KEY: &str = "task_estimate_minutes";
 const TASK_ESTIMATE_MINUTES_ALT_METADATA_KEY: &str = "task_estimate_min";
 const TASK_ESTIMATE_MIN_METADATA_KEY: &str = "estimate_min";
 const SEALED_BLOB_MAGIC: &[u8; 4] = b"MVB1";
+pub(crate) const WORKSPACE_PROJECTION_METADATA_KEY: &str = "mindvault.workspace_projection";
 
 // ── Public Types ─────────────────────────────────────────────────────
 

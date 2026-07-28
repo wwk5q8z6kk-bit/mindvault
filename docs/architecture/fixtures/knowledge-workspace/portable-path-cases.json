@@ -1,0 +1,50 @@
+[
+  {
+    "path": "Projects/MindVault/Architecture.md",
+    "safe_to_read": true,
+    "portable": true,
+    "normalized_path": "Projects/MindVault/Architecture.md"
+  },
+  {
+    "path": "Research/CON.notes.md",
+    "safe_to_read": true,
+    "portable": false,
+    "normalized_path": "Research/CON.notes.md"
+  },
+  {
+    "path": "Drafts/ending-space .md",
+    "safe_to_read": true,
+    "portable": true,
+    "normalized_path": "Drafts/ending-space .md"
+  },
+  {
+    "path": "Drafts/topic?.md",
+    "safe_to_read": true,
+    "portable": false,
+    "normalized_path": "Drafts/topic?.md"
+  },
+  {
+    "path": "Café.md",
+    "safe_to_read": true,
+    "portable": false,
+    "normalized_path": "Café.md"
+  },
+  {
+    "path": "../escape.md",
+    "safe_to_read": false,
+    "portable": false,
+    "normalized_path": "../escape.md"
+  },
+  {
+    "path": ".mindvault/index.md",
+    "safe_to_read": false,
+    "portable": false,
+    "normalized_path": ".mindvault/index.md"
+  },
+  {
+    "path": "/absolute.md",
+    "safe_to_read": false,
+    "portable": false,
+    "normalized_path": "/absolute.md"
+  }
+]

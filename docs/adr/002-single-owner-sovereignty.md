@@ -1,7 +1,11 @@
 # ADR-002: Single-Owner Sovereignty Model
 
 ## Status
-Accepted
+Superseded in part by ADR 010
+
+The single-owner boundary remains authoritative for a Personal Vault. ADR 010
+supersedes the platform-wide prohibition on shared state and built-in team
+features.
 
 ## Context
 MindVault is a personal knowledge management system. The architecture must decide between multi-tenant SaaS patterns vs. single-owner sovereignty.

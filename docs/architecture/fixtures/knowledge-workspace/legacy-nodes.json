@@ -1,0 +1,39 @@
+{
+  "contract_version": 1,
+  "namespace": "default",
+  "nodes": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "version": 3,
+      "kind": "decision",
+      "title": "Project Alpha",
+      "content": "Approved the file-first architecture for Project Alpha.\n",
+      "tags": ["roadmap", "q3"],
+      "metadata": {
+        "folder": "Projects"
+      }
+    },
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "version": 1,
+      "kind": "procedure",
+      "title": "Project Alpha",
+      "content": "1. Create a dry-run plan.\n2. Verify staged bytes.\n3. Commit explicitly.\n",
+      "tags": ["roadmap"],
+      "metadata": {
+        "folder": "Projects"
+      }
+    },
+    {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "version": 2,
+      "kind": "observation",
+      "title": "CON",
+      "content": "Reserved device names require a deterministic portable filename.\n",
+      "tags": [],
+      "metadata": {
+        "folder": "Decisions"
+      }
+    }
+  ]
+}

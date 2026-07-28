@@ -2,7 +2,7 @@
 name = "mv-core"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 authors.workspace = true
 description = "Core types, traits, and credential store for MindVault"
 repository.workspace = true
@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+unicode-normalization-alignments = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
@@ -21,3 +22,5 @@ aes-gcm = { workspace = true }
 argon2 = { workspace = true }
 rand = { workspace = true }
 base64 = { workspace = true }
+url = { workspace = true }
+sha2 = { workspace = true }

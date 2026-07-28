@@ -7,7 +7,7 @@ use axum::{
     extract::{Multipart, Path, Query, Request, State},
     http::{
         header::{CONTENT_DISPOSITION, CONTENT_TYPE},
-        HeaderValue, Method, StatusCode,
+        HeaderMap, HeaderValue, Method, StatusCode,
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -18,6 +18,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -109,6 +110,8 @@ mod distill;
 mod federation;
 #[path = "rest/google_calendar.rs"]
 mod google_calendar;
+#[path = "rest/interoperability.rs"]
+mod interoperability;
 #[path = "rest/models.rs"]
 mod models;
 #[path = "rest/plans.rs"]
@@ -125,6 +128,10 @@ mod proxy;
 mod shares;
 #[path = "rest/sync.rs"]
 mod sync;
+#[path = "rest/work_orders.rs"]
+mod work_orders;
+#[path = "rest/workspaces.rs"]
+mod workspaces;
 
 use crate::audit::{audit_middleware, list_audit_entries, AuditConfig, AuditEntry, AuditLogger};
 use crate::auth::{
@@ -166,6 +173,107 @@ pub fn init_observability() {
 pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[String]) -> Router {
     let router = Router::new()
         .route("/api/v1/health", get(health))
+        .route(
+            "/api/v1/workspaces",
+            get(workspaces::list_workspaces).post(workspaces::mount_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/:id/tree",
+            get(workspaces::get_workspace_tree),
+        )
+        .route(
+            "/api/v1/workspaces/:id/reconcile",
+            post(workspaces::reconcile_workspace),
+        )
+        .route(
+            "/api/v1/workspaces/:id/projections/rebuild",
+            post(workspaces::rebuild_workspace_projections),
+        )
+        .route(
+            "/api/v1/workspaces/:workspace_id/documents/:document_id",
+            get(workspaces::read_workspace_document),
+        )
+        // Governed agent execution graph. Command and query surfaces ship
+        // together per constitutional law 2.
+        .route(
+            "/api/v1/work-orders",
+            get(work_orders::list_work_orders).post(work_orders::create_work_order),
+        )
+        .route("/api/v1/work-orders/:id", get(work_orders::get_work_order))
+        .route("/api/v1/work-orders/:id/runs", get(work_orders::list_runs))
+        // The only path that creates a run. Executes nothing; see ADR 012.
+        .route(
+            "/api/v1/work-orders/:id/nodes/:node_id/runs",
+            post(work_orders::start_run),
+        )
+        .route(
+            "/api/v1/work-orders/:id/artifacts",
+            get(work_orders::list_artifacts),
+        )
+        .route(
+            "/api/v1/work-orders/:id/artifacts/:artifact_id/content",
+            get(work_orders::read_artifact_content),
+        )
+        // Portability: a user can leave with the whole governed graph, and
+        // bring it back into another vault.
+        .route(
+            "/api/v1/work-orders/:id/export",
+            get(work_orders::export_work_order),
+        )
+        .route(
+            "/api/v1/work-orders/restore",
+            post(work_orders::restore_work_order),
+        )
+        .route(
+            "/api/v1/context-nodes/local",
+            get(interoperability::get_local_context_node)
+                .post(interoperability::register_local_context_node),
+        )
+        .route(
+            "/api/v1/authority-grants",
+            get(interoperability::list_authority_grants)
+                .post(interoperability::issue_authority_grant),
+        )
+        .route(
+            "/api/v1/authority-grants/:id",
+            get(interoperability::get_authority_grant),
+        )
+        .route(
+            "/api/v1/authority-grants/:id/suspend",
+            post(interoperability::suspend_authority_grant),
+        )
+        .route(
+            "/api/v1/authority-grants/:id/revoke",
+            post(interoperability::revoke_authority_grant),
+        )
+        .route(
+            "/api/v1/authority-grants/:id/resume",
+            post(interoperability::resume_authority_grant),
+        )
+        .route(
+            "/api/v1/work-orders/:id/runs/:run_id/readiness",
+            get(work_orders::get_run_readiness),
+        )
+        .route(
+            "/api/v1/work-orders/:id/runs/:run_id/artifacts",
+            post(work_orders::record_artifact),
+        )
+        .route(
+            "/api/v1/work-orders/:id/runs/:run_id/gates",
+            get(work_orders::list_gates).post(work_orders::record_gate),
+        )
+        .route(
+            "/api/v1/work-orders/:id/runs/:run_id/approve",
+            post(work_orders::approve_run),
+        )
+        .route(
+            "/api/v1/work-orders/:id/runs/:run_id/complete",
+            post(work_orders::complete_run),
+        )
+        .route(
+            "/api/v1/work-orders/:id/runs/:run_id/fail",
+            post(work_orders::fail_run),
+        )
         .route("/api/v1/config/sections", get(list_config_sections))
         .route("/api/v1/diagnostics/embedding", get(embedding_diagnostics))
         .route("/api/v1/assist/completion", post(assist_completion))
@@ -941,7 +1049,7 @@ struct AssistTransformResponse {
     strategy: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct StoreNodeRequest {
     kind: String,
     content: String,
@@ -2107,11 +2215,93 @@ const BUILTIN_TEMPLATE_PACKS: &[BuiltinTemplatePackDefinition] = &[
     },
 ];
 
-fn map_mv_error(err: MvError) -> (StatusCode, String) {
+const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
+const CORRELATION_ID_HEADER: &str = "x-correlation-id";
+const CAUSATION_ID_HEADER: &str = "x-causation-id";
+
+fn request_idempotency_key(headers: &HeaderMap) -> Result<IdempotencyKey, (StatusCode, String)> {
+    match headers.get(IDEMPOTENCY_KEY_HEADER) {
+        Some(value) => {
+            let value = value.to_str().map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "Idempotency-Key must be visible ASCII".into(),
+                )
+            })?;
+            IdempotencyKey::parse(value.to_string())
+                .map_err(|message| (StatusCode::BAD_REQUEST, message))
+        }
+        None => Ok(IdempotencyKey::generated()),
+    }
+}
+
+fn optional_uuid_header(
+    headers: &HeaderMap,
+    name: &'static str,
+) -> Result<Option<Uuid>, (StatusCode, String)> {
+    let Some(value) = headers.get(name) else {
+        return Ok(None);
+    };
+    let value = value
+        .to_str()
+        .map_err(|_| (StatusCode::BAD_REQUEST, format!("{name} must be a UUID")))?;
+    Uuid::parse_str(value)
+        .map(Some)
+        .map_err(|_| (StatusCode::BAD_REQUEST, format!("{name} must be a UUID")))
+}
+
+fn canonicalize_json(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().collect();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            serde_json::Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key, canonicalize_json(value)))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(canonicalize_json).collect())
+        }
+        other => other,
+    }
+}
+
+fn node_create_payload_digest(node: &KnowledgeNode) -> Result<String, (StatusCode, String)> {
+    let mut tags = node.tags.clone();
+    tags.sort();
+    let value = canonicalize_json(serde_json::json!({
+        "kind": node.kind.as_str(),
+        "title": node.title,
+        "content": node.content,
+        "source": node.source,
+        "namespace": node.namespace,
+        "tags": tags,
+        "importance": node.importance,
+        "metadata": node.metadata,
+    }));
+    let bytes = serde_json::to_vec(&value).map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to fingerprint node request: {err}"),
+        )
+    })?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+pub(crate) fn map_mv_error(err: MvError) -> (StatusCode, String) {
     match err {
-        MvError::NodeNotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
+        MvError::NodeNotFound(_) | MvError::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
         MvError::InvalidInput(_) => (StatusCode::BAD_REQUEST, err.to_string()),
-        MvError::DuplicateNode(_) => (StatusCode::CONFLICT, err.to_string()),
+        MvError::AccessDenied(_) => (StatusCode::FORBIDDEN, err.to_string()),
+        MvError::DuplicateNode(_)
+        | MvError::IdempotencyConflict(_)
+        | MvError::CanonicalSourceConflict(_)
+        // A write lease held by another run: the caller may retry once the
+        // holder releases, which is materially different from a bad request.
+        | MvError::Conflict(_) => (StatusCode::CONFLICT, err.to_string()),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
 }
@@ -9008,6 +9198,7 @@ async fn install_template_pack(
             let Json(updated) = update_node(
                 Extension(auth.clone()),
                 State(Arc::clone(&state)),
+                HeaderMap::new(),
                 Path(existing_template.id.to_string()),
                 Json(updated_payload),
             )
@@ -10525,6 +10716,7 @@ async fn create_clip_note(
 async fn store_node(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(mut req): Json<StoreNodeRequest>,
 ) -> Result<(StatusCode, Json<KnowledgeNode>), (StatusCode, String)> {
     authorize_write(&auth)?;
@@ -10555,9 +10747,6 @@ async fn store_node(
         node = node.with_source(source);
     }
     let namespace = namespace_for_create(&auth, req.namespace.take(), "default")?;
-    enforce_namespace_quota(&state.engine, &namespace)
-        .await
-        .map_err(map_namespace_quota_error)?;
     node = node.with_namespace(namespace);
     if !tags.is_empty() {
         node = node.with_tags(tags);
@@ -10569,10 +10758,116 @@ async fn store_node(
         node.metadata = metadata;
     }
 
-    let stored = state.engine.store_node(node).await.map_err(map_mv_error)?;
+    let local_node_id = state
+        .engine
+        .local_context_node_id()
+        .await
+        .map_err(map_mv_error)?;
+    let source = StableUri::node(local_node_id);
+    let subject = StableUri::knowledge_node(local_node_id, node.id);
+    let idempotency_key = request_idempotency_key(&headers)?;
+    let correlation_id =
+        optional_uuid_header(&headers, CORRELATION_ID_HEADER)?.unwrap_or_else(Uuid::now_v7);
+    let causation_id = optional_uuid_header(&headers, CAUSATION_ID_HEADER)?;
+    let identity = interoperability::CommandIdentity::derive(&auth, local_node_id);
+    let principal = identity.principal.clone();
+    let payload_digest = node_create_payload_digest(&node)?;
+    if let Some(replay) = state
+        .engine
+        .find_node_create_replay(&source, &principal, &idempotency_key, &payload_digest)
+        .await
+        .map_err(map_mv_error)?
+    {
+        return Ok((StatusCode::OK, Json(replay.node)));
+    }
 
-    state.notify_change(&stored.id.to_string(), "create", Some(&stored.namespace));
-    Ok((StatusCode::CREATED, Json(stored)))
+    // Ordered after the replay lookup and before the quota check.
+    //
+    // After replay: a replay performs no mutation, and the lookup is
+    // principal-scoped, so re-admitting would refuse a network retry whose
+    // original commit already succeeded — leaving the caller with a false view
+    // of the world.
+    //
+    // Before quota: ADR 010:104-111 orders authorization as identity → role →
+    // resource → grants → delegation → budget. A caller who holds no authority
+    // should not consume quota accounting to find that out.
+    let admission = interoperability::admit_command(
+        &state,
+        &interoperability::node_create_admission_request(
+            &identity,
+            local_node_id,
+            subject.clone(),
+            idempotency_key.clone(),
+            correlation_id,
+            causation_id,
+        ),
+    )
+    .await?;
+
+    enforce_namespace_quota(&state.engine, &node.namespace)
+        .await
+        .map_err(map_namespace_quota_error)?;
+    let event = EventEnvelope::new(NewEventEnvelope {
+        event_type: KNOWLEDGE_NODE_CREATED_V1.into(),
+        source,
+        subject: subject.clone(),
+        schema: SchemaReference::new(
+            StableUri::schema("knowledge-node-created")
+                .map_err(|message| (StatusCode::INTERNAL_SERVER_ERROR, message))?,
+            "1.0.0",
+        )
+        .map_err(|message| (StatusCode::INTERNAL_SERVER_ERROR, message))?,
+        principal: principal.clone(),
+        actor: principal,
+        correlation_id,
+        causation_id,
+        idempotency_key,
+        payload_digest,
+        sensitivity: Sensitivity::Internal,
+        retention: RetentionClass::Durable,
+        provenance: vec![ProvenanceReference {
+            resource: subject,
+            relation: ProvenanceRelation::PrimarySource,
+        }],
+        data: {
+            let mut data = serde_json::json!({
+                "resource_kind": "knowledge_node",
+                "node_kind": node.kind.as_str(),
+                "namespace": node.namespace,
+            });
+            // Present only when the resolver ran, so `off` stays byte-identical.
+            // Credential-free and content-free: identities and enum tokens only.
+            if let Some(envelope) = &admission {
+                data["admission"] = envelope.policy_decision.policy_metadata();
+                data["action_envelope"] = envelope.attribution_metadata();
+            }
+            data
+        },
+    })
+    .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+
+    let commit = state
+        .engine
+        .store_node_with_event(node, event)
+        .await
+        .map_err(map_mv_error)?;
+
+    if !commit.replayed {
+        state.notify_change_with_event(
+            &commit.node.id.to_string(),
+            "create",
+            Some(&commit.node.namespace),
+            Some(commit.event.clone()),
+        );
+    }
+    Ok((
+        if commit.replayed {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
+        Json(commit.node),
+    ))
 }
 
 async fn get_node(
@@ -10598,6 +10893,7 @@ async fn get_node(
 async fn update_node(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(mut node): Json<KnowledgeNode>,
 ) -> Result<Json<KnowledgeNode>, (StatusCode, String)> {
@@ -10612,6 +10908,26 @@ async fn update_node(
         .ok_or((StatusCode::NOT_FOUND, "node not found".into()))?;
 
     authorize_namespace(&auth, &existing.namespace)?;
+
+    let local_node_id = state
+        .engine
+        .local_context_node_id()
+        .await
+        .map_err(map_mv_error)?;
+    let identity = interoperability::CommandIdentity::derive(&auth, local_node_id);
+    let subject = StableUri::knowledge_node(local_node_id, uuid);
+    let _action_envelope = interoperability::admit_command(
+        &state,
+        &interoperability::node_command_admission_request(
+            &identity,
+            local_node_id,
+            subject,
+            request_idempotency_key(&headers)?,
+            optional_uuid_header(&headers, CORRELATION_ID_HEADER)?.unwrap_or_else(Uuid::now_v7),
+            optional_uuid_header(&headers, CAUSATION_ID_HEADER)?,
+        ),
+    )
+    .await?;
 
     node.id = uuid;
     if !auth.is_admin() {
@@ -10681,6 +10997,7 @@ async fn update_node(
 async fn delete_node(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     authorize_write(&auth)?;
@@ -10690,6 +11007,26 @@ async fn delete_node(
     if let Some(node) = existing.as_ref() {
         authorize_namespace(&auth, &node.namespace)?;
     }
+
+    let local_node_id = state
+        .engine
+        .local_context_node_id()
+        .await
+        .map_err(map_mv_error)?;
+    let identity = interoperability::CommandIdentity::derive(&auth, local_node_id);
+    let subject = StableUri::knowledge_node(local_node_id, uuid);
+    let _action_envelope = interoperability::admit_command(
+        &state,
+        &interoperability::node_command_admission_request(
+            &identity,
+            local_node_id,
+            subject,
+            request_idempotency_key(&headers)?,
+            optional_uuid_header(&headers, CORRELATION_ID_HEADER)?.unwrap_or_else(Uuid::now_v7),
+            optional_uuid_header(&headers, CAUSATION_ID_HEADER)?,
+        ),
+    )
+    .await?;
 
     let deleted = state.engine.delete_node(uuid).await.map_err(map_mv_error)?;
 
@@ -11839,6 +12176,7 @@ async fn diagnostics_health(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::CommandAdmissionMode;
     use axum::body::{to_bytes, Body};
     use axum::http::Request;
     use chrono::TimeZone;
@@ -11865,6 +12203,12 @@ mod tests {
         config.embedding.provider = provider.to_string();
         config.embedding.model = model.to_string();
         config.sealed_mode = sealed_mode;
+        // Keep tests hermetic. `LlmConfig::auto_detect` defaults to true and probes
+        // http://localhost:11434/v1, so on a developer machine running Ollama the
+        // engine acquires a real LLM provider and AI handlers take the LLM branch
+        // instead of the deterministic heuristic one. CI has no Ollama, so leaving
+        // this on makes local and CI disagree.
+        config.llm.auto_detect = false;
 
         let engine = MindVaultEngine::init(config)
             .await
@@ -12291,7 +12635,13 @@ mod tests {
         assert_eq!(response.mode, "native");
         assert!(response.grounded);
         assert!(!response.sources.is_empty());
-        assert!(response.answer.contains("[1]"));
+        assert!(
+            response.answer.contains("[1]"),
+            "expected a citation marker; provider={} sources={} answer={:?}",
+            response.provider,
+            response.sources.len(),
+            response.answer
+        );
         assert!(response
             .sources
             .iter()
@@ -12516,6 +12866,7 @@ mod tests {
         let denied_write = store_node(
             Extension(reader.clone()),
             State(Arc::clone(&state)),
+            HeaderMap::new(),
             Json(StoreNodeRequest {
                 kind: "fact".to_string(),
                 content: "Should not be writable by read role.".to_string(),
@@ -12541,6 +12892,7 @@ mod tests {
         let denied_ns = store_node(
             Extension(writer),
             State(Arc::clone(&state)),
+            HeaderMap::new(),
             Json(StoreNodeRequest {
                 kind: "fact".to_string(),
                 content: "Writer must not escape namespace.".to_string(),
@@ -13021,6 +13373,7 @@ mod tests {
         let Json(updated) = update_node(
             Extension(AuthContext::system_admin()),
             State(Arc::clone(&state)),
+            HeaderMap::new(),
             Path(template.id.to_string()),
             Json(edited_template),
         )
@@ -13098,6 +13451,7 @@ mod tests {
         let _updated = update_node(
             Extension(AuthContext::system_admin()),
             State(Arc::clone(&state)),
+            HeaderMap::new(),
             Path(template.id.to_string()),
             Json(edited_template),
         )
@@ -16079,6 +16433,7 @@ mod tests {
         let (status, Json(stored)) = store_node(
             Extension(AuthContext::system_admin()),
             State(Arc::clone(&state)),
+            HeaderMap::new(),
             Json(StoreNodeRequest {
                 kind: "fact".to_string(),
                 content: "Original note content".to_string(),
@@ -16108,6 +16463,7 @@ mod tests {
         let Json(updated) = update_node(
             Extension(AuthContext::system_admin()),
             State(Arc::clone(&state)),
+            HeaderMap::new(),
             Path(stored.id.to_string()),
             Json(edited),
         )
@@ -16252,6 +16608,336 @@ mod tests {
             .contains_key(TASK_DUE_AT_METADATA_KEY));
     }
 
+    /// One engine, many states: lets a test change admission mode between calls
+    /// against the same vault, which is how the replay-ordering case is proven.
+    async fn admission_engine() -> (Arc<MindVaultEngine>, TempDir) {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let mut config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        config.embedding.provider = "unknown-provider".to_string();
+        config.embedding.model = "any".to_string();
+        config.llm.auto_detect = false;
+        let engine = MindVaultEngine::init(config)
+            .await
+            .expect("test engine should initialize");
+        (Arc::new(engine), temp_dir)
+    }
+
+    fn admission_state(engine: &Arc<MindVaultEngine>, mode: CommandAdmissionMode) -> Arc<AppState> {
+        Arc::new(AppState::new(Arc::clone(engine)).with_command_admission(mode))
+    }
+
+    fn admission_request(content: &str) -> StoreNodeRequest {
+        StoreNodeRequest {
+            kind: "fact".to_string(),
+            content: content.to_string(),
+            title: Some("Admission".to_string()),
+            source: None,
+            namespace: Some("ops".to_string()),
+            tags: None,
+            importance: None,
+            metadata: None,
+        }
+    }
+
+    fn admission_headers(key: &'static str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(IDEMPOTENCY_KEY_HEADER, HeaderValue::from_static(key));
+        headers
+    }
+
+    /// The regression guard for every pre-existing test: `off` changes nothing.
+    #[tokio::test]
+    async fn store_node_is_byte_identical_when_admission_is_off() {
+        let (engine, _tmp) = admission_engine().await;
+        let state = admission_state(&engine, CommandAdmissionMode::Off);
+        let mut change_rx = state.change_tx.subscribe();
+
+        let (status, Json(_node)) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            admission_headers("admission-off"),
+            Json(admission_request("off mode")),
+        )
+        .await
+        .expect("create should succeed");
+
+        assert_eq!(status, StatusCode::CREATED);
+        let envelope = change_rx
+            .recv()
+            .await
+            .expect("notification")
+            .event
+            .expect("envelope");
+        assert!(
+            envelope.data.get("admission").is_none(),
+            "off mode must not add an admission key: {}",
+            envelope.data
+        );
+    }
+
+    /// Fail closed: no grant, no mutation, no event.
+    #[tokio::test]
+    async fn store_node_fails_closed_without_an_effective_grant() {
+        let (engine, _tmp) = admission_engine().await;
+        let state = admission_state(&engine, CommandAdmissionMode::Enforce);
+
+        let (status, message) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            admission_headers("admission-enforce"),
+            Json(admission_request("enforced")),
+        )
+        .await
+        .expect_err("an ungranted command must be refused");
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // The bounded denial reason is audit-only; leaking it would let a caller
+        // distinguish "no grant" from "grant expired".
+        assert_eq!(message, "command_admission_denied");
+        for leaked in ["no_effective_grant", "expired", "grant_kind"] {
+            assert!(!message.contains(leaked), "leaked {leaked}: {message}");
+        }
+
+        let pending = engine
+            .store
+            .nodes
+            .list_pending_outbox_events(10)
+            .await
+            .unwrap();
+        assert!(pending.is_empty(), "a refused command must emit no event");
+    }
+
+    /// Observe records the decision and lets the command through.
+    ///
+    /// This is the mode that actually proves the resolver ran: under `enforce`
+    /// a 403 is also what a crashed resolver or an unparsed flag would produce.
+    #[tokio::test]
+    async fn store_node_observe_mode_records_a_denial_without_blocking() {
+        let (engine, _tmp) = admission_engine().await;
+        let state = admission_state(&engine, CommandAdmissionMode::Observe);
+        let mut change_rx = state.change_tx.subscribe();
+
+        let (status, Json(_node)) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            admission_headers("admission-observe"),
+            Json(admission_request("observed")),
+        )
+        .await
+        .expect("observe must not block");
+
+        assert_eq!(status, StatusCode::CREATED);
+        let envelope = change_rx
+            .recv()
+            .await
+            .expect("notification")
+            .event
+            .expect("envelope");
+        let admission = envelope
+            .data
+            .get("admission")
+            .expect("observe mode records the decision");
+        assert_eq!(admission["decision"], "denied");
+        assert_eq!(admission["reason"], "no_effective_grant");
+        let action_envelope = envelope
+            .data
+            .get("action_envelope")
+            .expect("observe mode constructs an action envelope");
+        assert_eq!(
+            action_envelope["envelope_version"],
+            "mindvault.action-envelope/v1"
+        );
+        assert!(action_envelope.get("action_id").is_some());
+        assert!(action_envelope.get("correlation_id").is_some());
+        assert_eq!(action_envelope["policy_decision"]["decision"], "denied");
+        // Credential-free and content-free.
+        let rendered = admission.to_string();
+        for leaked in ["purpose", "targets", "grantee", "grantor"] {
+            assert!(!rendered.contains(leaked), "leaked {leaked}: {rendered}");
+        }
+    }
+
+    /// A replay is not re-admitted.
+    ///
+    /// The original commit already succeeded, and the replay lookup is
+    /// principal-scoped and performs no mutation. Refusing the retry would hand
+    /// the caller a false view of the world.
+    #[tokio::test]
+    async fn a_replay_is_not_re_admitted_after_enforcement_is_enabled() {
+        let (engine, _tmp) = admission_engine().await;
+
+        let permissive = admission_state(&engine, CommandAdmissionMode::Off);
+        let (created_status, Json(created)) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&permissive)),
+            admission_headers("admission-replay"),
+            Json(admission_request("replay me")),
+        )
+        .await
+        .expect("first create should succeed");
+        assert_eq!(created_status, StatusCode::CREATED);
+
+        // Same vault, same idempotency key, now enforcing.
+        let strict = admission_state(&engine, CommandAdmissionMode::Enforce);
+        let (replay_status, Json(replayed)) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&strict)),
+            admission_headers("admission-replay"),
+            Json(admission_request("replay me")),
+        )
+        .await
+        .expect("a replay must not be refused");
+
+        assert_eq!(replay_status, StatusCode::OK);
+        assert_eq!(replayed.id, created.id);
+    }
+
+    /// Grants are an additional axis, not a replacement for RBAC.
+    #[tokio::test]
+    async fn admission_runs_after_the_role_check_and_before_the_quota_check() {
+        let (engine, _tmp) = admission_engine().await;
+        let state = admission_state(&engine, CommandAdmissionMode::Enforce);
+
+        // A reader is refused by authorize_write, before admission is consulted.
+        let mut reader = AuthContext::system_admin();
+        reader.role = crate::auth::AuthRole::Read;
+        let (reader_status, _) = store_node(
+            Extension(reader),
+            State(Arc::clone(&state)),
+            admission_headers("admission-role"),
+            Json(admission_request("reader")),
+        )
+        .await
+        .expect_err("a reader cannot write");
+        assert_eq!(reader_status, StatusCode::FORBIDDEN);
+
+        // A writer without a grant is refused by admission, and never reaches
+        // quota accounting: the status is 403, not the quota's 429.
+        let (writer_status, message) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            admission_headers("admission-order"),
+            Json(admission_request("writer")),
+        )
+        .await
+        .expect_err("an ungranted writer is refused");
+        assert_eq!(writer_status, StatusCode::FORBIDDEN);
+        assert_eq!(message, "command_admission_denied");
+    }
+
+    #[tokio::test]
+    async fn store_node_replays_idempotently_and_emits_one_versioned_event() {
+        let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
+        let mut change_rx = state.change_tx.subscribe();
+        let request = StoreNodeRequest {
+            kind: "fact".to_string(),
+            content: "One durable mutation".to_string(),
+            title: Some("Interoperability boundary".to_string()),
+            source: Some("test-suite".to_string()),
+            namespace: Some("ops".to_string()),
+            tags: Some(vec!["interop".to_string()]),
+            importance: Some(0.8),
+            metadata: Some(std::collections::HashMap::from([(
+                "source_system".to_string(),
+                serde_json::Value::String("rest-test".to_string()),
+            )])),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            IDEMPOTENCY_KEY_HEADER,
+            HeaderValue::from_static("node-create-interop-test"),
+        );
+        let correlation_id = Uuid::now_v7();
+        headers.insert(
+            CORRELATION_ID_HEADER,
+            HeaderValue::from_str(&correlation_id.to_string()).unwrap(),
+        );
+
+        let (first_status, Json(first)) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            headers.clone(),
+            Json(request.clone()),
+        )
+        .await
+        .expect("first create should succeed");
+        assert_eq!(first_status, StatusCode::CREATED);
+
+        let notification = change_rx.recv().await.expect("create notification");
+        let envelope = notification.event.expect("versioned event envelope");
+        assert_eq!(envelope.envelope_version, EVENT_ENVELOPE_V1);
+        assert_eq!(envelope.event_type, KNOWLEDGE_NODE_CREATED_V1);
+        assert_eq!(envelope.correlation_id, correlation_id);
+        assert_eq!(envelope.subject.trailing_uuid(), Some(first.id));
+
+        let (replay_status, Json(replayed)) = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            headers.clone(),
+            Json(request.clone()),
+        )
+        .await
+        .expect("retry should return original result");
+        assert_eq!(replay_status, StatusCode::OK);
+        assert_eq!(replayed.id, first.id);
+        assert!(matches!(
+            change_rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        let pending = state
+            .engine
+            .store
+            .nodes
+            .list_pending_outbox_events(10)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, envelope.id);
+
+        let mut changed_request = request;
+        changed_request.content = "Different semantics".to_string();
+        let conflict = store_node(
+            Extension(AuthContext::system_admin()),
+            State(Arc::clone(&state)),
+            headers,
+            Json(changed_request),
+        )
+        .await
+        .expect_err("same key with changed payload must fail");
+        assert_eq!(conflict.0, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn interoperability_headers_fail_closed() {
+        let generated = request_idempotency_key(&HeaderMap::new()).unwrap();
+        assert!(!generated.as_str().is_empty());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            IDEMPOTENCY_KEY_HEADER,
+            HeaderValue::from_static("contains spaces"),
+        );
+        assert_eq!(
+            request_idempotency_key(&headers).unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
+
+        headers.insert(
+            CORRELATION_ID_HEADER,
+            HeaderValue::from_static("not-a-uuid"),
+        );
+        assert_eq!(
+            optional_uuid_header(&headers, CORRELATION_ID_HEADER)
+                .unwrap_err()
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
     #[tokio::test]
     async fn apply_template_merge_fill_existing() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
@@ -16282,6 +16968,7 @@ mod tests {
         let (status, Json(existing)) = store_node(
             Extension(AuthContext::system_admin()),
             State(Arc::clone(&state)),
+            HeaderMap::new(),
             Json(StoreNodeRequest {
                 kind: "task".into(),
                 content: "Existing content".into(),

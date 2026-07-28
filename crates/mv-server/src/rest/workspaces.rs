@@ -1,0 +1,279 @@
+use std::path::{Path as FsPath, PathBuf};
+use std::sync::Arc;
+
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::{Extension, Json};
+use chrono::{DateTime, Utc};
+use mv_core::{KnowledgeWorkspace, MvError};
+use mv_engine::engine::WorkspaceProjectionOutcome;
+use mv_engine::workspace::{
+    decode_workspace_descriptor, WorkspaceDocumentRead, WorkspaceReconciliationOutcome,
+    WorkspaceTree,
+};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::auth::{
+    authorize_namespace, authorize_read, authorize_write, scoped_namespace, AuthContext,
+};
+use crate::state::AppState;
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ListWorkspacesQuery {
+    namespace: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MountWorkspaceRequest {
+    root_path: String,
+    namespace: Option<String>,
+    display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct WorkspaceSummary {
+    id: Uuid,
+    namespace: String,
+    display_name: String,
+    root_name: String,
+    mode: String,
+    state: String,
+    revision: u64,
+    last_reconciled_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct WorkspaceReconciliationResponse {
+    applied: bool,
+    inserted_documents: usize,
+    updated_documents: usize,
+    unchanged_documents: usize,
+    renamed_documents: usize,
+    projection: WorkspaceProjectionOutcome,
+    diagnostics: Vec<mv_engine::workspace::WorkspaceScanDiagnostic>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MountWorkspaceResponse {
+    workspace: WorkspaceSummary,
+    reconciliation: WorkspaceReconciliationResponse,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ReconcileWorkspaceResponse {
+    workspace: WorkspaceSummary,
+    reconciliation: WorkspaceReconciliationResponse,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RebuildWorkspaceProjectionsResponse {
+    workspace: WorkspaceSummary,
+    projection: WorkspaceProjectionOutcome,
+}
+
+pub(crate) async fn list_workspaces(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ListWorkspacesQuery>,
+) -> Result<Json<Vec<WorkspaceSummary>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let namespace = scoped_namespace(&auth, query.namespace)?;
+    let workspaces = state
+        .engine
+        .list_knowledge_workspaces(namespace.as_deref())
+        .await
+        .map_err(map_workspace_error)?;
+    let summaries = workspaces
+        .into_iter()
+        .map(workspace_summary)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Json(summaries))
+}
+
+pub(crate) async fn mount_workspace(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<MountWorkspaceRequest>,
+) -> Result<(StatusCode, Json<MountWorkspaceResponse>), (StatusCode, String)> {
+    authorize_write(&auth)?;
+    if !auth.is_admin() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "administrator permission is required to mount local filesystem roots".into(),
+        ));
+    }
+    let namespace = request.namespace.unwrap_or_else(|| "default".into());
+    authorize_namespace(&auth, &namespace)?;
+    let root = state
+        .workspace_root_policy
+        .authorize(FsPath::new(&request.root_path))
+        .map_err(|message| (StatusCode::FORBIDDEN, message))?;
+    let display_name = request
+        .display_name
+        .unwrap_or_else(|| default_workspace_name(&root));
+
+    let mounted = state
+        .engine
+        .mount_knowledge_workspace(&root, namespace, display_name)
+        .await
+        .map_err(map_workspace_error)?;
+    let response = MountWorkspaceResponse {
+        workspace: workspace_summary(mounted.workspace)?,
+        reconciliation: reconciliation_response(mounted.reconciliation),
+    };
+    Ok((StatusCode::CREATED, Json(response)))
+}
+
+pub(crate) async fn get_workspace_tree(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(workspace_id): Path<Uuid>,
+) -> Result<Json<WorkspaceTree>, (StatusCode, String)> {
+    let workspace = authorized_workspace(&auth, &state, workspace_id).await?;
+    let tree = state
+        .engine
+        .knowledge_workspace_tree(workspace.id)
+        .await
+        .map_err(map_workspace_error)?;
+    Ok(Json(tree))
+}
+
+pub(crate) async fn reconcile_workspace(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(workspace_id): Path<Uuid>,
+) -> Result<Json<ReconcileWorkspaceResponse>, (StatusCode, String)> {
+    authorize_write(&auth)?;
+    let workspace = authorized_workspace(&auth, &state, workspace_id).await?;
+    let reconciliation = state
+        .engine
+        .reconcile_knowledge_workspace(workspace.id)
+        .await
+        .map_err(map_workspace_error)?;
+    if !reconciliation.applied {
+        return Err((
+            StatusCode::CONFLICT,
+            "workspace changed concurrently; retry reconciliation".into(),
+        ));
+    }
+    let workspace = state
+        .engine
+        .get_knowledge_workspace(workspace.id)
+        .await
+        .map_err(map_workspace_error)?;
+    Ok(Json(ReconcileWorkspaceResponse {
+        workspace: workspace_summary(workspace)?,
+        reconciliation: reconciliation_response(reconciliation),
+    }))
+}
+
+pub(crate) async fn rebuild_workspace_projections(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(workspace_id): Path<Uuid>,
+) -> Result<Json<RebuildWorkspaceProjectionsResponse>, (StatusCode, String)> {
+    authorize_write(&auth)?;
+    let workspace = authorized_workspace(&auth, &state, workspace_id).await?;
+    let projection = state
+        .engine
+        .rebuild_knowledge_workspace_projections(workspace.id)
+        .await
+        .map_err(map_workspace_error)?;
+    let workspace = state
+        .engine
+        .get_knowledge_workspace(workspace.id)
+        .await
+        .map_err(map_workspace_error)?;
+    Ok(Json(RebuildWorkspaceProjectionsResponse {
+        workspace: workspace_summary(workspace)?,
+        projection,
+    }))
+}
+
+pub(crate) async fn read_workspace_document(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path((workspace_id, document_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<WorkspaceDocumentRead>, (StatusCode, String)> {
+    let workspace = authorized_workspace(&auth, &state, workspace_id).await?;
+    let document = state
+        .engine
+        .read_knowledge_workspace_document(workspace.id, document_id)
+        .await
+        .map_err(map_workspace_error)?;
+    Ok(Json(document))
+}
+
+async fn authorized_workspace(
+    auth: &AuthContext,
+    state: &AppState,
+    workspace_id: Uuid,
+) -> Result<KnowledgeWorkspace, (StatusCode, String)> {
+    authorize_read(auth)?;
+    let workspace = state
+        .engine
+        .get_knowledge_workspace(workspace_id)
+        .await
+        .map_err(map_workspace_error)?;
+    authorize_namespace(auth, &workspace.namespace)?;
+    Ok(workspace)
+}
+
+fn workspace_summary(
+    workspace: KnowledgeWorkspace,
+) -> Result<WorkspaceSummary, (StatusCode, String)> {
+    let descriptor = decode_workspace_descriptor(&workspace).map_err(map_workspace_error)?;
+    let root_name = PathBuf::from(&descriptor.root_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Workspace")
+        .to_string();
+    Ok(WorkspaceSummary {
+        id: workspace.id,
+        namespace: workspace.namespace,
+        display_name: descriptor.display_name,
+        root_name,
+        mode: workspace.mode.as_str().into(),
+        state: workspace.state.as_str().into(),
+        revision: workspace.revision,
+        last_reconciled_at: workspace.last_reconciled_at,
+    })
+}
+
+fn reconciliation_response(
+    outcome: WorkspaceReconciliationOutcome,
+) -> WorkspaceReconciliationResponse {
+    WorkspaceReconciliationResponse {
+        applied: outcome.applied,
+        inserted_documents: outcome.inserted_documents,
+        updated_documents: outcome.updated_documents,
+        unchanged_documents: outcome.unchanged_documents,
+        renamed_documents: outcome.renamed_documents,
+        projection: outcome.projection,
+        diagnostics: outcome.diagnostics,
+    }
+}
+
+fn default_workspace_name(root: &FsPath) -> String {
+    root.file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Workspace")
+        .to_string()
+}
+
+fn map_workspace_error(error: MvError) -> (StatusCode, String) {
+    let status = match &error {
+        MvError::NodeNotFound(_) => StatusCode::NOT_FOUND,
+        MvError::DuplicateNode(_)
+        | MvError::IdempotencyConflict(_)
+        | MvError::CanonicalSourceConflict(_) => StatusCode::CONFLICT,
+        MvError::InvalidInput(_) | MvError::Serialization(_) => StatusCode::BAD_REQUEST,
+        MvError::AccessDenied(_) | MvError::Auth(_) => StatusCode::FORBIDDEN,
+        MvError::VaultSealed => StatusCode::LOCKED,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, error.to_string())
+}

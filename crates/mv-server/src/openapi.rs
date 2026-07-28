@@ -19,6 +19,9 @@ use utoipa_swagger_ui::SwaggerUi;
     ),
     tags(
         (name = "health", description = "Health check endpoints"),
+        (name = "workspaces", description = "Allowlisted local Markdown workspace access"),
+        (name = "context-nodes", description = "Local Context Node bootstrap and registry"),
+        (name = "authority-grants", description = "Authority Grant issuance and lifecycle"),
         (name = "nodes", description = "Knowledge node CRUD operations"),
         (name = "recall", description = "Semantic recall and search"),
         (name = "graph", description = "Relationship graph operations"),
@@ -63,6 +66,13 @@ use utoipa_swagger_ui::SwaggerUi;
         embedding_diagnostics,
         diagnostics_health,
         diagnostics_performance,
+        // Mounted knowledge workspaces
+        list_workspaces,
+        mount_workspace,
+        get_workspace_tree,
+        reconcile_workspace,
+        rebuild_workspace_projections,
+        read_workspace_document,
         // Nodes
         store_node,
         list_nodes,
@@ -267,6 +277,31 @@ use utoipa_swagger_ui::SwaggerUi;
         agent_record_feedback,
         agent_list_feedback,
         agent_reflection_stats,
+        // Governed agent execution graph
+        work_orders_list,
+        work_orders_create,
+        work_order_get,
+        work_order_runs,
+        work_order_start_run,
+        work_order_record_artifact,
+        work_order_artifacts,
+        work_order_artifact_content,
+        work_order_export,
+        work_order_restore,
+        work_order_run_readiness,
+        work_order_run_gates,
+        work_order_run_record_gate,
+        work_order_run_approve,
+        work_order_run_complete,
+        work_order_run_fail,
+        context_nodes_local_get,
+        context_nodes_local_register,
+        authority_grants_list,
+        authority_grants_issue,
+        authority_grants_get,
+        authority_grants_suspend,
+        authority_grants_revoke,
+        authority_grants_resume,
         // Proactive
         proactive_list_insights,
         proactive_generate,
@@ -358,12 +393,105 @@ async fn diagnostics_health() {}
 async fn diagnostics_performance() {}
 
 #[utoipa::path(
+    get,
+    path = "/api/v1/workspaces",
+    tag = "workspaces",
+    params(
+        ("namespace" = Option<String>, Query, description = "Optional namespace scope")
+    ),
+    responses(
+        (status = 200, description = "Workspace summaries without filesystem root locators"),
+        (status = 403, description = "Read or namespace access denied")
+    )
+)]
+async fn list_workspaces() {}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces",
+    tag = "workspaces",
+    responses(
+        (status = 201, description = "Allowlisted workspace mounted and reconciled"),
+        (status = 400, description = "Invalid mount request"),
+        (status = 403, description = "Administrator access or root authorization denied"),
+        (status = 409, description = "Workspace root is already mounted")
+    )
+)]
+async fn mount_workspace() {}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{id}/tree",
+    tag = "workspaces",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Workspace UUID")
+    ),
+    responses(
+        (status = 200, description = "Flat, parent-addressable folder and document tree"),
+        (status = 403, description = "Namespace access denied"),
+        (status = 404, description = "Workspace not found")
+    )
+)]
+async fn get_workspace_tree() {}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/{id}/reconcile",
+    tag = "workspaces",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Workspace UUID")
+    ),
+    responses(
+        (status = 200, description = "Manifest reconciled with the canonical filesystem"),
+        (status = 409, description = "Optimistic workspace revision changed")
+    )
+)]
+async fn reconcile_workspace() {}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/{id}/projections/rebuild",
+    tag = "workspaces",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Workspace UUID")
+    ),
+    responses(
+        (status = 200, description = "Workspace search and graph projections rebuilt"),
+        (status = 403, description = "Write or namespace access denied")
+    )
+)]
+async fn rebuild_workspace_projections() {}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{workspace_id}/documents/{document_id}",
+    tag = "workspaces",
+    params(
+        ("workspace_id" = uuid::Uuid, Path, description = "Workspace UUID"),
+        ("document_id" = uuid::Uuid, Path, description = "Stable document UUID")
+    ),
+    responses(
+        (status = 200, description = "Current UTF-8 canonical document content and hash state"),
+        (status = 404, description = "Workspace document not found")
+    )
+)]
+async fn read_workspace_document() {}
+
+#[utoipa::path(
     post,
     path = "/api/v1/nodes",
     tag = "nodes",
     request_body = StoreNodeRequest,
+    params(
+        ("Idempotency-Key" = Option<String>, Header, description = "Principal-scoped replay key (1-200 visible ASCII characters)"),
+        ("X-Correlation-Id" = Option<String>, Header, description = "Optional UUID correlating related operations"),
+        ("X-Causation-Id" = Option<String>, Header, description = "Optional UUID identifying the causing event or command")
+    ),
     responses(
-        (status = 201, description = "Node created", body = KnowledgeNode)
+        (status = 201, description = "Node and durable event created atomically", body = KnowledgeNode),
+        (status = 200, description = "Original node returned for an idempotent replay", body = KnowledgeNode),
+        (status = 400, description = "Invalid request or interoperability header"),
+        (status = 409, description = "Idempotency key reused with a different semantic payload")
     )
 )]
 async fn store_node() {}
@@ -1031,6 +1159,224 @@ async fn adapter_send() {}
 #[utoipa::path(post, path = "/api/v1/adapters/{id}/health", tag = "adapters", params(("id" = String, Path)), responses((status = 200)))]
 async fn adapter_health() {}
 
+// --- Governed agent execution graph ---
+//
+// `docs/architecture/PROTOCOL_BOUNDARIES.md` makes OpenAPI the authoritative
+// description of supported public synchronous HTTP operations, so an
+// unregistered route is an undescribed capability. Command and query surfaces
+// are both described, per constitutional law 2.
+#[utoipa::path(
+    get, path = "/api/v1/work-orders", tag = "work-orders",
+    params(("status" = Option<String>, Query, description = "Filter by lifecycle status")),
+    responses((status = 200, description = "Work orders, newest first"))
+)]
+async fn work_orders_list() {}
+
+#[utoipa::path(
+    post, path = "/api/v1/work-orders", tag = "work-orders",
+    responses(
+        (status = 201, description = "Admitted; nodes and derived conflict edges recorded"),
+        (status = 400, description = "Malformed contract, cyclic graph, or authored conflict edge"),
+        (status = 403, description = "Gate G0: a declared write target lies outside the Tool Grant"),
+        (status = 409, description = "Idempotency key replayed with a different proposal")
+    )
+)]
+async fn work_orders_create() {}
+
+#[utoipa::path(
+    get, path = "/api/v1/work-orders/{id}", tag = "work-orders",
+    params(("id" = String, Path)),
+    responses((status = 200), (status = 404))
+)]
+async fn work_order_get() {}
+
+#[utoipa::path(
+    get, path = "/api/v1/work-orders/{id}/runs", tag = "work-orders",
+    params(("id" = String, Path)),
+    responses((status = 200, description = "Run attempts for this order"))
+)]
+async fn work_order_runs() {}
+
+#[utoipa::path(
+    post, path = "/api/v1/work-orders/{id}/nodes/{node_id}/runs", tag = "work-orders",
+    params(("id" = String, Path), ("node_id" = String, Path)),
+    responses(
+        (status = 201, description = "Attempt started. Executes nothing: the run record \
+            is created, a budgeted attempt is spent, and write leases are taken only if \
+            the owner's autonomy policy allows. An unconfigured vault parks the run for \
+            approval, reported as awaiting_approval — not an error, and with no deadline"),
+        (status = 404, description = "Unknown work order or node contract"),
+        (status = 409, description = "The contract's attempt ceiling is reached, or the \
+            work order is terminal")
+    )
+)]
+async fn work_order_start_run() {}
+
+#[utoipa::path(
+    get, path = "/api/v1/work-orders/{id}/artifacts", tag = "work-orders",
+    params(("id" = String, Path)),
+    responses((status = 200, description = "Artifact metadata with provenance references"))
+)]
+async fn work_order_artifacts() {}
+
+#[utoipa::path(
+    get, path = "/api/v1/work-orders/{id}/artifacts/{artifact_id}/content",
+    tag = "work-orders",
+    params(("id" = String, Path), ("artifact_id" = String, Path)),
+    responses(
+        (status = 200, description = "Opaque artifact bytes, re-verified against \
+            the recorded digest; digest returned in x-mindvault-content-digest",
+         content_type = "application/octet-stream"),
+        (status = 404, description = "Unknown artifact, or it belongs to another order"),
+        (status = 500, description = "Stored content does not match its recorded digest")
+    )
+)]
+async fn work_order_artifact_content() {}
+
+#[utoipa::path(
+    get, path = "/api/v1/work-orders/{id}/export", tag = "work-orders",
+    params(("id" = String, Path)),
+    responses((status = 200, description = "The complete governed graph as a portable \
+        document: contracts, typed edges, run attempts, gate evidence, and artifact \
+        content with provenance"))
+)]
+async fn work_order_export() {}
+
+#[utoipa::path(
+    post, path = "/api/v1/work-orders/restore", tag = "work-orders",
+    responses(
+        (status = 201, description = "Restored. Authority does not travel with the \
+            record: the restored contract carries no grant and must be re-authorized \
+            locally before any new run can pass gate G0"),
+        (status = 400, description = "The export is internally inconsistent, or an \
+            artifact's content does not match its recorded digest"),
+        (status = 409, description = "The work order already exists; restore does not \
+            merge divergent histories")
+    )
+)]
+async fn work_order_restore() {}
+
+#[utoipa::path(
+    get, path = "/api/v1/work-orders/{id}/runs/{run_id}/readiness", tag = "work-orders",
+    params(("id" = String, Path), ("run_id" = String, Path)),
+    responses((status = 200, description = "Unsatisfied inbound edges and outstanding gates"))
+)]
+async fn work_order_run_readiness() {}
+
+#[utoipa::path(
+    post, path = "/api/v1/work-orders/{id}/runs/{run_id}/artifacts", tag = "work-orders",
+    params(("id" = String, Path), ("run_id" = String, Path)),
+    responses(
+        (status = 201, description = "Artifact recorded. The content digest is derived \
+            from the submitted bytes, never taken from the request, so gate G2 verifies \
+            content rather than a claim. Sensitivity and retention are inherited from the \
+            governing Work Order"),
+        (status = 400, description = "Content is not valid base64, or provenance is \
+            missing or names an unknown relation"),
+        (status = 409, description = "The run is terminal; evidence cannot be added to a \
+            closed attempt")
+    )
+)]
+async fn work_order_record_artifact() {}
+
+#[utoipa::path(
+    get, path = "/api/v1/work-orders/{id}/runs/{run_id}/gates", tag = "work-orders",
+    params(("id" = String, Path), ("run_id" = String, Path)),
+    responses((status = 200, description = "Immutable gate evidence"))
+)]
+async fn work_order_run_gates() {}
+
+#[utoipa::path(
+    post, path = "/api/v1/work-orders/{id}/runs/{run_id}/gates", tag = "work-orders",
+    params(("id" = String, Path), ("run_id" = String, Path)),
+    responses(
+        (status = 201, description = "Gate evidence recorded"),
+        (status = 409, description = "Gate already evaluated for this run, or \
+            gate G5 evaluator is the run's own actor")
+    )
+)]
+async fn work_order_run_record_gate() {}
+
+#[utoipa::path(
+    post, path = "/api/v1/work-orders/{id}/runs/{run_id}/approve", tag = "work-orders",
+    params(("id" = String, Path), ("run_id" = String, Path)),
+    responses(
+        (status = 200, description = "Owner approval recorded; the run returns to ready \
+            and re-acquires write leases under a fresh conflict check"),
+        (status = 409, description = "The run is not awaiting approval")
+    )
+)]
+async fn work_order_run_approve() {}
+
+#[utoipa::path(
+    post, path = "/api/v1/work-orders/{id}/runs/{run_id}/complete", tag = "work-orders",
+    params(("id" = String, Path), ("run_id" = String, Path)),
+    responses(
+        (status = 200, description = "Completed; all gates required by the node's risk tier passed"),
+        (status = 409, description = "A required gate is still outstanding; the \
+            response names the missing gates")
+    )
+)]
+async fn work_order_run_complete() {}
+
+#[utoipa::path(
+    post, path = "/api/v1/work-orders/{id}/runs/{run_id}/fail", tag = "work-orders",
+    params(("id" = String, Path), ("run_id" = String, Path)),
+    responses((status = 200, description = "Failed terminally; write leases released"))
+)]
+async fn work_order_run_fail() {}
+
+#[utoipa::path(
+    get, path = "/api/v1/context-nodes/local", tag = "context-nodes",
+    responses(
+        (status = 200, description = "Local Context Node descriptor"),
+        (status = 404, description = "Not yet registered")
+    )
+)]
+async fn context_nodes_local_get() {}
+
+#[utoipa::path(
+    post, path = "/api/v1/context-nodes/local", tag = "context-nodes",
+    responses(
+        (status = 201, description = "Registered this vault's Context Node"),
+        (status = 200, description = "Already registered; existing descriptor returned"),
+        (status = 403, description = "Admin access required")
+    )
+)]
+async fn context_nodes_local_register() {}
+
+#[utoipa::path(get, path = "/api/v1/authority-grants", tag = "authority-grants",
+    responses((status = 200, description = "Grant list"), (status = 403, description = "Admin required")))]
+async fn authority_grants_list() {}
+
+#[utoipa::path(post, path = "/api/v1/authority-grants", tag = "authority-grants",
+    responses(
+        (status = 201, description = "Grant issued"),
+        (status = 200, description = "Idempotent replay"),
+        (status = 403, description = "Admin required")
+    ))]
+async fn authority_grants_issue() {}
+
+#[utoipa::path(get, path = "/api/v1/authority-grants/{id}", tag = "authority-grants",
+    params(("id" = String, Path)),
+    responses((status = 200, description = "Grant"), (status = 404, description = "Not found")))]
+async fn authority_grants_get() {}
+
+#[utoipa::path(post, path = "/api/v1/authority-grants/{id}/suspend", tag = "authority-grants",
+    params(("id" = String, Path)),
+    responses((status = 200, description = "Suspended"), (status = 400, description = "Invalid transition")))]
+async fn authority_grants_suspend() {}
+
+#[utoipa::path(post, path = "/api/v1/authority-grants/{id}/revoke", tag = "authority-grants",
+    params(("id" = String, Path)),
+    responses((status = 200, description = "Revoked"), (status = 400, description = "Invalid transition")))]
+async fn authority_grants_revoke() {}
+
+#[utoipa::path(post, path = "/api/v1/authority-grants/{id}/resume", tag = "authority-grants",
+    params(("id" = String, Path)),
+    responses((status = 200, description = "Resumed"), (status = 400, description = "Invalid transition")))]
+async fn authority_grants_resume() {}
+
 // --- Agent ---
 #[utoipa::path(get, path = "/api/v1/agent/context", tag = "agent", responses((status = 200)))]
 async fn agent_context() {}
@@ -1172,9 +1518,11 @@ pub struct StoreNodeRequest {
     pub kind: String,
     pub content: String,
     pub title: Option<String>,
+    pub source: Option<String>,
     pub namespace: Option<String>,
     pub tags: Option<Vec<String>>,
     pub importance: Option<f64>,
+    pub metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 #[derive(Deserialize, ToSchema)]

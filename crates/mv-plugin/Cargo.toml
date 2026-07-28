@@ -2,7 +2,7 @@
 name = "mv-plugin"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 authors.workspace = true
 description = "WASM plugin runtime for MindVault"
 repository.workspace = true

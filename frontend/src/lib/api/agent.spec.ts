@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CapturedIntent, ProactiveInsight } from './types';
 
 const fetchJsonMock = vi.fn();
@@ -9,18 +9,15 @@ vi.mock('$app/environment', () => ({
 
 vi.mock('./client', () => ({
 	API_BASE_URL: 'http://127.0.0.1:9470',
-	fetchJson: fetchJsonMock
+	fetchJson: (...args: unknown[]) => fetchJsonMock(...args)
 }));
 
-let agentApi: typeof import('./agent');
+import * as agentApi from './agent';
 
 describe('agent api client', () => {
-	beforeAll(async () => {
-		agentApi = await import('./agent');
-	}, 15_000);
-
 	beforeEach(() => {
 		fetchJsonMock.mockReset();
+		agentApi.agentRunObservations.set(null);
 	});
 
 	it('calls versioned agent context endpoint', async () => {
@@ -71,5 +68,52 @@ describe('agent api client', () => {
 			method: 'POST'
 		});
 		expect(fetchJsonMock).toHaveBeenCalledWith('/api/v1/agent/models');
+	});
+
+	it('dispatches agent run transitions onto the observation store', () => {
+		const seen: unknown[] = [];
+		const unsub = agentApi.agentRunObservations.subscribe((value) => {
+			if (value) seen.push(value);
+		});
+
+		agentApi.dispatchAgentNotification({
+			type: 'agent_run_transitioned',
+			run_id: 'run-1',
+			work_order_id: 'wo-1',
+			status: 'awaiting_approval',
+			failure_class: null
+		});
+		agentApi.dispatchAgentNotification({
+			type: 'agent_run_gate_recorded',
+			run_id: 'run-1',
+			work_order_id: 'wo-1',
+			gate: 'g2',
+			outcome: 'pass'
+		});
+		// Malformed payloads must not poison the store.
+		agentApi.dispatchAgentNotification({ type: 'agent_run_transitioned' });
+
+		unsub();
+
+		expect(seen).toHaveLength(2);
+		expect(seen[0]).toMatchObject({
+			event: {
+				kind: 'transition',
+				run_id: 'run-1',
+				work_order_id: 'wo-1',
+				status: 'awaiting_approval',
+				failure_class: null
+			}
+		});
+		expect(seen[1]).toMatchObject({
+			event: {
+				kind: 'gate',
+				run_id: 'run-1',
+				work_order_id: 'wo-1',
+				gate: 'g2',
+				outcome: 'pass'
+			}
+		});
+		expect((seen[0] as { seq: number }).seq).toBeLessThan((seen[1] as { seq: number }).seq);
 	});
 });

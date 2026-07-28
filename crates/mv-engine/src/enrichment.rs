@@ -94,6 +94,7 @@ impl EnrichmentWorker {
                         node_id: node_id.to_string(),
                         timestamp: chrono::Utc::now().to_rfc3339(),
                         namespace: None,
+                        event: None,
                     });
                 }
                 Err(e) => warn!("Node enrichment failed: {}", e),

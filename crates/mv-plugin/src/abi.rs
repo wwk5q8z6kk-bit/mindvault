@@ -40,3 +40,6 @@ pub const HOST_READ_NODE: &str = "mv_read_node";
 pub const HOST_WRITE_NODE: &str = "mv_write_node";
 pub const HOST_SEARCH: &str = "mv_search";
 pub const HOST_LOG: &str = "mv_log";
+/// Query the governed execution graph. Read-only; see
+/// [`crate::manifest::PluginPermission::ReadWorkOrders`].
+pub const HOST_READ_WORK_ORDERS: &str = "mv_read_work_orders";

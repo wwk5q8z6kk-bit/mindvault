@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 
 pub use mv_core::ChangeNotification;
-use mv_core::{CapturedIntent, ChronicleEntry, ProactiveInsight};
+use mv_core::{CapturedIntent, ChronicleEntry, EventEnvelope, ProactiveInsight};
 
 /// Shared application state.
 pub struct AppState {
@@ -25,6 +25,10 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     /// Counter: requests rejected by sealed-mode middleware.
     pub sealed_blocked_requests: AtomicU64,
+    /// Filesystem roots beneath which an administrator may mount workspaces.
+    pub workspace_root_policy: WorkspaceRootPolicy,
+    /// Whether public commands must resolve an authorizing grant.
+    pub command_admission: CommandAdmissionPolicy,
 }
 
 /// Notification for task reminders.
@@ -69,6 +73,35 @@ pub enum AgentNotification {
         node_id: String,
         namespace: Option<String>,
     },
+    /// A governed agent run changed lifecycle state.
+    ///
+    /// Carries identifiers and status only — never artifact content or declared
+    /// scope. The stream is an observation surface, and a run's write scope is
+    /// governed detail that belongs behind the query API where the caller's
+    /// read authorization is checked.
+    ///
+    /// `awaiting_approval` is the state the approval UI listens for; it is
+    /// unbounded by design and must never be rendered as an error or a timeout.
+    AgentRunTransitioned {
+        run_id: String,
+        work_order_id: String,
+        status: String,
+        /// Present only on terminal failure.
+        failure_class: Option<String>,
+        namespace: Option<String>,
+    },
+    /// Gate evidence was recorded for a run.
+    ///
+    /// Immutable once emitted, matching the underlying evidence: a client that
+    /// sees a `fail` will never see it revised to a `pass` for the same run and
+    /// gate.
+    AgentRunGateRecorded {
+        run_id: String,
+        work_order_id: String,
+        gate: String,
+        outcome: String,
+        namespace: Option<String>,
+    },
 }
 
 impl AgentNotification {
@@ -78,7 +111,68 @@ impl AgentNotification {
             | Self::Intent { namespace, .. }
             | Self::InsightDiscovered { namespace, .. }
             | Self::RelatedContext { namespace, .. }
-            | Self::NodeEnriched { namespace, .. } => namespace.as_deref(),
+            | Self::NodeEnriched { namespace, .. }
+            | Self::AgentRunTransitioned { namespace, .. }
+            | Self::AgentRunGateRecorded { namespace, .. } => namespace.as_deref(),
+        }
+    }
+}
+
+impl AgentNotification {
+    /// Whether this notification may be delivered to a socket with `scope`.
+    ///
+    /// An unscoped session receives everything. A namespace-scoped session
+    /// receives only notifications carrying that namespace — which means it
+    /// receives no execution-graph events at all, because the governed
+    /// execution graph is not namespace-partitioned: a Work Order is bounded by
+    /// its governing node and its AuthorityGrant, not by a namespace.
+    ///
+    /// That exclusion is deliberate and fails closed. A scoped token is an
+    /// assertion of "limit me to this namespace", and it may belong to a
+    /// delegate rather than the owner (System Principle 8). Pushing vault-wide
+    /// governance signal to it would widen access beyond what was requested.
+    /// Those clients poll the query API instead, where their authorization is
+    /// checked per request.
+    ///
+    /// Named and tested rather than left inline so the exclusion cannot be
+    /// undone by accident.
+    pub fn deliverable_to(&self, scope: Option<&str>) -> bool {
+        match scope {
+            None => true,
+            Some(namespace) => self.namespace() == Some(namespace),
+        }
+    }
+
+    /// Observation of a run lifecycle transition.
+    ///
+    /// `namespace` is `None` because the execution graph is not namespace-scoped
+    /// data — a Work Order is governed by its governing node URI and its
+    /// AuthorityGrant, not by a namespace.
+    ///
+    /// Consequence, stated rather than discovered later: `handle_agent_socket`
+    /// drops any notification whose namespace does not equal the client's scope,
+    /// so a namespace-scoped WebSocket client receives none of these. Unscoped
+    /// clients receive them all. This is deliberate — bypassing the scope filter
+    /// would push cross-scope signal to a client that asked to be limited — but
+    /// it means a scoped client must use the query API rather than the stream.
+    pub fn run_transitioned(run: &mv_core::AgentRun) -> Self {
+        Self::AgentRunTransitioned {
+            run_id: run.run_id.to_string(),
+            work_order_id: run.work_order_id.to_string(),
+            status: run.status.as_str().to_string(),
+            failure_class: run.failure_class.map(|class| class.as_str().to_string()),
+            namespace: None,
+        }
+    }
+
+    /// Observation of recorded gate evidence.
+    pub fn gate_recorded(result: &mv_core::GateResult) -> Self {
+        Self::AgentRunGateRecorded {
+            run_id: result.run_id.to_string(),
+            work_order_id: result.work_order_id.to_string(),
+            gate: result.gate.as_str().to_string(),
+            outcome: result.outcome.as_str().to_string(),
+            namespace: None,
         }
     }
 }
@@ -90,6 +184,132 @@ pub struct WebhookConfig {
     pub change_url: Option<String>,
     pub keychain_alert_url: Option<String>,
     pub timeout_secs: u64,
+}
+
+/// Whether public commands must resolve an authorizing grant before mutating.
+///
+/// Constitutional law 8 makes action authority a separate axis from context
+/// access, so this is additive: it never replaces the role, namespace, or quota
+/// checks that already guard a command.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CommandAdmissionMode {
+    /// Resolver does not run. Byte-identical to pre-admission behaviour.
+    #[default]
+    Off,
+    /// Resolver runs and the decision is recorded, but never blocks. The
+    /// rollout position: watch denials reach zero before enforcing.
+    Observe,
+    /// Resolver runs and an unauthorized command is refused.
+    Enforce,
+}
+
+/// Reads `MINDVAULT_COMMAND_ADMISSION_MODE`, defaulting to `Off`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CommandAdmissionPolicy {
+    mode: CommandAdmissionMode,
+}
+
+impl CommandAdmissionPolicy {
+    /// An unrecognized value falls back to `Off` with a warning.
+    ///
+    /// Deliberately not `Enforce`: what is unknown here is the feature's
+    /// configuration, not the caller's authority, and the pre-existing role,
+    /// namespace and quota checks remain fully in force either way. Silently
+    /// enforcing on a typo would refuse every write on a running vault.
+    pub fn from_env() -> Self {
+        Self {
+            mode: Self::parse_mode(
+                std::env::var("MINDVAULT_COMMAND_ADMISSION_MODE")
+                    .ok()
+                    .as_deref(),
+            ),
+        }
+    }
+
+    /// Pure so its behaviour is testable without process-global environment.
+    fn parse_mode(value: Option<&str>) -> CommandAdmissionMode {
+        match value {
+            None => CommandAdmissionMode::Off,
+            Some(value) => match value.trim().to_ascii_lowercase().as_str() {
+                "" | "off" => CommandAdmissionMode::Off,
+                "observe" => CommandAdmissionMode::Observe,
+                "enforce" => CommandAdmissionMode::Enforce,
+                other => {
+                    tracing::warn!(
+                        value = other,
+                        "unrecognized MINDVAULT_COMMAND_ADMISSION_MODE; \
+                         falling back to off (expected off, observe, or enforce)"
+                    );
+                    CommandAdmissionMode::Off
+                }
+            },
+        }
+    }
+
+    pub fn new(mode: CommandAdmissionMode) -> Self {
+        Self { mode }
+    }
+
+    pub fn mode(&self) -> CommandAdmissionMode {
+        self.mode
+    }
+
+    /// Whether the resolver runs at all.
+    pub fn is_active(&self) -> bool {
+        self.mode != CommandAdmissionMode::Off
+    }
+
+    /// Whether a refusal blocks the command.
+    pub fn enforces(&self) -> bool {
+        self.mode == CommandAdmissionMode::Enforce
+    }
+}
+
+/// Server-side capability boundary for local filesystem mounting.
+///
+/// The environment value uses the host path-list separator (`:` on Unix,
+/// `;` on Windows). An empty policy disables REST-based root mounting.
+#[derive(Clone, Debug, Default)]
+pub struct WorkspaceRootPolicy {
+    allowed_roots: Vec<PathBuf>,
+}
+
+impl WorkspaceRootPolicy {
+    pub fn from_env() -> Self {
+        let allowed_roots = std::env::var_os("MINDVAULT_WORKSPACE_ALLOWED_ROOTS")
+            .map(|value| std::env::split_paths(&value).collect())
+            .unwrap_or_default();
+        Self { allowed_roots }
+    }
+
+    pub fn new(allowed_roots: Vec<PathBuf>) -> Self {
+        Self { allowed_roots }
+    }
+
+    pub fn authorize(&self, requested_root: &std::path::Path) -> Result<PathBuf, String> {
+        if self.allowed_roots.is_empty() {
+            return Err(
+                "workspace mounting is disabled; configure MINDVAULT_WORKSPACE_ALLOWED_ROOTS"
+                    .into(),
+            );
+        }
+        let requested = std::fs::canonicalize(requested_root)
+            .map_err(|error| format!("workspace root unavailable: {error}"))?;
+        if !requested.is_dir() {
+            return Err("workspace root must be a directory".into());
+        }
+
+        let authorized = self.allowed_roots.iter().any(|allowed| {
+            std::fs::canonicalize(allowed)
+                .map(|allowed| requested == allowed || requested.starts_with(allowed))
+                .unwrap_or(false)
+        });
+        if authorized {
+            Ok(requested)
+        } else {
+            Err("workspace root is outside the configured allowlist".into())
+        }
+    }
 }
 
 impl WebhookConfig {
@@ -152,15 +372,42 @@ impl AppState {
             plugin_runtime: Arc::new(RwLock::new(plugin_runtime)),
             http_client,
             sealed_blocked_requests: AtomicU64::new(0),
+            workspace_root_policy: WorkspaceRootPolicy::from_env(),
+            command_admission: CommandAdmissionPolicy::from_env(),
         }
     }
 
+    pub fn with_workspace_allowed_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.workspace_root_policy = WorkspaceRootPolicy::new(roots);
+        self
+    }
+
+    /// Set the admission mode without touching process-global environment.
+    ///
+    /// Server tests share one process, so a test that set the environment
+    /// variable would leak enforcement into unrelated tests as mysterious 403s.
+    pub fn with_command_admission(mut self, mode: CommandAdmissionMode) -> Self {
+        self.command_admission = CommandAdmissionPolicy::new(mode);
+        self
+    }
+
     pub fn notify_change(&self, node_id: &str, operation: &str, namespace: Option<&str>) {
+        self.notify_change_with_event(node_id, operation, namespace, None);
+    }
+
+    pub fn notify_change_with_event(
+        &self,
+        node_id: &str,
+        operation: &str,
+        namespace: Option<&str>,
+        event: Option<EventEnvelope>,
+    ) {
         let _ = self.change_tx.send(ChangeNotification {
             node_id: node_id.to_string(),
             operation: operation.to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             namespace: namespace.map(|ns| ns.to_string()),
+            event,
         });
     }
 
@@ -221,6 +468,7 @@ impl AppState {
 mod tests {
     use super::*;
     use mv_core::{InsightType, IntentType};
+    use tempfile::tempdir;
 
     #[test]
     fn agent_notification_serializes_with_expected_type_tag() {
@@ -252,5 +500,94 @@ mod tests {
             namespace: Some("ops".to_string()),
         };
         assert_eq!(notification.namespace(), Some("ops"));
+    }
+
+    /// Admission is opt-in, and an unrecognized value must not enforce.
+    ///
+    /// A typo in the environment is a configuration fault, not evidence that
+    /// the caller lacks authority; failing to `Enforce` on one would refuse
+    /// every write on a running vault.
+    #[test]
+    fn command_admission_defaults_to_off_and_rejects_unknown_values() {
+        assert_eq!(
+            CommandAdmissionPolicy::parse_mode(None),
+            CommandAdmissionMode::Off
+        );
+        assert_eq!(
+            CommandAdmissionPolicy::parse_mode(Some("")),
+            CommandAdmissionMode::Off
+        );
+        assert_eq!(
+            CommandAdmissionPolicy::parse_mode(Some("off")),
+            CommandAdmissionMode::Off
+        );
+        assert_eq!(
+            CommandAdmissionPolicy::parse_mode(Some("observe")),
+            CommandAdmissionMode::Observe
+        );
+        assert_eq!(
+            CommandAdmissionPolicy::parse_mode(Some("  ENFORCE  ")),
+            CommandAdmissionMode::Enforce
+        );
+        for unknown in ["yes", "true", "1", "enforced", "enforce-all"] {
+            assert_eq!(
+                CommandAdmissionPolicy::parse_mode(Some(unknown)),
+                CommandAdmissionMode::Off,
+                "{unknown} must not enable enforcement"
+            );
+        }
+    }
+
+    #[test]
+    fn command_admission_predicates_match_their_mode() {
+        let off = CommandAdmissionPolicy::new(CommandAdmissionMode::Off);
+        assert!(!off.is_active() && !off.enforces());
+
+        let observe = CommandAdmissionPolicy::new(CommandAdmissionMode::Observe);
+        assert!(observe.is_active() && !observe.enforces());
+
+        let enforce = CommandAdmissionPolicy::new(CommandAdmissionMode::Enforce);
+        assert!(enforce.is_active() && enforce.enforces());
+    }
+
+    #[test]
+    fn workspace_root_policy_is_disabled_until_explicitly_allowlisted() {
+        let directory = tempdir().unwrap();
+        let error = WorkspaceRootPolicy::default()
+            .authorize(directory.path())
+            .unwrap_err();
+        assert!(error.contains("mounting is disabled"));
+    }
+
+    #[test]
+    fn workspace_root_policy_accepts_descendants_and_rejects_other_roots() {
+        let allowed = tempdir().unwrap();
+        let child = allowed.path().join("Knowledge");
+        std::fs::create_dir(&child).unwrap();
+        let outside = tempdir().unwrap();
+        let policy = WorkspaceRootPolicy::new(vec![allowed.path().to_path_buf()]);
+
+        assert_eq!(
+            policy.authorize(&child).unwrap(),
+            std::fs::canonicalize(&child).unwrap()
+        );
+        assert!(policy
+            .authorize(outside.path())
+            .unwrap_err()
+            .contains("outside"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_root_policy_resolves_symlinks_before_authorizing() {
+        use std::os::unix::fs::symlink;
+
+        let allowed = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let link = allowed.path().join("escape");
+        symlink(outside.path(), &link).unwrap();
+        let policy = WorkspaceRootPolicy::new(vec![allowed.path().to_path_buf()]);
+
+        assert!(policy.authorize(&link).is_err());
     }
 }
