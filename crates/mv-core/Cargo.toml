@@ -2,7 +2,7 @@
 name = "mv-core"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 authors.workspace = true
 description = "Core types, traits, and credential store for MindVault"
 repository.workspace = true
