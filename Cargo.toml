@@ -19,7 +19,7 @@ exclude = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0"
+license-file = "LICENSE"
 authors = ["MindVault Contributors"]
 description = "A local-first knowledge memory system for humans and AI agents"
 homepage = "https://github.com/wwk5q8z6kk-bit/mindvault"
