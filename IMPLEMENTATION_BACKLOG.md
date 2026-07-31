@@ -322,7 +322,7 @@ interoperability kernel."
 - **blocked_by:** none
 - **files:** `crates/mv-core/src/model/interoperability.rs`, `migrations/040_identity_registry.sql`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/auth.rs`, `crates/mv-server/src/rest/interoperability.rs`
 - **acceptance:** `cargo test -p mv-storage -- identity_registry` — principal URIs resolve through versioned identity records with actor kind (`human`/`agent`/`service`/`integration`); the local-system fallback is removed or gated behind an explicit dev flag
-- **evidence:** `cargo test -p mv-storage -- identity_registry` → 2/2 ok; commit pending; 2026-07-31. Migration 040 + `IdentityRecord`/`ActorKind`; `MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY` gates missing-subject fallback; `system_admin` uses explicit `local-system` subject.
+- **evidence:** `cargo test -p mv-storage -- identity_registry` → 2/2 ok; commit `49fb8f7`; 2026-07-31. Migration 040 + `IdentityRecord`/`ActorKind`; `MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY` gates missing-subject fallback; `system_admin` uses explicit `local-system` subject.
 
 #### IK-004 — Outbox dispatcher worker
 - **priority:** P0 — the outbox has no runtime; events accumulate as pending forever
