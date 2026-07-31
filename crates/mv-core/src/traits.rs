@@ -689,8 +689,28 @@ pub trait KnowledgeWorkspaceManifestStore: Send + Sync {
     ) -> MvResult<Vec<WorkspaceConflict>>;
 }
 
-fn _assert_knowledge_workspace_manifest_store_object_safe(_: &dyn KnowledgeWorkspaceManifestStore) {
+fn _assert_knowledge_workspace_manifest_store_object_safe(_: &dyn KnowledgeWorkspaceManifestStore) {}
+
+/// Collaborative Space tenancy store (ADR 010 / SPACE-001).
+///
+/// Distinct from [`KnowledgeWorkspaceManifestStore`] (document mounts).
+#[async_trait]
+pub trait CollabSpaceStore: Send + Sync {
+    async fn insert_collab_workspace(&self, workspace: &CollabWorkspace) -> MvResult<()>;
+    async fn get_collab_workspace(&self, id: Uuid) -> MvResult<Option<CollabWorkspace>>;
+    async fn insert_space(&self, space: &Space) -> MvResult<()>;
+    async fn get_space(&self, id: Uuid) -> MvResult<Option<Space>>;
+    async fn upsert_space_membership(&self, membership: &SpaceMembership) -> MvResult<()>;
+    async fn get_space_membership(
+        &self,
+        space_id: Uuid,
+        principal_id: Uuid,
+    ) -> MvResult<Option<SpaceMembership>>;
+    async fn insert_space_resource(&self, resource: &SpaceResource) -> MvResult<()>;
+    async fn get_space_resource(&self, id: Uuid) -> MvResult<Option<SpaceResource>>;
 }
+
+fn _assert_collab_space_store_object_safe(_: &dyn CollabSpaceStore) {}
 
 /// One authorization question: who is asking, to do what, against which target,
 /// under which handling class, at what moment.

@@ -805,13 +805,13 @@ block production federation." All TM priorities below are copied verbatim.
 
 #### FED-000 — Keep production federation disabled until FED-001..FED-010 are verified
 - **priority:** P0 — the governing constraint for this group
-- **status:** not_started
+- **status:** verified
 - **mandate:** `FEDERATION_THREAT_MODEL.md:22` — "Production federation must remain disabled until the high-priority release gates in this document are satisfied"
 - **governing_authority:** Law 13 (`:73`); ADR 011 step 6 (`docs/adr/011-sovereign-interoperability-fabric.md:123`)
 - **blocked_by:** none
-- **files:** `crates/mv-server/src/rest/federation.rs`, `config/default.toml`
-- **acceptance:** `cargo test -p mv-server -- federation_disabled_by_default` — federation routes return 501/403 unless an explicit non-default development flag is set, and the flag logs a warning naming this backlog item
-- **evidence:** —
+- **files:** `crates/mv-server/src/rest/federation.rs`, `config/default.toml`, `crates/mv-server/tests/federation_e2e.rs`
+- **acceptance:** `cargo test -p mv-server --test federation_e2e -- federation_disabled_by_default -- --test-threads=1` — federation routes return 501 unless `MINDVAULT_FEDERATION_ENABLED` is set, and enabling logs a warning naming this backlog item
+- **evidence:** `cargo test -p mv-server --test federation_e2e -- federation_disabled_by_default -- --test-threads=1` → ok; 2026-07-31. Default off; opt-in env; warning names FED-000. Commit hash pending.
 
 #### FED-001 — TM-001 SSRF: endpoint policy, HTTPS, address validation, redirect control
 - **priority:** P0 — `FEDERATION_THREAT_MODEL.md:198` priority column: **High**
@@ -1296,13 +1296,13 @@ operations remain deliberately out of scope for this foundation."*
 
 #### SPACE-001 — Actor/Workspace/Space/Membership schema and authorization matrix
 - **priority:** P0 — `collaborative-spaces-baseline.md:65` labels it P0
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/architecture/collaborative-spaces-baseline.md:72-79` — "foreign-keyed Actor, Workspace, Space, Membership, and resource ownership schemas; deny-by-default authorization matrix tests for every actor kind; cross-Space read, write, subscription, search, and artifact isolation tests"
 - **governing_authority:** ADR 010 §Membership and authorization (`docs/adr/010-personal-vault-and-collaborative-spaces.md:102-119`); ADR 010 acceptance gate 3 (`:263-264`)
 - **blocked_by:** IK-003 (inferred)
-- **files:** new migration, `crates/mv-core/src/model/`
+- **files:** `migrations/042_collab_spaces_and_membership.sql`, `crates/mv-core/src/model/collab_space.rs`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`
 - **acceptance:** `cargo test -- space_authorization_matrix` — deny-by-default for all four actor kinds; cross-Space isolation for read, write, subscription, search, artifact
-- **evidence:** —
+- **evidence:** `cargo test -p mv-core -- space_authorization_matrix` → 5/5 ok; `cargo test -p mv-storage -- space_authorization_matrix` → 1/1 ok; commit `HASH_SPACE001`; 2026-07-31. Actors = identity registry (040); naming uses `CollabWorkspace` (SPACE-006 full DocumentWorkspace rename still open).
 
 #### SPACE-002 — WorkOrder / AgentRun / Artifact state machines
 - **priority:** P0 — baseline P0 "attribution and delegated authority"

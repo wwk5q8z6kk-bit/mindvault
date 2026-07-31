@@ -508,6 +508,7 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 | 039 | Command admission decisions                     | Ready   |
 | 040 | Identity registry                               | Ready   |
 | 041 | Retire superseded plans / plan_steps (AGENT-002)| Ready   |
+| 042 | Collab Spaces / Membership (SPACE-001)          | Ready   |
 
 ### Frontend Components (SvelteKit + Tauri)
 

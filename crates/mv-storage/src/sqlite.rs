@@ -300,6 +300,10 @@ impl SqliteNodeStore {
                 41,
                 include_str!("../../../migrations/041_retire_plans.sql"),
             ),
+            (
+                42,
+                include_str!("../../../migrations/042_collab_spaces_and_membership.sql"),
+            ),
         ];
 
         // Migration 001 must always run first to create schema_version table.
@@ -679,6 +683,8 @@ fn parse_dt_strict(column: usize, s: &str) -> rusqlite::Result<chrono::DateTime<
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|err| rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(err)))
 }
+
+
 
 fn parse_optional_dt_strict(
     column: usize,
@@ -11958,6 +11964,258 @@ impl KnowledgeWorkspaceManifestStore for SqliteNodeStore {
 
 }
 
+
+#[async_trait]
+impl CollabSpaceStore for SqliteNodeStore {
+    async fn insert_collab_workspace(&self, workspace: &CollabWorkspace) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO collab_workspaces (
+                    id, slug, display_name, state, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    workspace.id.to_string(),
+                    workspace.slug,
+                    workspace.display_name,
+                    workspace.state.as_str(),
+                    workspace.created_at.to_rfc3339(),
+                    workspace.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert collab workspace failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_collab_workspace(&self, id: Uuid) -> MvResult<Option<CollabWorkspace>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, slug, display_name, state, created_at, updated_at
+                     FROM collab_workspaces WHERE id = ?1",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare collab workspace get: {err}")))?;
+            let mut rows = statement
+                .query(params![id.to_string()])
+                .map_err(|err| MvError::Storage(format!("query collab workspace: {err}")))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(row_to_collab_workspace(row).map_err(|err| MvError::Storage(err.to_string()))?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    async fn insert_space(&self, space: &Space) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO spaces (
+                    id, collab_workspace_id, slug, display_name, state, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    space.id.to_string(),
+                    space.collab_workspace_id.to_string(),
+                    space.slug,
+                    space.display_name,
+                    space.state.as_str(),
+                    space.created_at.to_rfc3339(),
+                    space.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert space failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_space(&self, id: Uuid) -> MvResult<Option<Space>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, collab_workspace_id, slug, display_name, state, created_at, updated_at
+                     FROM spaces WHERE id = ?1",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare space get: {err}")))?;
+            let mut rows = statement
+                .query(params![id.to_string()])
+                .map_err(|err| MvError::Storage(format!("query space: {err}")))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(row_to_space(row).map_err(|err| MvError::Storage(err.to_string()))?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    async fn upsert_space_membership(&self, membership: &SpaceMembership) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO space_memberships (
+                    id, space_id, principal_id, actor_kind, role, state, granted_at, expires_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(space_id, principal_id) DO UPDATE SET
+                    id = excluded.id,
+                    actor_kind = excluded.actor_kind,
+                    role = excluded.role,
+                    state = excluded.state,
+                    granted_at = excluded.granted_at,
+                    expires_at = excluded.expires_at",
+                params![
+                    membership.id.to_string(),
+                    membership.space_id.to_string(),
+                    membership.principal_id.to_string(),
+                    membership.actor_kind.as_str(),
+                    membership.role.as_str(),
+                    membership.state.as_str(),
+                    membership.granted_at.to_rfc3339(),
+                    membership.expires_at.map(|ts| ts.to_rfc3339()),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("upsert space membership failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_space_membership(
+        &self,
+        space_id: Uuid,
+        principal_id: Uuid,
+    ) -> MvResult<Option<SpaceMembership>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, space_id, principal_id, actor_kind, role, state, granted_at, expires_at
+                     FROM space_memberships
+                     WHERE space_id = ?1 AND principal_id = ?2",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare membership get: {err}")))?;
+            let mut rows = statement
+                .query(params![space_id.to_string(), principal_id.to_string()])
+                .map_err(|err| MvError::Storage(format!("query membership: {err}")))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(row_to_space_membership(row).map_err(|err| MvError::Storage(err.to_string()))?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    async fn insert_space_resource(&self, resource: &SpaceResource) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO space_resources (
+                    id, space_id, resource_kind, resource_key, owner_principal_id, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    resource.id.to_string(),
+                    resource.space_id.to_string(),
+                    resource.resource_kind.as_str(),
+                    resource.resource_key,
+                    resource.owner_principal_id.map(|id| id.to_string()),
+                    resource.created_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert space resource failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_space_resource(&self, id: Uuid) -> MvResult<Option<SpaceResource>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, space_id, resource_kind, resource_key, owner_principal_id, created_at
+                     FROM space_resources WHERE id = ?1",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare space resource get: {err}")))?;
+            let mut rows = statement
+                .query(params![id.to_string()])
+                .map_err(|err| MvError::Storage(format!("query space resource: {err}")))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(row_to_space_resource(row).map_err(|err| MvError::Storage(err.to_string()))?)),
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+fn parse_collab_enum<T, F>(column: usize, raw: &str, parse: F) -> rusqlite::Result<T>
+where
+    F: FnOnce(&str) -> Result<T, String>,
+{
+    parse(raw).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(column, Type::Text, err.into())
+    })
+}
+
+fn row_to_collab_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<CollabWorkspace> {
+    let id: String = row.get(0)?;
+    let state: String = row.get(3)?;
+    let created_at: String = row.get(4)?;
+    let updated_at: String = row.get(5)?;
+    Ok(CollabWorkspace {
+        id: parse_uuid_str(0, &id)?,
+        slug: row.get(1)?,
+        display_name: row.get(2)?,
+        state: parse_collab_enum(3, &state, CollabWorkspaceState::parse)?,
+        created_at: parse_dt_strict(4, &created_at)?,
+        updated_at: parse_dt_strict(5, &updated_at)?,
+    })
+}
+
+fn row_to_space(row: &rusqlite::Row<'_>) -> rusqlite::Result<Space> {
+    let id: String = row.get(0)?;
+    let collab_workspace_id: String = row.get(1)?;
+    let state: String = row.get(4)?;
+    let created_at: String = row.get(5)?;
+    let updated_at: String = row.get(6)?;
+    Ok(Space {
+        id: parse_uuid_str(0, &id)?,
+        collab_workspace_id: parse_uuid_str(1, &collab_workspace_id)?,
+        slug: row.get(2)?,
+        display_name: row.get(3)?,
+        state: parse_collab_enum(4, &state, SpaceState::parse)?,
+        created_at: parse_dt_strict(5, &created_at)?,
+        updated_at: parse_dt_strict(6, &updated_at)?,
+    })
+}
+
+fn row_to_space_membership(row: &rusqlite::Row<'_>) -> rusqlite::Result<SpaceMembership> {
+    let id: String = row.get(0)?;
+    let space_id: String = row.get(1)?;
+    let principal_id: String = row.get(2)?;
+    let actor_kind: String = row.get(3)?;
+    let role: String = row.get(4)?;
+    let state: String = row.get(5)?;
+    let granted_at: String = row.get(6)?;
+    let expires_at: Option<String> = row.get(7)?;
+    Ok(SpaceMembership {
+        id: parse_uuid_str(0, &id)?,
+        space_id: parse_uuid_str(1, &space_id)?,
+        principal_id: parse_uuid_str(2, &principal_id)?,
+        actor_kind: parse_collab_enum(3, &actor_kind, |s| s.parse::<ActorKind>())?,
+        role: parse_collab_enum(4, &role, SpaceRole::parse)?,
+        state: parse_collab_enum(5, &state, MembershipState::parse)?,
+        granted_at: parse_dt_strict(6, &granted_at)?,
+        expires_at: parse_optional_dt_strict(7, expires_at)?,
+    })
+}
+
+fn row_to_space_resource(row: &rusqlite::Row<'_>) -> rusqlite::Result<SpaceResource> {
+    let id: String = row.get(0)?;
+    let space_id: String = row.get(1)?;
+    let resource_kind: String = row.get(2)?;
+    let owner: Option<String> = row.get(4)?;
+    let created_at: String = row.get(5)?;
+    Ok(SpaceResource {
+        id: parse_uuid_str(0, &id)?,
+        space_id: parse_uuid_str(1, &space_id)?,
+        resource_kind: parse_collab_enum(3, &resource_kind, SpaceResourceKind::parse)?,
+        resource_key: row.get(3)?,
+        owner_principal_id: owner
+            .map(|value| parse_uuid_str(4, &value))
+            .transpose()?,
+        created_at: parse_dt_strict(5, &created_at)?,
+    })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -12714,7 +12972,26 @@ mod tests {
                         row.get(0)
                     })
                     .map_err(|err| MvError::Storage(err.to_string()))?;
-                assert_eq!(schema_version, 41);
+                assert_eq!(schema_version, 42);
+
+                for collab in [
+                    "collab_workspaces",
+                    "spaces",
+                    "space_memberships",
+                    "space_resources",
+                ] {
+                    let present: bool = conn
+                        .query_row(
+                            "SELECT EXISTS(
+                                SELECT 1 FROM sqlite_master
+                                WHERE type = 'table' AND name = ?1
+                             )",
+                            params![collab],
+                            |row| row.get(0),
+                        )
+                        .map_err(|err| MvError::Storage(err.to_string()))?;
+                    assert!(present, "expected SPACE-001 table {collab}");
+                }
 
                 for retired in ["plans", "plan_steps"] {
                     let present: bool = conn
@@ -12735,6 +13012,111 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+
+    #[tokio::test]
+    async fn space_authorization_matrix_persists_tenancy_and_denies_cross_space() {
+        use chrono::Utc;
+        use mv_core::{
+            authorize_space_operation, ActorKind, CollabSpaceStore, CollabWorkspace, IdentityRecord,
+            Space, SpaceAuthDecision, SpaceMembership, SpaceOperation, SpaceResource,
+            SpaceResourceKind, SpaceRole,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteNodeStore::open(&dir.path().join("space-auth.db")).unwrap();
+        let node_id = Uuid::now_v7();
+
+        let kinds = [
+            ActorKind::Human,
+            ActorKind::Agent,
+            ActorKind::Service,
+            ActorKind::Integration,
+        ];
+        let mut principals = Vec::new();
+        for (i, kind) in kinds.iter().enumerate() {
+            let record = IdentityRecord::new(
+                node_id,
+                format!("actor-{i}"),
+                *kind,
+                format!("{kind:?}"),
+            );
+            store.upsert_identity_record(&record).await.unwrap();
+            principals.push(record.principal_id);
+        }
+
+        let workspace = CollabWorkspace::new("acme", "Acme Org");
+        store.insert_collab_workspace(&workspace).await.unwrap();
+        let space_a = Space::new(workspace.id, "alpha", "Alpha");
+        let space_b = Space::new(workspace.id, "beta", "Beta");
+        store.insert_space(&space_a).await.unwrap();
+        store.insert_space(&space_b).await.unwrap();
+
+        let resource_a = SpaceResource::new(
+            space_a.id,
+            SpaceResourceKind::Document,
+            "doc-a",
+            Some(principals[0]),
+        );
+        let resource_b = SpaceResource::new(
+            space_b.id,
+            SpaceResourceKind::Artifact,
+            "art-b",
+            Some(principals[0]),
+        );
+        store.insert_space_resource(&resource_a).await.unwrap();
+        store.insert_space_resource(&resource_b).await.unwrap();
+
+        let now = Utc::now();
+        let ops = [
+            SpaceOperation::Read,
+            SpaceOperation::Write,
+            SpaceOperation::Subscription,
+            SpaceOperation::Search,
+            SpaceOperation::Artifact,
+        ];
+
+        // No membership → deny for every actor kind × every op on every resource.
+        for principal_id in &principals {
+            let m_a = store
+                .get_space_membership(space_a.id, *principal_id)
+                .await
+                .unwrap();
+            assert!(m_a.is_none());
+            for op in ops {
+                assert_eq!(
+                    authorize_space_operation(None, resource_a.space_id, op, now),
+                    SpaceAuthDecision::Deny("no space membership")
+                );
+                assert_eq!(
+                    authorize_space_operation(None, resource_b.space_id, op, now),
+                    SpaceAuthDecision::Deny("no space membership")
+                );
+            }
+        }
+
+        // Grant membership only in space A; B remains isolated.
+        for (principal_id, kind) in principals.iter().zip(kinds.iter()) {
+            let membership =
+                SpaceMembership::new(space_a.id, *principal_id, *kind, SpaceRole::Member);
+            store.upsert_space_membership(&membership).await.unwrap();
+            let loaded = store
+                .get_space_membership(space_a.id, *principal_id)
+                .await
+                .unwrap()
+                .expect("membership in A");
+            for op in ops {
+                assert_eq!(
+                    authorize_space_operation(Some(&loaded), resource_a.space_id, op, now),
+                    SpaceAuthDecision::Allow
+                );
+                assert_eq!(
+                    authorize_space_operation(Some(&loaded), resource_b.space_id, op, now),
+                    SpaceAuthDecision::Deny("cross-space access denied")
+                );
+            }
+        }
     }
 
 
