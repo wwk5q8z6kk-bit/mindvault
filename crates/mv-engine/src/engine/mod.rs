@@ -1,6 +1,7 @@
 mod access_ops;
 mod consumer_ops;
 mod graph_ops;
+mod inbox_consumer;
 mod intent_ops;
 mod interoperability_ops;
 mod mcp_ops;
@@ -21,6 +22,10 @@ mod workspace_projection_ops;
 pub use interoperability_ops::{
     AuthorityGrantIssuance, AuthorityGrantTransition, BootstrapLocalIdentities,
     IdentityRegistration, IssueAuthorityGrantRequest, LocalContextNodeRegistration,
+};
+pub use inbox_consumer::{
+    spawn_inbox_consumer, InboxConsumerConfig, InboxConsumerTick, InboxDomainHandler,
+    LocalProjectionHandler, NoopDomainHandler,
 };
 pub use outbox_dispatch::{
     spawn_outbox_dispatcher, LocalAckPublisher, OutboxDispatchTick, OutboxDispatcherConfig,
