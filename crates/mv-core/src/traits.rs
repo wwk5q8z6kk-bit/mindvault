@@ -927,6 +927,25 @@ pub trait InteroperabilityStore: Send + Sync {
         limit: usize,
     ) -> MvResult<Vec<ConsumerApplicationReceipt>>;
 
+    /// Create a new pending outbox event caused by one terminal outbox dead letter.
+    ///
+    /// The source event, its action receipts, and delivery state remain immutable.
+    async fn redrive_outbox_dead_letter(
+        &self,
+        source_event_id: Uuid,
+        command: &DeadLetterRedriveCommand,
+    ) -> MvResult<IdempotentDeadLetterRedriveCommit>;
+
+    /// Admit a new consumer inbox event caused by one terminal inbox dead letter.
+    ///
+    /// The source admission, application receipts, and checkpoint remain immutable.
+    async fn redrive_consumer_inbox_dead_letter(
+        &self,
+        consumer: &StableUri,
+        source_event_id: Uuid,
+        command: &DeadLetterRedriveCommand,
+    ) -> MvResult<IdempotentDeadLetterRedriveCommit>;
+
     // -----------------------------------------------------------------------
     // Governed agent execution graph
     //

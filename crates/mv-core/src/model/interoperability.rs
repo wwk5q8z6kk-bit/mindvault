@@ -33,6 +33,7 @@ pub const AGENT_RUN_STARTED_V1: &str = "dev.mindvault.agent-run.started.v1";
 pub const AGENT_RUN_LIFECYCLE_TRANSITIONED_V1: &str =
     "dev.mindvault.agent-run.lifecycle.transitioned.v1";
 pub const IDENTITY_REGISTERED_V1: &str = "dev.mindvault.identity.registered.v1";
+pub const DEAD_LETTER_REDRIVED_V1: &str = "dev.mindvault.dead-letter.redriven.v1";
 
 /// A portable MindVault identifier.
 ///
@@ -468,6 +469,44 @@ impl EventEnvelope {
             &serde_json::to_value(self)
                 .expect("serializing an in-memory event envelope cannot fail"),
         )
+    }
+
+    /// Build a new envelope that retries a terminal dead-lettered event.
+    ///
+    /// The redrive event id is deterministic from `(source.id, idempotency_key)`
+    /// so the governed command can replay without rewriting terminal evidence.
+    pub fn redrive_from_terminal(
+        source: &Self,
+        command: &DeadLetterRedriveCommand,
+    ) -> Result<Self, String> {
+        if command.reason.trim().is_empty() {
+            return Err("dead-letter redrive reason must not be empty".into());
+        }
+        let id = Uuid::new_v5(
+            &source.id,
+            format!("dead-letter-redrive:{}", command.idempotency_key.as_str()).as_bytes(),
+        );
+        let envelope = Self {
+            envelope_version: source.envelope_version.clone(),
+            id,
+            event_type: source.event_type.clone(),
+            source: source.source.clone(),
+            subject: source.subject.clone(),
+            occurred_at: command.redriven_at,
+            schema: source.schema.clone(),
+            principal: command.principal.clone(),
+            actor: command.actor.clone(),
+            correlation_id: source.correlation_id,
+            causation_id: Some(source.id),
+            idempotency_key: command.idempotency_key.clone(),
+            payload_digest: source.payload_digest.clone(),
+            sensitivity: source.sensitivity,
+            retention: source.retention,
+            provenance: source.provenance.clone(),
+            data: source.data.clone(),
+        };
+        envelope.validate()?;
+        Ok(envelope)
     }
 }
 
@@ -2222,6 +2261,31 @@ pub struct IdempotentSourceBindingCommit {
     pub replayed: bool,
 }
 
+/// Governed operator command that redrives one terminal dead-lettered event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadLetterRedriveCommand {
+    pub principal: StableUri,
+    pub actor: StableUri,
+    pub idempotency_key: IdempotencyKey,
+    pub reason: String,
+    pub redriven_at: DateTime<Utc>,
+}
+
+impl DeadLetterRedriveCommand {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.reason.trim().is_empty() {
+            return Err("dead-letter redrive reason must not be empty".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IdempotentDeadLetterRedriveCommit {
+    pub source_event_id: Uuid,
+    pub redrive_event: EventEnvelope,
+    pub replayed: bool,
+}
 
 interoperability_string_enum! {
     /// Actor kind for governed identity records (ADR 010 §Actors).

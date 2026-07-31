@@ -1369,6 +1369,123 @@ impl SqliteNodeStore {
         Self::decode_outbox_event(&envelope_json).map(Some)
     }
 
+    fn insert_consumer_inbox_event(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        consumer: &StableUri,
+        event: &EventEnvelope,
+        received_at: chrono::DateTime<Utc>,
+    ) -> MvResult<ConsumerInboxAdmission> {
+        event.validate().map_err(MvError::InvalidInput)?;
+        Self::require_active_event_schema(transaction, event)?;
+        let event_digest = event.content_digest();
+        let (payload, payload_format, wrapped_dek) =
+            self.encode_governance_record(event, "consumer inbox event")?;
+        transaction
+            .execute(
+                "INSERT INTO interoperability_consumer_inbox
+                 (consumer_uri, event_id, event_digest, source_uri, subject_uri,
+                  principal_uri, actor_uri, event_type, schema_uri, schema_version,
+                  correlation_id, occurred_at, sensitivity, retention, envelope_payload,
+                  payload_format, payload_wrapped_dek, state, attempts, next_attempt_at,
+                  lease_id, lease_processor_uri, lease_expires_at, last_attempt_at,
+                  applied_at, last_error_code, received_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                         ?14, ?15, ?16, ?17, 'pending', 0, ?18, NULL, NULL, NULL,
+                         NULL, NULL, NULL, ?18, ?18)",
+                params![
+                    consumer.as_str(),
+                    event.id.to_string(),
+                    &event_digest,
+                    event.source.as_str(),
+                    event.subject.as_str(),
+                    event.principal.as_str(),
+                    event.actor.as_str(),
+                    &event.event_type,
+                    event.schema.uri.as_str(),
+                    &event.schema.version,
+                    event.correlation_id.to_string(),
+                    event.occurred_at.to_rfc3339(),
+                    event.sensitivity.as_str(),
+                    event.retention.as_str(),
+                    payload,
+                    payload_format,
+                    wrapped_dek,
+                    received_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("admit consumer inbox event: {err}")))?;
+        let inbox_sequence = transaction.last_insert_rowid();
+        let inbox_sequence = u64::try_from(inbox_sequence)
+            .map_err(|_| MvError::Storage("consumer inbox sequence is invalid".into()))?;
+        let admission = ConsumerInboxAdmission {
+            inbox_sequence,
+            consumer: consumer.clone(),
+            event: event.clone(),
+            received_at,
+            replayed: false,
+        };
+        admission.validate().map_err(MvError::InvalidInput)?;
+        Ok(admission)
+    }
+
+    fn resolve_dead_letter_redrive_replay(
+        &self,
+        connection: &Connection,
+        redrive_event_id: Uuid,
+        command: &DeadLetterRedriveCommand,
+        source_event_id: Uuid,
+    ) -> MvResult<Option<EventEnvelope>> {
+        let Some(existing) = connection
+            .query_row(
+                "SELECT envelope_json FROM interoperability_outbox WHERE event_id = ?1",
+                params![redrive_event_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load dead-letter redrive replay: {err}")))?
+        else {
+            return Ok(None);
+        };
+        let event = Self::decode_outbox_event(&existing)?;
+        if event.causation_id != Some(source_event_id)
+            || event.idempotency_key != command.idempotency_key
+            || event.principal != command.principal
+        {
+            return Err(MvError::IdempotencyConflict(
+                "dead-letter redrive idempotency key already used for a different redrive"
+                    .into(),
+            ));
+        }
+        Ok(Some(event))
+    }
+
+    fn resolve_consumer_dead_letter_redrive_replay(
+        &self,
+        connection: &Connection,
+        consumer: &StableUri,
+        redrive_event_id: Uuid,
+        command: &DeadLetterRedriveCommand,
+        source_event_id: Uuid,
+    ) -> MvResult<Option<EventEnvelope>> {
+        let Some(mut existing) =
+            self.load_consumer_inbox_admission(connection, consumer, redrive_event_id)?
+        else {
+            return Ok(None);
+        };
+        if existing.event.causation_id != Some(source_event_id)
+            || existing.event.idempotency_key != command.idempotency_key
+            || existing.event.principal != command.principal
+        {
+            return Err(MvError::IdempotencyConflict(
+                "dead-letter redrive idempotency key already used for a different redrive"
+                    .into(),
+            ));
+        }
+        existing.replayed = true;
+        Ok(Some(existing.event))
+    }
+
     fn insert_outbox_event(
         transaction: &rusqlite::Transaction<'_>,
         event: &EventEnvelope,
@@ -4877,54 +4994,7 @@ impl InteroperabilityStore for SqliteNodeStore {
             return Ok(existing);
         }
 
-        let event_digest = event.content_digest();
-        let (payload, payload_format, wrapped_dek) =
-            self.encode_governance_record(event, "consumer inbox event")?;
-        transaction
-            .execute(
-                "INSERT INTO interoperability_consumer_inbox
-                 (consumer_uri, event_id, event_digest, source_uri, subject_uri,
-                  principal_uri, actor_uri, event_type, schema_uri, schema_version,
-                  correlation_id, occurred_at, sensitivity, retention, envelope_payload,
-                  payload_format, payload_wrapped_dek, state, attempts, next_attempt_at,
-                  lease_id, lease_processor_uri, lease_expires_at, last_attempt_at,
-                  applied_at, last_error_code, received_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                         ?14, ?15, ?16, ?17, 'pending', 0, ?18, NULL, NULL, NULL,
-                         NULL, NULL, NULL, ?18, ?18)",
-                params![
-                    consumer.as_str(),
-                    event.id.to_string(),
-                    &event_digest,
-                    event.source.as_str(),
-                    event.subject.as_str(),
-                    event.principal.as_str(),
-                    event.actor.as_str(),
-                    &event.event_type,
-                    event.schema.uri.as_str(),
-                    &event.schema.version,
-                    event.correlation_id.to_string(),
-                    event.occurred_at.to_rfc3339(),
-                    event.sensitivity.as_str(),
-                    event.retention.as_str(),
-                    payload,
-                    payload_format,
-                    wrapped_dek,
-                    received_at.to_rfc3339(),
-                ],
-            )
-            .map_err(|err| MvError::Storage(format!("admit consumer inbox event: {err}")))?;
-        let inbox_sequence = transaction.last_insert_rowid();
-        let inbox_sequence = u64::try_from(inbox_sequence)
-            .map_err(|_| MvError::Storage("consumer inbox sequence is invalid".into()))?;
-        let admission = ConsumerInboxAdmission {
-            inbox_sequence,
-            consumer: consumer.clone(),
-            event: event.clone(),
-            received_at,
-            replayed: false,
-        };
-        admission.validate().map_err(MvError::InvalidInput)?;
+        let admission = self.insert_consumer_inbox_event(&transaction, consumer, event, received_at)?;
         transaction
             .commit()
             .map_err(|err| MvError::Storage(format!("commit consumer inbox admission: {err}")))?;
@@ -5448,6 +5518,153 @@ impl InteroperabilityStore for SqliteNodeStore {
                 })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|err| MvError::Storage(format!("read consumer receipt: {err}")))
+        })
+    }
+
+    async fn redrive_outbox_dead_letter(
+        &self,
+        source_event_id: Uuid,
+        command: &DeadLetterRedriveCommand,
+    ) -> MvResult<IdempotentDeadLetterRedriveCommit> {
+        command.validate().map_err(MvError::InvalidInput)?;
+
+        let source = self
+            .get_outbox_event(source_event_id)
+            .await?
+            .ok_or_else(|| {
+                MvError::InvalidInput(format!("outbox event not found: {source_event_id}"))
+            })?;
+        let redrive_event = EventEnvelope::redrive_from_terminal(&source, command)
+            .map_err(MvError::InvalidInput)?;
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin outbox dead-letter redrive: {err}")))?;
+
+        if let Some(existing) = self.resolve_dead_letter_redrive_replay(
+            &transaction,
+            redrive_event.id,
+            command,
+            source_event_id,
+        )? {
+            transaction.commit().map_err(|err| {
+                MvError::Storage(format!("finish outbox dead-letter redrive replay: {err}"))
+            })?;
+            return Ok(IdempotentDeadLetterRedriveCommit {
+                source_event_id,
+                redrive_event: existing,
+                replayed: true,
+            });
+        }
+
+        let delivery_state: String = transaction
+            .query_row(
+                "SELECT delivery_state FROM interoperability_outbox WHERE event_id = ?1",
+                params![source_event_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|err| MvError::Storage(format!("load outbox dead-letter state: {err}")))?;
+        if delivery_state != OutboxDeliveryState::DeadLetter.as_str() {
+            return Err(MvError::InvalidInput(
+                "outbox dead-letter redrive requires a terminal dead-letter event".into(),
+            ));
+        }
+
+        Self::insert_outbox_event(&transaction, &redrive_event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit outbox dead-letter redrive: {err}")))?;
+        Ok(IdempotentDeadLetterRedriveCommit {
+            source_event_id,
+            redrive_event,
+            replayed: false,
+        })
+    }
+
+    async fn redrive_consumer_inbox_dead_letter(
+        &self,
+        consumer: &StableUri,
+        source_event_id: Uuid,
+        command: &DeadLetterRedriveCommand,
+    ) -> MvResult<IdempotentDeadLetterRedriveCommit> {
+        command.validate().map_err(MvError::InvalidInput)?;
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| {
+                MvError::Storage(format!("begin consumer dead-letter redrive: {err}"))
+            })?;
+
+        let source_admission = self
+            .load_consumer_inbox_admission(&transaction, consumer, source_event_id)?
+            .ok_or_else(|| {
+                MvError::InvalidInput(format!(
+                    "consumer inbox event not found: {source_event_id}"
+                ))
+            })?;
+        if source_admission.event.id != source_event_id {
+            return Err(MvError::InvalidInput(
+                "consumer dead-letter redrive source mismatch".into(),
+            ));
+        }
+        let redrive_event =
+            EventEnvelope::redrive_from_terminal(&source_admission.event, command)
+                .map_err(MvError::InvalidInput)?;
+
+        if let Some(existing) = self.resolve_consumer_dead_letter_redrive_replay(
+            &transaction,
+            consumer,
+            redrive_event.id,
+            command,
+            source_event_id,
+        )? {
+            transaction.commit().map_err(|err| {
+                MvError::Storage(format!("finish consumer dead-letter redrive replay: {err}"))
+            })?;
+            return Ok(IdempotentDeadLetterRedriveCommit {
+                source_event_id,
+                redrive_event: existing,
+                replayed: true,
+            });
+        }
+
+        let inbox_state: String = transaction
+            .query_row(
+                "SELECT state FROM interoperability_consumer_inbox
+                 WHERE consumer_uri = ?1 AND event_id = ?2",
+                params![consumer.as_str(), source_event_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|err| {
+                MvError::Storage(format!("load consumer dead-letter state: {err}"))
+            })?;
+        if inbox_state != ConsumerInboxState::DeadLetter.as_str() {
+            return Err(MvError::InvalidInput(
+                "consumer dead-letter redrive requires a terminal dead-letter inbox event".into(),
+            ));
+        }
+
+        self.insert_consumer_inbox_event(
+            &transaction,
+            consumer,
+            &redrive_event,
+            command.redriven_at,
+        )?;
+        transaction.commit().map_err(|err| {
+            MvError::Storage(format!("commit consumer dead-letter redrive: {err}"))
+        })?;
+        Ok(IdempotentDeadLetterRedriveCommit {
+            source_event_id,
+            redrive_event,
+            replayed: false,
         })
     }
 
@@ -14603,6 +14820,206 @@ mod tests {
                 .unwrap()
                 .state,
             ConsumerInboxState::DeadLetter
+        );
+    }
+
+    fn dead_letter_redrive_command(key: &str) -> DeadLetterRedriveCommand {
+        let local_node_id = Uuid::now_v7();
+        let principal = StableUri::principal(
+            local_node_id,
+            Uuid::new_v5(&local_node_id, b"redrive-operator"),
+        );
+        DeadLetterRedriveCommand {
+            principal: principal.clone(),
+            actor: principal,
+            idempotency_key: IdempotencyKey::parse(key).unwrap(),
+            reason: "operator approved dead-letter redrive".into(),
+            redriven_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn outbox_dead_letter_redrive_creates_new_event_and_preserves_receipt() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let node = KnowledgeNode::new(NodeKind::Fact, "redrive outbox")
+            .with_namespace("interoperability");
+        let event = node_created_event(
+            local_node_id,
+            node.id,
+            "redrive-outbox-source",
+            &"8".repeat(64),
+        );
+        store
+            .commit_node_create_with_event(&node, &event)
+            .await
+            .unwrap();
+
+        let executor = StableUri::parse("mindvault://dispatchers/local").unwrap();
+        let destination = StableUri::parse("mindvault://destinations/test").unwrap();
+        let claimed_at = event.occurred_at + chrono::Duration::seconds(1);
+        let claim = store
+            .claim_outbox_events(
+                &executor,
+                &destination,
+                claimed_at,
+                claimed_at + chrono::Duration::minutes(1),
+                1,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        let completion = OutboxDeliveryCompletion {
+            event_id: event.id,
+            lease_id: claim.lease_id,
+            attempt: claim.attempt,
+            completed_at: claimed_at + chrono::Duration::seconds(1),
+            result: OutboxDeliveryResult::DeadLettered {
+                error_code: "destination_rejected".into(),
+                error_summary: "destination permanently rejected publication".into(),
+            },
+        };
+        let receipt = store
+            .complete_outbox_delivery(&claim, &completion)
+            .await
+            .unwrap();
+        let receipt_before = serde_json::to_string(&receipt).unwrap();
+        let status_before = store
+            .get_outbox_delivery_status(event.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let status_before_json = serde_json::to_string(&status_before).unwrap();
+
+        let command = dead_letter_redrive_command("outbox-dead-letter-redrive");
+        let redrive = store
+            .redrive_outbox_dead_letter(event.id, &command)
+            .await
+            .unwrap();
+        assert!(!redrive.replayed);
+        assert_ne!(redrive.redrive_event.id, event.id);
+        assert_eq!(redrive.redrive_event.causation_id, Some(event.id));
+        assert_eq!(
+            store
+                .get_outbox_delivery_status(redrive.redrive_event.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            OutboxDeliveryState::Pending
+        );
+
+        let replay = store
+            .redrive_outbox_dead_letter(event.id, &command)
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.redrive_event.id, redrive.redrive_event.id);
+
+        let receipt_after = store
+            .list_action_receipts(event.id, 10)
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(serde_json::to_string(&receipt_after).unwrap(), receipt_before);
+        let status_after = store
+            .get_outbox_delivery_status(event.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::to_string(&status_after).unwrap(), status_before_json);
+    }
+
+    #[tokio::test]
+    async fn consumer_inbox_dead_letter_redrive_creates_new_event_and_preserves_checkpoint() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let event = node_created_event(
+            local_node_id,
+            Uuid::now_v7(),
+            "consumer-redrive-source",
+            &"9".repeat(64),
+        );
+        let consumer = StableUri::parse("mindvault://consumers/redrive-index").unwrap();
+        let processor = StableUri::parse("mindvault://processors/redrive-index").unwrap();
+        let received_at = event.occurred_at + chrono::Duration::seconds(1);
+        store
+            .admit_consumer_event(&consumer, &event, received_at)
+            .await
+            .unwrap();
+        let claim = store
+            .claim_consumer_events(
+                &consumer,
+                &processor,
+                received_at,
+                received_at + chrono::Duration::minutes(1),
+                1,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        let completion = ConsumerApplicationCompletion {
+            inbox_sequence: claim.inbox_sequence,
+            event_id: event.id,
+            lease_id: claim.lease_id,
+            attempt: claim.attempt,
+            completed_at: received_at + chrono::Duration::seconds(2),
+            result: ConsumerApplicationResult::DeadLettered {
+                error_code: "projection_failed".into(),
+                error_summary: "consumer cannot project this event".into(),
+            },
+        };
+        let receipt = store
+            .complete_consumer_event(&claim, &completion)
+            .await
+            .unwrap();
+        let receipt_before = serde_json::to_string(&receipt).unwrap();
+        let checkpoint_before = store
+            .get_consumer_checkpoint(&consumer, &event.source)
+            .await
+            .unwrap()
+            .unwrap();
+        let checkpoint_before_json = serde_json::to_string(&checkpoint_before).unwrap();
+
+        let command = dead_letter_redrive_command("consumer-dead-letter-redrive");
+        let redrive = store
+            .redrive_consumer_inbox_dead_letter(&consumer, event.id, &command)
+            .await
+            .unwrap();
+        assert!(!redrive.replayed);
+        assert_ne!(redrive.redrive_event.id, event.id);
+        assert_eq!(redrive.redrive_event.causation_id, Some(event.id));
+        assert_eq!(
+            store
+                .get_consumer_inbox_status(&consumer, redrive.redrive_event.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            ConsumerInboxState::Pending
+        );
+
+        let replay = store
+            .redrive_consumer_inbox_dead_letter(&consumer, event.id, &command)
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.redrive_event.id, redrive.redrive_event.id);
+
+        let receipt_after = store
+            .list_consumer_application_receipts(&consumer, event.id, 10)
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(serde_json::to_string(&receipt_after).unwrap(), receipt_before);
+        let checkpoint_after = store
+            .get_consumer_checkpoint(&consumer, &event.source)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_string(&checkpoint_after).unwrap(),
+            checkpoint_before_json
         );
     }
 
