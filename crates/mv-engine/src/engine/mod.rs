@@ -6,6 +6,7 @@ mod interoperability_ops;
 mod mcp_ops;
 mod node_ops;
 mod outbox_dispatch;
+mod outbox_http_publisher;
 mod profile_ops;
 mod proposal_ops;
 mod relay_ops;
@@ -25,6 +26,7 @@ pub use outbox_dispatch::{
     spawn_outbox_dispatcher, LocalAckPublisher, OutboxDispatchTick, OutboxDispatcherConfig,
     OutboxPublisher,
 };
+pub use outbox_http_publisher::{HttpOutboxPublisher, HttpOutboxPublisherConfig};
 pub use work_order_ops::{
     AdmissionRefusal, ProposedEdge, ProposedNode, ProposedWorkOrder, RunReadiness,
 };
