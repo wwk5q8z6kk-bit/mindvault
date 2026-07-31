@@ -223,11 +223,12 @@ expiration is invalid, and reclaiming an expired event invalidates its previous
 claim. Local inbox sequence and checkpoint state prove only local admission and
 disposition order; they do not prove a remote stream was gap-free.
 
-This slice provides the durable boundary a future subscriber and domain
-handler must use. It does not run a transport listener, invoke a domain
-projection, infer an issuer sequence, or requeue a dead letter. Dead-letter
-redrive requires a separate governed command so a prior terminal receipt and
-checkpoint are never rewritten.
+This slice provides the durable boundary subscribers and domain handlers must
+use. An env-gated local inbox consumer runtime (IK-006) admits, claims, applies
+via a domain handler, writes receipts, and advances checkpoints in order; it
+does not listen on a remote transport, verify remote signatures, infer an issuer
+sequence, or requeue a dead letter. Dead-letter redrive requires a separate
+governed command so a prior terminal receipt and checkpoint are never rewritten.
 
 ## In-process notification behavior
 

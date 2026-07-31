@@ -56,6 +56,8 @@ rewritten.
 
 Sealed vaults encrypt full envelope and receipt payloads with `mvenc-v1`; only
 bounded routing and lookup fields remain indexed. The storage contract does not
-verify remote signatures, run a background consumer, authorize an action, or
-prove global exactly-once delivery. A trustworthy end-to-end claim still
+verify remote signatures, authorize an action, or prove global exactly-once
+delivery. A local inbox consumer runtime exists (IK-006) but is env-gated
+(`MINDVAULT_INBOX_CONSUMER_ENABLED`, default off), uses in-process fixtures only,
+and is not a remote transport listener. A trustworthy end-to-end claim still
 requires authenticated transport and a policy-authorized action envelope.

@@ -344,13 +344,13 @@ interoperability kernel."
 
 #### IK-006 — Consumer transport listener and domain handler
 - **priority:** P0 — the inbox has no runtime
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:223-225` — "It does not run a transport listener, invoke a domain projection, infer an issuer sequence, or requeue a dead letter"; `CONSUMER_INBOX_MODEL.md:58-59` — "does not verify remote signatures, run a background consumer"
 - **governing_authority:** Law 4 (`:52`), Law 14 (`:75`)
 - **blocked_by:** IK-002 (declared — "a policy-authorized action envelope", `CONSUMER_INBOX_MODEL.md:61`)
-- **files:** new `crates/mv-engine/src/engine/inbox_consumer.rs`, `crates/mv-server/src/lib.rs`
+- **files:** `crates/mv-engine/src/engine/inbox_consumer.rs`, `crates/mv-server/src/inbox_consumer.rs`, `crates/mv-server/src/lib.rs`
 - **acceptance:** `cargo test -p mv-engine -- inbox_consumer` — admission, exclusive claim, domain application, receipt, and checkpoint advance in order; retry does not advance the checkpoint
-- **evidence:** —
+- **evidence:** `InboxDomainHandler` trait + `LocalProjectionHandler`/`NoopDomainHandler`; `admit_inbound_event` + `consume_inbox_once` claim/apply/complete via storage APIs only. Env-gated server spawn (`MINDVAULT_INBOX_CONSUMER_ENABLED`, default off). Observed: 3 `inbox_consumer_*` tests passed — happy path checkpoint advance, retry leaves checkpoint unchanged with `next_attempt_at`, exclusive claim while leased returns empty.
 
 #### IK-007 — Governed dead-letter redrive command
 - **priority:** P1 — explicitly requires its own governed command
