@@ -330,17 +330,17 @@ interoperability kernel."
 - **blocked_by:** IK-001, IK-002 (declared — "ahead of any live provider publisher")
 - **files:** `crates/mv-engine/src/engine/outbox_dispatch.rs`, `crates/mv-server/src/outbox_dispatch.rs`, `crates/mv-server/src/lib.rs`
 - **acceptance:** `cargo test -p mv-engine -- outbox_dispatcher` — the worker claims under a lease, honours `next_attempt_at`, advances attempt counters exactly once on reclaim, and writes exactly one immutable receipt per completion
-- **evidence:** `OutboxPublisher` trait + `LocalAckPublisher`; `dispatch_outbox_once` claims/publishes/completes via storage APIs only. Env-gated server spawn (`MINDVAULT_OUTBOX_DISPATCH_ENABLED`, default off). Observed: claim+one receipt, `next_attempt_at` gate, reclaim attempt+1, idle second tick. Live HTTP publisher remains IK-005.
+- **evidence:** `OutboxPublisher` trait + `LocalAckPublisher`; `dispatch_outbox_once` claims/publishes/completes via storage APIs only. Env-gated server spawn (`MINDVAULT_OUTBOX_DISPATCH_ENABLED`, default off). Observed: claim+one receipt, `next_attempt_at` gate, reclaim attempt+1, idle second tick. `HttpOutboxPublisher` shipped as env-gated IK-005 (default off).
 
 #### IK-005 — Authenticated live transport publisher (first destination)
 - **priority:** P0 — named gated work
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:17-19` — "authenticated live transport publishers ... remain later gated work"
 - **governing_authority:** Law 4 (`:52`), Law 5 (`:54`)
 - **blocked_by:** IK-004 (declared)
-- **files:** `crates/mv-engine/src/engine/outbox_dispatch.rs`, `crates/mv-server/src/rest.rs`
+- **files:** `crates/mv-engine/src/engine/outbox_http_publisher.rs`, `crates/mv-server/src/outbox_dispatch.rs`
 - **acceptance:** `cargo test -p mv-engine -- publisher_http` — a destination acknowledgement produces a `published` receipt; a transient failure produces `retry_scheduled` with a future `next_attempt_at`; a terminal failure produces `dead_lettered`
-- **evidence:** —
+- **evidence:** `HttpOutboxPublisher` posts `claim.event` JSON via reqwest; 2xx → `Published` with `response_digest`; 408/429/502/503/504 → `RetryScheduled`; other 4xx/5xx → `DeadLettered`. Server env gate requires `MINDVAULT_OUTBOX_HTTP_PUBLISHER_ENABLED=1` plus `MINDVAULT_COMMAND_ADMISSION_MODE` in `observe`/`enforce`; default production path remains `LocalAckPublisher`. Observed: 5 `publisher_http_*` tests passed.
 
 #### IK-006 — Consumer transport listener and domain handler
 - **priority:** P0 — the inbox has no runtime

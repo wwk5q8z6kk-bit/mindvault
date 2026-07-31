@@ -304,7 +304,8 @@ ADR 010 remain deferred to the Trust Ledger slice.
 
 The outbox dispatcher runtime (`IK-004`) claims under a lease, completes through
 the existing receipt binding, and ships a local-ack publisher so pending events
-are no longer inert. Authenticated live transport publishers remain `IK-005`.
+are no longer inert. `HttpOutboxPublisher` (IK-005) is available but env-gated
+and not the default production path.
 End-to-end completion may be claimed only when authenticated delivery can be
 joined to the independently queryable consumer application receipt and
 checkpoint.
