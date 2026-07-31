@@ -692,6 +692,25 @@ pub trait InteroperabilityStore: Send + Sync {
         event: &EventEnvelope,
     ) -> MvResult<IdempotentContextNodeCommit>;
 
+    async fn commit_identity_with_event(
+        &self,
+        record: &IdentityRecord,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentIdentityCommit>;
+
+    async fn get_identity(&self, principal_id: Uuid) -> MvResult<Option<IdentityRecord>>;
+
+    async fn get_identity_by_subject_binding(
+        &self,
+        governing_node_uri: &StableUri,
+        subject_binding: &str,
+    ) -> MvResult<Option<IdentityRecord>>;
+
+    async fn list_identities(
+        &self,
+        governing_node_uri: Option<&StableUri>,
+    ) -> MvResult<Vec<IdentityRecord>>;
+
     async fn get_context_node(&self, node_id: Uuid) -> MvResult<Option<ContextNodeRecord>>;
 
     async fn list_context_nodes(
