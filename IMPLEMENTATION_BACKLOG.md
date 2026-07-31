@@ -354,13 +354,13 @@ interoperability kernel."
 
 #### IK-007 — Governed dead-letter redrive command
 - **priority:** P1 — explicitly requires its own governed command
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:227-228` — "Dead-letter redrive requires a separate governed command so a prior terminal receipt and checkpoint are never rewritten"
 - **governing_authority:** Law 4 (`:52`)
 - **blocked_by:** IK-004, IK-006 (declared)
 - **files:** `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/rest.rs`
 - **acceptance:** `cargo test -p mv-storage -- dead_letter_redrive` — redrive creates a new event with causation to the dead letter; the original receipt and checkpoint are byte-identical afterwards
-- **evidence:** —
+- **evidence:** `DeadLetterRedriveCommand` + `redrive_outbox_dead_letter` / `redrive_consumer_inbox_dead_letter` on `InteroperabilityStore`; admin REST `POST /api/v1/outbox/events/:id/redrive` and `POST /api/v1/consumer-inbox/events/:id/redrive`. Observed: 2 `dead_letter_redrive` storage tests passed — new event carries `causation_id` to the dead letter; terminal action receipt and consumer checkpoint JSON unchanged after redrive and idempotent replay.
 
 #### IK-008 — Schema lifecycle commands and replacement migration guard
 - **priority:** P1 — transitions deliberately blocked pending this contract
