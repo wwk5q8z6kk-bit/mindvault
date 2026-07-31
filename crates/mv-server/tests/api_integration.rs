@@ -18,10 +18,12 @@ use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 use tower::ServiceExt; // for `.oneshot()`
 
+use mv_core::{IdentityRecord, StableUri};
 use mv_engine::config::EngineConfig;
 use mv_engine::engine::MindVaultEngine;
 use mv_server::rest::create_router;
 use mv_server::state::AppState;
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2834,4 +2836,59 @@ async fn authority_grant_lifecycle_enables_enforced_node_create() {
             .any(|g| g["grant_id"] == grant_id && g["status"] == "revoked"),
         "grants: {grants}"
     );
+}
+
+/// IK-003 — local context node bootstrap registers identities; registry resolves
+/// local-system; unknown subjects fail without legacy fallback.
+#[tokio::test]
+async fn identity_registry_resolves_local_system_and_rejects_unknown_subject() {
+    let tmp = TempDir::new().expect("tempdir");
+    let config = test_config(&tmp.path().to_string_lossy());
+    let (router, _tmp) = setup_with_config(config, tmp).await;
+
+    let registered = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/context-nodes/local",
+            Some(json!({ "display_name": "Identity Vault" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(registered.status(), StatusCode::CREATED);
+
+    let listed = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/identities", None))
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let identities = body_json(listed).await;
+    assert!(
+        identities
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| record["subject_binding"] == "local-system" && record["actor_kind"] == "human"),
+        "identities: {identities}"
+    );
+
+    let local_node_id = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/context-nodes/local", None))
+        .await
+        .unwrap();
+    let node_body = body_json(local_node_id).await;
+    let node_id = Uuid::parse_str(node_body["node_id"].as_str().unwrap()).unwrap();
+    let expected = StableUri::principal(
+        node_id,
+        IdentityRecord::principal_id_for_subject(node_id, "local-system"),
+    );
+    let local_system = identities
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["subject_binding"] == "local-system")
+        .expect("local-system identity");
+    assert_eq!(local_system["principal_uri"], expected.as_str());
 }
