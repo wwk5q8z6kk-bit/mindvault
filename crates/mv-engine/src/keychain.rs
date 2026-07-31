@@ -20,7 +20,8 @@ use mv_core::model::keychain::*;
 use mv_core::traits::KeychainStore;
 use mv_storage::crypto::EncryptionConfig;
 use mv_storage::sealed_runtime::{
-    clear_runtime_root_key_for_scope, runtime_is_degraded_security, runtime_root_key_for_scope,
+    clear_runtime_root_key_for_scope, runtime_is_degraded_security_for_scope,
+    runtime_root_key_for_scope,
     runtime_scope_from_parent, set_runtime_root_key_for_scope,
 };
 use mv_storage::vault_crypto::{
@@ -257,7 +258,12 @@ impl KeychainEngine {
     }
 
     pub fn degraded_security_mode(&self) -> bool {
-        runtime_is_degraded_security()
+        // Scoped read. The write side has always been scoped
+        // (`set_runtime_root_key_for_scope` below); only the read was global,
+        // so opening a second vault in degraded mode silently changed this
+        // vault's reported posture. This value reaches users via
+        // `mv-server/src/rest/keychain.rs` and `mv-cli/src/commands/keychain.rs`.
+        runtime_is_degraded_security_for_scope(&self.runtime_scope)
     }
 
     async fn refresh_runtime_storage_key(&self, degraded_security: bool) -> MvResult<()> {
@@ -270,8 +276,12 @@ impl KeychainEngine {
     }
 
     pub async fn sync_runtime_storage_key(&self) -> MvResult<()> {
-        self.refresh_runtime_storage_key(runtime_is_degraded_security())
-            .await
+        // Preserve THIS scope's posture across the refresh rather than
+        // inheriting whatever another vault last set.
+        self.refresh_runtime_storage_key(runtime_is_degraded_security_for_scope(
+            &self.runtime_scope,
+        ))
+        .await
     }
 
     pub async fn derive_namespace_kek(&self, namespace: &str) -> MvResult<[u8; 32]> {

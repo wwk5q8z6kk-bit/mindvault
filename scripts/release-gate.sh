@@ -58,8 +58,18 @@ clippy_rc=$?
 [[ $clippy_rc -eq 0 ]] && echo "clippy: ok" || echo "clippy: exit $clippy_rc"
 
 echo "== 3/3  test suite (serial — see header) =="
+# --baseline-skipped 1 is JUSTIFIED, not a fudge:
+#   crates/mv-engine/src/circuit_breaker.rs:46 carries a ```ignore doc fence —
+#   an intentionally non-runnable example. cargo counts it as "ignored", and the
+#   gate sums ignored+skipped. Exactly one such example exists today.
+#
+#   Raising this number is how a suite quietly stops testing things. If the gate
+#   reports "skipped regressed", find the newly-skipped test — do not bump the
+#   baseline to make the red go away. Bun's rule across a 6,502-commit rewrite
+#   was 0 tests skipped or deleted, and this is how that rule is enforced here.
 "$GATE" verify --command "cargo test --workspace --quiet -- --test-threads=1" \
-    --cwd "$PWD" --name "mindvault-suite" --out "$OUT" --timeout 2400
+    --cwd "$PWD" --name "mindvault-suite" --out "$OUT" \
+    --baseline-skipped 1 --timeout 2400
 suite_rc=$?
 
 echo

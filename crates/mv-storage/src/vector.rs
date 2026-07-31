@@ -927,8 +927,37 @@ impl KnowledgeVaultIndexNoteEmbeddingFastembedLocalEmbedder {
             })?;
 
             let options = TextInitOptions::new(resolved_model).with_show_download_progress(false);
-            let mut embedding_model = TextEmbedding::try_new(options)
-                .map_err(|err| MvError::Embedding(format!("fastembed init failed: {err}")))?;
+
+            // `ort` (the ONNX Runtime binding behind fastembed) PANICS rather than
+            // returning an error when it cannot dlopen `libonnxruntime`:
+            //
+            //   ort-2.0.0-rc.11/src/lib.rs:191
+            //   Failed to load ONNX Runtime dylib: ... dlopen failed
+            //
+            // That took down the whole server on any machine without the native
+            // library -- including health and every non-semantic endpoint --
+            // even though this function is written to return a recoverable
+            // `MvError::Embedding`. Catching the unwind is what lets the local
+            // error path actually run; without it the `Result` below is dead code
+            // on exactly the systems that need it most.
+            let mut embedding_model = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || TextEmbedding::try_new(options),
+            ))
+            .map_err(|panic| {
+                let detail = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown panic");
+                MvError::Embedding(format!(
+                    "local embedding backend unavailable: {detail}. \
+                     The `local-embeddings` feature (default in mv-engine) requires the \
+                     ONNX Runtime native library. Install it (macOS: `brew install onnxruntime`), \
+                     set ORT_DYLIB_PATH to an existing libonnxruntime, or build with \
+                     `--no-default-features` to use a remote embedding provider instead."
+                ))
+            })?
+            .map_err(|err| MvError::Embedding(format!("fastembed init failed: {err}")))?;
 
             // Probe output dimensions once during init so vector store sizing can be aligned.
             let probe = embedding_model
