@@ -264,6 +264,14 @@ pub(crate) struct ReadinessView {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct ExecuteRunResponse {
+    run: RunView,
+    artifact_id: Uuid,
+    artifact_digest: String,
+    gates_passed: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct CompleteRunResponse {
     completed: bool,
     run: Option<RunView>,
@@ -330,10 +338,11 @@ pub(crate) async fn create_work_order(
 
 /// POST /api/v1/work-orders/:id/nodes/:node_id/runs — start the next attempt.
 ///
-/// The only path that creates an Agent Run. It executes nothing: ADR 012 governs
-/// internal runs, and no external dispatcher, provider, or third-party agent is
-/// invoked. It spends a budgeted attempt, records the run and its event
-/// atomically, and takes write leases only if the owner's autonomy policy allows.
+/// The only path that creates an Agent Run. ADR 012 governs internal runs; no
+/// external dispatcher is invoked here. This spends a budgeted attempt, records
+/// the run and its event atomically, and takes write leases only if autonomy
+/// allows. Call `POST .../runs/:run_id/execute` to drive a leased run to
+/// completion via the internal engine executor.
 ///
 /// An unconfigured vault parks the run for approval rather than proceeding.
 pub(crate) async fn start_run(
@@ -506,6 +515,34 @@ pub(crate) async fn approve_run(
         .map_err(crate::rest::map_mv_error)?;
     state.notify_agent(AgentNotification::run_transitioned(&run));
     Ok(Json(run_view(&run)))
+}
+
+/// POST /api/v1/work-orders/:id/runs/:run_id/execute — internal engine executor.
+///
+/// Drives a leased (or ready) Engine run through artifact production and
+/// required gate evidence to Completed. No external dispatcher is contacted.
+pub(crate) async fn execute_run(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<ExecuteRunResponse>, (StatusCode, String)> {
+    authorize_write(&auth)?;
+    let executed = state
+        .engine
+        .execute_run(run_id)
+        .await
+        .map_err(crate::rest::map_mv_error)?;
+    state.notify_agent(AgentNotification::run_transitioned(&executed.run));
+    Ok(Json(ExecuteRunResponse {
+        run: run_view(&executed.run),
+        artifact_id: executed.artifact.artifact_id,
+        artifact_digest: executed.artifact.content_digest,
+        gates_passed: executed
+            .gate_results
+            .iter()
+            .map(|gate| gate.gate.as_str().to_string())
+            .collect(),
+    }))
 }
 
 /// POST /api/v1/work-orders/:id/runs/:run_id/complete — attempt completion.

@@ -503,11 +503,11 @@ impl MindVaultEngine {
     /// the layer is auditable but not operable: every downstream endpoint —
     /// readiness, gates, approval, completion — has no subject to act on.
     ///
-    /// **It executes nothing.** ADR 012 governs internal runs only; no external
-    /// dispatcher, provider call, or third-party agent is invoked here. Starting
-    /// a run means spending a budgeted attempt, recording the governed record
-    /// and its event atomically, and — only if the owner's autonomy policy
-    /// allows — taking the write leases a future executor would need.
+    /// **Admission and leasing only.** ADR 012 governs internal runs; no external
+    /// dispatcher is invoked here. Starting a run spends a budgeted attempt,
+    /// records the governed record and event atomically, and — only if autonomy
+    /// allows — takes write leases. Call [`MindVaultEngine::execute_run`] to
+    /// drive a leased run through artifact production and completion.
     ///
     /// The autonomy gate is consulted at the start, not after the fact. Because
     /// `AutonomyGate::evaluate` defers when no rule matches, an unconfigured
@@ -1066,7 +1066,7 @@ impl MindVaultEngine {
             .await
     }
 
-    async fn transition_run(
+    pub(crate) async fn transition_run(
         &self,
         run_id: Uuid,
         status: AgentRunStatus,
@@ -2343,5 +2343,82 @@ mod tests {
             .expect("all required gates passed");
         assert_eq!(completed.status, AgentRunStatus::Completed);
         assert!(completed.ended_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn agent_run_executor_drives_run_to_terminal_with_artifact() {
+        let (engine, _dir) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let actor = StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, b"agent"));
+        issue_tool_grant(
+            &engine,
+            local_node_id,
+            &actor,
+            &["mindvault://schemas/executable"],
+            "executable-grant",
+        )
+        .await;
+
+        // Admit engine runs without parking on owner approval.
+        let mut rule = AutonomyRule::global(0.0);
+        rule.allowed_intent_types = vec!["work_order.run.engine".into()];
+        rule.max_actions_per_hour = 100;
+        engine
+            .store
+            .nodes
+            .add_autonomy_rule(&rule)
+            .await
+            .unwrap();
+
+        let admitted = engine
+            .admit_work_order(
+                &actor,
+                &actor,
+                &proposal(
+                    &["mindvault://schemas/executable"],
+                    RiskTier::Low,
+                    "executable",
+                ),
+            )
+            .await
+            .unwrap()
+            .expect("admissible");
+        let contracts = engine
+            .store
+            .nodes
+            .list_work_order_nodes(admitted.work_order_id)
+            .await
+            .unwrap();
+        assert_eq!(contracts[0].executor_kind, ExecutorKind::Engine);
+
+        let started = engine
+            .start_run(admitted.work_order_id, contracts[0].node_id, &actor, 0.99)
+            .await
+            .unwrap();
+        assert!(!started.awaiting_approval);
+        assert_eq!(started.run.status, AgentRunStatus::Leased);
+
+        let executed = engine.execute_run(started.run.run_id).await.unwrap();
+        assert_eq!(executed.run.status, AgentRunStatus::Completed);
+        assert!(executed.run.ended_at.is_some());
+        assert_eq!(executed.artifact.artifact_kind, "engine.result");
+        assert!(!executed.artifact.content_digest.is_empty());
+        assert!(!executed.artifact.provenance.is_empty());
+        assert_eq!(executed.gate_results.len(), RiskTier::Low.required_gates().len());
+        assert!(executed
+            .gate_results
+            .iter()
+            .all(|gate| gate.outcome == GateOutcome::Pass));
+
+        let payload = engine
+            .store
+            .nodes
+            .read_run_artifact_payload(executed.artifact.artifact_id)
+            .await
+            .unwrap()
+            .expect("artifact bytes");
+        let body: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(body["executor"], "engine");
+        assert_eq!(body["run_id"], executed.run.run_id.to_string());
     }
 }

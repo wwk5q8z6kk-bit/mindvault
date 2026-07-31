@@ -1,4 +1,5 @@
 mod access_ops;
+mod agent_run_executor;
 mod consumer_ops;
 mod graph_ops;
 mod intent_ops;
@@ -25,6 +26,7 @@ pub use outbox_dispatch::{
     spawn_outbox_dispatcher, LocalAckPublisher, OutboxDispatchTick, OutboxDispatcherConfig,
     OutboxPublisher,
 };
+pub use agent_run_executor::ExecutedRun;
 pub use work_order_ops::{
     AdmissionRefusal, ProposedEdge, ProposedNode, ProposedWorkOrder, RunReadiness,
 };

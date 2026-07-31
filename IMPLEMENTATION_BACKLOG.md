@@ -110,7 +110,7 @@ work, or its citations are unanchored from the first day.
 | WS — knowledge workspace | 22 | 6 | 0 |
 | SPACE — collaborative spaces | 8 | 4 | 1 |
 | PARK — explicitly deferred | 6 | 0 | 0 |
-| AGENT — governed agent execution graph | 8 | 1 | 0 |
+| AGENT — governed agent execution | 8 | 1 | 1 |
 | HYG — engineering hygiene | 6 | 1 | 3 |
 | **Total** | **138** | **39** | **9** |
 
@@ -1456,13 +1456,13 @@ Gates 1-6 have landed; gate 7 has not.
 
 #### AGENT-001 — No executor exists; `start_run` executes nothing
 - **priority:** P0 — the graph is admissible, leasable, gateable, approvable and completable, but nothing ever runs
-- **status:** not_started
+- **status:** verified
 - **mandate:** `crates/mv-engine/src/engine/work_order_ops.rs:506` — "It executes nothing"; mirrored at `crates/mv-server/src/rest/work_orders.rs:313` and `crates/mv-server/src/rest.rs:200`
 - **governing_authority:** ADR 012 decision (`:72-113`); `docs/architecture/WORK_ORDER_MODEL.md:250`
 - **blocked_by:** IK-001 (public grant admission is named a hard prerequisite for outbound execution — `docs/adr/012-governed-agent-execution-graph.md:124`, `WORK_ORDER_MODEL.md:252`)
-- **files:** `crates/mv-engine/src/engine/work_order_ops.rs`, new executor module
+- **files:** `crates/mv-engine/src/engine/work_order_ops.rs`, `crates/mv-engine/src/engine/agent_run_executor.rs`
 - **acceptance:** a run drives a node contract to a terminal state and produces a digested artifact with provenance, without an external dispatcher
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine -- agent_run_executor` → 1/1 ok; commit pending; 2026-07-31. `execute_run` drives leased Engine runs through Running→artifact→Gated→required Low gates→Completed with digested provenance-linked artifact.
 
 #### AGENT-002 — Retire the superseded `plans` / `plan_steps` schema
 - **priority:** P1 — ADR 012's only unlanded implementation gate

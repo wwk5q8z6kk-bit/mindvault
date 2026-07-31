@@ -267,6 +267,10 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(work_orders::approve_run),
         )
         .route(
+            "/api/v1/work-orders/:id/runs/:run_id/execute",
+            post(work_orders::execute_run),
+        )
+        .route(
             "/api/v1/work-orders/:id/runs/:run_id/complete",
             post(work_orders::complete_run),
         )
