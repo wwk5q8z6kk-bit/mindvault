@@ -98,6 +98,14 @@ const LOCAL_NODE_CAPABILITIES: [ContextCapability; 3] = [
     ContextCapability::Health,
 ];
 
+/// Outcome of [`MindVaultEngine::redrive_outbox_dead_letter`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeadLetterRedriveOutcome {
+    pub source_event_id: Uuid,
+    pub redrive_event: EventEnvelope,
+    pub replayed: bool,
+}
+
 impl MindVaultEngine {
     /// Register this vault's own Context Node descriptor, idempotently.
     ///
@@ -556,6 +564,65 @@ impl MindVaultEngine {
             .await?;
         Ok(AuthorityGrantTransition {
             grant: commit.grant,
+            replayed: commit.replayed,
+        })
+    }
+
+    /// Redrive one terminal outbox dead letter as a new pending publication event.
+    pub async fn redrive_outbox_dead_letter(
+        &self,
+        source_event_id: Uuid,
+        principal: StableUri,
+        actor: StableUri,
+        idempotency_key: IdempotencyKey,
+        reason: impl Into<String>,
+    ) -> MvResult<DeadLetterRedriveOutcome> {
+        self.ensure_unsealed_for_node_io().await?;
+        let command = DeadLetterRedriveCommand {
+            principal,
+            actor,
+            idempotency_key,
+            reason: reason.into(),
+            redriven_at: Utc::now(),
+        };
+        let commit = self
+            .store
+            .nodes
+            .redrive_outbox_dead_letter(source_event_id, &command)
+            .await?;
+        Ok(DeadLetterRedriveOutcome {
+            source_event_id: commit.source_event_id,
+            redrive_event: commit.redrive_event,
+            replayed: commit.replayed,
+        })
+    }
+
+    /// Redrive one terminal consumer inbox dead letter as a new pending admission.
+    pub async fn redrive_consumer_inbox_dead_letter(
+        &self,
+        consumer: StableUri,
+        source_event_id: Uuid,
+        principal: StableUri,
+        actor: StableUri,
+        idempotency_key: IdempotencyKey,
+        reason: impl Into<String>,
+    ) -> MvResult<DeadLetterRedriveOutcome> {
+        self.ensure_unsealed_for_node_io().await?;
+        let command = DeadLetterRedriveCommand {
+            principal,
+            actor,
+            idempotency_key,
+            reason: reason.into(),
+            redriven_at: Utc::now(),
+        };
+        let commit = self
+            .store
+            .nodes
+            .redrive_consumer_inbox_dead_letter(&consumer, source_event_id, &command)
+            .await?;
+        Ok(DeadLetterRedriveOutcome {
+            source_event_id: commit.source_event_id,
+            redrive_event: commit.redrive_event,
             replayed: commit.replayed,
         })
     }

@@ -21,7 +21,8 @@ mod workspace_projection_ops;
 
 pub use interoperability_ops::{
     AuthorityGrantIssuance, AuthorityGrantTransition, BootstrapLocalIdentities,
-    IdentityRegistration, IssueAuthorityGrantRequest, LocalContextNodeRegistration,
+    DeadLetterRedriveOutcome, IdentityRegistration, IssueAuthorityGrantRequest,
+    LocalContextNodeRegistration,
 };
 pub use inbox_consumer::{
     spawn_inbox_consumer, InboxConsumerConfig, InboxConsumerTick, InboxDomainHandler,

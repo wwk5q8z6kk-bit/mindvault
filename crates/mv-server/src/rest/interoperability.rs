@@ -896,6 +896,130 @@ pub(crate) async fn list_identities(
     ))
 }
 
+fn map_redrive_error(err: MvError) -> (StatusCode, String) {
+    match &err {
+        MvError::VaultSealed => (StatusCode::LOCKED, err.to_string()),
+        MvError::InvalidInput(_) => (StatusCode::BAD_REQUEST, err.to_string()),
+        MvError::IdempotencyConflict(message) => (StatusCode::CONFLICT, message.clone()),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DeadLetterRedriveBody {
+    pub idempotency_key: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct DeadLetterRedriveView {
+    pub source_event_id: Uuid,
+    pub redrive_event_id: Uuid,
+    pub causation_id: Uuid,
+    pub replayed: bool,
+}
+
+impl DeadLetterRedriveView {
+    fn from_outcome(outcome: &mv_engine::engine::DeadLetterRedriveOutcome) -> Self {
+        Self {
+            source_event_id: outcome.source_event_id,
+            redrive_event_id: outcome.redrive_event.id,
+            causation_id: outcome.source_event_id,
+            replayed: outcome.replayed,
+        }
+    }
+}
+
+/// `POST /api/v1/outbox/events/:id/redrive` — governed outbox dead-letter redrive.
+pub(crate) async fn redrive_outbox_dead_letter(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(source_event_id): Path<Uuid>,
+    Json(body): Json<DeadLetterRedriveBody>,
+) -> Result<(StatusCode, Json<DeadLetterRedriveView>), (StatusCode, String)> {
+    require_admin(&auth)?;
+    if body.reason.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "reason must not be empty".into()));
+    }
+    let idempotency_key = IdempotencyKey::parse(&body.idempotency_key)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let local_node_id = state
+        .engine
+        .store
+        .nodes
+        .local_context_node_id()
+        .await
+        .map_err(map_redrive_error)?;
+    let identity = CommandIdentity::derive_async(&state, &auth, local_node_id).await?;
+    let outcome = state
+        .engine
+        .redrive_outbox_dead_letter(
+            source_event_id,
+            identity.principal,
+            identity.actor,
+            idempotency_key,
+            body.reason,
+        )
+        .await
+        .map_err(map_redrive_error)?;
+    let status = if outcome.replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(DeadLetterRedriveView::from_outcome(&outcome))))
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ConsumerDeadLetterRedriveBody {
+    pub consumer: String,
+    pub idempotency_key: String,
+    pub reason: String,
+}
+
+/// `POST /api/v1/consumer-inbox/events/:id/redrive` — governed inbox dead-letter redrive.
+pub(crate) async fn redrive_consumer_inbox_dead_letter(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(source_event_id): Path<Uuid>,
+    Json(body): Json<ConsumerDeadLetterRedriveBody>,
+) -> Result<(StatusCode, Json<DeadLetterRedriveView>), (StatusCode, String)> {
+    require_admin(&auth)?;
+    if body.reason.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "reason must not be empty".into()));
+    }
+    let consumer = StableUri::parse(&body.consumer)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let idempotency_key = IdempotencyKey::parse(&body.idempotency_key)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let local_node_id = state
+        .engine
+        .store
+        .nodes
+        .local_context_node_id()
+        .await
+        .map_err(map_redrive_error)?;
+    let identity = CommandIdentity::derive_async(&state, &auth, local_node_id).await?;
+    let outcome = state
+        .engine
+        .redrive_consumer_inbox_dead_letter(
+            consumer,
+            source_event_id,
+            identity.principal,
+            identity.actor,
+            idempotency_key,
+            body.reason,
+        )
+        .await
+        .map_err(map_redrive_error)?;
+    let status = if outcome.replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(DeadLetterRedriveView::from_outcome(&outcome))))
+}
+
 /// `GET /api/v1/identities/{principal_id}` — read one identity by principal id.
 pub(crate) async fn get_identity(
     Extension(auth): Extension<AuthContext>,

@@ -257,6 +257,14 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(interoperability::get_identity),
         )
         .route(
+            "/api/v1/outbox/events/:id/redrive",
+            post(interoperability::redrive_outbox_dead_letter),
+        )
+        .route(
+            "/api/v1/consumer-inbox/events/:id/redrive",
+            post(interoperability::redrive_consumer_inbox_dead_letter),
+        )
+        .route(
             "/api/v1/work-orders/:id/runs/:run_id/readiness",
             get(work_orders::get_run_readiness),
         )
