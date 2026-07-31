@@ -108,7 +108,7 @@ work, or its citations are unanchored from the first day.
 | PORT — portability & conformance | 7 | 0 | 0 |
 | SLICE — end-to-end vertical slice | 3 | 0 | 0 |
 | WS — knowledge workspace | 22 | 6 | 0 |
-| SPACE — collaborative spaces | 8 | 4 | 0 |
+| SPACE — collaborative spaces | 8 | 4 | 1 |
 | PARK — explicitly deferred | 6 | 0 | 0 |
 | AGENT — governed agent execution graph | 8 | 1 | 0 |
 | HYG — engineering hygiene | 6 | 1 | 3 |
@@ -1326,13 +1326,13 @@ operations remain deliberately out of scope for this foundation."*
 
 #### SPACE-004 — Communication-to-knowledge promotion boundary
 - **priority:** P0 — baseline P0; was a live violation
-- **status:** in_progress
+- **status:** verified
 - **mandate:** `collaborative-spaces-baseline.md:110-112` — "The relay currently inserts every allowed message into the knowledge graph. That violates the promotion boundary and can leak low-quality or private chat into retrieval, agent context, and downstream projections"; ADR 010:154-169
 - **governing_authority:** ADR 010 §Communication and knowledge promotion; ADR 010 acceptance gate 4 (`:265-266`)
 - **blocked_by:** none
 - **files:** `crates/mv-engine/src/relay.rs`, `crates/mv-engine/src/engine/relay_ops.rs`, `crates/mv-engine/src/ingest.rs`, `crates/mv-core/src/traits.rs`, `crates/mv-core/src/model/exchange.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/email.rs`
 - **acceptance:** `cargo test -p mv-engine -- promotion_boundary` — a relay message does not enter the knowledge graph without explicit or policy-approved promotion; promotion records source message ID, extractor/actor, evidence, confidence, policy, approval; retraction re-indexes without rewriting source communication
-- **evidence:** Acceptance passes locally: `cargo test -p mv-engine -- promotion_boundary` → 3/3 ok (2026-07-31). Relay send/receive store communication only; `promote_relay_message` / `retract_relay_promotion` record provenance and retract without rewriting source messages. Promote to `verified` when this change is committed (needs command + commit + date).
+- **evidence:** `cargo test -p mv-engine -- promotion_boundary` → 3/3 ok; commit `e3010b1`; 2026-07-31. Relay send/receive store communication only; `promote_relay_message` / `retract_relay_promotion` record provenance and retract without rewriting source messages.
 
 #### SPACE-005 — Execution evidence: versioned artifacts, budgets, grant snapshots
 - **priority:** P1 — baseline P1
