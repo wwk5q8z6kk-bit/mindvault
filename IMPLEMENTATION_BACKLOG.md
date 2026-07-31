@@ -1061,7 +1061,7 @@ open, and migration 031 shipped schema for five tables that nothing reads.
 - **blocked_by:** none
 - **files:** `crates/mv-core/src/model/workspace.rs`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-engine/src/engine/workspace_ops.rs`, `crates/mv-engine/src/engine/workspace_projection_ops.rs`
 - **acceptance:** `cargo test -p mv-storage -- workspace_event_journal` — every mount, reconcile, projection, and (later) mutation writes a journal row with correlation ID and before/after hashes; the row survives restart
-- **evidence:** `cargo test -p mv-storage -- workspace_event_journal` → 1/1 ok; mount/reconcile/projection append `WorkspaceEvent` rows via `journal_workspace_phase`; commit `HASH_WS`; 2026-07-31.
+- **evidence:** `cargo test -p mv-storage -- workspace_event_journal` → 1/1 ok; mount/reconcile/projection append `WorkspaceEvent` rows via `journal_workspace_phase`; commit `72e48b4`; 2026-07-31.
 
 #### WS-002 — `workspace_document_versions` has no reader or writer
 - **priority:** P0 — canonical rollback depends on it
@@ -1081,7 +1081,7 @@ open, and migration 031 shipped schema for five tables that nothing reads.
 - **blocked_by:** none
 - **files:** `crates/mv-core/src/model/workspace.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-engine/src/engine/workspace_ops.rs`, `crates/mv-server/src/rest/workspaces.rs`, `crates/mv-server/src/rest.rs`
 - **acceptance:** `cargo test -p mv-server -- workspace_conflicts` — an expected-hash mismatch creates a conflict row and leaves canonical bytes unchanged; the route lists open conflicts with the four documented resolutions (`document-contract:169-171`)
-- **evidence:** `cargo test -p mv-server --test api_integration -- workspace_conflicts` → 1/1 ok; commit `HASH_WS`; 2026-07-31.
+- **evidence:** `cargo test -p mv-server --test api_integration -- workspace_conflicts` → 1/1 ok; commit `72e48b4`; 2026-07-31.
 
 #### WS-004 — `workspace_migrations` has no reader or writer
 - **priority:** P1 — Stage 3 depends on it
@@ -1204,7 +1204,7 @@ operations remain deliberately out of scope for this foundation."*
 - **blocked_by:** none
 - **files:** `crates/mv-core/tests/workspace_fixtures.rs`, `docs/architecture/fixtures/knowledge-workspace/`
 - **acceptance:** `cargo test --workspace -- workspace_fixtures` — every file under `docs/architecture/fixtures/knowledge-workspace/` is loaded by at least one test; a guard test fails if a fixture file is added without a consumer
-- **evidence:** `cargo test -p mv-core --test workspace_fixtures` → 5/5 ok; commit `HASH_WS`; 2026-07-31.
+- **evidence:** `cargo test -p mv-core --test workspace_fixtures` → 5/5 ok; commit `72e48b4`; 2026-07-31.
 
 #### WS-015 — Filesystem platform fixtures for macOS, Linux, Windows
 - **priority:** P1 — required validation
@@ -1472,7 +1472,7 @@ Gates 1-6 have landed; gate 7 has not.
 - **blocked_by:** none
 - **files:** `migrations/041_retire_plans.sql`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/rest/plans.rs`, `migrations/024_plans.sql`
 - **acceptance:** the tables are dropped or formally frozen with a migration note; endpoints already return 410 Gone
-- **evidence:** `cargo test -p mv-storage -- knowledge_workspace_migration_installs_complete_manifest_contract` → ok (schema_version=41; `plans`/`plan_steps` absent); commit `HASH_WS`; 2026-07-31.
+- **evidence:** `cargo test -p mv-storage -- knowledge_workspace_migration_installs_complete_manifest_contract` → ok (schema_version=41; `plans`/`plan_steps` absent); commit `72e48b4`; 2026-07-31.
 
 #### AGENT-003 — `item_10_conformance_coverage_is_declared` cannot fail and its counts are stale
 - **priority:** P1 — a declaration standing in for a check, which is exactly what ADR 012:179-180 forbids
@@ -1482,7 +1482,7 @@ Gates 1-6 have landed; gate 7 has not.
 - **blocked_by:** none
 - **files:** `crates/mv-server/tests/work_order_conformance.rs`
 - **acceptance:** the test asserts real counts or is deleted
-- **evidence:** `cargo test -p mv-server --test work_order_conformance -- item_10_conformance_coverage_is_declared` → ok; asserts core=12, storage named=11, engine=14, api=3, conformance≥13; commit `HASH_WS`; 2026-07-31.
+- **evidence:** `cargo test -p mv-server --test work_order_conformance -- item_10_conformance_coverage_is_declared` → ok; asserts core=12, storage named=11, engine=14, api=3, conformance≥13; commit `72e48b4`; 2026-07-31.
 
 #### AGENT-004 — Runtime isolation is PARTIAL; external executor kinds are gated on it
 - **priority:** P1
