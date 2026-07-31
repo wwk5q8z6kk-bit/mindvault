@@ -314,13 +314,13 @@ interoperability kernel."
 
 #### IK-003 — Governed identity registry replacing the local-system fallback
 - **priority:** P0 — an explicitly labelled transition identity underneath all attribution
-- **status:** not_started
-- **mandate:** `docs/architecture/interoperability-kernel-v1.md:158-159` — "The current local-system fallback remains a transition identity until the governed identity registry is implemented"
+- **status:** **verified** (2026-07-30)
+- **mandate:** `docs/architecture/interoperability-kernel-v1.md:158-159`
 - **governing_authority:** Law 5 (`:54`); ADR 010 §Actors (`docs/adr/010-personal-vault-and-collaborative-spaces.md:82-101`)
 - **blocked_by:** none
-- **files:** `crates/mv-core/src/model/interoperability.rs`, new migration `038_identity_registry.sql`, `crates/mv-server/src/auth.rs`
+- **files:** `crates/mv-core/src/model/interoperability.rs`, `migrations/040_identity_registry.sql`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-engine/src/engine/interoperability_ops.rs`, `crates/mv-server/src/rest/interoperability.rs`, `docs/adr/017-governed-identity-registry.md`
 - **acceptance:** `cargo test -p mv-storage -- identity_registry` — principal URIs resolve through versioned identity records with actor kind (`human`/`agent`/`service`/`integration`); the local-system fallback is removed or gated behind an explicit dev flag
-- **evidence:** —
+- **evidence:** `IdentityRecord` + `ActorKind`; migration `040_identity_registry.sql`; `commit_identity_with_event` with idempotent subject-binding replay; `bootstrap_local_identities()` seeds `local-system` and `local-context-owner` with stable v5 principal URIs; `resolve_command_identity` fail-closed unless `MINDVAULT_IDENTITY_LEGACY_FALLBACK=1`; admin `POST/GET /api/v1/identities`. Observed: `cargo test -p mv-core --lib actor_kind`, `cargo test -p mv-storage -- identity_registry -- --test-threads=1`, `cargo test -p mv-engine --lib identity -- --test-threads=1`, `cargo test -p mv-server --test api_integration identity -- --test-threads=1`.
 
 #### IK-004 — Outbox dispatcher worker
 - **priority:** P0 — the outbox has no runtime; events accumulate as pending forever
