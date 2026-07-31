@@ -1462,7 +1462,7 @@ Gates 1-6 have landed; gate 7 has not.
 - **blocked_by:** IK-001 (public grant admission is named a hard prerequisite for outbound execution — `docs/adr/012-governed-agent-execution-graph.md:124`, `WORK_ORDER_MODEL.md:252`)
 - **files:** `crates/mv-engine/src/engine/work_order_ops.rs`, `crates/mv-engine/src/engine/agent_run_executor.rs`
 - **acceptance:** a run drives a node contract to a terminal state and produces a digested artifact with provenance, without an external dispatcher
-- **evidence:** `cargo test -p mv-engine -- agent_run_executor` → 1/1 ok; commit pending; 2026-07-31. `execute_run` drives leased Engine runs through Running→artifact→Gated→required Low gates→Completed with digested provenance-linked artifact.
+- **evidence:** `cargo test -p mv-engine -- agent_run_executor` → 1/1 ok; commit `ebf61a8`; 2026-07-31. `execute_run` drives leased Engine runs through Running→artifact→Gated→required Low gates→Completed with digested provenance-linked artifact.
 
 #### AGENT-002 — Retire the superseded `plans` / `plan_steps` schema
 - **priority:** P1 — ADR 012's only unlanded implementation gate
