@@ -73,7 +73,7 @@ async fn setup_with_config(config: EngineConfig, tmp: TempDir) -> (axum::Router,
     (router, tmp)
 }
 
-async fn setup_with_workspace_root() -> (axum::Router, TempDir, std::path::PathBuf) {
+async fn setup_with_workspace_root() -> (axum::Router, Arc<AppState>, TempDir, std::path::PathBuf) {
     for key in [
         "MINDVAULT_AUTH_TOKEN",
         "MINDVAULT_AUTH_ROLE",
@@ -102,7 +102,7 @@ async fn setup_with_workspace_root() -> (axum::Router, TempDir, std::path::PathB
         AppState::new(Arc::new(engine))
             .with_workspace_allowed_roots(vec![tmp.path().to_path_buf()]),
     );
-    (create_router(state), tmp, workspace_root)
+    (create_router(state.clone()), state, tmp, workspace_root)
 }
 
 fn json_request(method: Method, uri: &str, body: Option<Value>) -> Request<Body> {
@@ -130,7 +130,7 @@ async fn body_json(resp: axum::response::Response) -> Value {
 
 #[tokio::test]
 async fn workspace_api_mounts_lists_trees_and_reads_without_exposing_root_locator() {
-    let (router, _tmp, workspace_root) = setup_with_workspace_root().await;
+    let (router, _state, _tmp, workspace_root) = setup_with_workspace_root().await;
     let mount = router
         .clone()
         .oneshot(json_request(
@@ -245,9 +245,97 @@ async fn workspace_api_mounts_lists_trees_and_reads_without_exposing_root_locato
     assert_eq!(cross_workspace_read.status(), StatusCode::NOT_FOUND);
 }
 
+
+#[tokio::test]
+async fn workspace_conflicts_stale_hash_leaves_bytes_and_lists_resolutions() {
+    let (router, state, _tmp, workspace_root) = setup_with_workspace_root().await;
+    let mount = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/workspaces",
+            Some(json!({
+                "root_path": workspace_root,
+                "namespace": "default",
+                "display_name": "Knowledge"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(mount.status(), StatusCode::CREATED);
+    let mounted = body_json(mount).await;
+    let workspace_id = mounted["workspace"]["id"].as_str().expect("workspace id");
+    let workspace_uuid = uuid::Uuid::parse_str(workspace_id).unwrap();
+
+    let tree = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/workspaces/{workspace_id}/tree"),
+            None,
+        ))
+        .await
+        .unwrap();
+    let tree = body_json(tree).await;
+    let document = tree["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["relative_path"] == "Projects/MindVault.md")
+        .expect("document entry");
+    let document_id = uuid::Uuid::parse_str(document["document_id"].as_str().unwrap()).unwrap();
+    let canonical_hash = document["content_hash"].as_str().expect("content hash").to_string();
+
+    let absolute = workspace_root.join("Projects/MindVault.md");
+    let before = std::fs::read(&absolute).unwrap();
+
+    let conflict = state
+        .engine
+        .record_stale_write_conflict(
+            workspace_uuid,
+            document_id,
+            "sha256:stale-expected",
+            "sha256:attempted-write",
+        )
+        .await
+        .expect("stale write must record a conflict");
+    assert_eq!(conflict.conflict_kind.as_str(), "stale_write");
+    assert_eq!(std::fs::read(&absolute).unwrap(), before, "canonical bytes must not change");
+
+    let listed = router
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/workspaces/{workspace_id}/conflicts"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed = body_json(listed).await;
+    assert_eq!(
+        listed["resolution_choices"],
+        json!([
+            "keep_current",
+            "restore_known_revision",
+            "save_competing_to_new_path",
+            "merge_via_reviewed_proposal"
+        ])
+    );
+    let conflicts = listed["conflicts"].as_array().unwrap();
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0]["conflict_kind"], "stale_write");
+    assert_eq!(conflicts[0]["state"], "open");
+    assert_eq!(conflicts[0]["canonical_content_hash"], canonical_hash);
+    assert_eq!(conflicts[0]["expected_content_hash"], "sha256:stale-expected");
+    assert_eq!(
+        conflicts[0]["available_resolutions"],
+        listed["resolution_choices"]
+    );
+}
+
 #[tokio::test]
 async fn workspace_projections_are_searchable_linked_rebuildable_and_generic_mutation_safe() {
-    let (router, _tmp, workspace_root) = setup_with_workspace_root().await;
+    let (router, _state, _tmp, workspace_root) = setup_with_workspace_root().await;
     std::fs::write(
         workspace_root.join("Projects/References.md"),
         "---\ntitle: Reference Map\ntags: [workspace, graph]\n---\n\nSee [[MindVault]].",

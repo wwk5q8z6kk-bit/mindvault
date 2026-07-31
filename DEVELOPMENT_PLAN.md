@@ -507,6 +507,7 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 | 038 | Work Orders and Agent Runs                      | Ready   |
 | 039 | Command admission decisions                     | Ready   |
 | 040 | Identity registry                               | Ready   |
+| 041 | Retire superseded plans / plan_steps (AGENT-002)| Ready   |
 
 ### Frontend Components (SvelteKit + Tauri)
 

@@ -659,6 +659,34 @@ pub trait KnowledgeWorkspaceManifestStore: Send + Sync {
         &self,
         reconciliation: &WorkspaceManifestReconciliation,
     ) -> MvResult<bool>;
+
+    /// Append one durable journal row. Assigns the next `event_seq` for the
+    /// workspace and returns the persisted record.
+    async fn append_workspace_event(&self, event: &WorkspaceEvent) -> MvResult<WorkspaceEvent>;
+
+    async fn get_workspace_event(&self, id: Uuid) -> MvResult<Option<WorkspaceEvent>>;
+
+    async fn list_workspace_events(
+        &self,
+        workspace_id: Uuid,
+        after_seq: Option<u64>,
+        limit: usize,
+    ) -> MvResult<Vec<WorkspaceEvent>>;
+
+    async fn list_workspace_events_by_correlation(
+        &self,
+        correlation_id: Uuid,
+    ) -> MvResult<Vec<WorkspaceEvent>>;
+
+    async fn insert_workspace_conflict(&self, conflict: &WorkspaceConflict) -> MvResult<()>;
+
+    async fn get_workspace_conflict(&self, id: Uuid) -> MvResult<Option<WorkspaceConflict>>;
+
+    async fn list_workspace_conflicts(
+        &self,
+        workspace_id: Uuid,
+        open_only: bool,
+    ) -> MvResult<Vec<WorkspaceConflict>>;
 }
 
 fn _assert_knowledge_workspace_manifest_store_object_safe(_: &dyn KnowledgeWorkspaceManifestStore) {

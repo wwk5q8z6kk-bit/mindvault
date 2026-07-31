@@ -11,6 +11,8 @@
 //!
 //! These endpoints now fail explicitly and name their replacement. An honest
 //! `410 Gone` is a better contract than a fabricated `200`.
+//!
+//! Migration 041 drops the unused `plans` / `plan_steps` tables (AGENT-002).
 
 use std::sync::Arc;
 

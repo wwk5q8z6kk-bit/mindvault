@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use mv_core::{
     KnowledgeNode, KnowledgeWorkspaceDocument, KnowledgeWorkspaceManifestStore, MvError, MvResult,
-    NodeStore, WorkspaceDocumentLifecycle, WorkspaceDocumentPayloadV1, WorkspaceProjectionState,
+    NodeStore, WorkspaceDocumentLifecycle, WorkspaceDocumentPayloadV1, WorkspaceEventOperation,
+    WorkspaceProjectionState,
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -35,13 +36,14 @@ impl MindVaultEngine {
         &self,
         workspace_id: Uuid,
     ) -> MvResult<WorkspaceProjectionOutcome> {
-        self.project_knowledge_workspace(workspace_id, true).await
+        self.project_knowledge_workspace(workspace_id, true, None).await
     }
 
     pub(crate) async fn project_knowledge_workspace(
         &self,
         workspace_id: Uuid,
         force: bool,
+        correlation_id: Option<Uuid>,
     ) -> MvResult<WorkspaceProjectionOutcome> {
         let workspace = self.get_knowledge_workspace(workspace_id).await?;
         let root = workspace_root(&workspace)?;
@@ -246,6 +248,20 @@ impl MindVaultEngine {
             force,
             "knowledge workspace projections completed"
         );
+
+        let correlation_id = correlation_id.unwrap_or_else(Uuid::now_v7);
+        let _ = self
+            .journal_workspace_phase(
+                workspace.id,
+                correlation_id,
+                WorkspaceEventOperation::Scan,
+                None,
+                Some(workspace.revision),
+                Some(workspace.revision),
+                "projection",
+            )
+            .await?;
+
         Ok(outcome)
     }
 

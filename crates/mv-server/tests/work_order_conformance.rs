@@ -18,6 +18,7 @@
 //! NOTE: run with `--test-threads=1`, per the repository convention for
 //! integration tests.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -27,8 +28,8 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 use mv_core::{
-    AgentRun, GateId, GateResult, InteroperabilityStore, RiskTier, RunArtifact, WorkOrder,
-    WorkOrderBudget, WorkOrderNode, WorkOrderSpend, WriteLease,
+    AgentRun, GateId, GateResult, InteroperabilityStore, RiskTier, RunArtifact, StableUri,
+    WorkOrder, WorkOrderBudget, WorkOrderNode, WorkOrderSpend, WriteLease,
 };
 use mv_engine::config::EngineConfig;
 use mv_engine::engine::MindVaultEngine;
@@ -177,6 +178,7 @@ fn work_order_routes_are_described_by_the_authoritative_openapi_document() {
         "/api/v1/work-orders/{id}/runs/{run_id}/artifacts",
         "/api/v1/work-orders/{id}/runs/{run_id}/gates",
         "/api/v1/work-orders/{id}/runs/{run_id}/approve",
+        "/api/v1/work-orders/{id}/runs/{run_id}/execute",
         "/api/v1/work-orders/{id}/runs/{run_id}/complete",
         "/api/v1/work-orders/{id}/runs/{run_id}/fail",
     ] {
@@ -516,20 +518,70 @@ fn item_7_gate_evidence_is_attributable_and_independent() {
 
 /// Item 10 — automated contract and conformance tests.
 ///
-/// This file is that evidence, together with the unit and integration suites
-/// named below.
+/// Counts are derived from `#[test]` / `#[tokio::test]` attributes in the
+/// named sources (or from explicitly listed integration test names). A drift
+/// in either direction fails this check — scaffolding a string list is not
+/// enough (ADR 012:179-180).
 #[test]
 fn item_10_conformance_coverage_is_declared() {
-    // Named so a reader can locate the enforcing tests rather than trust a
-    // summary. Each is a real test path in this repository.
-    let enforcing = [
-        "mv-core: model::work_order::tests (12 tests)",
-        "mv-storage: sqlite::tests work-order/lease/gate/artifact (11 tests)",
-        "mv-engine: engine::work_order_ops::tests (8 tests)",
-        "mv-server: tests/api_integration.rs work-order surface (4 tests)",
-        "mv-server: tests/work_order_conformance.rs (this file)",
+    fn count_test_attrs(source: &str) -> usize {
+        source.matches("#[test]").count() + source.matches("#[tokio::test]").count()
+    }
+
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let core = std::fs::read_to_string(manifest.join("../mv-core/src/model/work_order.rs"))
+        .expect("mv-core work_order model");
+    assert_eq!(count_test_attrs(&core), 12, "mv-core work_order model tests");
+
+    let storage = std::fs::read_to_string(manifest.join("../mv-storage/src/sqlite.rs"))
+        .expect("mv-storage sqlite");
+    let storage_work_order_tests = [
+        "work_order_admission_round_trips_with_contracts_and_edges",
+        "admission_rejects_intersecting_write_scopes_without_a_conflict_edge",
+        "admission_rejects_a_dependency_cycle",
+        "a_run_awaiting_approval_releases_its_leases_and_unblocks_others",
+        "an_expired_lease_is_replaced_and_its_history_is_kept",
+        "a_lease_longer_than_one_hour_is_refused",
+        "an_artifact_digest_must_describe_its_stored_bytes",
+        "artifact_content_survives_arbitrary_bytes_and_is_not_json_inflated",
+        "an_artifact_without_provenance_is_refused",
+        "admission_replay_returns_the_original_work_order",
+        "sealed_storage_does_not_expose_work_order_scope_or_goal",
     ];
-    assert_eq!(enforcing.len(), 5);
+    for name in storage_work_order_tests {
+        assert!(
+            storage.contains(&format!("fn {name}")),
+            "missing mv-storage work-order test: {name}"
+        );
+    }
+    assert_eq!(storage_work_order_tests.len(), 11);
+
+    let engine = std::fs::read_to_string(manifest.join("../mv-engine/src/engine/work_order_ops.rs"))
+        .expect("mv-engine work_order_ops");
+    assert_eq!(count_test_attrs(&engine), 14, "mv-engine work_order_ops tests");
+
+    let api = std::fs::read_to_string(manifest.join("tests/api_integration.rs"))
+        .expect("api_integration");
+    let api_work_order_tests = [
+        "work_order_admission_refuses_scope_without_a_tool_grant",
+        "work_order_admission_rejects_an_authored_conflict_edge",
+        "work_order_queries_are_reachable_without_a_user_interface",
+    ];
+    for name in api_work_order_tests {
+        assert!(
+            api.contains(&format!("fn {name}")),
+            "missing api_integration work-order test: {name}"
+        );
+    }
+    assert_eq!(api_work_order_tests.len(), 3);
+
+    let conformance = std::fs::read_to_string(manifest.join("tests/work_order_conformance.rs"))
+        .expect("work_order_conformance");
+    assert!(
+        count_test_attrs(&conformance) >= 13,
+        "work_order_conformance must keep the constitutional item suite"
+    );
 }
 
 /// Item 8 — portable export and restore.
@@ -582,4 +634,190 @@ fn item_9_extensions_observe_the_execution_graph_but_cannot_command_it() {
     for forbidden in ["mv_write_work_orders", "mv_record_gate", "mv_approve_run"] {
         assert!(permitted.check(forbidden).is_err(), "{forbidden}");
     }
+}
+
+/// Wedge Value Proof — production-path Trusted Agent Work completion.
+///
+/// Exercises the public HTTP surface end-to-end:
+/// local Context Node → Tool Grant → Work Order admit → start run →
+/// (approve if autonomy parks) → execute → completed artifact with digest.
+///
+/// This is the unicorn-strategy wedge proof: trusted completed work with
+/// evidence on the real server path, not an engine-only unit test.
+#[tokio::test]
+async fn wedge_value_proof_trusted_work_completes_over_http() {
+    let (router, engine, _state, _tmp) = setup().await;
+
+    let registered = router
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/context-nodes/local",
+            Some(json!({ "display_name": "Wedge Vault" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(registered.status(), StatusCode::CREATED);
+    let registered = body_json(registered).await;
+    let local_node_id = uuid::Uuid::parse_str(registered["node_id"].as_str().unwrap()).unwrap();
+
+    let issued = router
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/authority-grants",
+            Some(json!({
+                "grantee_subject": "local-system",
+                "targets": ["mindvault://schemas/executable"],
+                "purpose": "admit wedge trusted-work execution",
+                "idempotency_key": "wedge-executable-grant",
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(issued.status(), StatusCode::CREATED, "grant: {:?}", issued);
+
+    let created = router
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/work-orders",
+            Some(json!({
+                "goal": "produce a provenance-linked trusted work artifact",
+                "success_criteria": ["engine run completes with digested artifact"],
+                "budget": {
+                    "wall_clock_secs": 600,
+                    "run_attempts": 3,
+                    "model_tokens": 10_000,
+                    "effect_actions": 0
+                },
+                "idempotency_key": "wedge-trusted-work-1",
+                "nodes": [{
+                    "purpose": "internal engine trusted work",
+                    "executor_kind": "engine",
+                    "risk_tier": "low",
+                    "write_scope": ["mindvault://schemas/executable"],
+                    "timeout_secs": 120,
+                    "max_attempts": 3
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        created.status(),
+        StatusCode::CREATED,
+        "admit work order must succeed with matching Tool Grant"
+    );
+    let detail = body_json(created).await;
+    let work_order_id = detail["work_order"]["work_order_id"].as_str().unwrap();
+    let node_id = detail["nodes"][0]["node_id"].as_str().unwrap();
+    assert_eq!(detail["nodes"][0]["executor_kind"], "engine");
+    assert_eq!(detail["nodes"][0]["risk_tier"], "low");
+
+    let actor = StableUri::principal(
+        local_node_id,
+        uuid::Uuid::new_v5(&local_node_id, b"local-system"),
+    );
+
+    let started = router
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/work-orders/{work_order_id}/nodes/{node_id}/runs"),
+            Some(json!({
+                "actor": actor.as_str(),
+                "confidence": 0.99
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(started.status(), StatusCode::CREATED, "start run");
+    let started = body_json(started).await;
+    let run_id = started["run"]["run_id"].as_str().unwrap().to_string();
+
+    if started["awaiting_approval"].as_bool() == Some(true) {
+        let approved = router
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("/api/v1/work-orders/{work_order_id}/runs/{run_id}/approve"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(approved.status(), StatusCode::OK, "approve parked run");
+    }
+
+    let executed = router
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/work-orders/{work_order_id}/runs/{run_id}/execute"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        executed.status(),
+        StatusCode::OK,
+        "execute must complete on the production HTTP path"
+    );
+    let executed = body_json(executed).await;
+    assert_eq!(executed["run"]["status"], "completed");
+    let digest = executed["artifact_digest"].as_str().unwrap();
+    assert_eq!(digest.len(), 64, "sha256 digest");
+    let artifact_id = executed["artifact_id"].as_str().unwrap();
+    let gates = executed["gates_passed"].as_array().unwrap();
+    assert!(
+        gates.iter().any(|g| g == "g0"),
+        "G0 scope gate must pass: {gates:?}"
+    );
+    assert!(
+        gates.iter().any(|g| g == "g2"),
+        "G2 artifact gate must pass: {gates:?}"
+    );
+
+    let content = router
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            &format!("/api/v1/work-orders/{work_order_id}/artifacts/{artifact_id}/content"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(content.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(content.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["executor"], "engine");
+    assert_eq!(body["run_id"], run_id);
+
+    // Duplicate execute must not silently succeed against a completed run.
+    let replay = router
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/v1/work-orders/{work_order_id}/runs/{run_id}/execute"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert!(
+        replay.status().is_client_error() || replay.status() == StatusCode::CONFLICT,
+        "re-executing a completed run must fail closed, got {}",
+        replay.status()
+    );
+
+    // Keep the engine handle live through setup teardown semantics.
+    let _ = engine.store.nodes.local_context_node_id().await;
+}
+
+async fn body_json(resp: axum::response::Response) -> Value {
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).to_string()))
 }

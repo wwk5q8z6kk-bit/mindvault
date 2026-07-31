@@ -190,6 +190,10 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(workspaces::rebuild_workspace_projections),
         )
         .route(
+            "/api/v1/workspaces/:id/conflicts",
+            get(workspaces::list_workspace_conflicts),
+        )
+        .route(
             "/api/v1/workspaces/:workspace_id/documents/:document_id",
             get(workspaces::read_workspace_document),
         )

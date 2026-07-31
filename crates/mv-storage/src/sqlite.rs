@@ -296,6 +296,10 @@ impl SqliteNodeStore {
                 40,
                 include_str!("../../../migrations/040_identity_registry.sql"),
             ),
+            (
+                41,
+                include_str!("../../../migrations/041_retire_plans.sql"),
+            ),
         ];
 
         // Migration 001 must always run first to create schema_version table.
@@ -804,6 +808,68 @@ fn row_to_workspace_document(
         revision: parse_workspace_revision(8, row.get(8)?)?,
         created_at: parse_dt_strict(9, &created_at)?,
         updated_at: parse_dt_strict(10, &updated_at)?,
+    })
+}
+
+
+
+fn row_to_workspace_conflict(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceConflict> {
+    let id: String = row.get(0)?;
+    let workspace_id: String = row.get(1)?;
+    let document_id: Option<String> = row.get(2)?;
+    let source_event_id: Option<String> = row.get(3)?;
+    let conflict_kind: String = row.get(4)?;
+    let state: String = row.get(5)?;
+    let payload_format: String = row.get(7)?;
+    let created_at: String = row.get(8)?;
+    let resolved_at: Option<String> = row.get(9)?;
+
+    Ok(WorkspaceConflict {
+        id: parse_uuid_str(0, &id)?,
+        workspace_id: parse_uuid_str(1, &workspace_id)?,
+        document_id: document_id
+            .map(|value| parse_uuid_str(2, &value))
+            .transpose()?,
+        source_event_id: source_event_id
+            .map(|value| parse_uuid_str(3, &value))
+            .transpose()?,
+        conflict_kind: parse_workspace_enum(4, &conflict_kind)?,
+        state: parse_workspace_enum(5, &state)?,
+        conflict_payload: row.get(6)?,
+        payload_format: parse_workspace_enum(7, &payload_format)?,
+        created_at: parse_dt_strict(8, &created_at)?,
+        resolved_at: parse_optional_dt_strict(9, resolved_at)?,
+    })
+}
+
+fn row_to_workspace_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceEvent> {
+    let id: String = row.get(0)?;
+    let workspace_id: String = row.get(1)?;
+    let document_id: Option<String> = row.get(2)?;
+    let correlation_id: String = row.get(4)?;
+    let actor_kind: String = row.get(5)?;
+    let operation: String = row.get(7)?;
+    let status: String = row.get(8)?;
+    let payload_format: String = row.get(10)?;
+    let prepared_at: String = row.get(11)?;
+    let completed_at: Option<String> = row.get(12)?;
+
+    Ok(WorkspaceEvent {
+        id: parse_uuid_str(0, &id)?,
+        workspace_id: parse_uuid_str(1, &workspace_id)?,
+        document_id: document_id
+            .map(|value| parse_uuid_str(2, &value))
+            .transpose()?,
+        event_seq: parse_workspace_revision(3, row.get(3)?)?,
+        correlation_id: parse_uuid_str(4, &correlation_id)?,
+        actor_kind: parse_workspace_enum(5, &actor_kind)?,
+        actor_id: row.get(6)?,
+        operation: parse_workspace_enum(7, &operation)?,
+        status: parse_workspace_enum(8, &status)?,
+        event_payload: row.get(9)?,
+        payload_format: parse_workspace_enum(10, &payload_format)?,
+        prepared_at: parse_dt_strict(11, &prepared_at)?,
+        completed_at: parse_optional_dt_strict(12, completed_at)?,
     })
 }
 
@@ -11281,6 +11347,18 @@ fn validate_workspace_document_record(
     checked_workspace_revision(document.revision)
 }
 
+
+const WORKSPACE_EVENT_SELECT: &str = "SELECT
+    id, workspace_id, document_id, event_seq, correlation_id,
+    actor_kind, actor_id, operation, status, event_payload,
+    payload_format, prepared_at, completed_at
+ FROM workspace_events";
+
+const WORKSPACE_CONFLICT_SELECT: &str = "SELECT
+    id, workspace_id, document_id, source_event_id, conflict_kind, state,
+    conflict_payload, payload_format, created_at, resolved_at
+ FROM workspace_conflicts";
+
 #[async_trait]
 impl KnowledgeWorkspaceManifestStore for SqliteNodeStore {
     async fn insert_knowledge_workspace(&self, workspace: &KnowledgeWorkspace) -> MvResult<()> {
@@ -11657,6 +11735,227 @@ impl KnowledgeWorkspaceManifestStore for SqliteNodeStore {
             Ok(true)
         })
     }
+
+    async fn append_workspace_event(&self, event: &WorkspaceEvent) -> MvResult<WorkspaceEvent> {
+        validate_manifest_payload(
+            self.sealed_mode(),
+            &event.event_payload,
+            event.payload_format,
+        )?;
+        if event.correlation_id.is_nil() {
+            return Err(MvError::InvalidInput(
+                "workspace event correlation_id must not be nil".into(),
+            ));
+        }
+        match event.status {
+            WorkspaceEventStatus::Completed
+            | WorkspaceEventStatus::Aborted
+            | WorkspaceEventStatus::Conflict => {
+                if event.completed_at.is_none() {
+                    return Err(MvError::InvalidInput(
+                        "terminal workspace events require completed_at".into(),
+                    ));
+                }
+            }
+            WorkspaceEventStatus::Prepared => {}
+        }
+
+        self.with_conn(|conn| {
+            let next_seq: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(event_seq), 0) + 1
+                     FROM workspace_events
+                     WHERE workspace_id = ?1",
+                    params![event.workspace_id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(|err| {
+                    MvError::Storage(format!("allocate workspace event_seq failed: {err}"))
+                })?;
+            let event_seq = parse_workspace_revision(0, next_seq).map_err(|err| {
+                MvError::Storage(format!("invalid allocated workspace event_seq: {err}"))
+            })?;
+
+            conn.execute(
+                "INSERT INTO workspace_events (
+                    id, workspace_id, document_id, event_seq, correlation_id,
+                    actor_kind, actor_id, operation, status, event_payload,
+                    payload_format, prepared_at, completed_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    event.id.to_string(),
+                    event.workspace_id.to_string(),
+                    event.document_id.map(|value| value.to_string()),
+                    next_seq,
+                    event.correlation_id.to_string(),
+                    event.actor_kind.as_str(),
+                    event.actor_id,
+                    event.operation.as_str(),
+                    event.status.as_str(),
+                    event.event_payload,
+                    event.payload_format.as_str(),
+                    event.prepared_at.to_rfc3339(),
+                    event.completed_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("append workspace event failed: {err}")))?;
+
+            Ok(WorkspaceEvent {
+                event_seq,
+                ..event.clone()
+            })
+        })
+    }
+
+    async fn get_workspace_event(&self, id: Uuid) -> MvResult<Option<WorkspaceEvent>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                &format!("{WORKSPACE_EVENT_SELECT} WHERE id = ?1"),
+                params![id.to_string()],
+                row_to_workspace_event,
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("get workspace event failed: {err}")))
+        })
+    }
+
+    async fn list_workspace_events(
+        &self,
+        workspace_id: Uuid,
+        after_seq: Option<u64>,
+        limit: usize,
+    ) -> MvResult<Vec<WorkspaceEvent>> {
+        let limit = i64::try_from(limit.max(1).min(1000)).unwrap_or(1000);
+        self.with_conn(|conn| {
+            let after = i64::try_from(after_seq.unwrap_or(0)).unwrap_or(0);
+            let mut statement = conn
+                .prepare(&format!(
+                    "{WORKSPACE_EVENT_SELECT}
+                     WHERE workspace_id = ?1 AND event_seq > ?2
+                     ORDER BY event_seq ASC
+                     LIMIT ?3"
+                ))
+                .map_err(|err| {
+                    MvError::Storage(format!("prepare workspace event list failed: {err}"))
+                })?;
+            let rows = statement
+                .query_map(
+                    params![workspace_id.to_string(), after, limit],
+                    row_to_workspace_event,
+                )
+                .map_err(|err| MvError::Storage(format!("list workspace events failed: {err}")))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|err| {
+                MvError::Storage(format!("collect workspace events failed: {err}"))
+            })
+        })
+    }
+
+    async fn list_workspace_events_by_correlation(
+        &self,
+        correlation_id: Uuid,
+    ) -> MvResult<Vec<WorkspaceEvent>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(&format!(
+                    "{WORKSPACE_EVENT_SELECT}
+                     WHERE correlation_id = ?1
+                     ORDER BY event_seq ASC"
+                ))
+                .map_err(|err| {
+                    MvError::Storage(format!(
+                        "prepare workspace events by correlation failed: {err}"
+                    ))
+                })?;
+            let rows = statement
+                .query_map(params![correlation_id.to_string()], row_to_workspace_event)
+                .map_err(|err| {
+                    MvError::Storage(format!(
+                        "list workspace events by correlation failed: {err}"
+                    ))
+                })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|err| {
+                MvError::Storage(format!(
+                    "collect workspace events by correlation failed: {err}"
+                ))
+            })
+        })
+    }
+
+    async fn insert_workspace_conflict(&self, conflict: &WorkspaceConflict) -> MvResult<()> {
+        validate_manifest_payload(
+            self.sealed_mode(),
+            &conflict.conflict_payload,
+            conflict.payload_format,
+        )?;
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO workspace_conflicts (
+                    id, workspace_id, document_id, source_event_id, conflict_kind, state,
+                    conflict_payload, payload_format, created_at, resolved_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    conflict.id.to_string(),
+                    conflict.workspace_id.to_string(),
+                    conflict.document_id.map(|value| value.to_string()),
+                    conflict.source_event_id.map(|value| value.to_string()),
+                    conflict.conflict_kind.as_str(),
+                    conflict.state.as_str(),
+                    conflict.conflict_payload,
+                    conflict.payload_format.as_str(),
+                    conflict.created_at.to_rfc3339(),
+                    conflict.resolved_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert workspace conflict failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_workspace_conflict(&self, id: Uuid) -> MvResult<Option<WorkspaceConflict>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                &format!("{WORKSPACE_CONFLICT_SELECT} WHERE id = ?1"),
+                params![id.to_string()],
+                row_to_workspace_conflict,
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("get workspace conflict failed: {err}")))
+        })
+    }
+
+    async fn list_workspace_conflicts(
+        &self,
+        workspace_id: Uuid,
+        open_only: bool,
+    ) -> MvResult<Vec<WorkspaceConflict>> {
+        self.with_conn(|conn| {
+            let sql = if open_only {
+                format!(
+                    "{WORKSPACE_CONFLICT_SELECT}
+                     WHERE workspace_id = ?1 AND state = 'open'
+                     ORDER BY created_at ASC, id ASC"
+                )
+            } else {
+                format!(
+                    "{WORKSPACE_CONFLICT_SELECT}
+                     WHERE workspace_id = ?1
+                     ORDER BY created_at ASC, id ASC"
+                )
+            };
+            let mut statement = conn.prepare(&sql).map_err(|err| {
+                MvError::Storage(format!("prepare workspace conflict list failed: {err}"))
+            })?;
+            let rows = statement
+                .query_map(params![workspace_id.to_string()], row_to_workspace_conflict)
+                .map_err(|err| {
+                    MvError::Storage(format!("list workspace conflicts failed: {err}"))
+                })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|err| {
+                MvError::Storage(format!("collect workspace conflicts failed: {err}"))
+            })
+        })
+    }
+
 }
 
 #[cfg(test)]
@@ -12415,10 +12714,138 @@ mod tests {
                         row.get(0)
                     })
                     .map_err(|err| MvError::Storage(err.to_string()))?;
-                assert_eq!(schema_version, 40);
+                assert_eq!(schema_version, 41);
+
+                for retired in ["plans", "plan_steps"] {
+                    let present: bool = conn
+                        .query_row(
+                            "SELECT EXISTS(
+                                SELECT 1 FROM sqlite_master
+                                WHERE type = 'table' AND name = ?1
+                             )",
+                            params![retired],
+                            |row| row.get(0),
+                        )
+                        .map_err(|err| MvError::Storage(err.to_string()))?;
+                    assert!(
+                        !present,
+                        "superseded table {retired} must be dropped by migration 041"
+                    );
+                }
                 Ok(())
             })
             .unwrap();
+    }
+
+
+    #[tokio::test]
+    async fn workspace_event_journal_survives_restart_with_correlation_and_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("workspace-events.db");
+        let workspace_id;
+        let correlation_id = Uuid::now_v7();
+        let event_id;
+
+        {
+            let store = SqliteNodeStore::open(&db_path).unwrap();
+            let workspace = KnowledgeWorkspace::new(
+                "personal",
+                KnowledgeWorkspaceMode::Mounted,
+                br#"{"schema":"mindvault.workspace-descriptor/v1","display_name":"Vault","root_path":"/tmp/vault"}"#.to_vec(),
+                WorkspaceManifestPayloadFormat::JsonV1,
+            );
+            workspace_id = workspace.id;
+            store.insert_knowledge_workspace(&workspace).await.unwrap();
+
+            let mut payload = WorkspaceEventPayloadV1::new();
+            payload.phase = Some("mount".into());
+            payload.expected_old_revision = Some(0);
+            payload.intended_new_revision = Some(1);
+            payload.expected_old_content_hash = Some("sha256:before".into());
+            payload.intended_new_content_hash = Some("sha256:after".into());
+            let event = WorkspaceEvent::completed(
+                workspace.id,
+                correlation_id,
+                WorkspaceEventOperation::Mount,
+                WorkspaceEventActorKind::System,
+                payload,
+            )
+            .unwrap();
+            let persisted = store.append_workspace_event(&event).await.unwrap();
+            assert_eq!(persisted.event_seq, 1);
+            event_id = persisted.id;
+
+            let mut scan_payload = WorkspaceEventPayloadV1::new();
+            scan_payload.phase = Some("reconcile".into());
+            scan_payload.expected_old_revision = Some(1);
+            scan_payload.intended_new_revision = Some(2);
+            let scan = WorkspaceEvent::completed(
+                workspace.id,
+                correlation_id,
+                WorkspaceEventOperation::Scan,
+                WorkspaceEventActorKind::System,
+                scan_payload,
+            )
+            .unwrap();
+            let scan = store.append_workspace_event(&scan).await.unwrap();
+            assert_eq!(scan.event_seq, 2);
+
+            let mut projection_payload = WorkspaceEventPayloadV1::new();
+            projection_payload.phase = Some("projection".into());
+            let projection = WorkspaceEvent::completed(
+                workspace.id,
+                correlation_id,
+                WorkspaceEventOperation::Scan,
+                WorkspaceEventActorKind::System,
+                projection_payload,
+            )
+            .unwrap();
+            let projection = store.append_workspace_event(&projection).await.unwrap();
+            assert_eq!(projection.event_seq, 3);
+        }
+
+        let store = SqliteNodeStore::open(&db_path).unwrap();
+        let by_id = store
+            .get_workspace_event(event_id)
+            .await
+            .unwrap()
+            .expect("mount event survives restart");
+        assert_eq!(by_id.correlation_id, correlation_id);
+        assert_eq!(by_id.operation, WorkspaceEventOperation::Mount);
+        let payload: WorkspaceEventPayloadV1 =
+            serde_json::from_slice(&by_id.event_payload).unwrap();
+        assert_eq!(
+            payload.expected_old_content_hash.as_deref(),
+            Some("sha256:before")
+        );
+        assert_eq!(
+            payload.intended_new_content_hash.as_deref(),
+            Some("sha256:after")
+        );
+
+        let listed = store
+            .list_workspace_events(workspace_id, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 3);
+        assert_eq!(
+            listed
+                .iter()
+                .map(|event| event.operation)
+                .collect::<Vec<_>>(),
+            vec![
+                WorkspaceEventOperation::Mount,
+                WorkspaceEventOperation::Scan,
+                WorkspaceEventOperation::Scan
+            ]
+        );
+
+        let correlated = store
+            .list_workspace_events_by_correlation(correlation_id)
+            .await
+            .unwrap();
+        assert_eq!(correlated.len(), 3);
+        assert!(correlated.iter().all(|event| event.correlation_id == correlation_id));
     }
 
     #[tokio::test]

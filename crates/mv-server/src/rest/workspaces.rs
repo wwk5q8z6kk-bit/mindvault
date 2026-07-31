@@ -5,7 +5,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
-use mv_core::{KnowledgeWorkspace, MvError};
+use mv_core::{KnowledgeWorkspace, MvError, WorkspaceConflict, WORKSPACE_CONFLICT_RESOLUTIONS};
 use mv_engine::engine::WorkspaceProjectionOutcome;
 use mv_engine::workspace::{
     decode_workspace_descriptor, WorkspaceDocumentRead, WorkspaceReconciliationOutcome,
@@ -203,6 +203,73 @@ pub(crate) async fn read_workspace_document(
         .await
         .map_err(map_workspace_error)?;
     Ok(Json(document))
+}
+
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WorkspaceConflictView {
+    id: Uuid,
+    workspace_id: Uuid,
+    document_id: Option<Uuid>,
+    conflict_kind: String,
+    state: String,
+    relative_path: Option<String>,
+    expected_content_hash: Option<String>,
+    observed_content_hash: Option<String>,
+    canonical_content_hash: Option<String>,
+    available_resolutions: Vec<String>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WorkspaceConflictsResponse {
+    conflicts: Vec<WorkspaceConflictView>,
+    resolution_choices: Vec<&'static str>,
+}
+
+/// GET /api/v1/workspaces/:id/conflicts — list open conflicts for review.
+pub(crate) async fn list_workspace_conflicts(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(workspace_id): Path<Uuid>,
+) -> Result<Json<WorkspaceConflictsResponse>, (StatusCode, String)> {
+    let workspace = authorized_workspace(&auth, &state, workspace_id).await?;
+    let conflicts = state
+        .engine
+        .list_workspace_conflicts(workspace.id, true)
+        .await
+        .map_err(map_workspace_error)?;
+    let views = conflicts
+        .into_iter()
+        .map(conflict_view)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Json(WorkspaceConflictsResponse {
+        conflicts: views,
+        resolution_choices: WORKSPACE_CONFLICT_RESOLUTIONS.to_vec(),
+    }))
+}
+
+fn conflict_view(conflict: WorkspaceConflict) -> Result<WorkspaceConflictView, (StatusCode, String)> {
+    let payload: mv_core::WorkspaceConflictPayloadV1 = serde_json::from_slice(&conflict.conflict_payload)
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("conflict payload is not valid JSON: {err}"),
+            )
+        })?;
+    Ok(WorkspaceConflictView {
+        id: conflict.id,
+        workspace_id: conflict.workspace_id,
+        document_id: conflict.document_id,
+        conflict_kind: conflict.conflict_kind.as_str().to_string(),
+        state: conflict.state.as_str().to_string(),
+        relative_path: payload.relative_path,
+        expected_content_hash: payload.expected_content_hash,
+        observed_content_hash: payload.observed_content_hash,
+        canonical_content_hash: payload.canonical_content_hash,
+        available_resolutions: payload.available_resolutions,
+        created_at: conflict.created_at,
+    })
 }
 
 async fn authorized_workspace(
