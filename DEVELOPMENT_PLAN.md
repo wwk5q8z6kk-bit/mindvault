@@ -312,7 +312,7 @@ This section is the operational source of truth for day-to-day execution.
   - user-facing docs updated
 - Phase progression is sequential; the next phase does not start until the previous exit criteria are met and verified.
 
-### 4) Master Program Board
+### 4) Master Program Board (pre-constitution, historical)
 
 - [x] `P0` Keep sovereign defaults strict (offline-first, local embeddings, explicit opt-ins)
 - [x] `P1` Owner profile as canonical identity source (API/UI + relay sync + federation identity + handshake + HMAC signing; 20 tests)
@@ -421,14 +421,13 @@ This section is the operational source of truth for day-to-day execution.
 > and in the A→Z Program Map predate the Interoperability Constitution and mark
 > items complete under the weaker definition below. Do not plan from them.
 
-Note: Historical tables below may still say “Complete.” That word **never**
-means “code is present in the repository” for any capability governed by the
-Interoperability Constitution. Completeness requires the ten-point feature
-completeness contract in `INTEROPERABILITY_CONSTITUTION.md` and a backlog item
-in `IMPLEMENTATION_BACKLOG.md` whose acceptance command passed with recorded
-evidence. Rows that still say Complete for gated subsystems (especially
-Federation per `docs/architecture/FEDERATION_THREAT_MODEL.md`) are provenance
-labels only — treat them as **code-present, governance incomplete**.
+Note: Historical tables below may still say “Complete.” For any capability
+governed by the Interoperability Constitution, completeness means the
+feature-completeness contract in `INTEROPERABILITY_CONSTITUTION.md` is
+satisfied and the matching item in `IMPLEMENTATION_BACKLOG.md` has passing
+acceptance evidence. Rows that still say Complete for gated subsystems
+(especially Federation per `docs/architecture/FEDERATION_THREAT_MODEL.md`) are
+provenance labels only — treat them as **code-present, governance incomplete**.
 
 ### Architecture Summary
 
@@ -456,7 +455,7 @@ labels only — treat them as **code-present, governance incomplete**.
 | Relay Engine        | `relay.rs`             | Complete                   | /api/v1/relay/\*               |
 | MultiModal Pipeline | `multimodal/`          | Complete (audio/image/pdf) | /api/v1/multimodal/status      |
 | Sync Engine         | `sync/`                | Complete                   | /api/v1/sync/\*                |
-| Federation Engine   | `federation.rs`        | Gated (see FED-000)        | /api/v1/federation/\*          |
+| Federation Engine   | `federation.rs`        | Experimental — production disabled (FEDERATION_THREAT_MODEL.md:22) | /api/v1/federation/*          |
 | Metrics Collector   | `metrics_collector.rs` | Complete                   | /api/v1/metrics/\*             |
 | Intent Executor     | `intent_executor.rs`   | Complete                   | On-demand via apply_intent()   |
 
@@ -581,7 +580,8 @@ Frontend:
 
 ### Phase 4: Ecosystem & Polish
 
-**Status:** Complete
+**Status:** Historical checklist only — do not treat as governance-complete.
+Tracked remaining work lives in `IMPLEMENTATION_BACKLOG.md`.
 
 - [x] Define plugin framework (hooks, manifest, registry)
 - [x] Wire plugin registry to REST endpoints
