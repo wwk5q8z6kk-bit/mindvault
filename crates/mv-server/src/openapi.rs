@@ -292,6 +292,7 @@ use utoipa_swagger_ui::SwaggerUi;
         work_order_run_gates,
         work_order_run_record_gate,
         work_order_run_approve,
+        work_order_run_execute,
         work_order_run_complete,
         work_order_run_fail,
         context_nodes_local_get,
@@ -1307,6 +1308,18 @@ async fn work_order_run_record_gate() {}
     )
 )]
 async fn work_order_run_approve() {}
+
+#[utoipa::path(
+    post, path = "/api/v1/work-orders/{id}/runs/{run_id}/execute", tag = "work-orders",
+    params(("id" = String, Path), ("run_id" = String, Path)),
+    responses(
+        (status = 200, description = "Internal Engine executor drove a leased or ready             Low-risk run through artifact production and required gates to Completed.             No external dispatcher or provider is contacted"),
+        (status = 400, description = "Executor kind or risk tier is outside the internal             engine auto-executor scope"),
+        (status = 404, description = "Unknown work order or run"),
+        (status = 409, description = "Work order is terminal, run is not executable, or             a required gate failed")
+    )
+)]
+async fn work_order_run_execute() {}
 
 #[utoipa::path(
     post, path = "/api/v1/work-orders/{id}/runs/{run_id}/complete", tag = "work-orders",
