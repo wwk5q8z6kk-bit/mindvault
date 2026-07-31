@@ -1302,7 +1302,7 @@ operations remain deliberately out of scope for this foundation."*
 - **blocked_by:** IK-003 (inferred)
 - **files:** `migrations/042_collab_spaces_and_membership.sql`, `crates/mv-core/src/model/collab_space.rs`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`
 - **acceptance:** `cargo test -- space_authorization_matrix` — deny-by-default for all four actor kinds; cross-Space isolation for read, write, subscription, search, artifact
-- **evidence:** `cargo test -p mv-core -- space_authorization_matrix` → 5/5 ok; `cargo test -p mv-storage -- space_authorization_matrix` → 1/1 ok; commit `HASH_SPACE001`; 2026-07-31. Actors = identity registry (040); naming uses `CollabWorkspace` (SPACE-006 full DocumentWorkspace rename still open).
+- **evidence:** `cargo test -p mv-core -- space_authorization_matrix` → 5/5 ok; `cargo test -p mv-storage -- space_authorization_matrix` → 1/1 ok; commit `6748481`; 2026-07-31. Actors = identity registry (040); naming uses `CollabWorkspace` (SPACE-006 full DocumentWorkspace rename still open).
 
 #### SPACE-002 — WorkOrder / AgentRun / Artifact state machines
 - **priority:** P0 — baseline P0 "attribution and delegated authority"
