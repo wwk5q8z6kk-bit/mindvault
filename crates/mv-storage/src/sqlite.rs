@@ -9301,6 +9301,52 @@ impl RelayStore for SqliteNodeStore {
         Ok(result)
     }
 
+    async fn bind_relay_message_vault_node(
+        &self,
+        message_id: Uuid,
+        vault_node_id: Option<Uuid>,
+    ) -> MvResult<bool> {
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let affected = conn
+            .execute(
+                "UPDATE relay_messages SET vault_node_id = ?1, updated_at = ?2 WHERE id = ?3",
+                params![
+                    vault_node_id.map(|id| id.to_string()),
+                    chrono::Utc::now().to_rfc3339(),
+                    message_id.to_string(),
+                ],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn update_relay_message_metadata(
+        &self,
+        message_id: Uuid,
+        metadata: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> MvResult<bool> {
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let metadata_json =
+            serde_json::to_string(metadata).map_err(|e| MvError::Storage(e.to_string()))?;
+        let affected = conn
+            .execute(
+                "UPDATE relay_messages SET metadata = ?1, updated_at = ?2 WHERE id = ?3",
+                params![
+                    metadata_json,
+                    chrono::Utc::now().to_rfc3339(),
+                    message_id.to_string(),
+                ],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
     async fn count_unread_messages(&self, channel_id: Option<Uuid>) -> MvResult<usize> {
         let conn = self
             .conn()

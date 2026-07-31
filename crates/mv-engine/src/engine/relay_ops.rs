@@ -1,4 +1,5 @@
 use mv_core::*;
+use uuid::Uuid;
 
 use crate::llm;
 
@@ -277,5 +278,120 @@ impl MindVaultEngine {
             auto_reply,
             proposal_id,
         })
+    }
+
+    /// Promote a retained relay message into canonical knowledge with provenance.
+    ///
+    /// Communication remains the source of truth for the raw message. Promotion
+    /// creates a Conversation knowledge node and binds `vault_node_id`.
+    pub async fn promote_relay_message(
+        &self,
+        request: RelayPromotionRequest,
+    ) -> MvResult<KnowledgeNode> {
+        let Some(message) = self.relay.get_message(request.message_id).await? else {
+            return Err(MvError::NotFound(format!(
+                "relay message {}",
+                request.message_id
+            )));
+        };
+
+        if message.status == MessageStatus::Failed {
+            return Err(MvError::InvalidInput(
+                "blocked or failed relay messages cannot be promoted".into(),
+            ));
+        }
+
+        if let Some(existing) = message.vault_node_id {
+            if let Some(node) = self.get_node(existing).await? {
+                return Ok(node);
+            }
+        }
+
+        if request.extractor.trim().is_empty()
+            || request.actor.trim().is_empty()
+            || request.evidence.trim().is_empty()
+        {
+            return Err(MvError::InvalidInput(
+                "promotion requires extractor, actor, and evidence".into(),
+            ));
+        }
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "promotion".to_string(),
+            serde_json::json!({
+                "source_message_id": message.id.to_string(),
+                "extractor": request.extractor,
+                "actor": request.actor,
+                "evidence": request.evidence,
+                "confidence": request.confidence.clamp(0.0, 1.0),
+                "policy": request.policy,
+                "approval": request.approval,
+            }),
+        );
+        metadata.insert(
+            "relay_channel_id".to_string(),
+            serde_json::Value::String(message.channel_id.to_string()),
+        );
+
+        let node = KnowledgeNode::new(NodeKind::Conversation, message.content.clone())
+            .with_namespace(request.namespace)
+            .with_source(format!("relay:{}", message.id))
+            .with_tags(vec![
+                "relay".to_string(),
+                "promoted".to_string(),
+                format!("channel:{}", message.channel_id),
+            ]);
+        let mut node = node;
+        node.metadata = metadata;
+        node.importance = request.confidence.clamp(0.0, 1.0);
+
+        let stored = self.ingest.ingest(node).await?;
+        self.store
+            .nodes
+            .bind_relay_message_vault_node(message.id, Some(stored.id))
+            .await?;
+        Ok(stored)
+    }
+
+    /// Retract a promotion: remove the knowledge node and indexes without
+    /// rewriting the source communication record.
+    pub async fn retract_relay_promotion(&self, message_id: Uuid) -> MvResult<RelayMessage> {
+        let Some(message) = self.relay.get_message(message_id).await? else {
+            return Err(MvError::NotFound(format!("relay message {message_id}")));
+        };
+
+        let original_content = message.content.clone();
+        let original_status = message.status;
+
+        if let Some(node_id) = message.vault_node_id {
+            let _ = self.ingest.delete(node_id).await?;
+            self.store
+                .nodes
+                .bind_relay_message_vault_node(message_id, None)
+                .await?;
+        }
+
+        let Some(retained) = self.relay.get_message(message_id).await? else {
+            return Err(MvError::NotFound(format!("relay message {message_id}")));
+        };
+
+        if retained.content != original_content {
+            return Err(MvError::Storage(
+                "retraction must not rewrite source communication content".into(),
+            ));
+        }
+        if retained.status != original_status {
+            return Err(MvError::Storage(
+                "retraction must not rewrite source communication status".into(),
+            ));
+        }
+        if retained.vault_node_id.is_some() {
+            return Err(MvError::Storage(
+                "retraction left vault_node_id bound".into(),
+            ));
+        }
+
+        Ok(retained)
     }
 }

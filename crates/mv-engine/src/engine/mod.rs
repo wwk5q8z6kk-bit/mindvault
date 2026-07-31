@@ -1102,8 +1102,8 @@ mod tests {
     use mv_core::{
         ConflictAlert, ConflictType, ContactIdentity, GraphStore, IdentityType, InsightType,
         KnowledgeNode, MessageStatus, NodeKind, ProactiveInsight, ProposalAction, ProposalState,
-        RelationKind, Relationship, RelayChannel, RelayContact, RelayMessage, SearchStrategy,
-        TrustLevel, TrustModel,
+        QueryFilters, RelationKind, Relationship, RelayChannel, RelayContact, RelayMessage,
+        RelayPromotionRequest, SearchStrategy, TrustLevel, TrustModel,
     };
     use tempfile::TempDir;
 
@@ -1481,6 +1481,137 @@ mod tests {
         assert!(proposals.iter().any(|proposal| {
             proposal.action == ProposalAction::Custom("relay.reply".to_string())
         }));
+    }
+
+    #[tokio::test]
+    async fn promotion_boundary_relay_message_not_in_knowledge_graph() {
+        let (engine, _tmp_dir) = create_test_engine().await;
+
+        let contact = RelayContact::new("Alice", "pk-alice");
+        engine.relay.add_contact(&contact).await.unwrap();
+        let channel = RelayChannel::direct(contact.id);
+        engine.relay.create_channel(&channel).await.unwrap();
+
+        let message = RelayMessage::inbound(channel.id, contact.id, "casual chat should stay out");
+        let outcome = engine
+            .receive_relay_message(message, "default")
+            .await
+            .unwrap();
+
+        assert!(outcome.message.vault_node_id.is_none());
+        let nodes = engine
+            .store
+            .nodes
+            .list(&QueryFilters::default(), 100, 0)
+            .await
+            .unwrap();
+        assert!(
+            nodes.iter().all(|n| n.kind != NodeKind::Conversation),
+            "relay receive must not create Conversation knowledge nodes"
+        );
+        assert!(
+            !nodes.iter().any(|n| n.content.contains("casual chat")),
+            "relay content must not enter the knowledge graph without promotion"
+        );
+    }
+
+    #[tokio::test]
+    async fn promotion_boundary_explicit_promotion_records_provenance() {
+        let (engine, _tmp_dir) = create_test_engine().await;
+
+        let contact = RelayContact::new("Bob", "pk-bob");
+        engine.relay.add_contact(&contact).await.unwrap();
+        let channel = RelayChannel::direct(contact.id);
+        engine.relay.create_channel(&channel).await.unwrap();
+
+        let message = RelayMessage::inbound(channel.id, contact.id, "Decision: ship Friday");
+        let stored = engine
+            .relay
+            .receive_message(message, "default")
+            .await
+            .unwrap();
+
+        let request = RelayPromotionRequest::explicit(
+            stored.id,
+            "human:owner",
+            "user selected message as a durable decision",
+        )
+        .with_policy("promotion.explicit")
+        .with_approval("approval:test-1");
+
+        let node = engine.promote_relay_message(request).await.unwrap();
+        assert_eq!(node.kind, NodeKind::Conversation);
+        assert_eq!(node.content, "Decision: ship Friday");
+
+        let promotion = node
+            .metadata
+            .get("promotion")
+            .expect("promotion metadata required");
+        let source_id = stored.id.to_string();
+        assert_eq!(
+            promotion.get("source_message_id").and_then(|v| v.as_str()),
+            Some(source_id.as_str())
+        );
+        assert_eq!(
+            promotion.get("extractor").and_then(|v| v.as_str()),
+            Some("explicit")
+        );
+        assert_eq!(
+            promotion.get("actor").and_then(|v| v.as_str()),
+            Some("human:owner")
+        );
+        assert_eq!(
+            promotion.get("evidence").and_then(|v| v.as_str()),
+            Some("user selected message as a durable decision")
+        );
+        assert_eq!(
+            promotion.get("policy").and_then(|v| v.as_str()),
+            Some("promotion.explicit")
+        );
+        assert_eq!(
+            promotion.get("approval").and_then(|v| v.as_str()),
+            Some("approval:test-1")
+        );
+        assert!(
+            promotion
+                .get("confidence")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+                >= 1.0
+        );
+
+        let rebound = engine.relay.get_message(stored.id).await.unwrap().unwrap();
+        assert_eq!(rebound.vault_node_id, Some(node.id));
+    }
+
+    #[tokio::test]
+    async fn promotion_boundary_retraction_preserves_source_communication() {
+        let (engine, _tmp_dir) = create_test_engine().await;
+
+        let contact = RelayContact::new("Carol", "pk-carol");
+        engine.relay.add_contact(&contact).await.unwrap();
+        let channel = RelayChannel::direct(contact.id);
+        engine.relay.create_channel(&channel).await.unwrap();
+
+        let message = RelayMessage::inbound(channel.id, contact.id, "Keep this exact text");
+        let stored = engine
+            .relay
+            .receive_message(message, "default")
+            .await
+            .unwrap();
+        let node = engine
+            .promote_relay_message(RelayPromotionRequest::explicit(
+                stored.id,
+                "human:owner",
+                "temporary promotion",
+            ))
+            .await
+            .unwrap();
+
+        let retained = engine.retract_relay_promotion(stored.id).await.unwrap();
+        assert_eq!(retained.content, "Keep this exact text");
+        assert!(retained.vault_node_id.is_none());
+        assert!(engine.get_node(node.id).await.unwrap().is_none());
     }
 
     #[tokio::test]

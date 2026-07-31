@@ -4,6 +4,8 @@
 - **Created:** 2026-07-26 · **Last recount:** 2026-07-27 (verified count re-derived from item status, not carried forward)
 - **Branch:** `feat/product-evolution-session`
 - **Governing law:** `INTEROPERABILITY_CONSTITUTION.md`, then `docs/adr/011-sovereign-interoperability-fabric.md`, then `docs/adr/012-governed-agent-execution-graph.md`
+- **Governing product plan:** `docs/MINDVAULT_NEXT_MASTER_PLAN.md` (product
+  direction and roadmap narrative; does not replace this file for status)
 - **Supersedes for execution tracking:** `DEVELOPMENT_PLAN.md` sections
   "Master Program Board", "Phase 0-4", and "Remaining Work"
 
@@ -1323,14 +1325,14 @@ operations remain deliberately out of scope for this foundation."*
 - **evidence:** —
 
 #### SPACE-004 — Communication-to-knowledge promotion boundary
-- **priority:** P0 — baseline P0; a live violation today
-- **status:** not_started
+- **priority:** P0 — baseline P0; was a live violation
+- **status:** in_progress
 - **mandate:** `collaborative-spaces-baseline.md:110-112` — "The relay currently inserts every allowed message into the knowledge graph. That violates the promotion boundary and can leak low-quality or private chat into retrieval, agent context, and downstream projections"; ADR 010:154-169
 - **governing_authority:** ADR 010 §Communication and knowledge promotion; ADR 010 acceptance gate 4 (`:265-266`)
 - **blocked_by:** none
-- **files:** `crates/mv-engine/src/relay.rs`, `crates/mv-engine/src/ingest.rs`
+- **files:** `crates/mv-engine/src/relay.rs`, `crates/mv-engine/src/engine/relay_ops.rs`, `crates/mv-engine/src/ingest.rs`, `crates/mv-core/src/traits.rs`, `crates/mv-core/src/model/exchange.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/email.rs`
 - **acceptance:** `cargo test -p mv-engine -- promotion_boundary` — a relay message does not enter the knowledge graph without explicit or policy-approved promotion; promotion records source message ID, extractor/actor, evidence, confidence, policy, approval; retraction re-indexes without rewriting source communication
-- **evidence:** —
+- **evidence:** Acceptance passes locally: `cargo test -p mv-engine -- promotion_boundary` → 3/3 ok (2026-07-31). Relay send/receive store communication only; `promote_relay_message` / `retract_relay_promotion` record provenance and retract without rewriting source messages. Promote to `verified` when this change is committed (needs command + commit + date).
 
 #### SPACE-005 — Execution evidence: versioned artifacts, budgets, grant snapshots
 - **priority:** P1 — baseline P1

@@ -577,11 +577,20 @@ async fn ingest_inbound_email(
 
     let stored = outcome.message;
 
-    if let Some(node_id) = stored.vault_node_id {
-        if !email.attachments.is_empty() {
+    if !email.attachments.is_empty() {
+        if let Some(node_id) = stored.vault_node_id {
             persist_inbound_attachments(
                 state,
                 node_id,
+                &email.attachments,
+                config.max_attachment_bytes,
+            )
+            .await?;
+        } else {
+            // Keep attachments with the communication record until promotion.
+            persist_relay_message_attachments(
+                state,
+                stored.id,
                 &email.attachments,
                 config.max_attachment_bytes,
             )
@@ -936,6 +945,85 @@ fn html_to_text(html: &str) -> String {
         }
     }
     output
+}
+
+
+async fn persist_relay_message_attachments(
+    state: &Arc<AppState>,
+    message_id: Uuid,
+    attachments: &[InboundAttachment],
+    max_attachment_bytes: usize,
+) -> MvResult<()> {
+    let Some(mut message) = state.engine.relay.get_message(message_id).await? else {
+        return Ok(());
+    };
+
+    let mut records = message
+        .metadata
+        .get("attachments")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<NodeAttachmentRecord>>(value).ok())
+        .unwrap_or_default();
+
+    let mut changed = false;
+    for attachment in attachments {
+        if attachment.bytes.is_empty() || attachment.bytes.len() > max_attachment_bytes {
+            continue;
+        }
+
+        let attachment_id = Uuid::now_v7().to_string();
+        let sanitized_name = sanitize_file_name(&attachment.file_name);
+        let relative_path = format!(
+            "blobs/relay/{}/{}_{}",
+            message_id, attachment_id, sanitized_name
+        );
+        let absolute_path = PathBuf::from(&state.engine.config.data_dir).join(&relative_path);
+
+        if let Some(parent) = absolute_path.parent() {
+            fs::create_dir_all(parent).map_err(|err| {
+                MvError::Storage(format!(
+                    "failed creating attachment dir {}: {err}",
+                    parent.display()
+                ))
+            })?;
+        }
+        fs::write(&absolute_path, &attachment.bytes).map_err(|err| {
+            MvError::Storage(format!(
+                "failed writing attachment {}: {err}",
+                absolute_path.display()
+            ))
+        })?;
+
+        records.push(NodeAttachmentRecord {
+            id: attachment_id,
+            file_name: attachment.file_name.clone(),
+            content_type: attachment.content_type.clone(),
+            size_bytes: attachment.bytes.len(),
+            stored_path: relative_path,
+            uploaded_at: Some(Utc::now().to_rfc3339()),
+            extraction_status: None,
+            extracted_chars: None,
+        });
+        changed = true;
+    }
+
+    if !changed {
+        return Ok(());
+    }
+
+    message.metadata.insert(
+        "attachments".to_string(),
+        serde_json::to_value(&records).map_err(|err| {
+            MvError::Storage(format!("serialize relay attachments failed: {err}"))
+        })?,
+    );
+    state
+        .engine
+        .store
+        .nodes
+        .update_relay_message_metadata(message_id, &message.metadata)
+        .await?;
+    Ok(())
 }
 
 async fn persist_inbound_attachments(

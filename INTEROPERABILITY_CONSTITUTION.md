@@ -182,6 +182,10 @@ connector quantity do not unlock this slice. Contract conformance does.
 - `docs/architecture/WORK_ORDER_MODEL.md`
 - `docs/architecture/EXECUTION_ISOLATION_MODEL.md`
 
+- `docs/MINDVAULT_NEXT_MASTER_PLAN.md` (superseding product/architecture plan;
+  does not override this constitution)
+- `IMPLEMENTATION_BACKLOG.md` (authoritative execution tracker)
+
 ## Execution tracking
 
 `IMPLEMENTATION_BACKLOG.md` is the authoritative record of every deferred,

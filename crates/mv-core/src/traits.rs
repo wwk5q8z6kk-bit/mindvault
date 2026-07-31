@@ -305,6 +305,20 @@ pub trait RelayStore: Send + Sync {
         offset: usize,
     ) -> MvResult<Vec<RelayMessage>>;
     async fn update_message_status(&self, id: Uuid, status: MessageStatus) -> MvResult<bool>;
+    /// Bind or clear the optional vault knowledge node for a relay message.
+    ///
+    /// Communication storage is independent of canonical knowledge. A vault
+    /// node ID is set only after explicit or policy-approved promotion.
+    async fn bind_relay_message_vault_node(
+        &self,
+        message_id: Uuid,
+        vault_node_id: Option<Uuid>,
+    ) -> MvResult<bool>;
+    async fn update_relay_message_metadata(
+        &self,
+        message_id: Uuid,
+        metadata: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> MvResult<bool>;
     async fn list_thread_messages(
         &self,
         thread_id: Uuid,

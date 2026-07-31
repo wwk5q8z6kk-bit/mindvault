@@ -817,3 +817,54 @@ impl RelayMessage {
         self
     }
 }
+
+/// Explicit or policy-approved promotion of communication into knowledge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayPromotionRequest {
+    pub message_id: Uuid,
+    pub namespace: String,
+    /// Extractor or promoting actor identity (`explicit`, policy id, or agent URI).
+    pub extractor: String,
+    /// Human or agent that initiated the promotion.
+    pub actor: String,
+    /// Evidence justifying promotion (quote, summary, policy decision id, etc.).
+    pub evidence: String,
+    pub confidence: f64,
+    pub policy: Option<String>,
+    pub approval: Option<String>,
+}
+
+impl RelayPromotionRequest {
+    pub fn explicit(message_id: Uuid, actor: impl Into<String>, evidence: impl Into<String>) -> Self {
+        Self {
+            message_id,
+            namespace: "default".into(),
+            extractor: "explicit".into(),
+            actor: actor.into(),
+            evidence: evidence.into(),
+            confidence: 1.0,
+            policy: None,
+            approval: None,
+        }
+    }
+
+    pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = namespace.into();
+        self
+    }
+
+    pub fn with_policy(mut self, policy: impl Into<String>) -> Self {
+        self.policy = Some(policy.into());
+        self
+    }
+
+    pub fn with_approval(mut self, approval: impl Into<String>) -> Self {
+        self.approval = Some(approval.into());
+        self
+    }
+
+    pub fn with_confidence(mut self, confidence: f64) -> Self {
+        self.confidence = confidence.clamp(0.0, 1.0);
+        self
+    }
+}
