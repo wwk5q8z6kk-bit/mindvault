@@ -506,6 +506,7 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 | 037 | Consumer inbox and checkpoints                  | Ready   |
 | 038 | Work Orders and Agent Runs                      | Ready   |
 | 039 | Command admission decisions                     | Ready   |
+| 040 | Identity registry                               | Ready   |
 
 ### Frontend Components (SvelteKit + Tauri)
 

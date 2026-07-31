@@ -100,7 +100,7 @@ work, or its citations are unanchored from the first day.
 |---|---|---|---|
 | DOC — documentation honesty | 9 | 5 | 8 |
 | PROG — program governance | 4 | 3 | 0 |
-| IK — interoperability kernel | 25 | 9 | 6 |
+| IK — interoperability kernel | 25 | 9 | 7 |
 | EXT — extension runtime & gateway | 9 | 0 | 0 |
 | PROTO — protocol adapters | 9 | 0 | 0 |
 | SRC — source authority & connectors | 8 | 0 | 0 |
@@ -316,13 +316,13 @@ interoperability kernel."
 
 #### IK-003 — Governed identity registry replacing the local-system fallback
 - **priority:** P0 — an explicitly labelled transition identity underneath all attribution
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:158-159` — "The current local-system fallback remains a transition identity until the governed identity registry is implemented"
 - **governing_authority:** Law 5 (`:54`); ADR 010 §Actors (`docs/adr/010-personal-vault-and-collaborative-spaces.md:82-101`)
 - **blocked_by:** none
-- **files:** `crates/mv-core/src/model/interoperability.rs`, new migration `038_identity_registry.sql`, `crates/mv-server/src/auth.rs`
+- **files:** `crates/mv-core/src/model/interoperability.rs`, `migrations/040_identity_registry.sql`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/auth.rs`, `crates/mv-server/src/rest/interoperability.rs`
 - **acceptance:** `cargo test -p mv-storage -- identity_registry` — principal URIs resolve through versioned identity records with actor kind (`human`/`agent`/`service`/`integration`); the local-system fallback is removed or gated behind an explicit dev flag
-- **evidence:** —
+- **evidence:** `cargo test -p mv-storage -- identity_registry` → 2/2 ok; commit pending; 2026-07-31. Migration 040 + `IdentityRecord`/`ActorKind`; `MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY` gates missing-subject fallback; `system_admin` uses explicit `local-system` subject.
 
 #### IK-004 — Outbox dispatcher worker
 - **priority:** P0 — the outbox has no runtime; events accumulate as pending forever

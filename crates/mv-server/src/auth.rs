@@ -66,8 +66,11 @@ pub struct AuthContext {
 
 impl AuthContext {
     pub fn system_admin() -> Self {
+        // Explicit transition identity for auth-disabled / local-admin paths.
+        // CommandIdentity no longer silently maps a missing subject to
+        // `local-system` unless MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY=1.
         Self {
-            subject: None,
+            subject: Some("local-system".into()),
             role: AuthRole::Admin,
             namespace: None,
             consumer_name: None,

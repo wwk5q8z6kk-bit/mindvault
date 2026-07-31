@@ -292,7 +292,26 @@ pub(crate) async fn create_work_order(
         .await
         .map_err(crate::rest::map_mv_error)?;
     // A stable per-subject principal; anonymous local access maps to "owner".
-    let subject = auth.subject.as_deref().unwrap_or("owner");
+    let subject = match auth.subject.as_deref() {
+        Some(subject) => subject,
+        None if std::env::var("MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY")
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false) =>
+        {
+            "local-system"
+        }
+        None => {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "missing auth subject; set MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY=1 to allow the local-system transition identity".into(),
+            ));
+        }
+    };
     let principal = StableUri::principal(
         local_node_id,
         Uuid::new_v5(&local_node_id, subject.as_bytes()),

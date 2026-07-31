@@ -775,6 +775,28 @@ pub trait InteroperabilityStore: Send + Sync {
         idempotency_key: &IdempotencyKey,
     ) -> MvResult<Option<CommandAdmissionDecisionRecord>>;
 
+    /// Insert or replace (revision+1) a governed identity record.
+    async fn upsert_identity_record(&self, record: &IdentityRecord) -> MvResult<IdentityRecord>;
+
+    async fn get_identity_record(&self, principal_id: Uuid) -> MvResult<Option<IdentityRecord>>;
+
+    async fn get_identity_by_principal_uri(
+        &self,
+        principal_uri: &StableUri,
+    ) -> MvResult<Option<IdentityRecord>>;
+
+    /// Resolve a principal by governing node + external auth subject.
+    async fn resolve_identity_by_subject(
+        &self,
+        governing_node_uri: &StableUri,
+        external_subject: &str,
+    ) -> MvResult<Option<IdentityRecord>>;
+
+    async fn list_identity_records(
+        &self,
+        status: Option<IdentityStatus>,
+    ) -> MvResult<Vec<IdentityRecord>>;
+
     /// Atomically register an immutable public schema and its event.
     async fn commit_public_schema_with_event(
         &self,

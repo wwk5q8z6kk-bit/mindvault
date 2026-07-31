@@ -9,7 +9,7 @@ use lettre::transport::smtp::authentication::Credentials as SmtpCredentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use mv_core::{
     ChannelType, ContentType, KnowledgeNode, MessageStatus, MvError, MvResult, RelayChannel,
-    RelayContact, RelayMessage, TrustLevel,
+    RelayContact, RelayMessage, RelayStore, TrustLevel,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

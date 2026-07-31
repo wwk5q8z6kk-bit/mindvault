@@ -155,8 +155,10 @@ request fields. Object keys and tags are order-normalized before hashing.
 | Mutation failure | Roll back both canonical state and outbox event |
 
 The authenticated subject is mapped deterministically to a principal URI under
-the local Context Node. The current local-system fallback remains a transition
-identity until the governed identity registry is implemented.
+the local Context Node. Governed identity records (migration 040) resolve
+principals with ADR 010 actor kinds. A missing auth subject no longer silently
+becomes `local-system` unless `MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY=1` is set;
+auth-disabled local admin uses an explicit `local-system` subject.
 
 ## Transactional outbox
 

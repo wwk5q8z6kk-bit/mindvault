@@ -714,6 +714,26 @@ interoperability_string_enum! {
 }
 
 interoperability_string_enum! {
+    /// ADR 010 actor kind for governed principals.
+    pub enum ActorKind {
+        Human => "human",
+        Agent => "agent",
+        Service => "service",
+        Integration => "integration",
+    }
+}
+
+interoperability_string_enum! {
+    /// Lifecycle status for a governed identity record.
+    pub enum IdentityStatus {
+        Active => "active",
+        Suspended => "suspended",
+        Revoked => "revoked",
+        Retired => "retired",
+    }
+}
+
+interoperability_string_enum! {
     /// Durable state of one outbox event's publication boundary.
     pub enum OutboxDeliveryState {
         Pending => "pending",
@@ -1660,6 +1680,63 @@ impl ContextCapabilityManifest {
         validate_sha256(&self.content_digest, "capability manifest content digest")?;
         if self.expected_digest() != self.content_digest {
             return Err("capability manifest digest does not match its canonical content".into());
+        }
+        Ok(())
+    }
+}
+
+/// Versioned governed identity for one principal URI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityRecord {
+    pub principal_id: Uuid,
+    pub revision: u64,
+    pub principal_uri: StableUri,
+    pub governing_node_uri: StableUri,
+    pub actor_kind: ActorKind,
+    pub status: IdentityStatus,
+    pub display_name: Option<String>,
+    /// External auth subject mapped into this Actor (not the Actor itself).
+    pub external_subject: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl IdentityRecord {
+    pub fn new(
+        governing_node_id: Uuid,
+        external_subject: impl Into<String>,
+        actor_kind: ActorKind,
+        display_name: impl Into<String>,
+    ) -> Self {
+        let subject = external_subject.into();
+        let principal_id = Uuid::new_v5(&governing_node_id, subject.as_bytes());
+        let now = Utc::now();
+        Self {
+            principal_id,
+            revision: 1,
+            principal_uri: StableUri::principal(governing_node_id, principal_id),
+            governing_node_uri: StableUri::node(governing_node_id),
+            actor_kind,
+            status: IdentityStatus::Active,
+            display_name: Some(display_name.into()),
+            external_subject: Some(subject),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.revision == 0 {
+            return Err("identity revision must be > 0".into());
+        }
+        let expected = StableUri::principal(
+            self.governing_node_uri
+                .context_node_uuid()
+                .ok_or_else(|| "governing_node_uri must be a node URI".to_string())?,
+            self.principal_id,
+        );
+        if self.principal_uri != expected {
+            return Err("principal_uri does not match governing node and principal_id".into());
         }
         Ok(())
     }
