@@ -129,7 +129,7 @@ Do these first.
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (437-462)
 - **acceptance:** `grep -n "Status:\*\* Complete" DEVELOPMENT_PLAN.md` returns nothing in the Remaining Work section; federation line reads `[~] Federation engine — experimental transport only; production disabled per FEDERATION_THREAT_MODEL.md:22`
-- **evidence:** Remaining Work Phase 3/4 no longer claim federation Complete; federation checklist uses `[~]` gated wording (2026-07-31, commit pending)
+- **evidence:** Remaining Work Phase 3/4 no longer claim federation Complete; federation checklist uses `[~]` gated wording (2026-07-31, commit )
 
 #### DOC-002 — Extend the `DEVELOPMENT_PLAN.md` migrations table from 025 to 037
 - **priority:** P0 — schema inventory is used to plan migrations; 12 rows missing
@@ -139,7 +139,7 @@ Do these first.
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (391-415, and 344 "all 25 migrations")
 - **acceptance:** `ls migrations/*.sql | wc -l` equals the row count of the migrations table; rows exist for 026 node_comments, 027 mcp_connectors, 028 sealed_node_payloads, 029 key_epoch_reencryption, 030 conversation_turn_sources, 031 knowledge_workspace_manifest, 032 interoperability_kernel, 033 governed_interoperability_registries, 034 context_node_registry, 035 authority_grants, 036 outbox_dispatch_and_action_receipts, 037 consumer_inbox_checkpoints
-- **evidence:** migrations table has 39 rows matching `ls migrations/*.sql | wc -l` including 026-039 (2026-07-31, commit pending)
+- **evidence:** migrations table has 39 rows matching `ls migrations/*.sql | wc -l` including 026-039 (2026-07-31, commit )
 
 #### DOC-003 — Replace `DEVELOPMENT_PLAN.md:351`'s definition of "Complete"
 - **priority:** P0 — this sentence is the root cause of DOC-001 and DOC-009
@@ -149,7 +149,7 @@ Do these first.
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (349-351)
 - **acceptance:** line 351 states that completeness for any capability governed by the constitution means the feature-completeness contract is satisfied and points to `IMPLEMENTATION_BACKLOG.md`; the phrase "code is present in the repository" no longer appears
-- **evidence:** removed "code is present in the repository"; completeness points to constitution + IMPLEMENTATION_BACKLOG.md (2026-07-31, commit pending)
+- **evidence:** removed "code is present in the repository"; completeness points to constitution + IMPLEMENTATION_BACKLOG.md (2026-07-31, commit )
 
 #### DOC-004 — Register the four unregistered contracts in the constitution
 - **priority:** P0 — unregistered contracts are invisible to anyone following the constitution
@@ -159,7 +159,7 @@ Do these first.
 - **blocked_by:** none
 - **files:** `INTEROPERABILITY_CONSTITUTION.md` (169-177)
 - **acceptance:** all 11 files under `docs/architecture/` referenced by ADR 011 or the kernel doc appear in the list; `for f in $(grep -o 'docs/architecture/[A-Za-z_-]*\.md' INTEROPERABILITY_CONSTITUTION.md); do test -f "$f"; done` passes
-- **evidence:** constitution Supporting contracts list includes ACTION_RECEIPT, AUTHORITY_GRANT, CONSUMER_INBOX, interoperability-kernel-v1; linked architecture paths exist (2026-07-31, commit pending)
+- **evidence:** constitution Supporting contracts list includes ACTION_RECEIPT, AUTHORITY_GRANT, CONSUMER_INBOX, interoperability-kernel-v1; linked architecture paths exist (2026-07-31, commit )
 
 #### DOC-005 — Add `AUTHORITY_GRANT_MODEL.md` to `docs/README.md`
 - **priority:** P1 — the doc index registers 12 of 13 new contracts
@@ -169,7 +169,7 @@ Do these first.
 - **blocked_by:** none
 - **files:** `docs/README.md`
 - **acceptance:** `grep -c AUTHORITY_GRANT_MODEL docs/README.md` ≥ 1
-- **evidence:** `grep -c AUTHORITY_GRANT_MODEL docs/README.md` = 1 (2026-07-31, commit pending)
+- **evidence:** `grep -c AUTHORITY_GRANT_MODEL docs/README.md` = 1 (2026-07-31, commit )
 
 #### DOC-006 — Register `IMPLEMENTATION_BACKLOG.md` in the constitution
 - **priority:** P0 — without this the backlog is an orphan and repeats the drift it exists to prevent
@@ -179,7 +179,7 @@ Do these first.
 - **blocked_by:** none
 - **files:** `INTEROPERABILITY_CONSTITUTION.md`
 - **acceptance:** `grep -c IMPLEMENTATION_BACKLOG INTEROPERABILITY_CONSTITUTION.md` ≥ 1
-- **evidence:** `grep -c IMPLEMENTATION_BACKLOG INTEROPERABILITY_CONSTITUTION.md` = 2 (2026-07-31, commit pending)
+- **evidence:** `grep -c IMPLEMENTATION_BACKLOG INTEROPERABILITY_CONSTITUTION.md` = 2 (2026-07-31, commit )
 
 #### DOC-007 — Point `DEVELOPMENT_PLAN.md` at the backlog for execution tracking
 - **priority:** P1 — readers currently land on the all-`[x]` board first
@@ -189,7 +189,7 @@ Do these first.
 - **blocked_by:** DOC-006 (inferred)
 - **files:** `DEVELOPMENT_PLAN.md` (3-29), `DEVELOPMENT_PLAN.md:285` Master Program Board header
 - **acceptance:** the notice block names `IMPLEMENTATION_BACKLOG.md` as the execution tracker; the Master Program Board carries a "pre-constitution, historical" header
-- **evidence:** notice names IMPLEMENTATION_BACKLOG.md; Master Program Board header marked pre-constitution, historical (2026-07-31, commit pending)
+- **evidence:** notice names IMPLEMENTATION_BACKLOG.md; Master Program Board header marked pre-constitution, historical (2026-07-31, commit )
 
 #### DOC-008 — Reconcile ADR 010 status `Proposed` with the constitution calling it authoritative
 - **priority:** P2 — derived: no doc declares this blocking, but it is an unresolved contradiction
@@ -209,7 +209,7 @@ Do these first.
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (367-390)
 - **acceptance:** the row reads `Experimental — production disabled (FEDERATION_THREAT_MODEL.md:22)`
-- **evidence:** Federation Engine row reads Experimental — production disabled (FEDERATION_THREAT_MODEL.md:22) (2026-07-31, commit pending)
+- **evidence:** Federation Engine row reads Experimental — production disabled (FEDERATION_THREAT_MODEL.md:22) (2026-07-31, commit )
 
 ---
 
