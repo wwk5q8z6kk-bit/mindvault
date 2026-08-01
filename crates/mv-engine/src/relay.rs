@@ -61,9 +61,10 @@ impl RelayEngine {
     /// Call [`MindVaultEngine::promote_relay_message`] for governed promotion.
     pub async fn send_message(
         &self,
-        message: RelayMessage,
+        mut message: RelayMessage,
         _namespace: &str,
     ) -> MvResult<RelayMessage> {
+        message.vault_node_id = None;
         self.store.nodes.add_relay_message(&message).await?;
         Ok(message)
     }

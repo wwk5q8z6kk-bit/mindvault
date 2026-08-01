@@ -64,7 +64,7 @@ WHEN
     OR NEW.actor_kind != OLD.actor_kind
     OR NEW.revision != OLD.revision + 1
 BEGIN
-    SELECT RAISE(ABORT, 'interoperability identity identity fields or revision jump invalid');
+    SELECT RAISE(ABORT, 'interoperability identity fields or revision jump invalid');
 END;
 
 CREATE TRIGGER IF NOT EXISTS archive_interoperability_identity_revision

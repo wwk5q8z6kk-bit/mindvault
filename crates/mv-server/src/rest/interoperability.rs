@@ -219,6 +219,12 @@ pub(crate) async fn admit_command(
 mod tests {
     use super::*;
     use crate::auth::AuthRole;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn auth_with_subject(subject: Option<&str>) -> AuthContext {
         let mut auth = AuthContext::system_admin();
@@ -253,6 +259,7 @@ mod tests {
     /// An unauthenticated-subject caller still gets a deterministic principal.
     #[test]
     fn a_missing_subject_derives_the_local_system_principal() {
+        let _guard = env_lock().lock().expect("env lock");
         let node_id = Uuid::now_v7();
         // Without the explicit transition flag, missing subjects are rejected.
         assert!(CommandIdentity::derive(&auth_with_subject(None), node_id).is_err());

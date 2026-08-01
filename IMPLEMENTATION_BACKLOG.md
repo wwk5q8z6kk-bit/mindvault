@@ -130,7 +130,7 @@ Do these first.
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (437-462)
 - **acceptance:** `grep -n "Status:\*\* Complete" DEVELOPMENT_PLAN.md` returns nothing in the Remaining Work section; federation line reads `[~] Federation engine — experimental transport only; production disabled per FEDERATION_THREAT_MODEL.md:22`
-- **evidence:** Remaining Work Phase 3/4 no longer claim federation Complete; federation checklist uses `[~]` gated wording (2026-07-31, commit )
+- **evidence:** Remaining Work Phase 3/4 no longer claim federation Complete; federation checklist uses `[~]` gated wording (2026-07-31, commit 3de2371)
 
 #### DOC-002 — Extend the `DEVELOPMENT_PLAN.md` migrations table from 025 to 037
 - **priority:** P0 — schema inventory is used to plan migrations; 12 rows missing
@@ -140,7 +140,7 @@ Do these first.
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (391-415, and 344 "all 25 migrations")
 - **acceptance:** `ls migrations/*.sql | wc -l` equals the row count of the migrations table; rows exist for 026 node_comments, 027 mcp_connectors, 028 sealed_node_payloads, 029 key_epoch_reencryption, 030 conversation_turn_sources, 031 knowledge_workspace_manifest, 032 interoperability_kernel, 033 governed_interoperability_registries, 034 context_node_registry, 035 authority_grants, 036 outbox_dispatch_and_action_receipts, 037 consumer_inbox_checkpoints
-- **evidence:** migrations table has 39 rows matching `ls migrations/*.sql | wc -l` including 026-039 (2026-07-31, commit )
+- **evidence:** migrations table has 39 rows matching `ls migrations/*.sql | wc -l` including 026-039 (2026-07-31, commit 3de2371)
 
 #### DOC-003 — Replace `DEVELOPMENT_PLAN.md:351`'s definition of "Complete"
 - **priority:** P0 — this sentence is the root cause of DOC-001 and DOC-009

@@ -299,7 +299,9 @@ pub(crate) async fn create_work_order(
         .local_context_node_id()
         .await
         .map_err(crate::rest::map_mv_error)?;
-    // A stable per-subject principal; anonymous local access maps to "owner".
+    // A stable per-subject principal; missing subjects are rejected unless the
+    // MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY transition flag is enabled, in
+    // which case they map to "local-system".
     let subject = match auth.subject.as_deref() {
         Some(subject) => subject,
         None if std::env::var("MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY")
@@ -524,9 +526,21 @@ pub(crate) async fn approve_run(
 pub(crate) async fn execute_run(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
-    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+    Path((work_order_id, run_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<ExecuteRunResponse>, (StatusCode, String)> {
     authorize_write(&auth)?;
+    // Validate that the run belongs to the declared work order before executing.
+    let run = state
+        .engine
+        .store
+        .nodes
+        .get_agent_run(run_id)
+        .await
+        .map_err(crate::rest::map_mv_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "agent run not found".to_string()))?;
+    if run.work_order_id != work_order_id {
+        return Err((StatusCode::NOT_FOUND, "agent run not found".to_string()));
+    }
     let executed = state
         .engine
         .execute_run(run_id)
