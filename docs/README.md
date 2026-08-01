@@ -46,6 +46,10 @@
   boundaries, and production release gates.
 - `architecture/DATA_PORTABILITY_CONTRACT.md`: Export, import, round-trip, and
   exit guarantees.
+- `UI_UX_PRODUCT_EXPERIENCE_AUDIT.md`: Canonical 2026-07-31 product experience
+  audit (UX/UI/IA/a11y/design system/competitive parity/roadmap/backlog).
+  Supersedes `ux-audit.md` for systemic judgment.
+- `ux-audit.md`: Historical Feb 2026 page-level frontend defect log.
 - `onboarding.md`: First-run setup and verification steps.
 - `architecture/system-overview.md`: High-level MindVault architecture diagram and data flow.
 - `architecture/knowledge-workspace.md`: File-first Library storage, identity,
