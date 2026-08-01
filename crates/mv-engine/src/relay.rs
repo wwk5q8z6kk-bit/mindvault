@@ -55,35 +55,34 @@ impl RelayEngine {
 
     // --- Messages ---
 
-    /// Send a message: store it, create a vault node for searchability, return the message.
+    /// Send a message into the communication store only.
+    ///
+    /// Messages are not automatically promoted into the knowledge graph.
+    /// Call [`MindVaultEngine::promote_relay_message`] for governed promotion.
     pub async fn send_message(
         &self,
         mut message: RelayMessage,
-        namespace: &str,
+        _namespace: &str,
     ) -> MvResult<RelayMessage> {
-        // Create a KnowledgeNode for this conversation message
-        let node = KnowledgeNode::new(NodeKind::Conversation, message.content.clone())
-            .with_namespace(namespace.to_string())
-            .with_tags(vec![
-                "relay".to_string(),
-                format!("channel:{}", message.channel_id),
-            ]);
-
-        self.store.nodes.insert(&node).await?;
-        message.vault_node_id = Some(node.id);
-
+        message.vault_node_id = None;
         self.store.nodes.add_relay_message(&message).await?;
         Ok(message)
     }
 
-    /// Receive an inbound message (from another vault).
+    /// Receive an inbound message into the communication store only.
+    ///
+    /// Allowed messages remain communication until explicit or policy-approved
+    /// promotion. Blocked senders are retained with Failed status and no vault
+    /// node binding.
     pub async fn receive_message(
         &self,
         mut message: RelayMessage,
-        namespace: &str,
+        _namespace: &str,
     ) -> MvResult<RelayMessage> {
         message.direction = MessageDirection::Inbound;
         message.status = MessageStatus::Delivered;
+        // Never auto-bind communication into canonical knowledge.
+        message.vault_node_id = None;
 
         let mut blocked = false;
         if let Some(sender_id) = message.sender_contact_id {
@@ -111,17 +110,6 @@ impl RelayEngine {
             message
                 .metadata
                 .insert("blocked".to_string(), serde_json::Value::Bool(true));
-        } else {
-            let node = KnowledgeNode::new(NodeKind::Conversation, message.content.clone())
-                .with_namespace(namespace.to_string())
-                .with_tags(vec![
-                    "relay".to_string(),
-                    "inbound".to_string(),
-                    format!("channel:{}", message.channel_id),
-                ]);
-
-            self.store.nodes.insert(&node).await?;
-            message.vault_node_id = Some(node.id);
         }
 
         self.store.nodes.add_relay_message(&message).await?;
@@ -172,7 +160,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn inbound_message_creates_vault_node() {
+    async fn inbound_message_stays_out_of_knowledge_graph() {
         let store = Arc::new(UnifiedStore::in_memory(384).unwrap());
         let engine = RelayEngine::new(Arc::clone(&store));
 
@@ -186,7 +174,12 @@ mod tests {
         let stored = engine.receive_message(message, "default").await.unwrap();
 
         assert_eq!(stored.status, MessageStatus::Delivered);
-        assert!(stored.vault_node_id.is_some());
+        assert!(stored.vault_node_id.is_none());
+        let nodes = store.nodes.list(&QueryFilters::default(), 100, 0).await.unwrap();
+        assert!(
+            nodes.is_empty(),
+            "relay receive must not insert knowledge nodes"
+        );
     }
 
     #[tokio::test]
@@ -212,5 +205,7 @@ mod tests {
             stored.metadata.get("blocked"),
             Some(&serde_json::Value::Bool(true))
         );
+        let nodes = store.nodes.list(&QueryFilters::default(), 100, 0).await.unwrap();
+        assert!(nodes.is_empty());
     }
 }

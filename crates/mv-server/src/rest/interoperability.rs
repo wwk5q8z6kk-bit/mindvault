@@ -62,15 +62,39 @@ impl CommandIdentity {
     /// The derivation is `Uuid::new_v5(local_node_id, subject)` and must stay
     /// byte-identical: the node-create replay index is principal-scoped, so a
     /// changed principal URI would silently orphan every prior idempotency key.
-    pub(crate) fn derive(auth: &AuthContext, local_node_id: Uuid) -> Self {
-        let subject = auth.subject.as_deref().unwrap_or("local-system");
+    ///
+    /// Missing subjects no longer silently become `local-system` unless the
+    /// explicit transition flag `MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY=1` is set
+    /// (IK-003). Prefer registering a governed identity and authenticating a
+    /// real subject.
+    pub(crate) fn derive(auth: &AuthContext, local_node_id: Uuid) -> Result<Self, String> {
+        let subject = match auth.subject.as_deref() {
+            Some(subject) => subject,
+            None if allow_local_system_identity() => "local-system",
+            None => {
+                return Err(
+                    "missing auth subject; set MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY=1 to allow the local-system transition identity".into(),
+                );
+            }
+        };
         let principal_id = Uuid::new_v5(&local_node_id, subject.as_bytes());
         let principal = StableUri::principal(local_node_id, principal_id);
-        Self {
+        Ok(Self {
             actor: principal.clone(),
             principal,
-        }
+        })
     }
+}
+
+fn allow_local_system_identity() -> bool {
+    std::env::var("MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 /// Build the admission question for a node create.
@@ -195,6 +219,12 @@ pub(crate) async fn admit_command(
 mod tests {
     use super::*;
     use crate::auth::AuthRole;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn auth_with_subject(subject: Option<&str>) -> AuthContext {
         let mut auth = AuthContext::system_admin();
@@ -208,7 +238,7 @@ mod tests {
     #[test]
     fn command_identity_derives_a_stable_principal_uri() {
         let node_id = Uuid::now_v7();
-        let identity = CommandIdentity::derive(&auth_with_subject(Some("owner")), node_id);
+        let identity = CommandIdentity::derive(&auth_with_subject(Some("owner")), node_id).unwrap();
 
         let expected = StableUri::principal(node_id, Uuid::new_v5(&node_id, b"owner"));
         assert_eq!(identity.principal, expected);
@@ -218,21 +248,27 @@ mod tests {
         );
 
         // Stable across calls.
-        let again = CommandIdentity::derive(&auth_with_subject(Some("owner")), node_id);
+        let again = CommandIdentity::derive(&auth_with_subject(Some("owner")), node_id).unwrap();
         assert_eq!(again.principal, expected);
 
         // A different subject is a different principal.
-        let other = CommandIdentity::derive(&auth_with_subject(Some("delegate")), node_id);
+        let other = CommandIdentity::derive(&auth_with_subject(Some("delegate")), node_id).unwrap();
         assert_ne!(other.principal, expected);
     }
 
     /// An unauthenticated-subject caller still gets a deterministic principal.
     #[test]
     fn a_missing_subject_derives_the_local_system_principal() {
+        let _guard = env_lock().lock().expect("env lock");
         let node_id = Uuid::now_v7();
-        let identity = CommandIdentity::derive(&auth_with_subject(None), node_id);
+        // Without the explicit transition flag, missing subjects are rejected.
+        assert!(CommandIdentity::derive(&auth_with_subject(None), node_id).is_err());
+
+        std::env::set_var("MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY", "1");
+        let identity = CommandIdentity::derive(&auth_with_subject(None), node_id).unwrap();
         let expected = StableUri::principal(node_id, Uuid::new_v5(&node_id, b"local-system"));
         assert_eq!(identity.principal, expected);
+        std::env::remove_var("MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY");
     }
 
     /// The admission question must mirror the node-create envelope exactly.
@@ -240,7 +276,7 @@ mod tests {
     fn a_node_create_request_targets_the_governing_node() {
         let node_id = Uuid::now_v7();
         let resource_id = Uuid::now_v7();
-        let identity = CommandIdentity::derive(&auth_with_subject(Some("owner")), node_id);
+        let identity = CommandIdentity::derive(&auth_with_subject(Some("owner")), node_id).unwrap();
         let request = node_create_admission_request(
             &identity,
             node_id,

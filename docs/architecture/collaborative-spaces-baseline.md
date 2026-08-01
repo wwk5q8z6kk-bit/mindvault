@@ -39,7 +39,7 @@ other Context Nodes.
 | Relay contacts          | Contact identity is display name, public key, optional vault address, trust level, and optional autonomy rule.                                                                           | `crates/mv-core/src/model/exchange.rs:517-546,675-713`; `migrations/008_relay.sql:2-12`                                                        | Migrate external identifiers to Actor identity mappings; do not treat trust level as membership.                                                       |
 | Relay channels          | Direct/group channel stores member contact UUIDs as a JSON list; it has no owner, Space, membership role, policy, or version.                                                            | `crates/mv-core/src/model/exchange.rs:715-748`; `migrations/008_relay.sql:16-23`                                                               | Preserve as communication projection after adding Space ownership; never promote it to the authority boundary.                                         |
 | Relay messages          | Message has direction, contacts, content, status, optional vault node, and free-form metadata; no principal/acting actor/delegation/policy fields.                                       | `crates/mv-core/src/model/exchange.rs:750-803`; `migrations/008_relay.sql:27-46`                                                               | Replace write contract with the ADR 010 action envelope; migrate legacy rows as unattributed historical communication.                                 |
-| Knowledge registration  | Sending or receiving creates a `Conversation` node immediately; a test asserts inbound registration.                                                                                     | `crates/mv-engine/src/relay.rs:58-128,170-190`                                                                                                 | Stop automatic canonical promotion. Add raw communication retention, candidate extraction, and explicit/policy-approved promotion.                     |
+| Knowledge registration  | Relay retains messages without inserting knowledge nodes; promotion is explicit via `promote_relay_message` with provenance; retraction preserves source communication.                 | `crates/mv-engine/src/relay.rs`; `crates/mv-engine/src/engine/relay_ops.rs`                                                                    | Candidate extraction object and promote/retract API/UX remain follow-ups.                                                                              |
 | Relay authorization     | Relay routes check coarse read/write roles and select an auth namespace, but do not authorize channel membership.                                                                        | `crates/mv-server/src/rest/relay.rs:360-426,461-517`; `crates/mv-server/src/auth.rs:58-113,391-419`                                            | Reuse auth middleware and default-deny patterns; add Actor and Space membership/resource checks.                                                       |
 | Tasks                   | Tasks are `KnowledgeNode(kind=task)` records; status, assignee, dependencies, due date, and other fields are mapped through metadata.                                                    | `frontend/src/lib/api/tasks.ts:5-97`; `crates/mv-server/src/rest.rs:8790-8857`                                                                 | Reuse user-facing task behavior during migration. Add typed ownership, Space, assignment, revision, and provenance before shared use.                  |
 | Agent plans             | Plans and steps have goals, actions, status, JSON input/output, and errors, but no requester, agent identity, grants, budgets, artifacts, evidence, or approval chain.                   | `crates/mv-engine/src/planner.rs:25-125`; `migrations/024_plans.sql`                                                                           | Adapt decomposition/execution logic behind new WorkOrder and AgentRun records; do not equate a plan with a run.                                        |
@@ -107,16 +107,18 @@ Unlock evidence:
 
 ### P0: communication is not canonical knowledge
 
-The relay currently inserts every allowed message into the knowledge graph.
-That violates the promotion boundary and can leak low-quality or private chat
-into retrieval, agent context, and downstream projections.
+**Status (2026-07-31):** Live auto-promotion removed. Relay send/receive retain
+messages in the communication store only. Explicit/policy promotion via
+`MindVaultEngine::promote_relay_message` records source message ID, extractor,
+actor, evidence, confidence, policy, and approval; retraction removes the
+knowledge node/indexes without rewriting source communication
+(`cargo test -p mv-engine -- promotion_boundary`).
 
-Unlock evidence:
+Remaining follow-ups:
 
-- raw message retention and deletion policy;
-- candidate extraction records with source message/version;
-- explicit or policy-approved promotion with provenance;
-- retraction and re-index tests that do not rewrite source communication.
+- broader retention/deletion policy for raw communication;
+- candidate extraction records (pre-canonical) as a first-class object;
+- REST/UX surfaces for promote/retract.
 
 ### P1: execution evidence and trust
 

@@ -1,5 +1,15 @@
 # MindVault Sovereign Intelligence System: Enhanced Comprehensive Development Plan
 
+> **Product direction superseded (2026-07-31):**
+> [`docs/MINDVAULT_NEXT_MASTER_PLAN.md`](docs/MINDVAULT_NEXT_MASTER_PLAN.md) is
+> the superseding product, architecture, and roadmap specification (MindVault
+> Next / Sovereign Context Fabric), including Domain Expansion and Competitive
+> Expansion parts. **This file is historical baseline + migration inventory
+> only.** Do not plan new product work from the vision/roadmap sections below.
+>
+> **Execution tracking:** [`IMPLEMENTATION_BACKLOG.md`](IMPLEMENTATION_BACKLOG.md)
+> is the sole authoritative tracker (`verified` requires evidence).
+>
 > **Architecture direction notice (2026-07-26):** The Interoperability
 > Constitution and ADR 011 are the highest-priority target architecture. ADR
 > 010 defines Personal Vault and Collaborative Space semantics within that
@@ -302,7 +312,7 @@ This section is the operational source of truth for day-to-day execution.
   - user-facing docs updated
 - Phase progression is sequential; the next phase does not start until the previous exit criteria are met and verified.
 
-### 4) Master Program Board
+### 4) Master Program Board (pre-constitution, historical)
 
 - [x] `P0` Keep sovereign defaults strict (offline-first, local embeddings, explicit opt-ins)
 - [x] `P1` Owner profile as canonical identity source (API/UI + relay sync + federation identity + handshake + HMAC signing; 20 tests)
@@ -399,7 +409,7 @@ This section is the operational source of truth for day-to-day execution.
 
 - [x] Plugin framework + management UI
 - [x] Performance profiling + large-vault benchmarks (SQLite/Engine/Vector benchmarks baselined)
-- [x] Onboarding/docs + migration polish (migration runner with schema_version inserts for all 25 migrations, docs + ADRs)
+- [x] Onboarding/docs + migration polish (migration runner with schema_version inserts for all migrations through 039, docs + ADRs)
 - [x] AI sidecar proxy endpoints (optional local OpenAI-compatible bridge)
 - [x] Public share links (backend + web admin UI + Svelte/Tauri UI + public viewer)
 - [x] Community module support and marketplace considerations (manifest: repository/license/homepage/checksum/min_version/keywords; SHA-256 verification on install; 5 new tests)
@@ -411,17 +421,13 @@ This section is the operational source of truth for day-to-day execution.
 > and in the A→Z Program Map predate the Interoperability Constitution and mark
 > items complete under the weaker definition below. Do not plan from them.
 
-Note: “Complete” in the tables below means **only that code is present in the
-repository**. It does not mean the capability is governed, reachable,
-conformance-tested, or safe to enable. That weaker definition is why several
-rows read "Complete" for subsystems whose own contracts still gate them — most
-visibly Federation, which `docs/architecture/FEDERATION_THREAT_MODEL.md:22`
-requires to stay disabled in production until its release gates pass.
-
-A capability is complete only when it satisfies the ten-point feature
-completeness contract in `INTEROPERABILITY_CONSTITUTION.md:112-128` and its
-backlog item carries a verification command whose output was observed.
-Operational validation is tracked in `IMPLEMENTATION_BACKLOG.md`.
+Note: Historical tables below may still say “Complete.” For any capability
+governed by the Interoperability Constitution, completeness means the
+feature-completeness contract in `INTEROPERABILITY_CONSTITUTION.md` is
+satisfied and the matching item in `IMPLEMENTATION_BACKLOG.md` has passing
+acceptance evidence. Rows that still say Complete for gated subsystems
+(especially Federation per `docs/architecture/FEDERATION_THREAT_MODEL.md`) are
+provenance labels only — treat them as **code-present, governance incomplete**.
 
 ### Architecture Summary
 
@@ -449,7 +455,7 @@ Operational validation is tracked in `IMPLEMENTATION_BACKLOG.md`.
 | Relay Engine        | `relay.rs`             | Complete                   | /api/v1/relay/\*               |
 | MultiModal Pipeline | `multimodal/`          | Complete (audio/image/pdf) | /api/v1/multimodal/status      |
 | Sync Engine         | `sync/`                | Complete                   | /api/v1/sync/\*                |
-| Federation Engine   | `federation.rs`        | Gated (see FED-000)        | /api/v1/federation/\*          |
+| Federation Engine   | `federation.rs`        | Experimental — production disabled (FEDERATION_THREAT_MODEL.md:22) | /api/v1/federation/*          |
 | Metrics Collector   | `metrics_collector.rs` | Complete                   | /api/v1/metrics/\*             |
 | Intent Executor     | `intent_executor.rs`   | Complete                   | On-demand via apply_intent()   |
 
@@ -499,6 +505,8 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 | 036 | Outbox dispatch and action receipts             | Ready   |
 | 037 | Consumer inbox and checkpoints                  | Ready   |
 | 038 | Work Orders and Agent Runs                      | Ready   |
+| 039 | Command admission decisions                     | Ready   |
+| 040 | Identity registry                               | Ready   |
 
 ### Frontend Components (SvelteKit + Tauri)
 
@@ -573,13 +581,14 @@ Frontend:
 
 ### Phase 4: Ecosystem & Polish
 
-**Status:** Complete
+**Status:** Historical checklist only — do not treat as governance-complete.
+Tracked remaining work lives in `IMPLEMENTATION_BACKLOG.md`.
 
 - [x] Define plugin framework (hooks, manifest, registry)
 - [x] Wire plugin registry to REST endpoints
 - [x] Build plugin management UI (/plugins)
 - [x] Performance profiling + optimization pass (Criterion benchmarks: SQLite 6, Engine 4, Vector 6; baseline established)
-- [x] Documentation, onboarding, and migration polish (migration runner with schema_version inserts for all 25 migrations; docs: onboarding, plugin-development, CONTRIBUTING, 7 ADRs, architecture)
+- [x] Documentation, onboarding, and migration polish (migration runner with schema_version inserts for all migrations through 039; docs: onboarding, plugin-development, CONTRIBUTING, 7 ADRs, architecture)
 - [x] Community module support (manifest community fields: repository/license/homepage/checksum/min_version/keywords; SHA-256 checksum verification on install; 5 new tests, 16 total plugin tests)
 - [x] Public share links: read-only public viewer for `/public/shares/:token`
 

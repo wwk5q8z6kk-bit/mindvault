@@ -1,5 +1,12 @@
 # MindVault Frontend UX Audit (Feb 12, 2026)
 
+> **Superseded for systemic judgment, IA, competitive strategy, roadmap, and
+> engineering backlog by
+> [`UI_UX_PRODUCT_EXPERIENCE_AUDIT.md`](UI_UX_PRODUCT_EXPERIENCE_AUDIT.md)
+> (2026-07-31).** Keep this file as a historical page-level defect log; several
+> findings (token adoption, `confirm`/`prompt`, focus rings) remain open and are
+> restated with fresh evidence in the superseding audit.
+
 ## Executive Summary
 
 Systematic review of all 25+ pages and key components. The app has a strong dark-themed foundation with good component modularity. However, three systemic issues recur across the entire surface:

@@ -305,6 +305,20 @@ pub trait RelayStore: Send + Sync {
         offset: usize,
     ) -> MvResult<Vec<RelayMessage>>;
     async fn update_message_status(&self, id: Uuid, status: MessageStatus) -> MvResult<bool>;
+    /// Bind or clear the optional vault knowledge node for a relay message.
+    ///
+    /// Communication storage is independent of canonical knowledge. A vault
+    /// node ID is set only after explicit or policy-approved promotion.
+    async fn bind_relay_message_vault_node(
+        &self,
+        message_id: Uuid,
+        vault_node_id: Option<Uuid>,
+    ) -> MvResult<bool>;
+    async fn update_relay_message_metadata(
+        &self,
+        message_id: Uuid,
+        metadata: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> MvResult<bool>;
     async fn list_thread_messages(
         &self,
         thread_id: Uuid,
@@ -760,6 +774,28 @@ pub trait InteroperabilityStore: Send + Sync {
         principal: &StableUri,
         idempotency_key: &IdempotencyKey,
     ) -> MvResult<Option<CommandAdmissionDecisionRecord>>;
+
+    /// Insert or replace (revision+1) a governed identity record.
+    async fn upsert_identity_record(&self, record: &IdentityRecord) -> MvResult<IdentityRecord>;
+
+    async fn get_identity_record(&self, principal_id: Uuid) -> MvResult<Option<IdentityRecord>>;
+
+    async fn get_identity_by_principal_uri(
+        &self,
+        principal_uri: &StableUri,
+    ) -> MvResult<Option<IdentityRecord>>;
+
+    /// Resolve a principal by governing node + external auth subject.
+    async fn resolve_identity_by_subject(
+        &self,
+        governing_node_uri: &StableUri,
+        external_subject: &str,
+    ) -> MvResult<Option<IdentityRecord>>;
+
+    async fn list_identity_records(
+        &self,
+        status: Option<IdentityStatus>,
+    ) -> MvResult<Vec<IdentityRecord>>;
 
     /// Atomically register an immutable public schema and its event.
     async fn commit_public_schema_with_event(

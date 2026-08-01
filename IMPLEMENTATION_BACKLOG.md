@@ -1,9 +1,11 @@
 # MindVault Implementation Backlog
 
 - **Status:** Authoritative execution tracker
-- **Created:** 2026-07-26 · **Last recount:** 2026-07-27 (verified count re-derived from item status, not carried forward)
+- **Created:** 2026-07-26 · **Last recount:** 2026-07-31 (UX group appended; recount dashboard when verifying)
 - **Branch:** `feat/product-evolution-session`
 - **Governing law:** `INTEROPERABILITY_CONSTITUTION.md`, then `docs/adr/011-sovereign-interoperability-fabric.md`, then `docs/adr/012-governed-agent-execution-graph.md`
+- **Governing product plan:** `docs/MINDVAULT_NEXT_MASTER_PLAN.md` (product
+  direction and roadmap narrative; does not replace this file for status)
 - **Supersedes for execution tracking:** `DEVELOPMENT_PLAN.md` sections
   "Master Program Board", "Phase 0-4", and "Remaining Work"
 
@@ -96,9 +98,9 @@ work, or its citations are unanchored from the first day.
 
 | Group | Items | P0 | verified |
 |---|---|---|---|
-| DOC — documentation corrections | 9 | 5 | 0 |
+| DOC — documentation honesty | 9 | 5 | 8 |
 | PROG — program governance | 4 | 3 | 0 |
-| IK — interoperability kernel | 25 | 9 | 6 |
+| IK — interoperability kernel | 25 | 9 | 7 |
 | EXT — extension runtime & gateway | 9 | 0 | 0 |
 | PROTO — protocol adapters | 9 | 0 | 0 |
 | SRC — source authority & connectors | 8 | 0 | 0 |
@@ -106,11 +108,12 @@ work, or its citations are unanchored from the first day.
 | PORT — portability & conformance | 7 | 0 | 0 |
 | SLICE — end-to-end vertical slice | 3 | 0 | 0 |
 | WS — knowledge workspace | 22 | 6 | 0 |
-| SPACE — collaborative spaces | 8 | 4 | 0 |
+| SPACE — collaborative spaces | 8 | 4 | 1 |
 | PARK — explicitly deferred | 6 | 0 | 0 |
-| AGENT — governed agent execution graph | 8 | 1 | 0 |
+| AGENT — governed agent execution | 8 | 1 | 1 |
 | HYG — engineering hygiene | 6 | 1 | 3 |
-| **Total** | **138** | **39** | **9** |
+| UX — product experience (see `docs/UI_UX_PRODUCT_EXPERIENCE_AUDIT.md`) | 12 | 6 | 0 |
+| **Total** | **150** | **45** | **9** |
 
 ---
 
@@ -121,73 +124,73 @@ Do these first.
 
 #### DOC-001 — Retract `DEVELOPMENT_PLAN.md` "Phase 3: Complete" and `[x] Build federation engine`
 - **priority:** P0 — the claim directly contradicts a ratified release gate
-- **status:** not_started
+- **status:** verified
 - **mandate:** `FEDERATION_THREAT_MODEL.md:22` — "Production federation must remain disabled until the high-priority release gates"; contradicted by `DEVELOPMENT_PLAN.md:441` ("**Status:** Complete") and `DEVELOPMENT_PLAN.md:452` ("[x] Build federation engine (peer management)")
 - **governing_authority:** Law 13 (`INTEROPERABILITY_CONSTITUTION.md:73`)
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (437-462)
 - **acceptance:** `grep -n "Status:\*\* Complete" DEVELOPMENT_PLAN.md` returns nothing in the Remaining Work section; federation line reads `[~] Federation engine — experimental transport only; production disabled per FEDERATION_THREAT_MODEL.md:22`
-- **evidence:** —
+- **evidence:** Remaining Work Phase 3/4 no longer claim federation Complete; federation checklist uses `[~]` gated wording (2026-07-31, commit 3de2371)
 
 #### DOC-002 — Extend the `DEVELOPMENT_PLAN.md` migrations table from 025 to 037
 - **priority:** P0 — schema inventory is used to plan migrations; 12 rows missing
-- **status:** not_started
+- **status:** verified
 - **mandate:** `DEVELOPMENT_PLAN.md:391-415` ends at "| 025 | Public shares | Ready |"; `migrations/` contains 026-037
 - **governing_authority:** feature-completeness §1 (`INTEROPERABILITY_CONSTITUTION.md:116`)
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (391-415, and 344 "all 25 migrations")
 - **acceptance:** `ls migrations/*.sql | wc -l` equals the row count of the migrations table; rows exist for 026 node_comments, 027 mcp_connectors, 028 sealed_node_payloads, 029 key_epoch_reencryption, 030 conversation_turn_sources, 031 knowledge_workspace_manifest, 032 interoperability_kernel, 033 governed_interoperability_registries, 034 context_node_registry, 035 authority_grants, 036 outbox_dispatch_and_action_receipts, 037 consumer_inbox_checkpoints
-- **evidence:** —
+- **evidence:** migrations table has 39 rows matching `ls migrations/*.sql | wc -l` including 026-039 (2026-07-31, commit 3de2371)
 
 #### DOC-003 — Replace `DEVELOPMENT_PLAN.md:351`'s definition of "Complete"
 - **priority:** P0 — this sentence is the root cause of DOC-001 and DOC-009
-- **status:** not_started
+- **status:** verified
 - **mandate:** `DEVELOPMENT_PLAN.md:351` — "'Complete' here means code is present in the repository"
 - **governing_authority:** feature-completeness §10 (`INTEROPERABILITY_CONSTITUTION.md:125`) — "automated contract and conformance tests"
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (349-351)
 - **acceptance:** line 351 states that completeness for any capability governed by the constitution means the feature-completeness contract is satisfied and points to `IMPLEMENTATION_BACKLOG.md`; the phrase "code is present in the repository" no longer appears
-- **evidence:** —
+- **evidence:** removed "code is present in the repository"; completeness points to constitution + IMPLEMENTATION_BACKLOG.md (2026-07-31, commit )
 
 #### DOC-004 — Register the four unregistered contracts in the constitution
 - **priority:** P0 — unregistered contracts are invisible to anyone following the constitution
-- **status:** not_started
+- **status:** verified
 - **mandate:** `INTEROPERABILITY_CONSTITUTION.md:171-177` lists 7 supporting contracts; missing `ACTION_RECEIPT_MODEL.md`, `AUTHORITY_GRANT_MODEL.md`, `CONSUMER_INBOX_MODEL.md`, `interoperability-kernel-v1.md`
 - **governing_authority:** `INTEROPERABILITY_CONSTITUTION.md:169` "Supporting contracts"
 - **blocked_by:** none
 - **files:** `INTEROPERABILITY_CONSTITUTION.md` (169-177)
 - **acceptance:** all 11 files under `docs/architecture/` referenced by ADR 011 or the kernel doc appear in the list; `for f in $(grep -o 'docs/architecture/[A-Za-z_-]*\.md' INTEROPERABILITY_CONSTITUTION.md); do test -f "$f"; done` passes
-- **evidence:** —
+- **evidence:** constitution Supporting contracts list includes ACTION_RECEIPT, AUTHORITY_GRANT, CONSUMER_INBOX, interoperability-kernel-v1; linked architecture paths exist (2026-07-31, commit )
 
 #### DOC-005 — Add `AUTHORITY_GRANT_MODEL.md` to `docs/README.md`
 - **priority:** P1 — the doc index registers 12 of 13 new contracts
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/README.md` contains entries for ACTION_RECEIPT, CONSUMER_INBOX, SOURCE_AUTHORITY, CONTEXT_NODE, EXTENSION_SECURITY, PROTOCOL_BOUNDARIES, FEDERATION_THREAT, DATA_PORTABILITY but no `AUTHORITY_GRANT_MODEL` line
 - **governing_authority:** ADR 011 §Decision — "Context Grants and Tool Grants" (`docs/adr/011-sovereign-interoperability-fabric.md:53`)
 - **blocked_by:** none
 - **files:** `docs/README.md`
 - **acceptance:** `grep -c AUTHORITY_GRANT_MODEL docs/README.md` ≥ 1
-- **evidence:** —
+- **evidence:** `grep -c AUTHORITY_GRANT_MODEL docs/README.md` = 1 (2026-07-31, commit )
 
 #### DOC-006 — Register `IMPLEMENTATION_BACKLOG.md` in the constitution
 - **priority:** P0 — without this the backlog is an orphan and repeats the drift it exists to prevent
-- **status:** not_started
+- **status:** verified
 - **mandate:** `INTEROPERABILITY_CONSTITUTION.md:169-177` "Supporting contracts"
 - **governing_authority:** `INTEROPERABILITY_CONSTITUTION.md:28-37` priority and conflict rule
 - **blocked_by:** none
 - **files:** `INTEROPERABILITY_CONSTITUTION.md`
 - **acceptance:** `grep -c IMPLEMENTATION_BACKLOG INTEROPERABILITY_CONSTITUTION.md` ≥ 1
-- **evidence:** —
+- **evidence:** `grep -c IMPLEMENTATION_BACKLOG INTEROPERABILITY_CONSTITUTION.md` = 2 (2026-07-31, commit )
 
 #### DOC-007 — Point `DEVELOPMENT_PLAN.md` at the backlog for execution tracking
 - **priority:** P1 — readers currently land on the all-`[x]` board first
-- **status:** not_started
+- **status:** verified
 - **mandate:** `DEVELOPMENT_PLAN.md:3-10` already carries the supersession notice but names no replacement tracker
 - **governing_authority:** `INTEROPERABILITY_CONSTITUTION.md:33-37`
 - **blocked_by:** DOC-006 (inferred)
 - **files:** `DEVELOPMENT_PLAN.md` (3-29), `DEVELOPMENT_PLAN.md:285` Master Program Board header
 - **acceptance:** the notice block names `IMPLEMENTATION_BACKLOG.md` as the execution tracker; the Master Program Board carries a "pre-constitution, historical" header
-- **evidence:** —
+- **evidence:** notice names IMPLEMENTATION_BACKLOG.md; Master Program Board header marked pre-constitution, historical (2026-07-31, commit )
 
 #### DOC-008 — Reconcile ADR 010 status `Proposed` with the constitution calling it authoritative
 - **priority:** P2 — derived: no doc declares this blocking, but it is an unresolved contradiction
@@ -201,13 +204,13 @@ Do these first.
 
 #### DOC-009 — Correct the `DEVELOPMENT_PLAN.md:379` Federation Engine status row
 - **priority:** P1 — a subsystem table row asserting "Complete (REST transport)" for a subsystem that must be disabled
-- **status:** not_started
+- **status:** verified
 - **mandate:** `DEVELOPMENT_PLAN.md:379` — "| Federation Engine | `federation.rs` | Complete (REST transport) |"; contradicted by `FEDERATION_THREAT_MODEL.md:11` — "an experimental transport, not a production security boundary"
 - **governing_authority:** Law 13 (`INTEROPERABILITY_CONSTITUTION.md:73`)
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (367-390)
 - **acceptance:** the row reads `Experimental — production disabled (FEDERATION_THREAT_MODEL.md:22)`
-- **evidence:** —
+- **evidence:** Federation Engine row reads Experimental — production disabled (FEDERATION_THREAT_MODEL.md:22) (2026-07-31, commit )
 
 ---
 
@@ -314,13 +317,13 @@ interoperability kernel."
 
 #### IK-003 — Governed identity registry replacing the local-system fallback
 - **priority:** P0 — an explicitly labelled transition identity underneath all attribution
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:158-159` — "The current local-system fallback remains a transition identity until the governed identity registry is implemented"
 - **governing_authority:** Law 5 (`:54`); ADR 010 §Actors (`docs/adr/010-personal-vault-and-collaborative-spaces.md:82-101`)
 - **blocked_by:** none
-- **files:** `crates/mv-core/src/model/interoperability.rs`, new migration `038_identity_registry.sql`, `crates/mv-server/src/auth.rs`
+- **files:** `crates/mv-core/src/model/interoperability.rs`, `migrations/040_identity_registry.sql`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/auth.rs`, `crates/mv-server/src/rest/interoperability.rs`
 - **acceptance:** `cargo test -p mv-storage -- identity_registry` — principal URIs resolve through versioned identity records with actor kind (`human`/`agent`/`service`/`integration`); the local-system fallback is removed or gated behind an explicit dev flag
-- **evidence:** —
+- **evidence:** `cargo test -p mv-storage -- identity_registry` → 2/2 ok; commit `49fb8f7`; 2026-07-31. Migration 040 + `IdentityRecord`/`ActorKind`; `MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY` gates missing-subject fallback; `system_admin` uses explicit `local-system` subject.
 
 #### IK-004 — Outbox dispatcher worker
 - **priority:** P0 — the outbox has no runtime; events accumulate as pending forever
@@ -1323,14 +1326,14 @@ operations remain deliberately out of scope for this foundation."*
 - **evidence:** —
 
 #### SPACE-004 — Communication-to-knowledge promotion boundary
-- **priority:** P0 — baseline P0; a live violation today
-- **status:** not_started
+- **priority:** P0 — baseline P0; was a live violation
+- **status:** verified
 - **mandate:** `collaborative-spaces-baseline.md:110-112` — "The relay currently inserts every allowed message into the knowledge graph. That violates the promotion boundary and can leak low-quality or private chat into retrieval, agent context, and downstream projections"; ADR 010:154-169
 - **governing_authority:** ADR 010 §Communication and knowledge promotion; ADR 010 acceptance gate 4 (`:265-266`)
 - **blocked_by:** none
-- **files:** `crates/mv-engine/src/relay.rs`, `crates/mv-engine/src/ingest.rs`
+- **files:** `crates/mv-engine/src/relay.rs`, `crates/mv-engine/src/engine/relay_ops.rs`, `crates/mv-engine/src/ingest.rs`, `crates/mv-core/src/traits.rs`, `crates/mv-core/src/model/exchange.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/email.rs`
 - **acceptance:** `cargo test -p mv-engine -- promotion_boundary` — a relay message does not enter the knowledge graph without explicit or policy-approved promotion; promotion records source message ID, extractor/actor, evidence, confidence, policy, approval; retraction re-indexes without rewriting source communication
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine -- promotion_boundary` → 3/3 ok; commit `e3010b1`; 2026-07-31. Relay send/receive store communication only; `promote_relay_message` / `retract_relay_promotion` record provenance and retract without rewriting source messages.
 
 #### SPACE-005 — Execution evidence: versioned artifacts, budgets, grant snapshots
 - **priority:** P1 — baseline P1
@@ -1454,13 +1457,13 @@ Gates 1-6 have landed; gate 7 has not.
 
 #### AGENT-001 — No executor exists; `start_run` executes nothing
 - **priority:** P0 — the graph is admissible, leasable, gateable, approvable and completable, but nothing ever runs
-- **status:** not_started
+- **status:** verified
 - **mandate:** `crates/mv-engine/src/engine/work_order_ops.rs:506` — "It executes nothing"; mirrored at `crates/mv-server/src/rest/work_orders.rs:313` and `crates/mv-server/src/rest.rs:200`
 - **governing_authority:** ADR 012 decision (`:72-113`); `docs/architecture/WORK_ORDER_MODEL.md:250`
 - **blocked_by:** IK-001 (public grant admission is named a hard prerequisite for outbound execution — `docs/adr/012-governed-agent-execution-graph.md:124`, `WORK_ORDER_MODEL.md:252`)
-- **files:** `crates/mv-engine/src/engine/work_order_ops.rs`, new executor module
+- **files:** `crates/mv-engine/src/engine/work_order_ops.rs`, `crates/mv-engine/src/engine/agent_run_executor.rs`
 - **acceptance:** a run drives a node contract to a terminal state and produces a digested artifact with provenance, without an external dispatcher
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine -- agent_run_executor` → 1/1 ok; commit `ebf61a8`; 2026-07-31. `execute_run` drives leased Engine runs through Running→artifact→Gated→required Low gates→Completed with digested provenance-linked artifact.
 
 #### AGENT-002 — Retire the superseded `plans` / `plan_steps` schema
 - **priority:** P1 — ADR 012's only unlanded implementation gate
@@ -1601,6 +1604,135 @@ document, but each one either hides real defects or makes verification lie.
 
 ---
 
+# U. UX — product experience
+
+Canonical analysis and full UX-001..UX-025 catalog:
+`docs/UI_UX_PRODUCT_EXPERIENCE_AUDIT.md`. Items below are the execution-tracked
+subset with acceptance commands. Do not mark product "best-in-class" until the
+audit §18.5 gates are met with evidence.
+
+#### UX-001 — Elevate Trusted Work in primary IA
+- **priority:** P0 — audit §4.3 / §15 Phase 1; category wedge otherwise undiscoverable
+- **status:** not_started
+- **mandate:** `docs/UI_UX_PRODUCT_EXPERIENCE_AUDIT.md` — "Elevate Work Orders + Approvals in sidebar; demote Goals/Plugins"
+- **governing_authority:** `docs/MINDVAULT_NEXT_MASTER_PLAN.md` Locked Decisions (agents first-class); `docs/strategy/unicorn/CATEGORY_DESIGN_AND_POSITIONING.md`
+- **blocked_by:** none
+- **files:** `frontend/src/routes/+layout.svelte`, `frontend/src/lib/components/MobileNav.svelte`, `frontend/src/lib/command-palette/actions.ts`
+- **acceptance:** Sidebar shows Trusted Work above personal-OS items; nav label "Daily" is renamed to "Focus" (still routes to `/focus`); `pnpm -C frontend exec vitest run` passes for any touched store/nav tests
+- **evidence:** —
+
+#### UX-002 — Today home replaces widget dashboard
+- **priority:** P0 — audit §11.1 / §18.5 gate
+- **status:** not_started
+- **mandate:** `docs/UI_UX_PRODUCT_EXPERIENCE_AUDIT.md` — "Today: Approvals · Due · Capture · Briefing · Continue"
+- **governing_authority:** master plan UX direction; category wedge
+- **blocked_by:** UX-001 (inferred)
+- **files:** `frontend/src/routes/+page.svelte`, `frontend/src/lib/components/*Widget*.svelte`
+- **acceptance:** `/` first viewport prioritizes awaiting approvals + due work + capture; uses shared EmptyState; Playwright or vitest smoke asserts approvals region when fixture runs present
+- **evidence:** —
+
+#### UX-003 — Replace native confirm/prompt with AlertDialog
+- **priority:** P0 — a11y + consistency; audit §5.10 / WCAG 2.4/4.1
+- **status:** not_started
+- **mandate:** `docs/UI_UX_PRODUCT_EXPERIENCE_AUDIT.md` — "Zero window.confirm/prompt in frontend/src"
+- **governing_authority:** master plan §46 Dialog/AlertDialog; WCAG 2.2
+- **blocked_by:** UX-004 (inferred)
+- **files:** all `confirm(`/`prompt(` call sites under `frontend/src/` (notes, chat, search, tags, settings, goals, …)
+- **acceptance:** `rg -n "\\b(confirm|prompt)\\(" frontend/src --glob '*.{svelte,ts}'` returns no `window`/global dialog usages for UX flows; AlertDialog has focus trap tests
+- **evidence:** —
+
+#### UX-004 — Complete Dialog primitive (focus trap/restore)
+- **priority:** P0 — WCAG 2.4.3 / 2.1.1; master plan §46
+- **status:** not_started
+- **mandate:** `docs/MINDVAULT_NEXT_MASTER_PLAN.md` §46 — "Dialog/AlertDialog"; audit §7 Modal gaps
+- **governing_authority:** master plan §46 Accessibility release requirements
+- **blocked_by:** none
+- **files:** `frontend/src/lib/components/Modal.svelte` (or `frontend/src/lib/ui/overlays/Dialog.svelte`)
+- **acceptance:** Unit test proves focus is trapped while open and restored on close; Escape closes; `aria-modal` + labelled title
+- **evidence:** —
+
+#### UX-005 — Global focus-visible and minimum target size
+- **priority:** P0 — WCAG 2.4.7 / 2.5.8
+- **status:** not_started
+- **mandate:** `docs/UI_UX_PRODUCT_EXPERIENCE_AUDIT.md` §9.2; prior `docs/ux-audit.md` S5
+- **governing_authority:** master plan §46 "visible focus"
+- **blocked_by:** none
+- **files:** `frontend/src/app.css`, inbox/task interactive controls
+- **acceptance:** Primary routes pass axe `serious`=0 for focus-related rules in Playwright (see UX-016)
+- **evidence:** —
+
+#### UX-007 — UI kit foundation under `frontend/src/lib/ui`
+- **priority:** P0 — master plan §46 required before expanding UI surface
+- **status:** not_started
+- **mandate:** `docs/MINDVAULT_NEXT_MASTER_PLAN.md` §46 — "Before expanding UI surface, build a shared, tested design system."
+- **governing_authority:** master plan §46
+- **blocked_by:** none
+- **files:** `frontend/src/lib/ui/**`, `frontend/src/lib/styles/tokens.css`, `frontend/src/app.css`
+- **acceptance:** Button, Dialog, FormField, EmptyState, Skeleton, PageHeader exported from `lib/ui`; Today + Work Orders consume Button/EmptyState; Storybook or Histoire build succeeds for primitives
+- **evidence:** —
+
+#### UX-009 — Work Orders experience v1 (approval craft)
+- **priority:** P0 — primary wedge surface
+- **status:** not_started
+- **mandate:** `docs/UI_UX_PRODUCT_EXPERIENCE_AUDIT.md` §11.13 — "Linear-speed list + ApprovalCard + Evidence timeline + keyboard approve/reject"
+- **governing_authority:** category wedge; AGENT execution graph productization
+- **blocked_by:** UX-007 (inferred); AGENT-008 (inferred for API hardness)
+- **files:** `frontend/src/routes/work-orders/+page.svelte`, `frontend/src/lib/api/workOrders.ts`
+- **acceptance:** Keyboard approve/reject path documented and covered by Playwright; empty/loading/error states use ui kit; no native confirm
+- **evidence:** —
+
+#### UX-010 — Onboarding teaches Trusted Work
+- **priority:** P0 — promise-vs-delivery
+- **status:** not_started
+- **mandate:** `docs/UI_UX_PRODUCT_EXPERIENCE_AUDIT.md` §5.1 / §11.16
+- **governing_authority:** category positioning
+- **blocked_by:** none
+- **files:** `frontend/src/routes/onboarding/+page.svelte`, `frontend/src/lib/stores/onboarding.ts`
+- **acceptance:** FTUE copy references owned context + governed agent work; includes connection health step; does not only teach note+task PKM
+- **evidence:** —
+
+#### UX-016 — Accessibility CI on primary routes
+- **priority:** P0 — master plan §46 automated checks; HYG-004 adjacency
+- **status:** not_started
+- **mandate:** `docs/MINDVAULT_NEXT_MASTER_PLAN.md` §46 — "automated checks plus human verification"
+- **governing_authority:** master plan §46
+- **blocked_by:** HYG-004 (inferred)
+- **files:** `frontend/e2e/**`, `.github/workflows/ci.yml`
+- **acceptance:** CI runs Playwright+axe on `/`, `/inbox`, `/notes`, `/tasks`, `/work-orders`, `/search`, `/settings` and fails on axe `serious`+
+- **evidence:** —
+
+#### UX-012 — Settings nested layout split
+- **priority:** P1 — cognitive load; audit §4.4
+- **status:** not_started
+- **mandate:** `docs/UI_UX_PRODUCT_EXPERIENCE_AUDIT.md` §4.4
+- **governing_authority:** feature-completeness / UX honesty
+- **blocked_by:** UX-007 (inferred)
+- **files:** `frontend/src/routes/settings/**`
+- **acceptance:** `/settings` uses nested layout with secondary nav; megapage section count reduced by extracting ≥4 routes; `pnpm -C frontend check` passes
+- **evidence:** —
+
+#### UX-013 — Unify note editors
+- **priority:** P1 — consistency; audit §2.4
+- **status:** not_started
+- **mandate:** `docs/UI_UX_PRODUCT_EXPERIENCE_AUDIT.md` — "One editor package"
+- **governing_authority:** master plan §46 "accessible rich-text editor surface"
+- **blocked_by:** none
+- **files:** `frontend/src/lib/components/RichNoteEditor.svelte`, `frontend/src/lib/components/MvEditor.svelte`, `frontend/src/lib/components/editor/**`, `frontend/src/routes/daily/+page.svelte`
+- **acceptance:** Daily + Notes share one editor entrypoint; dead duplicate path removed or re-exported; editor a11y helpers still used
+- **evidence:** —
+
+#### UX-018 — Browser API client auth/session honesty
+- **priority:** P0 — error prevention; audit §5.7
+- **status:** not_started
+- **mandate:** `docs/UI_UX_PRODUCT_EXPERIENCE_AUDIT.md` — "fetchJson does not attach Authorization"
+- **governing_authority:** security product plane; onboarding honesty
+- **blocked_by:** none
+- **files:** `frontend/src/lib/api/client.ts`, settings connection UI, chat error mapping
+- **acceptance:** Documented local auth path works end-to-end from Settings → API calls; chat 401 copy matches actual client behavior; vitest covers header attachment when token configured
+- **evidence:** —
+
+---
+
 ## Suggested execution order
 
 1. **DOC-001..DOC-007, PROG-001..PROG-003** — a day's work; stops false-completeness
@@ -1618,3 +1750,6 @@ document, but each one either hides real defects or makes verification lie.
 7. **FED-000 first, then FED-001..FED-010** — federation stays off until all ten
    are `verified`.
 8. **SLICE-001..SLICE-003** — the end-to-end proof, last.
+9. **UX-004 → UX-003 → UX-001 → UX-007 → UX-002/UX-009/UX-010** in parallel with
+   foundation spines once HYG-004 unlocks UX-016 — experience work must not invent
+   Spaces/Federation claims ahead of SPACE/FED verification (see experience audit §18.5).

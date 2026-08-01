@@ -292,6 +292,10 @@ impl SqliteNodeStore {
                 39,
                 include_str!("../../../migrations/039_command_admission_decisions.sql"),
             ),
+            (
+                40,
+                include_str!("../../../migrations/040_identity_registry.sql"),
+            ),
         ];
 
         // Migration 001 must always run first to create schema_version table.
@@ -1967,6 +1971,71 @@ impl SqliteNodeStore {
         Ok(())
     }
 
+    
+    fn row_to_identity_record(row: &rusqlite::Row<'_>) -> MvResult<IdentityRecord> {
+        let principal_id = Uuid::parse_str(&row.get::<_, String>(0).map_err(|e| MvError::Storage(e.to_string()))?)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let revision = row.get::<_, i64>(1).map_err(|e| MvError::Storage(e.to_string()))? as u64;
+        let principal_uri = StableUri::parse(row.get::<_, String>(2).map_err(|e| MvError::Storage(e.to_string()))?)
+            .map_err(MvError::InvalidInput)?;
+        let governing_node_uri = StableUri::parse(row.get::<_, String>(3).map_err(|e| MvError::Storage(e.to_string()))?)
+            .map_err(MvError::InvalidInput)?;
+        let actor_kind = row
+            .get::<_, String>(4)
+            .map_err(|e| MvError::Storage(e.to_string()))?
+            .parse::<ActorKind>()
+            .map_err(MvError::InvalidInput)?;
+        let status = row
+            .get::<_, String>(5)
+            .map_err(|e| MvError::Storage(e.to_string()))?
+            .parse::<IdentityStatus>()
+            .map_err(MvError::InvalidInput)?;
+        let display_name: Option<String> = row.get(6).map_err(|e| MvError::Storage(e.to_string()))?;
+        let external_subject: Option<String> = row.get(7).map_err(|e| MvError::Storage(e.to_string()))?;
+        let created_at = chrono::DateTime::parse_from_rfc3339(
+            &row.get::<_, String>(8).map_err(|e| MvError::Storage(e.to_string()))?,
+        )
+        .map_err(|e| MvError::Storage(e.to_string()))?
+        .with_timezone(&chrono::Utc);
+        let updated_at = chrono::DateTime::parse_from_rfc3339(
+            &row.get::<_, String>(9).map_err(|e| MvError::Storage(e.to_string()))?,
+        )
+        .map_err(|e| MvError::Storage(e.to_string()))?
+        .with_timezone(&chrono::Utc);
+        Ok(IdentityRecord {
+            principal_id,
+            revision,
+            principal_uri,
+            governing_node_uri,
+            actor_kind,
+            status,
+            display_name,
+            external_subject,
+            created_at,
+            updated_at,
+        })
+    }
+
+    fn load_identity_by_principal_id(
+        connection: &rusqlite::Connection,
+        principal_id: Uuid,
+    ) -> MvResult<Option<IdentityRecord>> {
+        let mut stmt = connection
+            .prepare(
+                "SELECT principal_id, revision, principal_uri, governing_node_uri, actor_kind,
+                        status, display_name, external_subject, created_at, updated_at
+                 FROM interoperability_identities WHERE principal_id = ?1",
+            )
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let mut rows = stmt
+            .query(params![principal_id.to_string()])
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+            Some(row) => Ok(Some(Self::row_to_identity_record(row)?)),
+            None => Ok(None),
+        }
+    }
+
     fn load_command_admission_decision(
         connection: &Connection,
         principal: &StableUri,
@@ -3468,6 +3537,171 @@ impl InteroperabilityStore for SqliteNodeStore {
     ) -> MvResult<Option<CommandAdmissionDecisionRecord>> {
         self.with_conn(|connection| {
             Self::load_command_admission_decision(connection, principal, idempotency_key)
+        })
+    }
+
+    async fn upsert_identity_record(&self, record: &IdentityRecord) -> MvResult<IdentityRecord> {
+        record.validate().map_err(MvError::InvalidInput)?;
+        let connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let existing = Self::load_identity_by_principal_id(&connection, record.principal_id)?;
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "display_name": record.display_name,
+            "external_subject": record.external_subject,
+            "actor_kind": record.actor_kind.as_str(),
+            "status": record.status.as_str(),
+        }))
+        .map_err(|err| MvError::Storage(format!("serialize identity payload: {err}")))?;
+
+        if let Some(existing) = existing {
+            if record.revision != existing.revision + 1 {
+                return Err(MvError::Conflict(format!(
+                    "identity revision must be {}, got {}",
+                    existing.revision + 1,
+                    record.revision
+                )));
+            }
+            let updated_at = chrono::Utc::now().to_rfc3339();
+            connection
+                .execute(
+                    "UPDATE interoperability_identities SET
+                        revision = ?1,
+                        status = ?2,
+                        display_name = ?3,
+                        external_subject = ?4,
+                        record_payload = ?5,
+                        payload_format = 'json-v1',
+                        payload_wrapped_dek = NULL,
+                        updated_at = ?6
+                     WHERE principal_id = ?7",
+                    params![
+                        record.revision as i64,
+                        record.status.as_str(),
+                        record.display_name,
+                        record.external_subject,
+                        payload,
+                        updated_at,
+                        record.principal_id.to_string(),
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("update identity: {err}")))?;
+        } else {
+            if record.revision != 1 {
+                return Err(MvError::InvalidInput(
+                    "new identity records must start at revision 1".into(),
+                ));
+            }
+            connection
+                .execute(
+                    "INSERT INTO interoperability_identities (
+                        principal_id, revision, principal_uri, governing_node_uri, actor_kind,
+                        status, display_name, external_subject, record_payload, payload_format,
+                        payload_wrapped_dek, created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'json-v1', NULL, ?10, ?11)",
+                    params![
+                        record.principal_id.to_string(),
+                        record.revision as i64,
+                        record.principal_uri.as_str(),
+                        record.governing_node_uri.as_str(),
+                        record.actor_kind.as_str(),
+                        record.status.as_str(),
+                        record.display_name,
+                        record.external_subject,
+                        payload,
+                        record.created_at.to_rfc3339(),
+                        record.updated_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("insert identity: {err}")))?;
+        }
+
+        Self::load_identity_by_principal_id(&connection, record.principal_id)?
+            .ok_or_else(|| MvError::Storage("identity missing after upsert".into()))
+    }
+
+    async fn get_identity_record(&self, principal_id: Uuid) -> MvResult<Option<IdentityRecord>> {
+        self.with_conn(|connection| Self::load_identity_by_principal_id(connection, principal_id))
+    }
+
+    async fn get_identity_by_principal_uri(
+        &self,
+        principal_uri: &StableUri,
+    ) -> MvResult<Option<IdentityRecord>> {
+        self.with_conn(|connection| {
+            let mut stmt = connection
+                .prepare(
+                    "SELECT principal_id, revision, principal_uri, governing_node_uri, actor_kind,
+                            status, display_name, external_subject, created_at, updated_at
+                     FROM interoperability_identities WHERE principal_uri = ?1",
+                )
+                .map_err(|err| MvError::Storage(err.to_string()))?;
+            let mut rows = stmt
+                .query(params![principal_uri.as_str()])
+                .map_err(|err| MvError::Storage(err.to_string()))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(Self::row_to_identity_record(row)?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    async fn resolve_identity_by_subject(
+        &self,
+        governing_node_uri: &StableUri,
+        external_subject: &str,
+    ) -> MvResult<Option<IdentityRecord>> {
+        self.with_conn(|connection| {
+            let mut stmt = connection
+                .prepare(
+                    "SELECT principal_id, revision, principal_uri, governing_node_uri, actor_kind,
+                            status, display_name, external_subject, created_at, updated_at
+                     FROM interoperability_identities
+                     WHERE governing_node_uri = ?1 AND external_subject = ?2",
+                )
+                .map_err(|err| MvError::Storage(err.to_string()))?;
+            let mut rows = stmt
+                .query(params![governing_node_uri.as_str(), external_subject])
+                .map_err(|err| MvError::Storage(err.to_string()))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(Self::row_to_identity_record(row)?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    async fn list_identity_records(
+        &self,
+        status: Option<IdentityStatus>,
+    ) -> MvResult<Vec<IdentityRecord>> {
+        self.with_conn(|connection| {
+            let sql = if status.is_some() {
+                "SELECT principal_id, revision, principal_uri, governing_node_uri, actor_kind,
+                        status, display_name, external_subject, created_at, updated_at
+                 FROM interoperability_identities WHERE status = ?1
+                 ORDER BY updated_at ASC"
+            } else {
+                "SELECT principal_id, revision, principal_uri, governing_node_uri, actor_kind,
+                        status, display_name, external_subject, created_at, updated_at
+                 FROM interoperability_identities ORDER BY updated_at ASC"
+            };
+            let mut stmt = connection
+                .prepare(sql)
+                .map_err(|err| MvError::Storage(err.to_string()))?;
+            let mut rows = match status {
+                Some(status) => stmt
+                    .query(params![status.as_str()])
+                    .map_err(|err| MvError::Storage(err.to_string()))?,
+                None => stmt
+                    .query([])
+                    .map_err(|err| MvError::Storage(err.to_string()))?,
+            };
+            let mut records = Vec::new();
+            while let Some(row) = rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                records.push(Self::row_to_identity_record(row)?);
+            }
+            Ok(records)
         })
     }
 
@@ -9301,6 +9535,52 @@ impl RelayStore for SqliteNodeStore {
         Ok(result)
     }
 
+    async fn bind_relay_message_vault_node(
+        &self,
+        message_id: Uuid,
+        vault_node_id: Option<Uuid>,
+    ) -> MvResult<bool> {
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let affected = conn
+            .execute(
+                "UPDATE relay_messages SET vault_node_id = ?1, updated_at = ?2 WHERE id = ?3",
+                params![
+                    vault_node_id.map(|id| id.to_string()),
+                    chrono::Utc::now().to_rfc3339(),
+                    message_id.to_string(),
+                ],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn update_relay_message_metadata(
+        &self,
+        message_id: Uuid,
+        metadata: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> MvResult<bool> {
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let metadata_json =
+            serde_json::to_string(metadata).map_err(|e| MvError::Storage(e.to_string()))?;
+        let affected = conn
+            .execute(
+                "UPDATE relay_messages SET metadata = ?1, updated_at = ?2 WHERE id = ?3",
+                params![
+                    metadata_json,
+                    chrono::Utc::now().to_rfc3339(),
+                    message_id.to_string(),
+                ],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
     async fn count_unread_messages(&self, channel_id: Option<Uuid>) -> MvResult<usize> {
         let conn = self
             .conn()
@@ -12135,7 +12415,7 @@ mod tests {
                         row.get(0)
                     })
                     .map_err(|err| MvError::Storage(err.to_string()))?;
-                assert_eq!(schema_version, 38);
+                assert_eq!(schema_version, 40);
                 Ok(())
             })
             .unwrap();
@@ -12374,6 +12654,80 @@ mod tests {
             Err(MvError::InvalidInput(message))
                 if message.contains("requires mvenc-v1")
         ));
+    }
+
+    #[tokio::test]
+    async fn identity_registry_resolves_principal_uris_with_actor_kinds() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let node_id = store.local_context_node_id().await.unwrap();
+
+        let human = IdentityRecord::new(node_id, "user@example.com", ActorKind::Human, "Ada");
+        let agent = IdentityRecord::new(node_id, "agent:researcher", ActorKind::Agent, "Researcher");
+        let service = IdentityRecord::new(node_id, "local-system", ActorKind::Service, "Local System");
+        let integration =
+            IdentityRecord::new(node_id, "slack:workspace", ActorKind::Integration, "Slack");
+
+        for record in [&human, &agent, &service, &integration] {
+            let stored = store.upsert_identity_record(record).await.unwrap();
+            assert_eq!(stored.revision, 1);
+            assert_eq!(stored.actor_kind, record.actor_kind);
+            assert_eq!(stored.principal_uri, record.principal_uri);
+        }
+
+        let by_uri = store
+            .get_identity_by_principal_uri(&human.principal_uri)
+            .await
+            .unwrap()
+            .expect("human identity");
+        assert_eq!(by_uri.actor_kind, ActorKind::Human);
+        assert_eq!(by_uri.external_subject.as_deref(), Some("user@example.com"));
+
+        let resolved = store
+            .resolve_identity_by_subject(&StableUri::node(node_id), "agent:researcher")
+            .await
+            .unwrap()
+            .expect("agent by subject");
+        assert_eq!(resolved.actor_kind, ActorKind::Agent);
+        assert_eq!(resolved.principal_uri, agent.principal_uri);
+
+        let kinds: Vec<_> = store
+            .list_identity_records(Some(IdentityStatus::Active))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.actor_kind)
+            .collect();
+        assert!(kinds.contains(&ActorKind::Human));
+        assert!(kinds.contains(&ActorKind::Agent));
+        assert!(kinds.contains(&ActorKind::Service));
+        assert!(kinds.contains(&ActorKind::Integration));
+    }
+
+    #[tokio::test]
+    async fn identity_registry_versions_and_archives_prior_revision() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let node_id = store.local_context_node_id().await.unwrap();
+        let mut record = IdentityRecord::new(node_id, "owner", ActorKind::Human, "Owner");
+        store.upsert_identity_record(&record).await.unwrap();
+
+        record.revision = 2;
+        record.display_name = Some("Owner Renamed".into());
+        record.status = IdentityStatus::Suspended;
+        let updated = store.upsert_identity_record(&record).await.unwrap();
+        assert_eq!(updated.revision, 2);
+        assert_eq!(updated.status, IdentityStatus::Suspended);
+
+        let history_count: i64 = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM interoperability_identity_history WHERE principal_id = ?1",
+                    params![record.principal_id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))
+            })
+            .unwrap();
+        assert_eq!(history_count, 1);
     }
 
     #[tokio::test]
