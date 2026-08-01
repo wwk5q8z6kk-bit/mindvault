@@ -13101,6 +13101,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn identity_registry_bootstrap_schema_digest_matches_definition() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let schema_reference =
+            SchemaReference::new(StableUri::schema("identity-registered").unwrap(), "1.0.0")
+                .unwrap();
+        let schema = store
+            .get_public_schema(&schema_reference)
+            .await
+            .unwrap()
+            .expect("identity registration schema");
+
+        assert_eq!(
+            schema.definition["$schema"],
+            "https://json-schema.org/draft/2020-12/schema"
+        );
+        assert_eq!(
+            schema.content_digest,
+            "95c98ffd9423c88e1483973ba594583760b8d1a119f5b3d26a5c602cf984d7b1"
+        );
+        assert_eq!(
+            schema.content_digest,
+            canonical_json_sha256(&schema.definition)
+        );
+    }
+
+    #[tokio::test]
     async fn context_node_registration_is_atomic_listable_and_idempotent() {
         let store = SqliteNodeStore::open_in_memory().unwrap();
         let local_node_id = store.local_context_node_id().await.unwrap();
