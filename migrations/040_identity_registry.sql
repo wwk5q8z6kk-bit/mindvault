@@ -135,7 +135,7 @@ INSERT OR IGNORE INTO interoperability_public_schemas (
     '1.0.0',
     'application/schema+json',
     '{"$schema":"https://json-schema.org/draft/2020-12/schema","required":["principal_id","actor_kind","status","record_digest","subject_binding_digest"],"type":"object","x-mindvault-event-type":"dev.mindvault.identity.registered.v1"}',
-    '4da4891e0ffe833dbab1c278b2f170cb925bd1d0e3a2b97221cfde7693ade2c1',
+    '95c98ffd9423c88e1483973ba594583760b8d1a119f5b3d26a5c602cf984d7b1',
     'active',
     'mindvault://schemas/governance',
     '2026-07-30T00:00:00Z',
