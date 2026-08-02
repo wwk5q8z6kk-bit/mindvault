@@ -2,8 +2,11 @@
 <script lang="ts">
 	/* eslint-disable svelte/no-navigation-without-resolve */
 	import { onDestroy, onMount, tick } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/stores';
 	import {
+		AlertTriangle,
 		ArrowLeft,
 		Bookmark,
 		CalendarDays,
@@ -31,26 +34,20 @@
 	} from '@lucide/svelte';
 	import ContextBoundary from '$lib/components/ContextBoundary.svelte';
 	import FocusedNoteEditor from '$lib/components/FocusedNoteEditor.svelte';
-	import { createNote, deleteNote, updateNote, type Note } from '$lib/api/notes';
-	import { listNodes } from '$lib/api/nodes';
+	import { createNote, deleteNote, updateNote } from '$lib/api/notes';
+	import { getNode, listNodes } from '$lib/api/nodes';
 	import type { NodeKind } from '$lib/api/types';
+	import {
+		noteSelectionPath,
+		toWorkbenchNote,
+		WORKBENCH_NOTE_KINDS,
+		type WorkbenchNote
+	} from '$lib/notes/deep-link';
 	import { pushToast } from '$lib/stores/toast';
-
-	interface WorkbenchNote extends Note {
-		kind: NodeKind;
-	}
+	import { kindLabel } from '$lib/utils/kind-helpers';
 
 	type ListTab = 'all' | 'pinned' | 'recent';
 	type SaveStatus = 'saved' | 'saving' | 'error';
-
-	const noteKinds: NodeKind[] = [
-		'fact',
-		'decision',
-		'procedure',
-		'observation',
-		'preference',
-		'concept'
-	];
 
 	const navGroups = [
 		{
@@ -108,6 +105,10 @@
 	let tagInput: HTMLInputElement;
 	let saveTimer: ReturnType<typeof setTimeout> | null = null;
 	let saveInFlight = false;
+	let handledRequestedNoteId: string | null = null;
+	let routeStatus: 'idle' | 'opening' | 'missing' = 'idle';
+	let routeChangeInFlight = false;
+	let noteListElement: HTMLDivElement;
 
 	function normalizeTag(tag: string) {
 		return tag.trim().toLowerCase();
@@ -242,6 +243,19 @@
 			: savedStatus === 'error'
 				? 'Saved in this session'
 				: 'Saved locally';
+	$: requestedNoteId = $page.url.searchParams.get('note');
+	$: if (
+		!loading &&
+		!routeChangeInFlight &&
+		requestedNoteId &&
+		requestedNoteId !== handledRequestedNoteId
+	) {
+		void openRequestedNote(requestedNoteId);
+	}
+	$: if (!requestedNoteId && handledRequestedNoteId) {
+		handledRequestedNoteId = null;
+		routeStatus = 'idle';
+	}
 
 	onMount(() => {
 		void loadWorkbenchNotes();
@@ -256,25 +270,13 @@
 		const loaded: WorkbenchNote[] = [];
 		let successfulRequests = 0;
 
-		for (const kind of noteKinds) {
+		for (const kind of WORKBENCH_NOTE_KINDS) {
 			try {
 				const nodes = await listNodes({ kind, limit: 100 });
 				successfulRequests += 1;
 				for (const node of nodes) {
-					if (node.tags.some((tag) => tag.startsWith('day:'))) continue;
-					loaded.push({
-						id: node.id,
-						title: node.title,
-						markdown: node.content ?? '',
-						namespace: node.namespace,
-						tags: node.tags,
-						backlinks: [],
-						pinned: Boolean(node.metadata?.pinned),
-						created_at: node.temporal.created_at,
-						updated_at: node.temporal.updated_at,
-						metadata: node.metadata,
-						kind: node.kind
-					});
+					const note = toWorkbenchNote(node);
+					if (note) loaded.push(note);
 				}
 			} catch {
 				// A local preview remains useful while the API is unavailable.
@@ -289,16 +291,76 @@
 		}
 
 		loading = false;
+		const routeNoteId = $page.url.searchParams.get('note');
 		const first = notes[0];
-		if (first) {
-			selectNote(first, false);
+		if (routeNoteId) {
+			void openRequestedNote(routeNoteId);
+		} else if (first) {
+			selectNote(first, false, false);
 		} else {
 			void newNote(false);
 			mobilePane = 'list';
 		}
 	}
 
-	function selectNote(note: WorkbenchNote, moveToEditor = true) {
+	function syncSelectedNoteRoute(noteId: string | null) {
+		if ($page.url.searchParams.get('note') === noteId) return;
+		handledRequestedNoteId = noteId;
+		routeChangeInFlight = true;
+		void goto(noteSelectionPath($page.url, noteId), {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true
+		}).finally(() => {
+			routeChangeInFlight = false;
+		});
+	}
+
+	async function revealRequestedNote(note: WorkbenchNote) {
+		clearFilters();
+		selectNote(note, true, false);
+		await tick();
+		const noteItem = noteListElement?.querySelector<HTMLElement>(
+			`[data-note-id="${CSS.escape(note.id)}"]`
+		);
+		noteItem?.scrollIntoView({ block: 'nearest' });
+	}
+
+	async function openRequestedNote(noteId: string) {
+		handledRequestedNoteId = noteId;
+		routeStatus = 'opening';
+
+		const existing = notes.find((note) => note.id === noteId);
+		if (existing) {
+			await revealRequestedNote(existing);
+			routeStatus = 'idle';
+			return;
+		}
+
+		if (!demoMode) {
+			try {
+				const requested = toWorkbenchNote(await getNode(noteId));
+				if (requested) {
+					notes = [requested, ...notes];
+					await revealRequestedNote(requested);
+					routeStatus = 'idle';
+					return;
+				}
+			} catch {
+				// The recovery state below keeps the user oriented without hiding the current note.
+			}
+		}
+
+		if (!selectedNote && notes[0]) selectNote(notes[0], false, false);
+		routeStatus = 'missing';
+	}
+
+	function dismissRouteNotice() {
+		routeStatus = 'idle';
+		syncSelectedNoteRoute(selectedNote?.id ?? null);
+	}
+
+	function selectNote(note: WorkbenchNote, moveToEditor = true, updateRoute = true) {
 		if (saveTimer) clearTimeout(saveTimer);
 		selectedNote = note;
 		title = note.title ?? '';
@@ -309,6 +371,7 @@
 		toolsOpen = false;
 		tagEditorOpen = false;
 		if (moveToEditor) mobilePane = 'editor';
+		if (updateRoute) syncSelectedNoteRoute(note.id);
 	}
 
 	async function newNote(focusTitle = true) {
@@ -321,6 +384,7 @@
 		tagEditorOpen = false;
 		toolsOpen = false;
 		mobilePane = 'editor';
+		syncSelectedNoteRoute(null);
 		if (focusTitle) {
 			await tick();
 			titleInput?.focus();
@@ -344,6 +408,7 @@
 		}
 		selectedNote = note;
 		savedAt = new Date(note.updated_at);
+		syncSelectedNoteRoute(note.id);
 	}
 
 	async function saveCurrentNote() {
@@ -701,7 +766,7 @@
 			{/if}
 		</div>
 
-		<div class="note-list" aria-live="polite">
+		<div class="note-list" bind:this={noteListElement} aria-live="polite">
 			{#if loading}
 				<div class="list-state">
 					<span class="loading-ring"></span>
@@ -717,6 +782,7 @@
 				{#each filteredNotes as note (note.id)}
 					<button
 						class="note-item"
+						data-note-id={note.id}
 						class:active={note.id === selectedNote?.id}
 						on:click={() => selectNote(note)}
 						aria-pressed={note.id === selectedNote?.id}
@@ -749,7 +815,10 @@
 				>
 					<ArrowLeft size={19} strokeWidth={1.8} />
 				</button>
-				<ContextBoundary compact />
+				<ContextBoundary
+					compact
+					detail={selectedNote ? kindLabel(selectedNote.kind) : 'New note'}
+				/>
 				<span class="context-divider" aria-hidden="true"></span>
 				<FileText size={19} strokeWidth={1.7} aria-hidden="true" />
 				<span class="note-context-title">{title.trim() || 'Untitled note'}</span>
@@ -782,9 +851,12 @@
 								{selectedNote.pinned ? 'Unpin note' : 'Pin note'}
 							</button>
 						{/if}
-						<a href={`${resolve('/notes')}?view=graph`} role="menuitem">
+						<a
+							href={`${resolve('/notes')}?view=graph${selectedNote ? `&node=${encodeURIComponent(selectedNote.id)}` : ''}`}
+							role="menuitem"
+						>
 							<Network size={16} strokeWidth={1.8} />
-							Open knowledge graph
+							{selectedNote ? 'Show note in graph' : 'Open knowledge graph'}
 						</a>
 						<a href={`${resolve('/notes')}?view=canvas`} role="menuitem">
 							<Expand size={16} strokeWidth={1.8} />
@@ -807,6 +879,27 @@
 		</header>
 
 		<div class="editor-scroll">
+			{#if routeStatus === 'opening'}
+				<div class="route-notice opening" role="status">
+					<span class="loading-ring" aria-hidden="true"></span>
+					<div>
+						<strong>Opening selected knowledge…</strong>
+						<span>Finding the exact item in your Personal Vault.</span>
+					</div>
+				</div>
+			{:else if routeStatus === 'missing'}
+				<div class="route-notice" role="alert">
+					<AlertTriangle size={18} strokeWidth={1.8} aria-hidden="true" />
+					<div>
+						<strong>This knowledge item isn’t available</strong>
+						<span>It may have moved, been removed, or be unavailable while offline.</span>
+					</div>
+					<a href={resolve('/search')}>Return to search</a>
+					<button on:click={dismissRouteNotice} aria-label="Dismiss unavailable item message">
+						<X size={15} strokeWidth={2} />
+					</button>
+				</div>
+			{/if}
 			<article class="document">
 				<textarea
 					class="document-title"
@@ -1701,6 +1794,80 @@
 		scrollbar-color: #303038 transparent;
 	}
 
+	.route-notice {
+		display: grid;
+		width: min(calc(100% - 64px), 760px);
+		grid-template-columns: auto minmax(0, 1fr) auto auto;
+		align-items: center;
+		gap: 12px;
+		margin: 24px auto 0;
+		padding: 12px 14px;
+		border: 1px solid #4b3f32;
+		border-radius: 11px;
+		background: #17130f;
+		color: #d7a86e;
+	}
+
+	.route-notice.opening {
+		grid-template-columns: auto minmax(0, 1fr);
+		border-color: #34303f;
+		background: #141318;
+		color: #9587cb;
+	}
+
+	.route-notice .loading-ring {
+		width: 18px;
+		height: 18px;
+	}
+
+	.route-notice div {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: 3px;
+	}
+
+	.route-notice strong {
+		color: #e4e0da;
+		font-size: 12px;
+		font-weight: 650;
+	}
+
+	.route-notice span {
+		color: #9e978f;
+		font-size: 11px;
+	}
+
+	.route-notice a,
+	.route-notice button {
+		border: 0;
+		background: transparent;
+		color: #c9b08e;
+		font-size: 11px;
+		font-weight: 600;
+		text-decoration: none;
+		white-space: nowrap;
+		cursor: pointer;
+	}
+
+	.route-notice button {
+		display: grid;
+		width: 28px;
+		height: 28px;
+		place-items: center;
+		border-radius: 7px;
+	}
+
+	.route-notice a:hover,
+	.route-notice button:hover {
+		background: #24201b;
+		color: #f0d5ae;
+	}
+
+	.route-notice + .document {
+		padding-top: 44px;
+	}
+
 	.document {
 		width: min(100%, 820px);
 		margin: 0 auto;
@@ -2010,6 +2177,20 @@
 
 		.document {
 			padding: 46px 24px 86px;
+		}
+
+		.route-notice {
+			width: calc(100% - 36px);
+			grid-template-columns: auto minmax(0, 1fr) auto;
+			margin-top: 16px;
+		}
+
+		.route-notice a {
+			display: none;
+		}
+
+		.route-notice + .document {
+			padding-top: 34px;
 		}
 
 		.document-title {
