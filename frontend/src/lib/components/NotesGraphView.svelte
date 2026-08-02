@@ -1,12 +1,32 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { page } from '$app/stores';
 	import { listNodes } from '$lib/api/nodes';
-	import { getNeighbors, addRelationship, getNodeRelationships, deleteRelationship, updateRelationship, getGraphClusters, searchGraph } from '$lib/api/graph';
+	import {
+		getNeighbors,
+		addRelationship,
+		getNodeRelationships,
+		deleteRelationship,
+		updateRelationship,
+		getGraphClusters,
+		searchGraph
+	} from '$lib/api/graph';
 	import type { NodeRelationship, GraphCluster, GraphSearchResult } from '$lib/api/graph';
-	import { getConceptMap, getKnowledgeGaps, getCrossNamespaceInsights, type ConceptMapResponse } from '$lib/api/insights';
+	import {
+		getConceptMap,
+		getKnowledgeGaps,
+		getCrossNamespaceInsights,
+		type ConceptMapResponse
+	} from '$lib/api/insights';
 	import type { KnowledgeNode, ProactiveInsight } from '$lib/api/types';
 	import { pushToast } from '$lib/stores/toast';
-	import { kindColor, kindLabel, ALL_NODE_KINDS, RELATIONSHIP_TYPES, type RelationshipType } from '$lib/utils/kind-helpers';
+	import {
+		kindColor,
+		kindLabel,
+		ALL_NODE_KINDS,
+		RELATIONSHIP_TYPES,
+		type RelationshipType
+	} from '$lib/utils/kind-helpers';
 
 	type GraphNode = {
 		id: string;
@@ -46,6 +66,7 @@
 	let edges: GraphEdge[] = [];
 	let loading = true;
 	let selectedNodeId: string | null = null;
+	let appliedRequestedNodeId: string | null = null;
 	let svgEl: SVGSVGElement | null = null;
 	let width = 800;
 	let height = 600;
@@ -110,8 +131,16 @@
 	let pathError = '';
 
 	const CLUSTER_COLORS = [
-		'#38bdf8', '#22c55e', '#f97316', '#a78bfa', '#ec4899',
-		'#eab308', '#14b8a6', '#ef4444', '#8b5cf6', '#06b6d4'
+		'#38bdf8',
+		'#22c55e',
+		'#f97316',
+		'#a78bfa',
+		'#ec4899',
+		'#eab308',
+		'#14b8a6',
+		'#ef4444',
+		'#8b5cf6',
+		'#06b6d4'
 	];
 
 	function getNodeColor(node: GraphNode): string {
@@ -152,9 +181,8 @@
 
 	$: displayedNodes = kindFilter === 'all' ? nodes : nodes.filter((n) => n.kind === kindFilter);
 	$: displayedNodeIds = new Set(displayedNodes.map((n) => n.id));
-	$: filteredByRelationship = relationshipFilter === 'all'
-		? edges
-		: edges.filter((e) => e.kind === relationshipFilter);
+	$: filteredByRelationship =
+		relationshipFilter === 'all' ? edges : edges.filter((e) => e.kind === relationshipFilter);
 	$: displayedEdges = filteredByRelationship.filter(
 		(e) => displayedNodeIds.has(e.source) && displayedNodeIds.has(e.target)
 	);
@@ -168,6 +196,16 @@
 	}
 	$: if (!pathToId && nodes.length > 1) {
 		pathToId = nodes[1].id;
+	}
+	$: requestedNodeId = $page.url.searchParams.get('node');
+	$: if (
+		requestedNodeId &&
+		requestedNodeId !== appliedRequestedNodeId &&
+		nodes.some((node) => node.id === requestedNodeId) &&
+		selectedNodeId !== requestedNodeId
+	) {
+		selectedNodeId = requestedNodeId;
+		appliedRequestedNodeId = requestedNodeId;
 	}
 
 	async function loadGraph(depth: number = 1) {
@@ -202,11 +240,14 @@
 						const key = [node.id, neighbor.node.id].sort().join('-');
 						if (!edgeSet.has(key)) {
 							edgeSet.add(key);
-							edges = [...edges, {
-								source: neighbor.direction === 'outgoing' ? node.id : neighbor.node.id,
-								target: neighbor.direction === 'outgoing' ? neighbor.node.id : node.id,
-								kind: neighbor.relationship_kind
-							}];
+							edges = [
+								...edges,
+								{
+									source: neighbor.direction === 'outgoing' ? node.id : neighbor.node.id,
+									target: neighbor.direction === 'outgoing' ? neighbor.node.id : node.id,
+									kind: neighbor.relationship_kind
+								}
+							];
 						}
 					}
 				} catch {
@@ -421,11 +462,14 @@
 			await addRelationship(relationshipFromId, relationshipToId, selectedRelationshipType);
 
 			// Add to local edges
-			edges = [...edges, {
-				source: relationshipFromId,
-				target: relationshipToId,
-				kind: selectedRelationshipType
-			}];
+			edges = [
+				...edges,
+				{
+					source: relationshipFromId,
+					target: relationshipToId,
+					kind: selectedRelationshipType
+				}
+			];
 
 			pushToast(`Created ${selectedRelationshipType} relationship`, 'success');
 		} catch {
@@ -611,7 +655,10 @@
 			{:else}
 				<button
 					class="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300"
-					on:click={() => { creatingRelationship = true; pushToast('Click a node to start', 'info'); }}
+					on:click={() => {
+						creatingRelationship = true;
+						pushToast('Click a node to start', 'info');
+					}}
 				>
 					+ Link nodes
 				</button>
@@ -641,14 +688,25 @@
 	</div>
 
 	{#if loading}
-		<div class="flex h-96 items-center justify-center rounded-2xl border border-slate-800 bg-slate-900/40">
+		<div
+			class="flex h-96 items-center justify-center rounded-2xl border border-slate-800 bg-slate-900/40"
+		>
 			<p class="text-xs text-slate-400">Loading graph...</p>
 		</div>
 	{:else if nodes.length === 0}
-		<div class="flex h-96 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 bg-slate-900/20">
-			<div class="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/20 text-xl text-emerald-300">
+		<div
+			class="flex h-96 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 bg-slate-900/20"
+		>
+			<div
+				class="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/20 text-xl text-emerald-300"
+			>
 				<svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+					<path
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						stroke-width="2"
+						d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
+					/>
 				</svg>
 			</div>
 			<h3 class="text-sm font-medium text-white">No connections yet</h3>
@@ -656,57 +714,64 @@
 				Create notes and tasks first, then link them together to see your knowledge graph.
 			</p>
 			<div class="mt-4 flex gap-2">
-				<a href="/notes" class="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-300 hover:bg-sky-500/20">
+				<a
+					href="/notes"
+					class="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-300 hover:bg-sky-500/20"
+				>
 					Create notes
 				</a>
-				<a href="/tasks" class="rounded-lg border border-violet-500/40 bg-violet-500/10 px-3 py-2 text-xs text-violet-300 hover:bg-violet-500/20">
+				<a
+					href="/tasks"
+					class="rounded-lg border border-violet-500/40 bg-violet-500/10 px-3 py-2 text-xs text-violet-300 hover:bg-violet-500/20"
+				>
 					Add tasks
 				</a>
 			</div>
 		</div>
 	{:else if displayedNodes.length === 0}
-		<div class="flex h-96 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 bg-slate-900/20">
+		<div
+			class="flex h-96 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 bg-slate-900/20"
+		>
 			<p class="text-sm text-slate-400">No nodes match your current filter.</p>
 			<button
 				class="mt-2 text-xs text-sky-400 hover:text-sky-300"
-				on:click={() => { kindFilter = 'all'; relationshipFilter = 'all'; }}
+				on:click={() => {
+					kindFilter = 'all';
+					relationshipFilter = 'all';
+				}}
 			>
 				Clear filters
 			</button>
 		</div>
 	{:else}
 		<div class="overflow-hidden rounded-2xl border border-slate-800/60 bg-slate-950">
-			<svg
-				bind:this={svgEl}
-				{width}
-				{height}
-				class="w-full"
-				viewBox="0 0 {width} {height}"
-			>
+			<svg bind:this={svgEl} {width} {height} class="w-full" viewBox="0 0 {width} {height}">
 				<!-- Edges -->
 				{#each displayedEdges as edge}
 					{@const source = displayedNodes.find((n) => n.id === edge.source)}
 					{@const target = displayedNodes.find((n) => n.id === edge.target)}
 					{@const edgeColor = getRelationshipColor(edge.kind)}
 					{#if source && target}
-							<g class="edge-group">
-								<line
-									x1={source.x}
-									y1={source.y}
+						<g class="edge-group">
+							<line
+								x1={source.x}
+								y1={source.y}
 								x2={target.x}
 								y2={target.y}
 								stroke={edgeColor}
 								stroke-opacity="0.4"
 								stroke-width="1.5"
 							/>
-								<!-- Arrow marker at midpoint -->
-								<polygon
-									points="-4,-3 4,0 -4,3"
-									fill={edgeColor}
-									fill-opacity="0.6"
-									transform="translate({(source.x + target.x) / 2}, {(source.y + target.y) / 2}) rotate({Math.atan2(target.y - source.y, target.x - source.x) * (180 / Math.PI)})"
-								/>
-							</g>
+							<!-- Arrow marker at midpoint -->
+							<polygon
+								points="-4,-3 4,0 -4,3"
+								fill={edgeColor}
+								fill-opacity="0.6"
+								transform="translate({(source.x + target.x) / 2}, {(source.y + target.y) /
+									2}) rotate({Math.atan2(target.y - source.y, target.x - source.x) *
+									(180 / Math.PI)})"
+							/>
+						</g>
 					{/if}
 				{/each}
 
@@ -714,18 +779,30 @@
 				{#each displayedNodes as node (node.id)}
 					<g
 						on:mousedown={(e) => handleMouseDown(e, node.id)}
-						on:dblclick={() => { window.location.href = nodeLink(node); }}
+						on:dblclick={() => {
+							window.location.href = nodeLink(node);
+						}}
 						style="cursor: {dragging === node.id ? 'grabbing' : 'grab'}"
 						role="button"
 						tabindex="0"
-						on:keydown={(e) => { if (e.key === 'Enter') window.location.href = nodeLink(node); }}
+						on:keydown={(e) => {
+							if (e.key === 'Enter') window.location.href = nodeLink(node);
+						}}
 					>
 						<circle
 							cx={node.x}
 							cy={node.y}
-							r={selectedNodeId === node.id ? 10 : creatingRelationship && relationshipFromId === node.id ? 10 : 7}
+							r={selectedNodeId === node.id
+								? 10
+								: creatingRelationship && relationshipFromId === node.id
+									? 10
+									: 7}
 							fill={getNodeColor(node)}
-							stroke={creatingRelationship && relationshipFromId === node.id ? '#22c55e' : showClusters && nodeClusterMap.has(node.id) ? getNodeColor(node) : 'none'}
+							stroke={creatingRelationship && relationshipFromId === node.id
+								? '#22c55e'
+								: showClusters && nodeClusterMap.has(node.id)
+									? getNodeColor(node)
+									: 'none'}
 							stroke-width="2"
 							opacity={selectedNodeId && selectedNodeId !== node.id ? 0.3 : 0.8}
 							role="button"
@@ -799,10 +876,13 @@
 				<div class="mt-2 flex flex-wrap gap-2">
 					{#each clusters as cluster, idx (cluster.id)}
 						<button
-							class="flex items-center gap-1.5 rounded-lg border px-2 py-1 transition {selectedClusterId === cluster.id
+							class="flex items-center gap-1.5 rounded-lg border px-2 py-1 transition {selectedClusterId ===
+							cluster.id
 								? 'border-sky-500/40 bg-sky-500/10'
 								: 'border-slate-700 hover:border-slate-600'}"
-							on:click={() => { selectedClusterId = selectedClusterId === cluster.id ? null : cluster.id; }}
+							on:click={() => {
+								selectedClusterId = selectedClusterId === cluster.id ? null : cluster.id;
+							}}
 						>
 							<div
 								class="h-3 w-3 rounded-full"
@@ -838,9 +918,15 @@
 							{#each selectedClusterNodes as cNode (cNode.id)}
 								<a
 									href={nodeLink(cNode)}
-									class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-slate-800/60 transition {cNode.id === selectedCluster.center_node_id ? 'border border-sky-500/30 bg-sky-500/5' : ''}"
+									class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-slate-800/60 transition {cNode.id ===
+									selectedCluster.center_node_id
+										? 'border border-sky-500/30 bg-sky-500/5'
+										: ''}"
 								>
-									<div class="h-2.5 w-2.5 rounded-full flex-shrink-0" style="background-color: {kindColor(cNode.kind)}"></div>
+									<div
+										class="h-2.5 w-2.5 rounded-full flex-shrink-0"
+										style="background-color: {kindColor(cNode.kind)}"
+									></div>
 									<span class="truncate text-slate-300">{cNode.title}</span>
 									{#if cNode.id === selectedCluster.center_node_id}
 										<span class="ml-auto text-[9px] text-sky-400">center</span>
@@ -878,7 +964,9 @@
 				<div class="grid gap-3 lg:grid-cols-2">
 					<div class="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
 						<div class="mb-2 flex items-center justify-between">
-							<h4 class="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Concept Map</h4>
+							<h4 class="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+								Concept Map
+							</h4>
 							{#if conceptMap}
 								<span class="text-[10px] text-slate-500">{conceptMap.total_nodes} nodes</span>
 							{/if}
@@ -898,7 +986,9 @@
 					</div>
 
 					<div class="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
-						<h4 class="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Knowledge Gaps</h4>
+						<h4 class="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+							Knowledge Gaps
+						</h4>
 						{#if knowledgeGaps.length === 0}
 							<p class="text-xs text-slate-500">No major unanswered questions detected.</p>
 						{:else}
@@ -917,7 +1007,10 @@
 				<div class="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
 					<div class="flex flex-wrap items-end gap-2">
 						<div class="flex-1 min-w-[220px]">
-							<label for="cross-ns-input" class="mb-1 block text-[10px] uppercase tracking-wide text-slate-500">
+							<label
+								for="cross-ns-input"
+								class="mb-1 block text-[10px] uppercase tracking-wide text-slate-500"
+							>
 								Cross-Namespace Insights
 							</label>
 							<input
@@ -938,7 +1031,9 @@
 					{#if crossNamespaceInsights.length > 0}
 						<div class="mt-2 space-y-1.5 max-h-36 overflow-y-auto">
 							{#each crossNamespaceInsights as insight (insight.id)}
-								<div class="rounded border border-violet-500/20 bg-violet-500/5 px-2 py-1 text-xs text-slate-200">
+								<div
+									class="rounded border border-violet-500/20 bg-violet-500/5 px-2 py-1 text-xs text-slate-200"
+								>
 									<p class="font-medium text-violet-200">{insight.title}</p>
 									<p class="mt-0.5 text-slate-300">{insight.content}</p>
 								</div>
@@ -948,14 +1043,22 @@
 				</div>
 
 				<div class="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
-					<h4 class="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Multi-Hop Pathfinding</h4>
+					<h4 class="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+						Multi-Hop Pathfinding
+					</h4>
 					<div class="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
-						<select class="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white" bind:value={pathFromId}>
+						<select
+							class="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white"
+							bind:value={pathFromId}
+						>
 							{#each nodes as node (node.id)}
 								<option value={node.id}>{node.title.slice(0, 48)}</option>
 							{/each}
 						</select>
-						<select class="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white" bind:value={pathToId}>
+						<select
+							class="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-white"
+							bind:value={pathToId}
+						>
 							{#each nodes as node (node.id)}
 								<option value={node.id}>{node.title.slice(0, 48)}</option>
 							{/each}
@@ -972,7 +1075,9 @@
 						<div class="mt-2 flex flex-wrap items-center gap-1 text-xs text-slate-300">
 							{#each pathResult as nodeId, idx (nodeId)}
 								{@const node = nodes.find((n) => n.id === nodeId)}
-								<span class="rounded border border-slate-700 px-2 py-0.5">{node?.title || nodeId.slice(0, 8)}</span>
+								<span class="rounded border border-slate-700 px-2 py-0.5"
+									>{node?.title || nodeId.slice(0, 8)}</span
+								>
 								{#if idx < pathResult.length - 1}
 									<span class="text-slate-500">→</span>
 								{/if}
@@ -991,7 +1096,12 @@
 				<div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
 					<div class="flex items-center justify-between">
 						<div>
-							<span class="rounded px-1.5 py-0.5 text-[9px] font-medium" style="background-color: {kindColor(selected.kind)}20; color: {kindColor(selected.kind)}">{kindLabel(selected.kind)}</span>
+							<span
+								class="rounded px-1.5 py-0.5 text-[9px] font-medium"
+								style="background-color: {kindColor(selected.kind)}20; color: {kindColor(
+									selected.kind
+								)}">{kindLabel(selected.kind)}</span
+							>
 							<span class="ml-2 text-sm font-medium text-white">{selected.title}</span>
 						</div>
 						<div class="flex items-center gap-2">
@@ -1027,14 +1137,22 @@
 							</h4>
 							<div class="flex flex-col gap-1">
 								{#each selectedNodeRelationships as rel (rel.id)}
-									{@const otherNodeId = rel.from_node_id === selected.id ? rel.to_node_id : rel.from_node_id}
+									{@const otherNodeId =
+										rel.from_node_id === selected.id ? rel.to_node_id : rel.from_node_id}
 									{@const otherNode = nodes.find((n) => n.id === otherNodeId)}
 									{@const isOutgoing = rel.from_node_id === selected.id}
 									<div class="group rounded-lg px-2 py-1.5 text-xs hover:bg-slate-800/60">
 										<div class="flex items-center gap-2">
-											<span class="text-[9px] text-slate-600">{isOutgoing ? '\u2192' : '\u2190'}</span>
-											<span class="text-[9px] font-medium" style="color: {getRelationshipColor(rel.kind)}">{rel.kind}</span>
-											<span class="flex-1 truncate text-slate-300">{otherNode?.title ?? otherNodeId.slice(0, 8)}</span>
+											<span class="text-[9px] text-slate-600"
+												>{isOutgoing ? '\u2192' : '\u2190'}</span
+											>
+											<span
+												class="text-[9px] font-medium"
+												style="color: {getRelationshipColor(rel.kind)}">{rel.kind}</span
+											>
+											<span class="flex-1 truncate text-slate-300"
+												>{otherNode?.title ?? otherNodeId.slice(0, 8)}</span
+											>
 											{#if rel.weight != null}
 												<span class="text-[9px] text-slate-600" title="Weight">{rel.weight}</span>
 											{/if}
@@ -1043,8 +1161,17 @@
 												title="Edit weight"
 												on:click={() => startEditRelationship(rel)}
 											>
-												<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-													<path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+												<svg
+													viewBox="0 0 24 24"
+													width="14"
+													height="14"
+													fill="none"
+													stroke="currentColor"
+													stroke-width="2"
+												>
+													<path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path
+														d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"
+													/>
 												</svg>
 											</button>
 											<button
@@ -1053,8 +1180,15 @@
 												disabled={deletingRelId === rel.id}
 												on:click={() => handleDeleteRelationship(rel)}
 											>
-												<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-													<path d="M18 6L6 18M6 6l12 12"/>
+												<svg
+													viewBox="0 0 24 24"
+													width="14"
+													height="14"
+													fill="none"
+													stroke="currentColor"
+													stroke-width="2"
+												>
+													<path d="M18 6L6 18M6 6l12 12" />
 												</svg>
 											</button>
 										</div>
@@ -1080,7 +1214,9 @@
 												</button>
 												<button
 													class="text-[9px] text-slate-500 hover:text-white"
-													on:click={() => { editingRelId = null; }}
+													on:click={() => {
+														editingRelId = null;
+													}}
 												>
 													Cancel
 												</button>
@@ -1101,7 +1237,10 @@
 								</h4>
 								<button
 									class="text-[10px] text-slate-500 hover:text-slate-300"
-									on:click={() => { showGraphSearch = false; graphSearchResults = []; }}
+									on:click={() => {
+										showGraphSearch = false;
+										graphSearchResults = [];
+									}}
 								>
 									Close
 								</button>
@@ -1140,18 +1279,36 @@
 								<div class="mt-2 flex flex-col gap-1 max-h-48 overflow-y-auto">
 									{#each graphSearchResults as result (result.node.id)}
 										<a
-											href={nodeLink({ id: result.node.id, title: result.node.title || 'Untitled', kind: result.node.kind, namespace: result.node.namespace ?? null, x: 0, y: 0, vx: 0, vy: 0 })}
+											href={nodeLink({
+												id: result.node.id,
+												title: result.node.title || 'Untitled',
+												kind: result.node.kind,
+												namespace: result.node.namespace ?? null,
+												x: 0,
+												y: 0,
+												vx: 0,
+												vy: 0
+											})}
 											class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-slate-800/60 transition"
 										>
-											<div class="h-2.5 w-2.5 rounded-full flex-shrink-0" style="background-color: {kindColor(result.node.kind)}"></div>
-											<span class="flex-1 truncate text-slate-300">{result.node.title || 'Untitled'}</span>
-											<span class="text-[9px] text-slate-500">{result.path_length} hop{result.path_length !== 1 ? 's' : ''}</span>
+											<div
+												class="h-2.5 w-2.5 rounded-full flex-shrink-0"
+												style="background-color: {kindColor(result.node.kind)}"
+											></div>
+											<span class="flex-1 truncate text-slate-300"
+												>{result.node.title || 'Untitled'}</span
+											>
+											<span class="text-[9px] text-slate-500"
+												>{result.path_length} hop{result.path_length !== 1 ? 's' : ''}</span
+											>
 											<span class="text-[9px] text-violet-400">{result.score.toFixed(2)}</span>
 										</a>
 									{/each}
 								</div>
 							{:else if !graphSearching}
-								<p class="mt-2 text-[10px] text-slate-500">No results yet. Click Search to explore.</p>
+								<p class="mt-2 text-[10px] text-slate-500">
+									No results yet. Click Search to explore.
+								</p>
 							{/if}
 						</div>
 					{/if}
@@ -1174,7 +1331,9 @@
 			tabindex="-1"
 			aria-label="Close"
 		></div>
-		<div class="relative z-10 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+		<div
+			class="relative z-10 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
+		>
 			<h3 class="text-sm font-semibold text-white">Create Relationship</h3>
 			<p class="mt-1 text-[11px] text-slate-400">
 				Connect "{fromNode?.title ?? 'Node'}" to "{toNode?.title ?? 'Node'}"
@@ -1197,9 +1356,15 @@
 
 			<div class="mt-3 rounded-lg border border-slate-800 bg-slate-800/50 p-3">
 				<div class="flex items-center gap-2 text-xs text-slate-400">
-					<span class="rounded bg-slate-700 px-1.5 py-0.5">{fromNode?.title?.slice(0, 20) ?? '?'}</span>
-					<span style="color: {getRelationshipColor(selectedRelationshipType)}">→ {selectedRelationshipType} →</span>
-					<span class="rounded bg-slate-700 px-1.5 py-0.5">{toNode?.title?.slice(0, 20) ?? '?'}</span>
+					<span class="rounded bg-slate-700 px-1.5 py-0.5"
+						>{fromNode?.title?.slice(0, 20) ?? '?'}</span
+					>
+					<span style="color: {getRelationshipColor(selectedRelationshipType)}"
+						>→ {selectedRelationshipType} →</span
+					>
+					<span class="rounded bg-slate-700 px-1.5 py-0.5"
+						>{toNode?.title?.slice(0, 20) ?? '?'}</span
+					>
 				</div>
 			</div>
 
