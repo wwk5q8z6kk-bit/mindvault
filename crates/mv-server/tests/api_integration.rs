@@ -2869,13 +2869,18 @@ async fn identity_registry_resolves_local_system_and_rejects_unknown_subject() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|record| record["subject_binding"] == "local-system" && record["actor_kind"] == "human"),
+            .any(|record| record["subject_binding"] == "local-system"
+                && record["actor_kind"] == "human"),
         "identities: {identities}"
     );
 
     let local_node_id = router
         .clone()
-        .oneshot(json_request(Method::GET, "/api/v1/context-nodes/local", None))
+        .oneshot(json_request(
+            Method::GET,
+            "/api/v1/context-nodes/local",
+            None,
+        ))
         .await
         .unwrap();
     let node_body = body_json(local_node_id).await;

@@ -2222,7 +2222,6 @@ pub struct IdempotentSourceBindingCommit {
     pub replayed: bool,
 }
 
-
 interoperability_string_enum! {
     /// Actor kind for governed identity records (ADR 010 §Actors).
     pub enum ActorKind {
@@ -2313,13 +2312,18 @@ impl IdentityRecord {
             .context_node_uuid()
             .ok_or_else(|| "governing node id must be a canonical Context Node URI".to_string())?;
         if self.principal_uri != StableUri::principal(local_node_id, self.principal_id) {
-            return Err("identity principal URI must be derived from its stable principal id".into());
+            return Err(
+                "identity principal URI must be derived from its stable principal id".into(),
+            );
         }
         validate_display_text(&self.display_name, "identity display name", 256)?;
         if self.subject_binding.trim().is_empty() || self.subject_binding.len() > 512 {
             return Err("identity subject binding must be 1-512 trimmed bytes".into());
         }
-        validate_sha256(&self.subject_binding_digest, "identity subject binding digest")?;
+        validate_sha256(
+            &self.subject_binding_digest,
+            "identity subject binding digest",
+        )?;
         if self.subject_binding_digest != Self::subject_binding_digest(&self.subject_binding) {
             return Err("identity subject binding digest does not match its binding".into());
         }

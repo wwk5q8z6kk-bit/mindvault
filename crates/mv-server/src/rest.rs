@@ -10777,8 +10777,8 @@ async fn store_node(
     let correlation_id =
         optional_uuid_header(&headers, CORRELATION_ID_HEADER)?.unwrap_or_else(Uuid::now_v7);
     let causation_id = optional_uuid_header(&headers, CAUSATION_ID_HEADER)?;
-    let identity = interoperability::CommandIdentity::derive_async(&state, &auth, local_node_id)
-        .await?;
+    let identity =
+        interoperability::CommandIdentity::derive_async(&state, &auth, local_node_id).await?;
     let principal = identity.principal.clone();
     let payload_digest = node_create_payload_digest(&node)?;
     if let Some(replay) = state
@@ -10923,8 +10923,8 @@ async fn update_node(
         .local_context_node_id()
         .await
         .map_err(map_mv_error)?;
-    let identity = interoperability::CommandIdentity::derive_async(&state, &auth, local_node_id)
-        .await?;
+    let identity =
+        interoperability::CommandIdentity::derive_async(&state, &auth, local_node_id).await?;
     let subject = StableUri::knowledge_node(local_node_id, uuid);
     let _action_envelope = interoperability::admit_command(
         &state,
@@ -11023,8 +11023,8 @@ async fn delete_node(
         .local_context_node_id()
         .await
         .map_err(map_mv_error)?;
-    let identity = interoperability::CommandIdentity::derive_async(&state, &auth, local_node_id)
-        .await?;
+    let identity =
+        interoperability::CommandIdentity::derive_async(&state, &auth, local_node_id).await?;
     let subject = StableUri::knowledge_node(local_node_id, uuid);
     let _action_envelope = interoperability::admit_command(
         &state,

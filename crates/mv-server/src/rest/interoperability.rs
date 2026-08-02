@@ -823,7 +823,9 @@ pub(crate) struct ListIdentitiesQuery {
 }
 
 fn parse_actor_kind(value: &str) -> Result<ActorKind, (StatusCode, String)> {
-    value.parse().map_err(|err: String| (StatusCode::BAD_REQUEST, err))
+    value
+        .parse()
+        .map_err(|err: String| (StatusCode::BAD_REQUEST, err))
 }
 
 /// `POST /api/v1/identities` — register one governed identity.
@@ -876,9 +878,7 @@ pub(crate) async fn list_identities(
 ) -> Result<Json<Vec<IdentityView>>, (StatusCode, String)> {
     authorize_read(&auth)?;
     let governing_node_uri = match query.governing_node_uri {
-        Some(value) => Some(
-            StableUri::parse(value).map_err(|err| (StatusCode::BAD_REQUEST, err))?,
-        ),
+        Some(value) => Some(StableUri::parse(value).map_err(|err| (StatusCode::BAD_REQUEST, err))?),
         None => None,
     };
     let records = state

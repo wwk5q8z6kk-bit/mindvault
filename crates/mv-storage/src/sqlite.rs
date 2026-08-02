@@ -1668,10 +1668,7 @@ impl SqliteNodeStore {
                     .get("actor_kind")
                     .and_then(|value| value.as_str())
                     != Some(identity.actor_kind.as_str())
-                    || event
-                        .data
-                        .get("status")
-                        .and_then(|value| value.as_str())
+                    || event.data.get("status").and_then(|value| value.as_str())
                         != Some(identity.status.as_str())
                     || event
                         .data
@@ -1719,8 +1716,8 @@ impl SqliteNodeStore {
             .parse()
             .map_err(|err: String| Self::as_sql_conversion_error(7, err))?;
         let stored_principal_id = parse_uuid_str(0, &principal_id)?;
-        let stored_principal_uri = StableUri::parse(principal_uri)
-            .map_err(|err| Self::as_sql_conversion_error(2, err))?;
+        let stored_principal_uri =
+            StableUri::parse(principal_uri).map_err(|err| Self::as_sql_conversion_error(2, err))?;
         let stored_governing_node_uri = StableUri::parse(governing_node_uri)
             .map_err(|err| Self::as_sql_conversion_error(3, err))?;
 
@@ -3027,7 +3024,10 @@ impl InteroperabilityStore for SqliteNodeStore {
             ));
         }
         Self::validate_identity_event_record(event, identity, false, true)?;
-        if event.data.get("actor_kind").and_then(|value| value.as_str())
+        if event
+            .data
+            .get("actor_kind")
+            .and_then(|value| value.as_str())
             != Some(identity.actor_kind.as_str())
             || event.data.get("status").and_then(|value| value.as_str())
                 != Some(identity.status.as_str())
@@ -3084,9 +3084,9 @@ impl InteroperabilityStore for SqliteNodeStore {
             &identity.governing_node_uri,
             &identity.subject_binding,
         )? {
-            transaction
-                .commit()
-                .map_err(|err| MvError::Storage(format!("finish existing identity lookup: {err}")))?;
+            transaction.commit().map_err(|err| {
+                MvError::Storage(format!("finish existing identity lookup: {err}"))
+            })?;
             return Ok(IdempotentIdentityCommit {
                 identity: existing,
                 event: event.clone(),
@@ -3154,18 +3154,22 @@ impl InteroperabilityStore for SqliteNodeStore {
                     })
                     .map_err(|err| MvError::Storage(format!("query identities: {err}")))?;
                 for row in rows {
-                    identities.push(row.map_err(|err| {
-                        MvError::Storage(format!("read identity record: {err}"))
-                    })?);
+                    identities.push(
+                        row.map_err(|err| {
+                            MvError::Storage(format!("read identity record: {err}"))
+                        })?,
+                    );
                 }
             } else {
                 let rows = statement
                     .query_map([], |row| self.row_to_identity(row))
                     .map_err(|err| MvError::Storage(format!("query identities: {err}")))?;
                 for row in rows {
-                    identities.push(row.map_err(|err| {
-                        MvError::Storage(format!("read identity record: {err}"))
-                    })?);
+                    identities.push(
+                        row.map_err(|err| {
+                            MvError::Storage(format!("read identity record: {err}"))
+                        })?,
+                    );
                 }
             }
             Ok(identities)
@@ -12753,13 +12757,8 @@ mod tests {
     async fn identity_registry_registers_and_reads_actor_kind() {
         let store = SqliteNodeStore::open_in_memory().unwrap();
         let local_node_id = store.local_context_node_id().await.unwrap();
-        let identity = IdentityRecord::bootstrap(
-            local_node_id,
-            "owner",
-            ActorKind::Human,
-            "Owner",
-        )
-        .unwrap();
+        let identity =
+            IdentityRecord::bootstrap(local_node_id, "owner", ActorKind::Human, "Owner").unwrap();
         let data = serde_json::json!({
             "principal_id": identity.principal_id,
             "actor_kind": identity.actor_kind.as_str(),
@@ -12767,18 +12766,17 @@ mod tests {
             "record_digest": identity.semantic_digest(),
             "subject_binding_digest": identity.subject_binding_digest,
         });
-        let event = identity_event(
-            local_node_id,
-            &identity,
-            "identity-register-owner",
-            data,
-        );
+        let event = identity_event(local_node_id, &identity, "identity-register-owner", data);
         let commit = store
             .commit_identity_with_event(&identity, &event)
             .await
             .unwrap();
         assert!(!commit.replayed);
-        let loaded = store.get_identity(identity.principal_id).await.unwrap().unwrap();
+        let loaded = store
+            .get_identity(identity.principal_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.actor_kind, ActorKind::Human);
         assert_eq!(loaded.subject_binding, "owner");
     }
@@ -12805,7 +12803,12 @@ mod tests {
         store
             .commit_identity_with_event(
                 &identity,
-                &identity_event(local_node_id, &identity, "identity-register-local-system", data),
+                &identity_event(
+                    local_node_id,
+                    &identity,
+                    "identity-register-local-system",
+                    data,
+                ),
             )
             .await
             .unwrap();
@@ -12833,10 +12836,7 @@ mod tests {
         );
         assert_eq!(
             identity.principal_uri,
-            StableUri::principal(
-                local_node_id,
-                Uuid::new_v5(&local_node_id, b"local-system"),
-            )
+            StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, b"local-system"),)
         );
     }
 
