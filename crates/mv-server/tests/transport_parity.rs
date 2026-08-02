@@ -431,6 +431,22 @@ async fn namespace_scoped_token_deny_allow_matches_across_rest_and_grpc() {
         .expect("foreign id")
         .to_string();
 
+    let identity = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/identities",
+            Some(json!({
+                "subject_binding": "shared-token",
+                "actor_kind": "service",
+                "display_name": "Scoped Shared Token",
+                "idempotency_key": "transport-parity-shared-token"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(identity.status(), StatusCode::CREATED);
+
     let token = "parity-scoped-write-token";
     let _auth = ScopedEnvVars::set(&[
         ("MINDVAULT_AUTH_TOKEN", token),
@@ -671,6 +687,26 @@ async fn jwt_namespace_claim_deny_allow_matches_across_rest_and_grpc() {
         .as_str()
         .expect("foreign id")
         .to_string();
+
+    // JWT subjects are intentionally fail-closed until an administrator binds
+    // them in the governed identity registry. Register the writer before auth
+    // is enabled so this parity test exercises the normal registry path rather
+    // than the opt-in legacy derivation fallback.
+    let identity = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/identities",
+            Some(json!({
+                "subject_binding": "writer",
+                "actor_kind": "human",
+                "display_name": "JWT Writer",
+                "idempotency_key": "transport-parity-jwt-writer"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(identity.status(), StatusCode::CREATED);
 
     let secret = "parity-jwt-secret";
     let _auth = ScopedEnvVars::set(&[("MINDVAULT_JWT_SECRET", secret)]);
