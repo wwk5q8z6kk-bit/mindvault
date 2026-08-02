@@ -38,12 +38,14 @@
 	import NotesCanvasView from '$lib/components/NotesCanvasView.svelte';
 	import NotesPdfView from '$lib/components/NotesPdfView.svelte';
 	import NotesMediaView from '$lib/components/NotesMediaView.svelte';
+	import LibraryWorkspaceBrowser from '$lib/components/LibraryWorkspaceBrowser.svelte';
 	import { fade } from 'svelte/transition';
 
-	const currentView = createViewMode('list', ['list', 'graph', 'canvas', 'pdf', 'media']);
+	const currentView = createViewMode('list', ['list', 'files', 'graph', 'canvas', 'pdf', 'media']);
 
 	const notesViews = [
 		{ key: 'list', label: 'List' },
+		{ key: 'files', label: 'Files' },
 		{ key: 'graph', label: 'Graph' },
 		{ key: 'canvas', label: 'Canvas' },
 		{ key: 'pdf', label: 'PDF' },
@@ -1490,6 +1492,10 @@
 			</div>
 		</div>
 	{/if}
+{:else if $currentView === 'files'}
+	<div class="mt-4">
+		<LibraryWorkspaceBrowser />
+	</div>
 {:else if $currentView === 'graph' || $currentView === 'canvas'}
 	{#key $currentView}
 		{#if $currentView === 'graph'}

@@ -67,4 +67,13 @@ pub enum PluginPermission {
     NetworkAccess,
     FileSystemRead,
     FileSystemWrite,
+    /// Read governed execution-graph state: Work Orders, runs, gate evidence,
+    /// and artifact metadata.
+    ///
+    /// Read-only by design, and there is deliberately no write counterpart. An
+    /// extension that could command the execution graph could record its own
+    /// gate evidence or approve its own runs, which would make the gate
+    /// hierarchy meaningless. Extensions observe governance; they do not
+    /// produce it.
+    ReadWorkOrders,
 }

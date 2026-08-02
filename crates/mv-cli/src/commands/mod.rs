@@ -996,6 +996,9 @@ fn apply_env_overrides(engine: &mut EngineConfig, server: &mut ServerRuntimeConf
     if let Some(value) = parse_env_bool("MINDVAULT_LLM_ENABLED") {
         engine.llm.enabled = value;
     }
+    if let Some(value) = parse_env_bool("MINDVAULT_LLM_ALLOW_CLOUD_FALLBACK") {
+        engine.llm.allow_cloud_fallback = value;
+    }
     if let Ok(value) = std::env::var("MINDVAULT_LLM_BASE_URL") {
         if !value.is_empty() {
             engine.llm.base_url = value;

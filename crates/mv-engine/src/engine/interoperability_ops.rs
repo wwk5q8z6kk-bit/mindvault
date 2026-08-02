@@ -1,0 +1,1128 @@
+//! Command admission against the authority-grant layer.
+//!
+//! Contract: `docs/architecture/AUTHORITY_GRANT_MODEL.md`.
+//! Slice: `docs/architecture/interoperability-kernel-v1.md:283-284` — "the next
+//! gated kernel slice should wire action-envelope and grant admission ahead of
+//! any live provider publisher".
+//!
+//! Constitutional law 7 requires an explicit grant for context access; law 8
+//! requires action authority to be a separate axis, so reading never implies
+//! authority to mutate, execute, transmit, or spend. This module answers one
+//! question — may this actor perform this operation on this target, now — and
+//! answers it fail-closed.
+//!
+//! Admission is additive. It never replaces the role, namespace, or quota
+//! checks that already guard a command; `interoperability-kernel-v1.md:252-253`
+//! requires those to stay in place.
+
+use chrono::Utc;
+use mv_core::*;
+use uuid::Uuid;
+
+use super::MindVaultEngine;
+
+/// Outcome of [`MindVaultEngine::register_local_context_node`].
+///
+/// `newly_registered` is decided by storage — either the early existing-descriptor
+/// read, or the idempotent commit's `replayed` flag — so callers never race a
+/// separate "is it there?" check against the write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalContextNodeRegistration {
+    pub record: ContextNodeRecord,
+    pub newly_registered: bool,
+}
+
+/// Outcome of [`MindVaultEngine::issue_authority_grant`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorityGrantIssuance {
+    pub grant: AuthorityGrant,
+    pub newly_issued: bool,
+}
+
+/// Outcome of a grant lifecycle transition (suspend / revoke / resume).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorityGrantTransition {
+    pub grant: AuthorityGrant,
+    pub replayed: bool,
+}
+
+/// Parameters for issuing one Context or Tool Grant through the governed command.
+///
+/// The grantor is always this vault's local owner principal. Admin REST auth
+/// decides who may call the command; the record attributes issuance to the
+/// self-governed owner so an admin can grant to their own acting principal
+/// without violating `grantor != grantee`.
+#[derive(Debug, Clone)]
+pub struct IssueAuthorityGrantRequest {
+    pub kind: AuthorityGrantKind,
+    pub grantee: StableUri,
+    pub targets: Vec<StableUri>,
+    pub capabilities: Vec<ContextCapability>,
+    pub purpose: String,
+    pub expires_at: chrono::DateTime<Utc>,
+    pub sensitivity_ceiling: Sensitivity,
+    pub retention_ceiling: RetentionClass,
+    pub idempotency_key: IdempotencyKey,
+}
+
+/// Capabilities the local node declares as a Context Node.
+///
+/// Deliberately narrow, and narrower than what the REST API can do. A
+/// capability manifest is a public claim about what this node offers *through
+/// governed Context Node contracts*, not an inventory of every handler. Query
+/// and Read are absent because the governed query transport is still gated
+/// (`interoperability-kernel-v1.md`); declaring them would over-claim exactly
+/// the way the constitution's "no UI-only capability" law exists to prevent.
+///
+/// Expand this list when a governed contract for the capability actually ships,
+/// and expect the manifest revision and digest to change with it.
+/// Order matters. `ContextCapabilityManifest::validate` requires capabilities to
+/// be strictly sorted by their wire token, so this list is in `as_str()` order
+/// ("command", "discover", "health") rather than conceptual order.
+const LOCAL_NODE_CAPABILITIES: [ContextCapability; 3] = [
+    ContextCapability::Command,
+    ContextCapability::Discover,
+    ContextCapability::Health,
+];
+
+impl MindVaultEngine {
+    /// Register this vault's own Context Node descriptor, idempotently.
+    ///
+    /// Bootstrapping problem this solves: `commit_authority_grant_with_event`
+    /// refuses a grant whose governing node has no active registered
+    /// descriptor, and `ensure_local_context_node` only allocates the identity
+    /// UUID — not the descriptor. So a fresh vault cannot be issued any grant,
+    /// which in turn makes command admission unusable in `enforce`.
+    ///
+    /// Registering the self-governed local node directly as active is sanctioned
+    /// by `docs/architecture/CONTEXT_NODE_MODEL.md`: "Initial local bootstrap
+    /// may register the self-governed local node directly as active". That
+    /// exemption is for *this* node only. Every remote node still requires
+    /// discovery, key proof, and signature verification, which remain gated.
+    ///
+    /// Returns the existing descriptor unchanged when one is already present,
+    /// so this is safe to call on every startup or from an operator command.
+    pub async fn register_local_context_node(
+        &self,
+        display_name: &str,
+    ) -> MvResult<LocalContextNodeRegistration> {
+        self.ensure_unsealed_for_node_io().await?;
+        let local_node_id = self.store.nodes.local_context_node_id().await?;
+
+        if let Some(existing) = self.store.nodes.get_context_node(local_node_id).await? {
+            return Ok(LocalContextNodeRegistration {
+                record: existing,
+                newly_registered: false,
+            });
+        }
+
+        let manifest = ContextCapabilityManifest::new(
+            LOCAL_NODE_CAPABILITIES.to_vec(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .map_err(MvError::InvalidInput)?;
+
+        let owner = self.local_owner_principal(local_node_id);
+        let mut record = ContextNodeRecord::discovered(
+            local_node_id,
+            ContextNodeType::Personal,
+            owner.clone(),
+            StableUri::node(local_node_id),
+            display_name,
+            manifest,
+        )
+        .map_err(MvError::InvalidInput)?;
+        record.trust_class = ContextNodeTrustClass::local();
+        record.status = ContextNodeStatus::Active;
+
+        let data = serde_json::json!({
+            "node_id": record.node_id,
+            "node_type": record.node_type.as_str(),
+            "status": record.status.as_str(),
+            "record_digest": record.semantic_digest(),
+            "capability_digest": record.capability_manifest.content_digest,
+        });
+        let mut event = EventEnvelope::new(NewEventEnvelope {
+            event_type: CONTEXT_NODE_REGISTERED_V1.into(),
+            source: StableUri::node(local_node_id),
+            subject: record.node_uri.clone(),
+            schema: SchemaReference::new(
+                StableUri::schema("context-node-registered").map_err(MvError::InvalidInput)?,
+                "1.0.0",
+            )
+            .map_err(MvError::InvalidInput)?,
+            principal: owner.clone(),
+            actor: owner,
+            correlation_id: Uuid::now_v7(),
+            causation_id: None,
+            // Scoped to the node identity, so a concurrent second call collapses
+            // onto the same registration rather than creating a rival one.
+            idempotency_key: IdempotencyKey::parse(format!("register-local-node-{local_node_id}"))
+                .map_err(MvError::InvalidInput)?,
+            payload_digest: canonical_json_sha256(&data),
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Durable,
+            provenance: vec![ProvenanceReference {
+                resource: record.node_uri.clone(),
+                relation: ProvenanceRelation::PrimarySource,
+            }],
+            data,
+        })
+        .map_err(MvError::InvalidInput)?;
+        event.payload_digest = record.semantic_digest();
+        let commit = self
+            .store
+            .nodes
+            .commit_context_node_with_event(&record, &event)
+            .await?;
+        Ok(LocalContextNodeRegistration {
+            record: commit.context_node,
+            newly_registered: !commit.replayed,
+        })
+    }
+
+    /// Read the local Context Node descriptor, if it has been registered.
+    pub async fn local_context_node(&self) -> MvResult<Option<ContextNodeRecord>> {
+        self.ensure_unsealed_for_node_io().await?;
+        let local_node_id = self.store.nodes.local_context_node_id().await?;
+        self.store.nodes.get_context_node(local_node_id).await
+    }
+
+    /// The owner principal this vault attributes its own governance acts to.
+    ///
+    /// Derived rather than stored so it is stable across restarts without a
+    /// migration. It is the same shape the REST layer derives for an
+    /// authenticated caller, and it must stay stable: grants reference it as
+    /// grantor, and changing the derivation would orphan them.
+    fn local_owner_principal(&self, local_node_id: Uuid) -> StableUri {
+        StableUri::principal(
+            local_node_id,
+            Uuid::new_v5(&local_node_id, b"local-context-owner"),
+        )
+    }
+
+    /// Issue one Context or Tool Grant governed by this vault's local node.
+    ///
+    /// Requires an active registered local Context Node (IK-001a). Idempotent
+    /// on `idempotency_key`: a replay returns the historical grant with
+    /// `newly_issued: false`.
+    pub async fn issue_authority_grant(
+        &self,
+        request: IssueAuthorityGrantRequest,
+    ) -> MvResult<AuthorityGrantIssuance> {
+        self.ensure_unsealed_for_node_io().await?;
+        let local_node_id = self.store.nodes.local_context_node_id().await?;
+        let node_uri = StableUri::node(local_node_id);
+        let grantor = self.local_owner_principal(local_node_id);
+
+        let mut grant = match request.kind {
+            AuthorityGrantKind::Tool => AuthorityGrant::new_tool(
+                node_uri.clone(),
+                grantor.clone(),
+                request.grantee.clone(),
+                request.targets,
+                request.capabilities,
+                request.purpose,
+                request.expires_at,
+            ),
+            AuthorityGrantKind::Context => AuthorityGrant::new_context(
+                node_uri.clone(),
+                grantor.clone(),
+                request.grantee.clone(),
+                request.targets,
+                request.capabilities,
+                request.purpose,
+                request.expires_at,
+            ),
+        }
+        .map_err(MvError::InvalidInput)?;
+        // Deterministic id from the idempotency key. A retry with the same key
+        // resolves to the same grant id and returns the stored record instead of
+        // minting a rival grant whose digest would conflict.
+        grant.grant_id = Uuid::new_v5(&local_node_id, request.idempotency_key.as_str().as_bytes());
+        grant.grant_uri = StableUri::authority_grant(local_node_id, grant.grant_id);
+        if let Some(existing) = self.store.nodes.get_authority_grant(grant.grant_id).await? {
+            return Ok(AuthorityGrantIssuance {
+                grant: existing,
+                newly_issued: false,
+            });
+        }
+        grant.sensitivity_ceiling = request.sensitivity_ceiling;
+        grant.retention_ceiling = request.retention_ceiling;
+        grant.validate().map_err(MvError::InvalidInput)?;
+
+        let data = serde_json::json!({
+            "grant_id": grant.grant_id,
+            "grant_kind": grant.kind.as_str(),
+            "grantee_uri": grant.grantee.as_str(),
+            "governing_node_uri": grant.governing_node.as_str(),
+            "record_digest": grant.semantic_digest(),
+        });
+        let mut event = EventEnvelope::new(NewEventEnvelope {
+            event_type: AUTHORITY_GRANT_ISSUED_V1.into(),
+            source: node_uri,
+            subject: grant.grant_uri.clone(),
+            schema: SchemaReference::new(
+                StableUri::schema("authority-grant-issued").map_err(MvError::InvalidInput)?,
+                "1.0.0",
+            )
+            .map_err(MvError::InvalidInput)?,
+            principal: grantor.clone(),
+            actor: grantor,
+            correlation_id: Uuid::now_v7(),
+            causation_id: None,
+            idempotency_key: request.idempotency_key,
+            payload_digest: canonical_json_sha256(&data),
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Durable,
+            provenance: vec![ProvenanceReference {
+                resource: grant.grant_uri.clone(),
+                relation: ProvenanceRelation::PrimarySource,
+            }],
+            data,
+        })
+        .map_err(MvError::InvalidInput)?;
+        event.payload_digest = grant.semantic_digest();
+
+        let commit = self
+            .store
+            .nodes
+            .commit_authority_grant_with_event(&grant, &event)
+            .await?;
+        Ok(AuthorityGrantIssuance {
+            grant: commit.grant,
+            newly_issued: !commit.replayed,
+        })
+    }
+
+    /// Read one Authority Grant by id.
+    pub async fn get_authority_grant(&self, grant_id: Uuid) -> MvResult<Option<AuthorityGrant>> {
+        self.ensure_unsealed_for_node_io().await?;
+        self.store.nodes.get_authority_grant(grant_id).await
+    }
+
+    /// List Authority Grants with optional filters.
+    pub async fn list_authority_grants(
+        &self,
+        grantee: Option<&StableUri>,
+        kind: Option<AuthorityGrantKind>,
+        status: Option<AuthorityGrantStatus>,
+    ) -> MvResult<Vec<AuthorityGrant>> {
+        self.ensure_unsealed_for_node_io().await?;
+        self.store
+            .nodes
+            .list_authority_grants(grantee, kind, status)
+            .await
+    }
+
+    /// Suspend, revoke, or resume an Authority Grant.
+    ///
+    /// Only status, reason, revision, and update time change — grant terms are
+    /// immutable after issuance (`AUTHORITY_GRANT_MODEL.md`).
+    pub async fn transition_authority_grant(
+        &self,
+        grant_id: Uuid,
+        to_status: AuthorityGrantStatus,
+        reason: impl Into<String>,
+        idempotency_key: IdempotencyKey,
+    ) -> MvResult<AuthorityGrantTransition> {
+        self.ensure_unsealed_for_node_io().await?;
+        let current = self
+            .store
+            .nodes
+            .get_authority_grant(grant_id)
+            .await?
+            .ok_or_else(|| MvError::InvalidInput("authority grant does not exist".into()))?;
+
+        let reason = reason.into();
+        let mut replacement = current.clone();
+        replacement.revision = current
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| MvError::InvalidInput("authority-grant revision overflow".into()))?;
+        replacement.status = to_status;
+        replacement.status_reason = match to_status {
+            AuthorityGrantStatus::Active => None,
+            _ => Some(reason),
+        };
+        replacement.updated_at = Utc::now();
+        replacement.validate().map_err(MvError::InvalidInput)?;
+
+        let local_node_id = self.store.nodes.local_context_node_id().await?;
+        let grantor = current.grantor.clone();
+        let data = serde_json::json!({
+            "grant_id": replacement.grant_id,
+            "revision": replacement.revision,
+            "from_status": current.status.as_str(),
+            "to_status": replacement.status.as_str(),
+            "record_digest": replacement.semantic_digest(),
+        });
+        let mut event = EventEnvelope::new(NewEventEnvelope {
+            event_type: AUTHORITY_GRANT_LIFECYCLE_TRANSITIONED_V1.into(),
+            source: StableUri::node(local_node_id),
+            subject: replacement.grant_uri.clone(),
+            schema: SchemaReference::new(
+                StableUri::schema("authority-grant-lifecycle-transitioned")
+                    .map_err(MvError::InvalidInput)?,
+                "1.0.0",
+            )
+            .map_err(MvError::InvalidInput)?,
+            principal: grantor.clone(),
+            actor: grantor,
+            correlation_id: Uuid::now_v7(),
+            causation_id: None,
+            idempotency_key,
+            payload_digest: canonical_json_sha256(&data),
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Durable,
+            provenance: vec![ProvenanceReference {
+                resource: replacement.grant_uri.clone(),
+                relation: ProvenanceRelation::PrimarySource,
+            }],
+            data,
+        })
+        .map_err(MvError::InvalidInput)?;
+        event.payload_digest = replacement.semantic_digest();
+
+        let commit = self
+            .store
+            .nodes
+            .transition_authority_grant_with_event(current.revision, &replacement, &event)
+            .await?;
+        Ok(AuthorityGrantTransition {
+            grant: commit.grant,
+            replayed: commit.replayed,
+        })
+    }
+
+    /// Derive a principal URI the same way the REST command path does.
+    ///
+    /// Kept public so grant issuance can name a grantee that will match
+    /// `CommandIdentity::derive` for a given auth subject without the caller
+    /// reconstructing the v5 scheme.
+    pub fn principal_for_subject(&self, local_node_id: Uuid, subject: &str) -> StableUri {
+        StableUri::principal(
+            local_node_id,
+            Uuid::new_v5(&local_node_id, subject.as_bytes()),
+        )
+    }
+
+    /// Resolve whether one command is authorized by an effective grant.
+    ///
+    /// Returns `Denied` rather than an error when authorization simply fails —
+    /// a denial is a decision, and the caller records it. `Err` is reserved for
+    /// a resolver that could not reach an answer, which callers must treat as a
+    /// denial too (`AUTHORITY_GRANT_MODEL.md:86`, fail closed).
+    pub async fn resolve_command_admission(
+        &self,
+        request: &CommandAdmissionRequest,
+    ) -> MvResult<AdmissionDecision> {
+        // Ordered first so a sealed vault yields the canonical VaultSealed error
+        // rather than the decrypt failure that reading a sealed governance
+        // record would otherwise produce.
+        self.ensure_unsealed_for_node_io().await?;
+
+        request
+            .validate()
+            .map_err(|err| MvError::InvalidInput(format!("command admission request: {err}")))?;
+
+        let grant = self
+            .store
+            .nodes
+            .find_authorizing_grant(GrantQuery {
+                grantee: &request.actor,
+                kind: request.required_grant_kind,
+                target: &request.resource,
+                capability: request.operation,
+                sensitivity: request.sensitivity,
+                retention: request.retention,
+                at: request.requested_at,
+            })
+            .await?;
+
+        let decision = match grant {
+            Some(grant) => AdmissionDecision::Admitted {
+                grant_id: grant.grant_id,
+                grant_uri: grant.grant_uri.clone(),
+                grant_kind: grant.kind,
+                capability: request.operation,
+                delegation_depth_remaining: grant.delegation_depth_remaining,
+                decided_at: Utc::now(),
+            },
+            None => AdmissionDecision::Denied {
+                reason: self.classify_admission_denial(request).await,
+                decided_at: Utc::now(),
+            },
+        };
+
+        // Law 15: denials must be durable. Admitted decisions are recorded too
+        // as the first Trust Ledger brick; they also continue to ride in the
+        // event envelope for committed mutations. Persistence failure fails
+        // closed — an unrecorded decision must not be treated as settled.
+        let record = CommandAdmissionDecisionRecord::from_request_and_decision(request, &decision);
+        self.store
+            .nodes
+            .commit_command_admission_decision(&record)
+            .await?;
+
+        Ok(decision)
+    }
+
+    /// Narrow a refusal to a bounded reason, for the audit trail only.
+    ///
+    /// Runs strictly after the resolver already returned `None`, so it cannot
+    /// admit anything — the worst case is a less precise audit line. Reasons are
+    /// never returned to callers: distinguishing "you hold no grant" from "your
+    /// grant expired" is a probing oracle. Law 15 requires a denial be recorded,
+    /// not disclosed.
+    async fn classify_admission_denial(
+        &self,
+        request: &CommandAdmissionRequest,
+    ) -> AdmissionDenialReason {
+        let candidates = match self
+            .store
+            .nodes
+            .list_authority_grants(Some(&request.actor), None, None)
+            .await
+        {
+            Ok(candidates) => candidates,
+            // The lookup already failed closed; we simply cannot say why.
+            Err(_) => return AdmissionDenialReason::ResolverUnavailable,
+        };
+
+        if candidates.is_empty() {
+            return AdmissionDenialReason::NoEffectiveGrant;
+        }
+
+        // Report the failure of the closest candidate: one that matched kind and
+        // target is more informative than one that matched neither.
+        let mut best = AdmissionDenialReason::NoEffectiveGrant;
+        let mut best_rank = 0u8;
+        for grant in &candidates {
+            let (reason, rank) = Self::rank_grant_refusal(grant, request);
+            if rank > best_rank {
+                best = reason;
+                best_rank = rank;
+            }
+        }
+        best
+    }
+
+    /// Score how far one grant got before refusing. Higher means closer.
+    fn rank_grant_refusal(
+        grant: &AuthorityGrant,
+        request: &CommandAdmissionRequest,
+    ) -> (AdmissionDenialReason, u8) {
+        if grant.kind != request.required_grant_kind {
+            return (AdmissionDenialReason::GrantKindMismatch, 1);
+        }
+        if !grant.targets.iter().any(|t| t == &request.resource) {
+            return (AdmissionDenialReason::TargetNotGranted, 2);
+        }
+        if !grant.capabilities.contains(&request.operation) {
+            return (AdmissionDenialReason::CapabilityNotGranted, 3);
+        }
+        if request.sensitivity.rank() > grant.sensitivity_ceiling.rank() {
+            return (AdmissionDenialReason::SensitivityCeilingExceeded, 4);
+        }
+        if request.retention.rank() > grant.retention_ceiling.rank() {
+            return (AdmissionDenialReason::RetentionCeilingExceeded, 5);
+        }
+        if !grant.is_effective_at(request.requested_at) {
+            return (AdmissionDenialReason::GrantNotEffective, 6);
+        }
+        // Every term this grant states is satisfied, yet the resolver refused.
+        // The difference is the parent chain, which the resolver walks and this
+        // per-grant view does not.
+        (AdmissionDenialReason::DelegationChainIneffective, 7)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::EngineConfig;
+    use chrono::Duration;
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    async fn test_engine() -> (MindVaultEngine, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        config.embedding.provider = "noop".into();
+        // Keep the fixture hermetic: auto-detect probes a local Ollama.
+        config.llm.auto_detect = false;
+        let engine = MindVaultEngine::init(config).await.unwrap();
+        (engine, temp_dir)
+    }
+
+    /// Register the local Context Node via the production command.
+    ///
+    /// Calling the real op rather than a hand-rolled fixture means these tests
+    /// fail if registration regresses, instead of quietly testing a copy.
+    async fn register_local_node(engine: &MindVaultEngine) -> Uuid {
+        engine
+            .register_local_context_node("Personal Vault")
+            .await
+            .unwrap()
+            .record
+            .node_id
+    }
+
+    async fn commit_grant(engine: &MindVaultEngine, local_node_id: Uuid, grant: &AuthorityGrant) {
+        let data = serde_json::json!({
+            "grant_id": grant.grant_id,
+            "grant_kind": grant.kind.as_str(),
+            "grantee_uri": grant.grantee.as_str(),
+            "governing_node_uri": grant.governing_node.as_str(),
+            "record_digest": grant.semantic_digest(),
+        });
+        let mut event = EventEnvelope::new(NewEventEnvelope {
+            event_type: AUTHORITY_GRANT_ISSUED_V1.into(),
+            source: StableUri::node(local_node_id),
+            subject: grant.grant_uri.clone(),
+            schema: SchemaReference::new(
+                StableUri::schema("authority-grant-issued").unwrap(),
+                "1.0.0",
+            )
+            .unwrap(),
+            principal: grant.grantor.clone(),
+            actor: grant.grantor.clone(),
+            correlation_id: Uuid::now_v7(),
+            causation_id: None,
+            idempotency_key: IdempotencyKey::parse(format!("admission-grant-{}", grant.grant_id))
+                .unwrap(),
+            payload_digest: canonical_json_sha256(&data),
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Durable,
+            provenance: vec![ProvenanceReference {
+                resource: grant.grant_uri.clone(),
+                relation: ProvenanceRelation::PrimarySource,
+            }],
+            data,
+        })
+        .unwrap();
+        event.payload_digest = grant.semantic_digest();
+
+        engine
+            .store
+            .nodes
+            .commit_authority_grant_with_event(grant, &event)
+            .await
+            .unwrap();
+    }
+
+    fn node_create_request(
+        local_node_id: Uuid,
+        grantee: &StableUri,
+        kind: AuthorityGrantKind,
+        operation: ContextCapability,
+    ) -> CommandAdmissionRequest {
+        CommandAdmissionRequest {
+            request_id: Uuid::now_v7(),
+            correlation_id: Uuid::now_v7(),
+            causation_id: None,
+            principal: grantee.clone(),
+            actor: grantee.clone(),
+            governing_node: StableUri::node(local_node_id),
+            // The only satisfiable target for a create: the subject id is minted
+            // after admission, so no grant could name it.
+            resource: StableUri::node(local_node_id),
+            subject: StableUri::knowledge_node(local_node_id, Uuid::now_v7()),
+            operation,
+            required_grant_kind: kind,
+            idempotency_key: IdempotencyKey::parse("admission-node-create").unwrap(),
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Durable,
+            requested_at: Utc::now(),
+        }
+    }
+
+    /// Root grants must be issued by a local principal, not by the node URI.
+    fn grantor_of(local_node_id: Uuid) -> StableUri {
+        StableUri::principal(
+            local_node_id,
+            Uuid::new_v5(&local_node_id, b"admission-grantor"),
+        )
+    }
+
+    fn grantee_of(local_node_id: Uuid) -> StableUri {
+        StableUri::principal(
+            local_node_id,
+            Uuid::new_v5(&local_node_id, b"admission-grantee"),
+        )
+    }
+
+    /// The grant shape a node create actually needs, end to end.
+    ///
+    /// Targets the governing node URI and raises `retention_ceiling` to
+    /// `Durable`, because `new_tool` defaults it to `Operational` while the
+    /// node-create envelope declares `Durable`.
+    #[tokio::test]
+    async fn a_node_scoped_tool_grant_authorizes_a_local_command() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let grantee = grantee_of(local_node_id);
+        let node_uri = StableUri::node(local_node_id);
+
+        let mut grant = AuthorityGrant::new_tool(
+            node_uri.clone(),
+            grantor_of(local_node_id),
+            grantee.clone(),
+            vec![node_uri.clone()],
+            vec![ContextCapability::Command],
+            "admit node creates for the owner",
+            Utc::now() + Duration::days(1),
+        )
+        .unwrap();
+        grant.retention_ceiling = RetentionClass::Durable;
+        commit_grant(&engine, local_node_id, &grant).await;
+
+        let request = node_create_request(
+            local_node_id,
+            &grantee,
+            AuthorityGrantKind::Tool,
+            ContextCapability::Command,
+        );
+        let decision = engine.resolve_command_admission(&request).await.unwrap();
+
+        assert!(decision.is_admitted(), "unexpected refusal: {decision:?}");
+        match decision {
+            AdmissionDecision::Admitted {
+                grant_id,
+                grant_kind,
+                capability,
+                ..
+            } => {
+                assert_eq!(grant_id, grant.grant_id);
+                assert_eq!(grant_kind, AuthorityGrantKind::Tool);
+                assert_eq!(capability, ContextCapability::Command);
+            }
+            AdmissionDecision::Denied { .. } => unreachable!(),
+        }
+    }
+
+    /// Law 8, end to end: reading never implies authority to mutate.
+    ///
+    /// A Context Grant covering the same target with the same grantee must not
+    /// admit a command, and the refusal must be recorded as a kind mismatch
+    /// rather than a bare "no grant".
+    #[tokio::test]
+    async fn a_context_grant_never_authorizes_a_command() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let grantee = grantee_of(local_node_id);
+        let node_uri = StableUri::node(local_node_id);
+
+        let mut grant = AuthorityGrant::new_context(
+            node_uri.clone(),
+            grantor_of(local_node_id),
+            grantee.clone(),
+            vec![node_uri.clone()],
+            vec![ContextCapability::Read],
+            "read the vault",
+            Utc::now() + Duration::days(1),
+        )
+        .unwrap();
+        grant.retention_ceiling = RetentionClass::Durable;
+        commit_grant(&engine, local_node_id, &grant).await;
+
+        let request = node_create_request(
+            local_node_id,
+            &grantee,
+            AuthorityGrantKind::Tool,
+            ContextCapability::Command,
+        );
+        let decision = engine.resolve_command_admission(&request).await.unwrap();
+
+        assert!(
+            !decision.is_admitted(),
+            "a context grant admitted a mutation"
+        );
+        assert!(matches!(
+            decision,
+            AdmissionDecision::Denied {
+                reason: AdmissionDenialReason::GrantKindMismatch,
+                ..
+            }
+        ));
+    }
+
+    /// With no grants at all the refusal is unambiguous.
+    #[tokio::test]
+    async fn an_actor_without_any_grant_is_refused() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let grantee = grantee_of(local_node_id);
+
+        let request = node_create_request(
+            local_node_id,
+            &grantee,
+            AuthorityGrantKind::Tool,
+            ContextCapability::Command,
+        );
+        let decision = engine.resolve_command_admission(&request).await.unwrap();
+
+        assert!(matches!(
+            decision,
+            AdmissionDecision::Denied {
+                reason: AdmissionDenialReason::NoEffectiveGrant,
+                ..
+            }
+        ));
+    }
+
+    /// The default retention ceiling refuses a durable create, and the audit
+    /// reason says so rather than blaming the target or capability.
+    #[tokio::test]
+    async fn a_default_retention_ceiling_refuses_a_durable_command() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let grantee = grantee_of(local_node_id);
+        let node_uri = StableUri::node(local_node_id);
+
+        // Deliberately left at the `new_tool` default of Operational.
+        let grant = AuthorityGrant::new_tool(
+            node_uri.clone(),
+            grantor_of(local_node_id),
+            grantee.clone(),
+            vec![node_uri.clone()],
+            vec![ContextCapability::Command],
+            "admit node creates for the owner",
+            Utc::now() + Duration::days(1),
+        )
+        .unwrap();
+        assert_eq!(grant.retention_ceiling, RetentionClass::Operational);
+        commit_grant(&engine, local_node_id, &grant).await;
+
+        let request = node_create_request(
+            local_node_id,
+            &grantee,
+            AuthorityGrantKind::Tool,
+            ContextCapability::Command,
+        );
+        let decision = engine.resolve_command_admission(&request).await.unwrap();
+
+        assert!(matches!(
+            decision,
+            AdmissionDecision::Denied {
+                reason: AdmissionDenialReason::RetentionCeilingExceeded,
+                ..
+            }
+        ));
+    }
+
+    /// A request that pairs a Context Grant with an effectful capability is a
+    /// construction error, caught before any storage lookup.
+    #[tokio::test]
+    async fn an_incoherent_request_is_rejected_before_resolution() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let grantee = grantee_of(local_node_id);
+
+        let request = node_create_request(
+            local_node_id,
+            &grantee,
+            AuthorityGrantKind::Context,
+            ContextCapability::Command,
+        );
+        let error = engine
+            .resolve_command_admission(&request)
+            .await
+            .expect_err("a context grant cannot carry a command");
+        assert!(matches!(error, MvError::InvalidInput(_)), "got {error:?}");
+    }
+
+    /// Fresh vaults get an active self-governed descriptor they can issue grants against.
+    #[tokio::test]
+    async fn registers_the_local_context_node_as_active() {
+        let (engine, _tmp) = test_engine().await;
+        assert!(engine.local_context_node().await.unwrap().is_none());
+
+        let registration = engine
+            .register_local_context_node("Personal Vault")
+            .await
+            .unwrap();
+        assert!(registration.newly_registered);
+        let record = registration.record;
+
+        assert_eq!(record.status, ContextNodeStatus::Active);
+        assert_eq!(record.display_name, "Personal Vault");
+        assert_eq!(record.node_type, ContextNodeType::Personal);
+        assert_eq!(record.trust_class, ContextNodeTrustClass::local());
+        assert!(
+            record
+                .capability_manifest
+                .capabilities
+                .contains(&ContextCapability::Command),
+            "bootstrap must advertise Command so Tool Grants can authorize creates"
+        );
+        assert_eq!(
+            engine.local_context_node().await.unwrap().unwrap().node_id,
+            record.node_id
+        );
+    }
+
+    /// A second call is a no-op: same descriptor, no rival registration.
+    #[tokio::test]
+    async fn local_context_node_registration_is_idempotent() {
+        let (engine, _tmp) = test_engine().await;
+        let first = engine
+            .register_local_context_node("Personal Vault")
+            .await
+            .unwrap();
+        assert!(first.newly_registered);
+        let second = engine
+            .register_local_context_node("A different name that must be ignored")
+            .await
+            .unwrap();
+        assert!(!second.newly_registered);
+
+        assert_eq!(first.record.node_id, second.record.node_id);
+        assert_eq!(first.record.revision, second.record.revision);
+        assert_eq!(first.record.display_name, second.record.display_name);
+        assert_eq!(
+            first.record.semantic_digest(),
+            second.record.semantic_digest()
+        );
+    }
+
+    /// IK-001b: the production issuance command creates a grant that admits.
+    #[tokio::test]
+    async fn issued_tool_grant_admits_a_node_create() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let grantee = grantee_of(local_node_id);
+        let node_uri = StableUri::node(local_node_id);
+
+        let issuance = engine
+            .issue_authority_grant(IssueAuthorityGrantRequest {
+                kind: AuthorityGrantKind::Tool,
+                grantee: grantee.clone(),
+                targets: vec![node_uri],
+                capabilities: vec![ContextCapability::Command],
+                purpose: "admit node creates for the owner".into(),
+                expires_at: Utc::now() + Duration::days(1),
+                sensitivity_ceiling: Sensitivity::Internal,
+                retention_ceiling: RetentionClass::Durable,
+                idempotency_key: IdempotencyKey::parse("issue-tool-for-create").unwrap(),
+            })
+            .await
+            .unwrap();
+        assert!(issuance.newly_issued);
+        assert_eq!(issuance.grant.status, AuthorityGrantStatus::Active);
+
+        let decision = engine
+            .resolve_command_admission(&node_create_request(
+                local_node_id,
+                &grantee,
+                AuthorityGrantKind::Tool,
+                ContextCapability::Command,
+            ))
+            .await
+            .unwrap();
+        assert!(decision.is_admitted(), "unexpected refusal: {decision:?}");
+    }
+
+    /// Issuance is idempotent on the caller-supplied key.
+    #[tokio::test]
+    async fn authority_grant_issuance_is_idempotent() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let request = IssueAuthorityGrantRequest {
+            kind: AuthorityGrantKind::Tool,
+            grantee: grantee_of(local_node_id),
+            targets: vec![StableUri::node(local_node_id)],
+            capabilities: vec![ContextCapability::Command],
+            purpose: "idempotent issue".into(),
+            expires_at: Utc::now() + Duration::days(1),
+            sensitivity_ceiling: Sensitivity::Internal,
+            retention_ceiling: RetentionClass::Durable,
+            idempotency_key: IdempotencyKey::parse("issue-once").unwrap(),
+        };
+        let first = engine.issue_authority_grant(request.clone()).await.unwrap();
+        let second = engine.issue_authority_grant(request).await.unwrap();
+        assert!(first.newly_issued);
+        assert!(!second.newly_issued);
+        assert_eq!(first.grant.grant_id, second.grant.grant_id);
+        assert_eq!(first.grant.revision, second.grant.revision);
+    }
+
+    /// Suspend then revoke through the production lifecycle command.
+    #[tokio::test]
+    async fn suspending_a_grant_stops_admission_and_revoke_is_terminal() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let grantee = grantee_of(local_node_id);
+        let issuance = engine
+            .issue_authority_grant(IssueAuthorityGrantRequest {
+                kind: AuthorityGrantKind::Tool,
+                grantee: grantee.clone(),
+                targets: vec![StableUri::node(local_node_id)],
+                capabilities: vec![ContextCapability::Command],
+                purpose: "lifecycle".into(),
+                expires_at: Utc::now() + Duration::days(1),
+                sensitivity_ceiling: Sensitivity::Internal,
+                retention_ceiling: RetentionClass::Durable,
+                idempotency_key: IdempotencyKey::parse("issue-for-lifecycle").unwrap(),
+            })
+            .await
+            .unwrap();
+
+        let suspended = engine
+            .transition_authority_grant(
+                issuance.grant.grant_id,
+                AuthorityGrantStatus::Suspended,
+                "operator review",
+                IdempotencyKey::parse("suspend-1").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(!suspended.replayed);
+        assert_eq!(suspended.grant.status, AuthorityGrantStatus::Suspended);
+
+        let decision = engine
+            .resolve_command_admission(&node_create_request(
+                local_node_id,
+                &grantee,
+                AuthorityGrantKind::Tool,
+                ContextCapability::Command,
+            ))
+            .await
+            .unwrap();
+        assert!(!decision.is_admitted());
+
+        let revoked = engine
+            .transition_authority_grant(
+                issuance.grant.grant_id,
+                AuthorityGrantStatus::Revoked,
+                "no longer needed",
+                IdempotencyKey::parse("revoke-1").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revoked.grant.status, AuthorityGrantStatus::Revoked);
+
+        let err = engine
+            .transition_authority_grant(
+                issuance.grant.grant_id,
+                AuthorityGrantStatus::Active,
+                "should fail",
+                IdempotencyKey::parse("resume-revoked").unwrap(),
+            )
+            .await
+            .expect_err("revoked grants cannot resume");
+        assert!(matches!(err, MvError::InvalidInput(_)), "got {err:?}");
+    }
+
+    /// IK-001c: a denial is durable and idempotent on (principal, idempotency_key).
+    #[tokio::test]
+    async fn denied_command_admission_is_persisted_idempotently() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let grantee = grantee_of(local_node_id);
+        let request = node_create_request(
+            local_node_id,
+            &grantee,
+            AuthorityGrantKind::Tool,
+            ContextCapability::Command,
+        );
+
+        let first = engine.resolve_command_admission(&request).await.unwrap();
+        assert!(!first.is_admitted());
+
+        let stored = engine
+            .store
+            .nodes
+            .get_command_admission_decision(&request.principal, &request.idempotency_key)
+            .await
+            .unwrap()
+            .expect("denial must be durable");
+        assert!(stored.is_denied());
+        assert_eq!(stored.admission_digest, request.admission_digest());
+        assert_eq!(stored.principal, request.principal);
+
+        let second = engine.resolve_command_admission(&request).await.unwrap();
+        assert!(!second.is_admitted());
+        let again = engine
+            .store
+            .nodes
+            .get_command_admission_decision(&request.principal, &request.idempotency_key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.decision_id, stored.decision_id);
+        assert_eq!(again.decided_at, stored.decided_at);
+    }
+
+    /// Changing the admission question under the same idempotency key conflicts.
+    #[tokio::test]
+    async fn conflicting_admission_decision_replay_is_rejected() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let grantee = grantee_of(local_node_id);
+        let mut request = node_create_request(
+            local_node_id,
+            &grantee,
+            AuthorityGrantKind::Tool,
+            ContextCapability::Command,
+        );
+        engine.resolve_command_admission(&request).await.unwrap();
+
+        // Same principal + idempotency key, different subject → different digest.
+        request.subject = StableUri::knowledge_node(local_node_id, Uuid::now_v7());
+        let err = engine
+            .resolve_command_admission(&request)
+            .await
+            .expect_err("conflicting replay must fail closed");
+        assert!(
+            matches!(err, MvError::IdempotencyConflict(_)),
+            "got {err:?}"
+        );
+    }
+
+    /// An admitted decision is also durable (Trust Ledger brick).
+    #[tokio::test]
+    async fn admitted_command_admission_is_persisted() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let grantee = grantee_of(local_node_id);
+        let node_uri = StableUri::node(local_node_id);
+        engine
+            .issue_authority_grant(IssueAuthorityGrantRequest {
+                kind: AuthorityGrantKind::Tool,
+                grantee: grantee.clone(),
+                targets: vec![node_uri],
+                capabilities: vec![ContextCapability::Command],
+                purpose: "persist admitted decision".into(),
+                expires_at: Utc::now() + Duration::days(1),
+                sensitivity_ceiling: Sensitivity::Internal,
+                retention_ceiling: RetentionClass::Durable,
+                idempotency_key: IdempotencyKey::parse("issue-for-durable-admit").unwrap(),
+            })
+            .await
+            .unwrap();
+
+        let request = node_create_request(
+            local_node_id,
+            &grantee,
+            AuthorityGrantKind::Tool,
+            ContextCapability::Command,
+        );
+        let decision = engine.resolve_command_admission(&request).await.unwrap();
+        assert!(decision.is_admitted());
+        let stored = engine
+            .store
+            .nodes
+            .get_command_admission_decision(&request.principal, &request.idempotency_key)
+            .await
+            .unwrap()
+            .expect("admission must be durable");
+        assert!(!stored.is_denied());
+        assert!(stored.decision.is_admitted());
+    }
+}

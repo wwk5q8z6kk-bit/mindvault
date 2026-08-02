@@ -32,24 +32,71 @@ impl MindVaultEngine {
         self.store.nodes.get_intent(id).await
     }
 
-    /// Apply an intent: execute the action and mark as applied.
+    /// Apply an intent that the owner explicitly authorized.
+    ///
+    /// This is the interactive path: the owner acted on the intent in the
+    /// inbox, so the human — the ultimate anchor in a single-owner vault — is
+    /// the authorizing party. The admission is recorded rather than inferred.
+    ///
+    /// Automated callers must use [`Self::apply_intent_autonomously`], which
+    /// consults the autonomy gate and defers by default.
     pub async fn apply_intent(
         self: &Arc<Self>,
         id: Uuid,
     ) -> MvResult<crate::intent_executor::ExecutionResult> {
-        // Get the intent
-        let intent = self
-            .store
+        let intent = self.require_intent(id).await?;
+        let admission =
+            crate::admission::admit_owner_authorized(format!("intent.{}", intent.intent_type));
+        self.execute_admitted_intent(id, &intent, &admission).await
+    }
+
+    /// Apply an intent without a human in the loop.
+    ///
+    /// Every effect passes the autonomy gate first. A refusal is a normal
+    /// outcome — deferral is the safe default under System Principle 1 — so it
+    /// is returned rather than raised, and the intent stays pending for the
+    /// owner to act on.
+    pub async fn apply_intent_autonomously(
+        self: &Arc<Self>,
+        id: Uuid,
+        confidence: f32,
+    ) -> MvResult<Result<crate::intent_executor::ExecutionResult, crate::admission::EffectRefusal>>
+    {
+        let intent = self.require_intent(id).await?;
+        let request = crate::admission::EffectRequest::new(
+            format!("intent.{}", intent.intent_type),
+            confidence,
+        )
+        .with_scope("domain", "agentic");
+
+        let outcome = crate::admission::admit_effect(&self.autonomy, &request).await?;
+        let admission = match outcome {
+            crate::admission::EffectOutcome::Admitted(admission) => admission,
+            crate::admission::EffectOutcome::Refused(refusal) => return Ok(Err(refusal)),
+        };
+
+        self.execute_admitted_intent(id, &intent, &admission)
+            .await
+            .map(Ok)
+    }
+
+    async fn require_intent(&self, id: Uuid) -> MvResult<CapturedIntent> {
+        self.store
             .nodes
             .get_intent(id)
             .await?
-            .ok_or_else(|| MvError::InvalidInput(format!("Intent {} not found", id)))?;
+            .ok_or_else(|| MvError::InvalidInput(format!("Intent {} not found", id)))
+    }
 
-        // Execute the intent
+    async fn execute_admitted_intent(
+        self: &Arc<Self>,
+        id: Uuid,
+        intent: &CapturedIntent,
+        admission: &crate::admission::EffectAdmission,
+    ) -> MvResult<crate::intent_executor::ExecutionResult> {
         let executor = crate::intent_executor::IntentExecutor::new(Arc::clone(self));
-        let result = executor.execute(&intent).await?;
+        let result = executor.execute(intent, admission).await?;
 
-        // If execution succeeded, mark as applied
         if result.success {
             self.store
                 .nodes

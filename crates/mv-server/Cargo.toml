@@ -2,7 +2,7 @@
 name = "mv-server"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 authors.workspace = true
 description = "Axum REST + tonic gRPC server for MindVault"
 repository.workspace = true
@@ -16,7 +16,7 @@ wip = ["mv-engine/wip"]
 
 [dependencies]
 mv-core = { workspace = true }
-mv-engine = { workspace = true }
+mv-engine = { workspace = true, default-features = false }
 mv-storage = { workspace = true }
 mv-plugin = { workspace = true }
 axum = { workspace = true }
@@ -46,11 +46,13 @@ utoipa-swagger-ui = { workspace = true } # set SWAGGER_UI_DOWNLOAD_URL for offli
 base64 = { workspace = true }
 toml = { workspace = true }
 rand = { workspace = true }
+sha2 = { workspace = true }
 serde_urlencoded = "0.7"
 imap = "2.4"
 native-tls = "0.2"
 mailparse = "0.15"
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-native-tls"] }
+notify = { workspace = true }
 
 [build-dependencies]
 tonic-build = "0.12"

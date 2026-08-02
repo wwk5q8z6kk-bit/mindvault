@@ -406,7 +406,7 @@ fn extract_wikilinks(content: &str) -> Vec<String> {
 ///
 /// Handles simple `key: value` pairs and `key: [item1, item2]` arrays.
 /// Does NOT add an external YAML crate — parses manually.
-fn parse_frontmatter(content: &str) -> (HashMap<String, serde_json::Value>, String) {
+pub(crate) fn parse_frontmatter(content: &str) -> (HashMap<String, serde_json::Value>, String) {
     let mut metadata = HashMap::new();
 
     if !content.starts_with("---") {
@@ -507,7 +507,7 @@ fn parse_frontmatter(content: &str) -> (HashMap<String, serde_json::Value>, Stri
 }
 
 /// Determine node kind from frontmatter.
-fn determine_kind(frontmatter: &HashMap<String, serde_json::Value>) -> NodeKind {
+pub(crate) fn determine_kind(frontmatter: &HashMap<String, serde_json::Value>) -> NodeKind {
     // Check `type` field
     if let Some(type_val) = frontmatter.get("type") {
         if let Some(type_str) = type_val.as_str() {
@@ -539,7 +539,9 @@ fn determine_kind(frontmatter: &HashMap<String, serde_json::Value>) -> NodeKind 
 }
 
 /// Extract tags from frontmatter (handles both array and string formats).
-fn extract_frontmatter_tags(frontmatter: &HashMap<String, serde_json::Value>) -> Vec<String> {
+pub(crate) fn extract_frontmatter_tags(
+    frontmatter: &HashMap<String, serde_json::Value>,
+) -> Vec<String> {
     let mut tags = Vec::new();
     if let Some(tags_val) = frontmatter.get("tags") {
         match tags_val {

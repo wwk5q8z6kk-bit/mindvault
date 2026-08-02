@@ -83,6 +83,7 @@ export const sidebarNavigationGroups: SidebarNavigationGroup[] = [
 		items: [
 			{ label: 'Sync', href: '/sync' },
 			{ label: 'Plugins', href: '/plugins' },
+			{ label: 'Work Orders', href: '/work-orders' },
 			{ label: 'Autonomy', href: '/autonomy' },
 			{ label: 'Settings', href: '/settings' }
 		]

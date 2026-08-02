@@ -12,6 +12,12 @@ use serde::Serialize;
 
 use crate::manager::PluginManager;
 use crate::manifest::PluginManifest;
+// Gated to match `execute_hook` / `execute_hook_with_host`, which are the only
+// users. Without the feature these would be unused-import warnings; with it,
+// the methods previously failed to resolve the types at all, so the crate did
+// not build under `--all-features`.
+#[cfg(feature = "wasm-runtime")]
+use crate::hooks::{HookContext, HookResult};
 
 /// Information about a loaded plugin within the runtime.
 pub struct LoadedPlugin {
@@ -348,8 +354,18 @@ mod tests {
         };
         let json = serde_json::to_string_pretty(&manifest).unwrap();
         std::fs::write(plugin_dir.join("manifest.json"), json).unwrap();
-        // Write a dummy wasm file (won't actually be executed without wasm-runtime feature)
-        std::fs::write(plugin_dir.join("plugin.wasm"), b"dummy").unwrap();
+        // A minimal *valid* WASM module: the 8-byte header (`\0asm` + version 1)
+        // with no sections. It compiles but exports nothing, which is all these
+        // tests need.
+        //
+        // This used to be `b"dummy"`, which is not valid WASM. That went
+        // unnoticed because the crate did not build under `--all-features` at
+        // all; once it did, `Module::from_file` rejected the bytes and
+        // `load_plugin` propagated the error, so `scan_and_load` reported zero
+        // plugins loaded. A fixture must be valid in every configuration the
+        // test runs in.
+        const EMPTY_WASM_MODULE: &[u8] = b"\0asm\x01\0\0\0";
+        std::fs::write(plugin_dir.join("plugin.wasm"), EMPTY_WASM_MODULE).unwrap();
     }
 
     #[test]
@@ -405,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_loaded_plugin_without_wasm_is_registered() {
+    fn runtime_plugin_status_reflects_wasm_availability() {
         let tmp = std::env::temp_dir().join(format!("mv_rt_dispatch_{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&tmp).unwrap();
 
@@ -416,8 +432,15 @@ mod tests {
         runtime.scan_and_load().unwrap();
         assert_eq!(runtime.plugin_count(), 1);
 
-        // Without wasm-runtime feature, plugin should show as "registered" not "loaded"
+        // Status reports whether a WASM module is actually loaded, which is
+        // legitimately feature-dependent: with `wasm-runtime` the fixture
+        // module compiles and the plugin is "loaded"; without it only the
+        // manifest is registered. Asserting one of these unconditionally makes
+        // the suite pass in exactly one configuration.
         let info = runtime.get_plugin("hook-test").unwrap();
+        #[cfg(feature = "wasm-runtime")]
+        assert_eq!(info.status, "loaded");
+        #[cfg(not(feature = "wasm-runtime"))]
         assert_eq!(info.status, "registered");
         assert_eq!(info.hooks, vec!["post_ingest".to_string()]);
         assert_eq!(info.invocation_count, 0);

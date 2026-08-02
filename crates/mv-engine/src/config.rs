@@ -391,6 +391,19 @@ pub struct LlmConfig {
     pub max_tokens: u32,
     pub temperature: f32,
     pub timeout_secs: u64,
+    /// Allow a discovered API key to enable a remote cloud provider.
+    ///
+    /// API keys resolve through the credential store, whose backend chain ends in
+    /// environment variables (`mv_core::credentials`, "OS Keyring → Encrypted File
+    /// → Environment Variables"). Without this gate an ambient `OPENAI_API_KEY`
+    /// silently adds a cloud provider even when `enabled` is false, which would
+    /// make a remote service an undeclared dependency of a local-first vault and
+    /// send vault content off-device without an explicit decision.
+    ///
+    /// Defaults to false: cloud fallback is opt-in. Local providers (llama.cpp,
+    /// auto-detected Ollama) are unaffected — they stay on-device.
+    #[serde(default)]
+    pub allow_cloud_fallback: bool,
 }
 
 impl Default for LlmConfig {
@@ -403,6 +416,7 @@ impl Default for LlmConfig {
             max_tokens: 512,
             temperature: 0.3,
             timeout_secs: 30,
+            allow_cloud_fallback: false,
         }
     }
 }

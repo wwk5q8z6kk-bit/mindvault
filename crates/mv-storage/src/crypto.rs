@@ -409,4 +409,44 @@ mod tests {
         let unwrapped = unwrap_encrypted(&wrapped);
         assert_eq!(unwrapped, Some("base64data"));
     }
+
+    #[test]
+    fn test_wrong_password_cannot_decrypt() {
+        let good = test_key_manager();
+        let encrypted = good.encrypt_string("classified").unwrap();
+
+        let mut bad = KeyManager::new(EncryptionConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        bad.derive_master_key("wrong-password", b"test-salt")
+            .unwrap();
+        assert!(bad.decrypt_string(&encrypted).is_err());
+    }
+
+    #[test]
+    fn test_corrupted_ciphertext_rejected() {
+        let manager = test_key_manager();
+        let encrypted = manager.encrypt_string("payload").unwrap();
+        let mut chars: Vec<char> = encrypted.chars().collect();
+        let mid = chars.len() / 2;
+        chars[mid] = if chars[mid] == 'A' { 'B' } else { 'A' };
+        let corrupted: String = chars.into_iter().collect();
+        assert!(manager.decrypt_string(&corrupted).is_err());
+        assert!(EncryptedData::from_base64("not-base64").is_err());
+        assert!(EncryptedData::from_base64("YWJj").is_err());
+    }
+
+    #[test]
+    fn test_encrypt_without_key_fails() {
+        let manager = KeyManager::new(EncryptionConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        match manager.encrypt(b"x") {
+            Err(CryptoError::KeyNotSet) => {}
+            Ok(_) => panic!("encrypt without key must fail"),
+            Err(other) => panic!("unexpected error: {other}"),
+        }
+    }
 }

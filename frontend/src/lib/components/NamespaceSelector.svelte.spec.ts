@@ -17,7 +17,7 @@ describe('NamespaceSelector', () => {
 			name: 'Filter records by namespace'
 		});
 		await expect.element(selector).toBeDisabled();
-		await expect.element(page.getByText('Records')).toBeInTheDocument();
+		await expect.element(page.getByText('Records', { exact: true })).toBeInTheDocument();
 		await expect.element(page.getByRole('option', { name: 'All records' })).toBeInTheDocument();
 	});
 

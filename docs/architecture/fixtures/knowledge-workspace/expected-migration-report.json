@@ -1,0 +1,53 @@
+{
+  "contract_version": 1,
+  "migration_id": "44444444-4444-4444-8444-444444444444",
+  "plan_sha256": "42a44eca2822e7e4dc96e74f908caf7128ea6f0507f8cc4f31101da8dc9b2a9b",
+  "state": "verified",
+  "counts": {
+    "total": 3,
+    "verified": 3,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 2
+  },
+  "items": [
+    {
+      "source_node_id": "11111111-1111-4111-8111-111111111111",
+      "source_node_version": 3,
+      "target_relative_path": "Projects/Project Alpha.md",
+      "expected_content_sha256": "e9b5f6d502d9d339d34266180ea7ba99d996ba8975c5eab35383066526ee5859",
+      "actual_content_sha256": "e9b5f6d502d9d339d34266180ea7ba99d996ba8975c5eab35383066526ee5859",
+      "state": "verified",
+      "warnings": [],
+      "errors": []
+    },
+    {
+      "source_node_id": "22222222-2222-4222-8222-222222222222",
+      "source_node_version": 1,
+      "target_relative_path": "Projects/Project Alpha--22222222.md",
+      "expected_content_sha256": "128e36a75b05b9dc2b960d7a0a5cd9c434a318dae2f3ae0a2c3a255963bf0d37",
+      "actual_content_sha256": "128e36a75b05b9dc2b960d7a0a5cd9c434a318dae2f3ae0a2c3a255963bf0d37",
+      "state": "verified",
+      "warnings": [
+        "duplicate title/path resolved with stable source ID suffix"
+      ],
+      "errors": []
+    },
+    {
+      "source_node_id": "33333333-3333-4333-8333-333333333333",
+      "source_node_version": 2,
+      "target_relative_path": "Decisions/_CON.md",
+      "expected_content_sha256": "9dd2fd25acb5d1ca97a2ecf85f174a8417981fcdb6977cd65c2fe142d8a0433a",
+      "actual_content_sha256": "9dd2fd25acb5d1ca97a2ecf85f174a8417981fcdb6977cd65c2fe142d8a0433a",
+      "state": "verified",
+      "warnings": [
+        "reserved device name prefixed with underscore"
+      ],
+      "errors": []
+    }
+  ],
+  "warnings": [
+    "two paths required deterministic portability rewrites"
+  ],
+  "errors": []
+}

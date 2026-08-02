@@ -83,6 +83,7 @@ async fn setup() -> (Arc<AppState>, axum::Router, MindVaultGrpc, TempDir) {
         "MINDVAULT_JWT_ISSUER",
         "MINDVAULT_JWT_AUDIENCE",
         "MINDVAULT_NAMESPACE_NODE_QUOTA",
+        "MINDVAULT_COMMAND_ADMISSION_MODE",
     ] {
         std::env::remove_var(key);
     }

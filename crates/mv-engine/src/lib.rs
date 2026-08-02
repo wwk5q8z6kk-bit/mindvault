@@ -1,4 +1,5 @@
 pub mod adapters;
+pub mod admission;
 pub mod ai_autotag;
 pub mod autonomy;
 pub mod backlinks;
@@ -41,3 +42,4 @@ pub mod secure_enclave;
 pub mod session;
 pub mod sync;
 pub mod watcher;
+pub mod workspace;

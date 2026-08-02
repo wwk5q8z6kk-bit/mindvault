@@ -66,6 +66,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, auth: crate::aut
                         "operation": notification.operation,
                         "timestamp": notification.timestamp,
                         "namespace": notification.namespace,
+                        "event": notification.event,
                     });
                     if sender.send(Message::Text(json.to_string())).await.is_err() {
                         break;
@@ -148,10 +149,8 @@ async fn handle_agent_socket(
         loop {
             match rx.recv().await {
                 Ok(notification) => {
-                    if let Some(ref namespace_scope) = auth.namespace {
-                        if notification.namespace() != Some(namespace_scope.as_str()) {
-                            continue;
-                        }
+                    if !notification.deliverable_to(auth.namespace.as_deref()) {
+                        continue;
                     }
 
                     let payload = match serde_json::to_string(&notification) {

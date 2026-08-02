@@ -189,6 +189,11 @@
 			subtitle: 'Recover deleted tasks and notes or remove them permanently.'
 		},
 		{
+			href: '/work-orders',
+			title: 'Work Orders',
+			subtitle: 'Governed agent runs, gate evidence, and verified artifacts.'
+		},
+		{
 			href: '/autonomy',
 			title: 'Autonomy Controls',
 			subtitle: 'Configure when agents act autonomously vs. defer to your approval.'

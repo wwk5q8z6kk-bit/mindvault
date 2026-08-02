@@ -39,6 +39,12 @@ describe('sidebar knowledge navigation', () => {
 		expect(control?.items.map((item) => item.label)).not.toContain('Review');
 	});
 
+	it('keeps governed agent work reachable through the consolidated control group', () => {
+		const control = sidebarNavigationGroups.find((group) => group.label === 'Control');
+
+		expect(control?.items.map((item) => item.label)).toContain('Work Orders');
+	});
+
 	it('preserves subview preferences only for broad destinations', () => {
 		const review = sidebarNavigationGroups
 			.flatMap((group) => group.items)

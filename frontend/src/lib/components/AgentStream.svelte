@@ -1,12 +1,10 @@
 <script lang="ts">
-	import { agentStore, connectAgentStream, disconnectAgentStream } from '$lib/api/agent';
-	import { onMount } from 'svelte';
+	import { agentStore } from '$lib/api/agent';
 	import { slide } from 'svelte/transition';
 
-	onMount(() => {
-		connectAgentStream();
-		return () => disconnectAgentStream();
-	});
+	// Connection lifecycle is owned by `+layout.svelte`. This component must
+	// not disconnect on unmount — leaving the home page used to tear down the
+	// global `/ws/agent` socket and starve work-order live updates.
 
 	$: ({ summary, relatedNodes } = $agentStore);
 </script>
