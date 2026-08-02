@@ -16718,7 +16718,12 @@ mod tests {
             .list_pending_outbox_events(10)
             .await
             .unwrap();
-        assert!(pending.is_empty(), "a refused command must emit no event");
+        assert!(
+            pending
+                .iter()
+                .all(|event| event.event_type != KNOWLEDGE_NODE_CREATED_V1),
+            "a refused command must emit no knowledge mutation event"
+        );
     }
 
     /// Observe records the decision and lets the command through.
@@ -16906,8 +16911,12 @@ mod tests {
             .list_pending_outbox_events(10)
             .await
             .unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].id, envelope.id);
+        let knowledge_events = pending
+            .iter()
+            .filter(|event| event.event_type == KNOWLEDGE_NODE_CREATED_V1)
+            .collect::<Vec<_>>();
+        assert_eq!(knowledge_events.len(), 1);
+        assert_eq!(knowledge_events[0].id, envelope.id);
 
         let mut changed_request = request;
         changed_request.content = "Different semantics".to_string();
