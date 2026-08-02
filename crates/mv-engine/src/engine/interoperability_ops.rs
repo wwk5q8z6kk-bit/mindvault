@@ -342,6 +342,25 @@ impl MindVaultEngine {
         {
             return Ok(record.principal_uri);
         }
+
+        // The two built-in local principals are governed bootstrap identities,
+        // not a legacy derivation fallback. A fresh vault may reach its first
+        // command before an operator explicitly registers the local Context
+        // Node (notably immediately after sealed-vault initialization), so
+        // materialize the descriptor and registry records idempotently and then
+        // resolve through storage again.
+        if matches!(subject, "local-system" | "local-context-owner") {
+            self.register_local_context_node("Personal Vault").await?;
+            if let Some(record) = self
+                .store
+                .nodes
+                .get_identity_by_subject_binding(&StableUri::node(local_node_id), subject)
+                .await?
+            {
+                return Ok(record.principal_uri);
+            }
+        }
+
         if Self::identity_legacy_fallback_enabled() {
             return Ok(self.derived_principal_for_subject(local_node_id, subject));
         }
@@ -1038,6 +1057,37 @@ mod tests {
                 local_node_id,
                 IdentityRecord::principal_id_for_subject(local_node_id, "local-system"),
             )
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_registry_resolution_bootstraps_a_fresh_local_context_node() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = engine.store.nodes.local_context_node_id().await.unwrap();
+        assert!(engine.local_context_node().await.unwrap().is_none());
+
+        let principal = engine
+            .resolve_command_identity(local_node_id, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            principal,
+            StableUri::principal(
+                local_node_id,
+                IdentityRecord::principal_id_for_subject(local_node_id, "local-system"),
+            )
+        );
+        assert!(engine.local_context_node().await.unwrap().is_some());
+        assert_eq!(
+            engine
+                .store
+                .nodes
+                .list_identities(Some(&StableUri::node(local_node_id)))
+                .await
+                .unwrap()
+                .len(),
+            2
         );
     }
 

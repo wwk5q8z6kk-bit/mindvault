@@ -12492,7 +12492,7 @@ mod tests {
                         row.get(0)
                     })
                     .map_err(|err| MvError::Storage(err.to_string()))?;
-                assert_eq!(schema_version, 38);
+                assert_eq!(schema_version, 40);
                 Ok(())
             })
             .unwrap();
