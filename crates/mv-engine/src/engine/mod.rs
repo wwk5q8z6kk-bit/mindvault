@@ -18,6 +18,7 @@ mod work_order_ops;
 mod workspace_ops;
 mod workspace_projection_ops;
 
+pub use agent_run_executor::ExecutedRun;
 pub use interoperability_ops::{
     AuthorityGrantIssuance, AuthorityGrantTransition, IssueAuthorityGrantRequest,
     LocalContextNodeRegistration,
@@ -26,7 +27,6 @@ pub use outbox_dispatch::{
     spawn_outbox_dispatcher, LocalAckPublisher, OutboxDispatchTick, OutboxDispatcherConfig,
     OutboxPublisher,
 };
-pub use agent_run_executor::ExecutedRun;
 pub use work_order_ops::{
     AdmissionRefusal, ProposedEdge, ProposedNode, ProposedWorkOrder, RunReadiness,
 };

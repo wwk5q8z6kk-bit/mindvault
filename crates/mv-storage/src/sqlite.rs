@@ -1971,15 +1971,25 @@ impl SqliteNodeStore {
         Ok(())
     }
 
-    
     fn row_to_identity_record(row: &rusqlite::Row<'_>) -> MvResult<IdentityRecord> {
-        let principal_id = Uuid::parse_str(&row.get::<_, String>(0).map_err(|e| MvError::Storage(e.to_string()))?)
-            .map_err(|e| MvError::Storage(e.to_string()))?;
-        let revision = row.get::<_, i64>(1).map_err(|e| MvError::Storage(e.to_string()))? as u64;
-        let principal_uri = StableUri::parse(row.get::<_, String>(2).map_err(|e| MvError::Storage(e.to_string()))?)
-            .map_err(MvError::InvalidInput)?;
-        let governing_node_uri = StableUri::parse(row.get::<_, String>(3).map_err(|e| MvError::Storage(e.to_string()))?)
-            .map_err(MvError::InvalidInput)?;
+        let principal_id = Uuid::parse_str(
+            &row.get::<_, String>(0)
+                .map_err(|e| MvError::Storage(e.to_string()))?,
+        )
+        .map_err(|e| MvError::Storage(e.to_string()))?;
+        let revision = row
+            .get::<_, i64>(1)
+            .map_err(|e| MvError::Storage(e.to_string()))? as u64;
+        let principal_uri = StableUri::parse(
+            row.get::<_, String>(2)
+                .map_err(|e| MvError::Storage(e.to_string()))?,
+        )
+        .map_err(MvError::InvalidInput)?;
+        let governing_node_uri = StableUri::parse(
+            row.get::<_, String>(3)
+                .map_err(|e| MvError::Storage(e.to_string()))?,
+        )
+        .map_err(MvError::InvalidInput)?;
         let actor_kind = row
             .get::<_, String>(4)
             .map_err(|e| MvError::Storage(e.to_string()))?
@@ -1990,15 +2000,19 @@ impl SqliteNodeStore {
             .map_err(|e| MvError::Storage(e.to_string()))?
             .parse::<IdentityStatus>()
             .map_err(MvError::InvalidInput)?;
-        let display_name: Option<String> = row.get(6).map_err(|e| MvError::Storage(e.to_string()))?;
-        let external_subject: Option<String> = row.get(7).map_err(|e| MvError::Storage(e.to_string()))?;
+        let display_name: Option<String> =
+            row.get(6).map_err(|e| MvError::Storage(e.to_string()))?;
+        let external_subject: Option<String> =
+            row.get(7).map_err(|e| MvError::Storage(e.to_string()))?;
         let created_at = chrono::DateTime::parse_from_rfc3339(
-            &row.get::<_, String>(8).map_err(|e| MvError::Storage(e.to_string()))?,
+            &row.get::<_, String>(8)
+                .map_err(|e| MvError::Storage(e.to_string()))?,
         )
         .map_err(|e| MvError::Storage(e.to_string()))?
         .with_timezone(&chrono::Utc);
         let updated_at = chrono::DateTime::parse_from_rfc3339(
-            &row.get::<_, String>(9).map_err(|e| MvError::Storage(e.to_string()))?,
+            &row.get::<_, String>(9)
+                .map_err(|e| MvError::Storage(e.to_string()))?,
         )
         .map_err(|e| MvError::Storage(e.to_string()))?
         .with_timezone(&chrono::Utc);
@@ -2030,7 +2044,10 @@ impl SqliteNodeStore {
         let mut rows = stmt
             .query(params![principal_id.to_string()])
             .map_err(|err| MvError::Storage(err.to_string()))?;
-        match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+        match rows
+            .next()
+            .map_err(|err| MvError::Storage(err.to_string()))?
+        {
             Some(row) => Ok(Some(Self::row_to_identity_record(row)?)),
             None => Ok(None),
         }
@@ -3640,7 +3657,10 @@ impl InteroperabilityStore for SqliteNodeStore {
             let mut rows = stmt
                 .query(params![principal_uri.as_str()])
                 .map_err(|err| MvError::Storage(err.to_string()))?;
-            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+            match rows
+                .next()
+                .map_err(|err| MvError::Storage(err.to_string()))?
+            {
                 Some(row) => Ok(Some(Self::row_to_identity_record(row)?)),
                 None => Ok(None),
             }
@@ -3664,7 +3684,10 @@ impl InteroperabilityStore for SqliteNodeStore {
             let mut rows = stmt
                 .query(params![governing_node_uri.as_str(), external_subject])
                 .map_err(|err| MvError::Storage(err.to_string()))?;
-            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+            match rows
+                .next()
+                .map_err(|err| MvError::Storage(err.to_string()))?
+            {
                 Some(row) => Ok(Some(Self::row_to_identity_record(row)?)),
                 None => Ok(None),
             }
@@ -3698,7 +3721,10 @@ impl InteroperabilityStore for SqliteNodeStore {
                     .map_err(|err| MvError::Storage(err.to_string()))?,
             };
             let mut records = Vec::new();
-            while let Some(row) = rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+            while let Some(row) = rows
+                .next()
+                .map_err(|err| MvError::Storage(err.to_string()))?
+            {
                 records.push(Self::row_to_identity_record(row)?);
             }
             Ok(records)
@@ -12662,8 +12688,10 @@ mod tests {
         let node_id = store.local_context_node_id().await.unwrap();
 
         let human = IdentityRecord::new(node_id, "user@example.com", ActorKind::Human, "Ada");
-        let agent = IdentityRecord::new(node_id, "agent:researcher", ActorKind::Agent, "Researcher");
-        let service = IdentityRecord::new(node_id, "local-system", ActorKind::Service, "Local System");
+        let agent =
+            IdentityRecord::new(node_id, "agent:researcher", ActorKind::Agent, "Researcher");
+        let service =
+            IdentityRecord::new(node_id, "local-system", ActorKind::Service, "Local System");
         let integration =
             IdentityRecord::new(node_id, "slack:workspace", ActorKind::Integration, "Slack");
 

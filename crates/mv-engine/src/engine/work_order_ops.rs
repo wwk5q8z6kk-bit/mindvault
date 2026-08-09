@@ -2363,12 +2363,7 @@ mod tests {
         let mut rule = AutonomyRule::global(0.0);
         rule.allowed_intent_types = vec!["work_order.run.engine".into()];
         rule.max_actions_per_hour = 100;
-        engine
-            .store
-            .nodes
-            .add_autonomy_rule(&rule)
-            .await
-            .unwrap();
+        engine.store.nodes.add_autonomy_rule(&rule).await.unwrap();
 
         let admitted = engine
             .admit_work_order(
@@ -2404,7 +2399,10 @@ mod tests {
         assert_eq!(executed.artifact.artifact_kind, "engine.result");
         assert!(!executed.artifact.content_digest.is_empty());
         assert!(!executed.artifact.provenance.is_empty());
-        assert_eq!(executed.gate_results.len(), RiskTier::Low.required_gates().len());
+        assert_eq!(
+            executed.gate_results.len(),
+            RiskTier::Low.required_gates().len()
+        );
         assert!(executed
             .gate_results
             .iter()

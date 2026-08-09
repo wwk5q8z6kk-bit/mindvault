@@ -175,7 +175,11 @@ mod tests {
 
         assert_eq!(stored.status, MessageStatus::Delivered);
         assert!(stored.vault_node_id.is_none());
-        let nodes = store.nodes.list(&QueryFilters::default(), 100, 0).await.unwrap();
+        let nodes = store
+            .nodes
+            .list(&QueryFilters::default(), 100, 0)
+            .await
+            .unwrap();
         assert!(
             nodes.is_empty(),
             "relay receive must not insert knowledge nodes"
@@ -205,7 +209,11 @@ mod tests {
             stored.metadata.get("blocked"),
             Some(&serde_json::Value::Bool(true))
         );
-        let nodes = store.nodes.list(&QueryFilters::default(), 100, 0).await.unwrap();
+        let nodes = store
+            .nodes
+            .list(&QueryFilters::default(), 100, 0)
+            .await
+            .unwrap();
         assert!(nodes.is_empty());
     }
 }
