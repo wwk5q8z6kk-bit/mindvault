@@ -186,7 +186,10 @@ static AI_RATE_LIMITER: OnceLock<RequestRateLimiter> = OnceLock::new();
 /// Local system admin (auth disabled / no subject) is exempt; the global
 /// request rate limiter still applies via middleware.
 pub fn enforce_ai_rate_limit(auth: &AuthContext) -> Result<RateLimitStatus, RateLimitExceeded> {
-    if auth.subject.is_none() && auth.is_admin() {
+    // The local system admin (auth-disabled path) is exempt. That identity is
+    // either subjectless or carries the explicit "local-system" transition
+    // subject produced by `AuthContext::system_admin()`.
+    if auth.is_admin() && matches!(auth.subject.as_deref(), None | Some("local-system")) {
         return Ok(RateLimitStatus {
             limit: 0,
             remaining: 0,
