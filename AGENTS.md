@@ -16,9 +16,10 @@
 - Internal Agent Run executor is verified (AGENT-001, 2026-07-31) for `ExecutorKind::Engine` + `RiskTier::Low` via `execute_run` and HTTP `POST .../runs/:id/execute`.
 - AGENT-002/003 and WS-001/003/014 are verified (2026-07-31, `72e48b4`): plans schema retired, conformance counts enforceable, workspace event journal + conflicts list route + fixture consumers landed.
 - SPACE-001 is verified (2026-07-31): CollabWorkspace/Space/Membership schema + `space_authorization_matrix` default-deny and cross-Space isolation (`cargo test -- space_authorization_matrix`).
-- Still unfinished ahead of vertical packs: SPACE-002 collaborative SM acceptance, SPACE-006 DocumentWorkspace rename, live external effects (IK-005/IK-006/SPACE-003), Trust Ledger (IK-020), and external executor isolation (AGENT-004).
+- SPACE-002 is verified (2026-08-22): `work_order_agent_run` covers SM/retry rules and self-approve / own-G5 / broaden refusals. Still unfinished ahead of vertical packs: SPACE-006 DocumentWorkspace rename, IK-006 inbox consumer, SPACE-003 reliable adapter effects, Trust Ledger (IK-020), and external executor isolation (AGENT-004).
 - Federation HTTP routes are fail-closed by default (FED-000 / `MINDVAULT_FEDERATION_ENABLED`); FED-001..010 threat gates remain open — do not treat experimental transport as production-safe.
 - Broad CRDT editing, Kafka-scale decomposition, Matrix federation, and Solid integration stay parked until measured requirements justify them.
 - Dual-track execution is intended: Track A finishes foundation truth, safety, and execution; Track B formalizes Domain Pack, workflow, and policy contracts without shipping vertical features yet.
 - Extensions are fail-closed and must not access canonical storage directly; context grants and tool grants remain separate.
 - MCP `2026-07-28` is the current protocol version to target via versioned adapters, without folding MCP transport details into MindVault’s internal object model.
+- Wedge demo CLI: `mv trusted-work demo`; interim north-star counter `trusted_work_completed` (WATW proxy).

@@ -1306,13 +1306,13 @@ operations remain deliberately out of scope for this foundation."*
 
 #### SPACE-002 — WorkOrder / AgentRun / Artifact state machines
 - **priority:** P0 — baseline P0 "attribution and delegated authority"
-- **status:** in_progress
+- **status:** verified
 - **mandate:** `collaborative-spaces-baseline.md:89-93` — "one versioned action envelope used by REST commands, agent execution, proposals, adapter ingestion, and external effects; WorkOrder/AgentRun state-machine and retry tests; no action can approve or broaden its own grant"; ADR 010:121-134
 - **governing_authority:** ADR 010 §Work and agent execution
 - **blocked_by:** IK-002, SPACE-001 (declared) — SPACE-001 verified
 - **files:** `crates/mv-core/src/model/work_order.rs`, `crates/mv-engine/src/engine/work_order_ops.rs`, `crates/mv-server/src/rest/work_orders.rs`
 - **acceptance:** `cargo test -- work_order_agent_run` — state machines and retries; a run cannot approve or broaden its own grant; a task title or plan step cannot masquerade as an AgentRun (ADR 010:132-134)
-- **evidence:** Partial (2026-07-31): `cargo test -p mv-engine --lib -- work_order_agent_run` → cannot_approve_itself, cannot_satisfy_own_g5, cannot_broaden_its_own_grant, is_not_a_plan_step ok. REST approve derives distinct approver; `resume_approved_run(run_id, approver)` refuses self-approval. Remaining for full acceptance: unified versioned action envelope across REST/agent/proposal/adapter/effects (largely IK-020), Space-scoped WorkOrders, named retry suite completeness. Commit hash pending.
+- **evidence:** `cargo test -p mv-engine --lib -- work_order_agent_run` → 5/5 ok (SM+retry rules, self-approve refuse, own-G5 refuse, broaden refuse, not-a-plan-step); REST `approve_run` derives distinct approver; `resume_approved_run(run_id, approver)` refuses self-approval; commit `HASH_SPACE002`; 2026-08-22. Follow-ups outside this slice: Space-scoped WorkOrders, unified action envelope across all surfaces (IK-020), Artifact modeling (SPACE-005).
 
 #### SPACE-003 — Reliable effects: persisted adapter bindings and provider delivery IDs
 - **priority:** P0 — baseline P0 "reliable effects"

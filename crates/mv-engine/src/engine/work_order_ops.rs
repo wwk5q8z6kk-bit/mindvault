@@ -691,7 +691,25 @@ impl MindVaultEngine {
     /// The run returns to the ready set rather than straight to execution: the
     /// write set must be re-checked, because approval authorizes the action,
     /// not a stale set of targets.
-    pub async fn resume_approved_run(&self, run_id: Uuid) -> MvResult<AgentRun> {
+    ///
+    /// SPACE-002 / ADR 012: the acting run actor cannot approve itself. The
+    /// approver must be a distinct principal (typically the owner/reviewer).
+    pub async fn resume_approved_run(
+        &self,
+        run_id: Uuid,
+        approver: &StableUri,
+    ) -> MvResult<AgentRun> {
+        let run = self
+            .store
+            .nodes
+            .get_agent_run(run_id)
+            .await?
+            .ok_or_else(|| MvError::NotFound("agent run not found".into()))?;
+        if &run.actor == approver {
+            return Err(MvError::AccessDenied(
+                "a run cannot approve itself (SPACE-002 / ADR 012)".into(),
+            ));
+        }
         self.transition_run(run_id, AgentRunStatus::Ready, None)
             .await
     }
@@ -791,6 +809,9 @@ impl MindVaultEngine {
             evaluated_at: now,
             created_at: now,
         };
+        // Enforces G5 independence (and digest shape) before persistence —
+        // SPACE-002: a run cannot satisfy its own review gate.
+        result.validate(&run).map_err(MvError::InvalidInput)?;
         self.store.nodes.record_gate_result(&result).await
     }
 
@@ -1618,8 +1639,12 @@ mod tests {
         );
 
         // Approving returns it to the ready set rather than straight to work.
+        let owner = StableUri::principal(
+            local_node_id,
+            Uuid::new_v5(&local_node_id, b"local-context-owner"),
+        );
         let resumed = engine
-            .resume_approved_run(started.run.run_id)
+            .resume_approved_run(started.run.run_id, &owner)
             .await
             .unwrap();
         assert_eq!(resumed.status, AgentRunStatus::Ready);
@@ -2420,5 +2445,259 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&payload).unwrap();
         assert_eq!(body["executor"], "engine");
         assert_eq!(body["run_id"], executed.run.run_id.to_string());
+
+        let counters = engine.metrics.get_counters().await;
+        assert_eq!(
+            counters.get("trusted_work_completed").copied().unwrap_or(0),
+            1,
+            "WATW interim counter must increment on successful execute_run"
+        );
     }
+
+    /// SPACE-002 — a run cannot approve itself.
+    #[tokio::test]
+    async fn work_order_agent_run_cannot_approve_itself() {
+        let (engine, _dir) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let actor = StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, b"agent"));
+        issue_tool_grant(
+            &engine,
+            local_node_id,
+            &actor,
+            &["mindvault://schemas/executable"],
+            "self-approve-grant",
+        )
+        .await;
+
+        let admitted = engine
+            .admit_work_order(
+                &actor,
+                &actor,
+                &proposal(
+                    &["mindvault://schemas/executable"],
+                    RiskTier::Low,
+                    "self-approve",
+                ),
+            )
+            .await
+            .unwrap()
+            .expect("admissible");
+        let contracts = engine
+            .store
+            .nodes
+            .list_work_order_nodes(admitted.work_order_id)
+            .await
+            .unwrap();
+        let started = engine
+            .start_run(admitted.work_order_id, contracts[0].node_id, &actor, 0.99)
+            .await
+            .unwrap();
+        assert!(started.awaiting_approval);
+
+        let err = engine
+            .resume_approved_run(started.run.run_id, &actor)
+            .await
+            .expect_err("self-approval must fail closed");
+        match err {
+            MvError::AccessDenied(msg) => assert!(
+                msg.contains("cannot approve itself"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected AccessDenied, got {other:?}"),
+        }
+    }
+
+    /// SPACE-002 — a run cannot record G5 as its own evaluator.
+    #[tokio::test]
+    async fn work_order_agent_run_cannot_satisfy_own_g5() {
+        let (engine, _dir) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let actor = StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, b"agent"));
+        issue_tool_grant(
+            &engine,
+            local_node_id,
+            &actor,
+            &["mindvault://schemas/executable"],
+            "self-g5-grant",
+        )
+        .await;
+
+        let mut rule = AutonomyRule::global(0.0);
+        rule.allowed_intent_types = vec!["work_order.run.engine".into()];
+        rule.max_actions_per_hour = 100;
+        engine.store.nodes.add_autonomy_rule(&rule).await.unwrap();
+
+        let admitted = engine
+            .admit_work_order(
+                &actor,
+                &actor,
+                &proposal(
+                    &["mindvault://schemas/executable"],
+                    RiskTier::Low,
+                    "self-g5",
+                ),
+            )
+            .await
+            .unwrap()
+            .expect("admissible");
+        let contracts = engine
+            .store
+            .nodes
+            .list_work_order_nodes(admitted.work_order_id)
+            .await
+            .unwrap();
+        let started = engine
+            .start_run(admitted.work_order_id, contracts[0].node_id, &actor, 0.99)
+            .await
+            .unwrap();
+        assert!(!started.awaiting_approval);
+        let run_id = started.run.run_id;
+
+        let digest = "a".repeat(64);
+        let err = engine
+            .record_run_gate(
+                run_id,
+                GateId::G5,
+                GateOutcome::Pass,
+                &actor,
+                digest,
+                Some("self review".into()),
+            )
+            .await
+            .expect_err("self G5 must fail");
+        match err {
+            MvError::InvalidInput(msg) => assert!(
+                msg.contains("cannot satisfy its own G5"),
+                "unexpected: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    /// SPACE-002 — a run cannot broaden the grant that authorizes it.
+    ///
+    /// Write scope is resolved through the Tool Grant at admission. Declaring
+    /// targets outside that grant is refused, and a self-issued grant (grantor
+    /// == grantee) cannot be constructed to invent the missing authority.
+    #[tokio::test]
+    async fn work_order_agent_run_cannot_broaden_its_own_grant() {
+        let (engine, _dir) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let actor = StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, b"agent"));
+        issue_tool_grant(
+            &engine,
+            local_node_id,
+            &actor,
+            &["mindvault://schemas/alpha"],
+            "space002-narrow-grant",
+        )
+        .await;
+
+        let before = engine
+            .store
+            .nodes
+            .list_authority_grants(Some(&actor), None, None)
+            .await
+            .unwrap();
+        assert_eq!(before.len(), 1);
+        assert_eq!(
+            before[0].targets,
+            vec![StableUri::parse("mindvault://schemas/alpha").unwrap()]
+        );
+
+        // Self-grant cannot mint broader authority.
+        let self_grant = AuthorityGrant::new_tool(
+            StableUri::node(local_node_id),
+            actor.clone(),
+            actor.clone(),
+            vec![
+                StableUri::parse("mindvault://schemas/alpha").unwrap(),
+                StableUri::parse("mindvault://schemas/beta").unwrap(),
+            ],
+            vec![ContextCapability::Execute],
+            "self-broaden",
+            Utc::now() + chrono::Duration::hours(1),
+        );
+        assert!(
+            self_grant.is_err(),
+            "grantor and grantee must remain distinct"
+        );
+
+        let refusal = engine
+            .admit_work_order(
+                &actor,
+                &actor,
+                &proposal(
+                    &["mindvault://schemas/alpha", "mindvault://schemas/beta"],
+                    RiskTier::Low,
+                    "space002-broaden",
+                ),
+            )
+            .await
+            .unwrap()
+            .expect_err("over-scope must fail closed");
+        match refusal {
+            AdmissionRefusal::WriteScopeOutsideGrant { targets, .. } => {
+                assert!(targets.iter().any(|t| t.contains("beta")), "{targets:?}");
+            }
+            other => panic!("expected WriteScopeOutsideGrant, got {other:?}"),
+        }
+
+        let after = engine
+            .store
+            .nodes
+            .list_authority_grants(Some(&actor), None, None)
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 1, "failed admit must not mint a rival grant");
+        assert_eq!(after[0].targets, before[0].targets);
+    }
+
+    /// SPACE-002 — state-machine transitions and identical-retry classification.
+    #[test]
+    fn work_order_agent_run_state_machine_and_retry_rules() {
+        use mv_core::{AgentRunStatus, RunFailureClass, WorkOrderStatus};
+
+        assert!(WorkOrderStatus::Admitted.can_transition_to(WorkOrderStatus::Running));
+        assert!(WorkOrderStatus::Running.can_transition_to(WorkOrderStatus::Completed));
+        assert!(!WorkOrderStatus::Completed.can_transition_to(WorkOrderStatus::Running));
+
+        assert!(AgentRunStatus::Ready.can_transition_to(AgentRunStatus::Leased));
+        assert!(AgentRunStatus::Leased.can_transition_to(AgentRunStatus::Running));
+        assert!(AgentRunStatus::Running.can_transition_to(AgentRunStatus::Gated));
+        assert!(AgentRunStatus::Gated.can_transition_to(AgentRunStatus::Completed));
+        assert!(AgentRunStatus::Failed.is_terminal());
+        assert!(!AgentRunStatus::Failed.can_transition_to(AgentRunStatus::Ready));
+        assert!(!AgentRunStatus::Completed.can_transition_to(AgentRunStatus::Running));
+        assert!(!AgentRunStatus::AwaitingApproval.can_transition_to(AgentRunStatus::Running));
+
+        assert!(RunFailureClass::Transient.permits_identical_retry());
+        for class in [
+            RunFailureClass::Deterministic,
+            RunFailureClass::Specification,
+            RunFailureClass::Authorization,
+            RunFailureClass::Budget,
+            RunFailureClass::Conflict,
+        ] {
+            assert!(
+                !class.permits_identical_retry(),
+                "{class:?} must not permit identical retry"
+            );
+        }
+    }
+
+    /// SPACE-002 — AgentRun is a distinct typed object; plan steps cannot masquerade.
+    #[test]
+    fn work_order_agent_run_is_not_a_plan_step() {
+        fn assert_typed<T>() {}
+        assert_typed::<AgentRun>();
+        assert_typed::<WorkOrder>();
+        assert_typed::<RunArtifact>();
+        // Plans schema retired (AGENT-002). The AgentRun status vocabulary is
+        // the only execution-attempt machine — titles/strings are not runs.
+        assert!(AgentRunStatus::Ready.can_transition_to(AgentRunStatus::Leased));
+        assert!(!AgentRunStatus::AwaitingApproval.can_transition_to(AgentRunStatus::Running));
+        assert!(!AgentRunStatus::AwaitingApproval.may_hold_write_leases());
+    }
+
 }

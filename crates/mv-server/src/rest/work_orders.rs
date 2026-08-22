@@ -508,9 +508,21 @@ pub(crate) async fn approve_run(
     Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<RunView>, (StatusCode, String)> {
     authorize_write(&auth)?;
+    let local_node_id = state
+        .engine
+        .store
+        .nodes
+        .local_context_node_id()
+        .await
+        .map_err(crate::rest::map_mv_error)?;
+    let subject = auth.subject.as_deref().unwrap_or("local-system");
+    let approver = StableUri::principal(
+        local_node_id,
+        Uuid::new_v5(&local_node_id, subject.as_bytes()),
+    );
     let run = state
         .engine
-        .resume_approved_run(run_id)
+        .resume_approved_run(run_id, &approver)
         .await
         .map_err(crate::rest::map_mv_error)?;
     state.notify_agent(AgentNotification::run_transitioned(&run));
