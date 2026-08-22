@@ -336,13 +336,13 @@ interoperability kernel."
 
 #### IK-005 — Authenticated live transport publisher (first destination)
 - **priority:** P0 — named gated work
-- **status:** in_progress
+- **status:** verified
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:17-19` — "authenticated live transport publishers ... remain later gated work"
 - **governing_authority:** Law 4 (`:52`), Law 5 (`:54`)
 - **blocked_by:** IK-004 (declared)
 - **files:** `crates/mv-engine/src/engine/outbox_dispatch.rs`, `crates/mv-server/src/outbox_dispatch.rs`
 - **acceptance:** `cargo test -p mv-engine -- publisher_http` — a destination acknowledgement produces a `published` receipt; a transient failure produces `retry_scheduled` with a future `next_attempt_at`; a terminal failure produces `dead_lettered`
-- **evidence:** `cargo test -p mv-engine --lib -- publisher_http` → 3/3 ok; `HttpOutboxPublisher` maps 2xx→published, 5xx/408/429→retry_scheduled, other 4xx→dead_lettered; env `MINDVAULT_OUTBOX_HTTP_URL` + `MINDVAULT_OUTBOX_HTTP_BEARER_TOKEN`; 2026-08-22. Commit hash pending.
+- **evidence:** `cargo test -p mv-engine --lib -- publisher_http` → 3/3 ok; `HttpOutboxPublisher` maps 2xx→published, 5xx/408/429→retry_scheduled, other 4xx→dead_lettered; env `MINDVAULT_OUTBOX_HTTP_URL` + `MINDVAULT_OUTBOX_HTTP_BEARER_TOKEN`; commit `1039bc1`; 2026-08-22.
 
 #### IK-006 — Consumer transport listener and domain handler
 - **priority:** P0 — the inbox has no runtime
@@ -805,13 +805,13 @@ block production federation." All TM priorities below are copied verbatim.
 
 #### FED-000 — Keep production federation disabled until FED-001..FED-010 are verified
 - **priority:** P0 — the governing constraint for this group
-- **status:** verified
+- **status:** in_progress
 - **mandate:** `FEDERATION_THREAT_MODEL.md:22` — "Production federation must remain disabled until the high-priority release gates in this document are satisfied"
 - **governing_authority:** Law 13 (`:73`); ADR 011 step 6 (`docs/adr/011-sovereign-interoperability-fabric.md:123`)
 - **blocked_by:** none
 - **files:** `crates/mv-server/src/rest/federation.rs`, `config/default.toml`, `crates/mv-server/tests/federation_e2e.rs`
 - **acceptance:** `cargo test -p mv-server --test federation_e2e -- federation_disabled_by_default -- --test-threads=1` — federation routes return 501 unless `MINDVAULT_FEDERATION_ENABLED` is set, and enabling logs a warning naming this backlog item
-- **evidence:** `cargo test -p mv-server --test federation_e2e -- federation_disabled_by_default -- --test-threads=1` → ok; 2026-07-31. Default off; opt-in env; warning names FED-000. Commit hash pending.
+- **evidence:** Corrected 2026-08-22 (this file previously self-asserted `verified` with "Commit hash pending," violating this file's own rule 3 — a status this session found is untrue: no commit has ever added `require_federation_enabled()`/`federation_disabled_by_default`; `git log --all -S"require_federation_enabled"` matches only the `.autonomous` task-list prose, not code, and `git show HEAD:crates/mv-server/src/rest/federation.rs` has no fail-closed gate at all). The fail-closed gate and matching `federation_disabled_by_default` test now exist and compile in the **uncommitted working tree** as of 2026-08-22 (`cargo check --workspace` → ok). Acceptance command not yet re-run to completion this session; per rule 3, `verified` requires a landed commit + passing command, so this stays `in_progress` until both land.
 
 #### FED-001 — TM-001 SSRF: endpoint policy, HTTPS, address validation, redirect control
 - **priority:** P0 — `FEDERATION_THREAT_MODEL.md:198` priority column: **High**
@@ -1306,13 +1306,13 @@ operations remain deliberately out of scope for this foundation."*
 
 #### SPACE-002 — WorkOrder / AgentRun / Artifact state machines
 - **priority:** P0 — baseline P0 "attribution and delegated authority"
-- **status:** not_started
+- **status:** in_progress
 - **mandate:** `collaborative-spaces-baseline.md:89-93` — "one versioned action envelope used by REST commands, agent execution, proposals, adapter ingestion, and external effects; WorkOrder/AgentRun state-machine and retry tests; no action can approve or broaden its own grant"; ADR 010:121-134
 - **governing_authority:** ADR 010 §Work and agent execution
-- **blocked_by:** IK-002, SPACE-001 (declared)
-- **files:** new migration, `crates/mv-core/src/model/`, `crates/mv-engine/src/`
+- **blocked_by:** IK-002, SPACE-001 (declared) — SPACE-001 verified
+- **files:** `crates/mv-core/src/model/work_order.rs`, `crates/mv-engine/src/engine/work_order_ops.rs`, `crates/mv-server/src/rest/work_orders.rs`
 - **acceptance:** `cargo test -- work_order_agent_run` — state machines and retries; a run cannot approve or broaden its own grant; a task title or plan step cannot masquerade as an AgentRun (ADR 010:132-134)
-- **evidence:** —
+- **evidence:** Partial (2026-07-31): `cargo test -p mv-engine --lib -- work_order_agent_run` → cannot_approve_itself, cannot_satisfy_own_g5, cannot_broaden_its_own_grant, is_not_a_plan_step ok. REST approve derives distinct approver; `resume_approved_run(run_id, approver)` refuses self-approval. Remaining for full acceptance: unified versioned action envelope across REST/agent/proposal/adapter/effects (largely IK-020), Space-scoped WorkOrders, named retry suite completeness. Commit hash pending.
 
 #### SPACE-003 — Reliable effects: persisted adapter bindings and provider delivery IDs
 - **priority:** P0 — baseline P0 "reliable effects"
@@ -1615,10 +1615,11 @@ document, but each one either hides real defects or makes verification lie.
 5. **Wedge productization** — follow `docs/strategy/unicorn/PRIMARY_WEDGE_DECISION.md`
    (Trusted Agent Work). HTTP execute proof exists; instrument WATW; design partners.
 6. **IK-005..IK-007, IK-016, SPACE-003** — live reliable effects after wedge habit.
-7. **SPACE-002 acceptance** — Space-scoped WO/envelope/self-approval refusal (SPACE-001 verified).
+7. **SPACE-002 remainder** — Space-scoped WO + unified action envelope (self-approve/G5/broaden refusal landed).
 8. **WS-006..WS-013** — Stage 2 guarded writes behind the six unlock gates.
 9. **FED-001..FED-010** — FED-000 kill-switch verified; threat gates still open.
 10. **SLICE-001..SLICE-003** — broader interop proof after wedge retention evidence.
 
 Note (2026-07-31): **AGENT-001**, **SPACE-001**, and **FED-000** are verified.
+SPACE-002 is **in_progress** (self-approve / own-G5 / broaden-grant / not-a-plan-step).
 Wedge CLI: `mv trusted-work demo`. Strategy pack: `docs/strategy/unicorn/`.
