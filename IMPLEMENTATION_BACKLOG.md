@@ -352,7 +352,7 @@ interoperability kernel."
 - **blocked_by:** IK-002 (declared — "a policy-authorized action envelope", `CONSUMER_INBOX_MODEL.md:61`)
 - **files:** `crates/mv-engine/src/engine/inbox_consumer.rs`, `crates/mv-server/src/inbox_consumer.rs`, `crates/mv-server/src/lib.rs`
 - **acceptance:** `cargo test -p mv-engine -- inbox_consumer` — admission, exclusive claim, domain application, receipt, and checkpoint advance in order; retry does not advance the checkpoint
-- **evidence:** `cargo test -p mv-engine --lib -- inbox_consumer` → 3/3 ok; `LocalIndexHandler` + `consume_inbox_once` claim→apply→receipt→checkpoint; retry leaves checkpoint absent; exclusive lease blocks second tick; env `MINDVAULT_INBOX_CONSUMER_ENABLED` (default off); commit `HASH_IK006`; 2026-08-22. HTTP admit/listener remain IK-014.
+- **evidence:** `cargo test -p mv-engine --lib -- inbox_consumer` → 3/3 ok; `LocalIndexHandler` + `consume_inbox_once` claim→apply→receipt→checkpoint; retry leaves checkpoint absent; exclusive lease blocks second tick; env `MINDVAULT_INBOX_CONSUMER_ENABLED` (default off); commit `f8bca99`; 2026-08-22. HTTP admit/listener remain IK-014.
 
 #### IK-007 — Governed dead-letter redrive command
 - **priority:** P1 — explicitly requires its own governed command
