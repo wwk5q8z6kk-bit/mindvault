@@ -5408,6 +5408,52 @@ impl InteroperabilityStore for SqliteNodeStore {
         })
     }
 
+    async fn redrive_consumer_dead_letter(
+        &self,
+        consumer: &StableUri,
+        dead_letter_event_id: Uuid,
+        event: &EventEnvelope,
+        received_at: chrono::DateTime<Utc>,
+    ) -> MvResult<ConsumerInboxAdmission> {
+        event.validate().map_err(MvError::InvalidInput)?;
+        if event.id == dead_letter_event_id {
+            return Err(MvError::InvalidInput(
+                "dead-letter redrive must mint a new event ID".into(),
+            ));
+        }
+        if event.causation_id != Some(dead_letter_event_id) {
+            return Err(MvError::InvalidInput(
+                "dead-letter redrive event must set causation_id to the dead-letter event ID"
+                    .into(),
+            ));
+        }
+
+        let status = self
+            .get_consumer_inbox_status(consumer, dead_letter_event_id)
+            .await?
+            .ok_or_else(|| {
+                MvError::InvalidInput(
+                    "dead-letter redrive requires an admitted consumer inbox event".into(),
+                )
+            })?;
+        if status.state != ConsumerInboxState::DeadLetter {
+            return Err(MvError::InvalidInput(format!(
+                "dead-letter redrive requires state dead_letter, found {}",
+                status.state.as_str()
+            )));
+        }
+        if status.source != event.source {
+            return Err(MvError::InvalidInput(
+                "dead-letter redrive must keep the original source stream".into(),
+            ));
+        }
+
+        // Admit a new pending row. Do not touch the original inbox row,
+        // receipts, or checkpoint — those stay terminal and immutable.
+        self.admit_consumer_event(consumer, event, received_at)
+            .await
+    }
+
     // -----------------------------------------------------------------------
     // Governed agent execution graph
     // -----------------------------------------------------------------------
@@ -15400,6 +15446,187 @@ mod tests {
                 .state,
             ConsumerInboxState::DeadLetter
         );
+    }
+
+    #[tokio::test]
+    async fn dead_letter_redrive_admits_caused_event_and_preserves_receipt_checkpoint() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let original = node_created_event(
+            local_node_id,
+            Uuid::now_v7(),
+            "consumer-redrive-original",
+            &"a".repeat(64),
+        );
+        let consumer = StableUri::parse("mindvault://consumers/redrive-index").unwrap();
+        let processor = StableUri::parse("mindvault://processors/redrive-index").unwrap();
+        let received_at = original.occurred_at + chrono::Duration::seconds(1);
+        store
+            .admit_consumer_event(&consumer, &original, received_at)
+            .await
+            .unwrap();
+
+        let claim = store
+            .claim_consumer_events(
+                &consumer,
+                &processor,
+                received_at + chrono::Duration::seconds(1),
+                received_at + chrono::Duration::minutes(1),
+                1,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        let completion = ConsumerApplicationCompletion {
+            inbox_sequence: claim.inbox_sequence,
+            event_id: claim.event.id,
+            lease_id: claim.lease_id,
+            attempt: claim.attempt,
+            completed_at: claim.claimed_at + chrono::Duration::seconds(1),
+            result: ConsumerApplicationResult::DeadLettered {
+                error_code: "unsupported_projection".into(),
+                error_summary: "the consumer cannot project this event".into(),
+            },
+        };
+        let original_receipt = store
+            .complete_consumer_event(&claim, &completion)
+            .await
+            .unwrap();
+        assert_eq!(
+            original_receipt.outcome,
+            ConsumerApplicationOutcome::DeadLettered
+        );
+
+        let receipt_before = store
+            .get_consumer_application_receipt(original_receipt.receipt_id)
+            .await
+            .unwrap()
+            .expect("dead-letter receipt must exist");
+        let checkpoint_before = store
+            .get_consumer_checkpoint(&consumer, &original.source)
+            .await
+            .unwrap()
+            .expect("dead-letter checkpoint must exist");
+        let receipt_bytes_before = serde_json::to_vec(&receipt_before).unwrap();
+        let checkpoint_bytes_before = serde_json::to_vec(&checkpoint_before).unwrap();
+
+        let redrive = EventEnvelope::new(NewEventEnvelope {
+            event_type: original.event_type.clone(),
+            source: original.source.clone(),
+            subject: original.subject.clone(),
+            schema: original.schema.clone(),
+            principal: original.principal.clone(),
+            actor: original.actor.clone(),
+            correlation_id: original.correlation_id,
+            causation_id: Some(original.id),
+            idempotency_key: IdempotencyKey::parse("consumer-redrive-retry-1").unwrap(),
+            payload_digest: original.payload_digest.clone(),
+            sensitivity: original.sensitivity,
+            retention: original.retention,
+            provenance: original.provenance.clone(),
+            data: original.data.clone(),
+        })
+        .unwrap();
+        let admission = store
+            .redrive_consumer_dead_letter(
+                &consumer,
+                original.id,
+                &redrive,
+                completion.completed_at + chrono::Duration::seconds(1),
+            )
+            .await
+            .unwrap();
+        assert!(!admission.replayed);
+        assert_ne!(admission.event.id, original.id);
+        assert_eq!(admission.event.causation_id, Some(original.id));
+        assert!(admission.inbox_sequence > claim.inbox_sequence);
+
+        assert_eq!(
+            store
+                .get_consumer_inbox_status(&consumer, original.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            ConsumerInboxState::DeadLetter
+        );
+        assert_eq!(
+            store
+                .get_consumer_inbox_status(&consumer, admission.event.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            ConsumerInboxState::Pending
+        );
+
+        let receipt_after = store
+            .get_consumer_application_receipt(original_receipt.receipt_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let checkpoint_after = store
+            .get_consumer_checkpoint(&consumer, &original.source)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt_after, receipt_before);
+        assert_eq!(checkpoint_after, checkpoint_before);
+        assert_eq!(
+            serde_json::to_vec(&receipt_after).unwrap(),
+            receipt_bytes_before
+        );
+        assert_eq!(
+            serde_json::to_vec(&checkpoint_after).unwrap(),
+            checkpoint_bytes_before
+        );
+
+        // Fail-closed: wrong causation / same ID / non-dead-letter source.
+        let missing_causation = EventEnvelope::new(NewEventEnvelope {
+            event_type: original.event_type.clone(),
+            source: original.source.clone(),
+            subject: original.subject.clone(),
+            schema: original.schema.clone(),
+            principal: original.principal.clone(),
+            actor: original.actor.clone(),
+            correlation_id: original.correlation_id,
+            causation_id: None,
+            idempotency_key: IdempotencyKey::parse("consumer-redrive-bad-causation").unwrap(),
+            payload_digest: original.payload_digest.clone(),
+            sensitivity: original.sensitivity,
+            retention: original.retention,
+            provenance: original.provenance.clone(),
+            data: original.data.clone(),
+        })
+        .unwrap();
+        assert!(matches!(
+            store
+                .redrive_consumer_dead_letter(
+                    &consumer,
+                    original.id,
+                    &missing_causation,
+                    completion.completed_at + chrono::Duration::seconds(2),
+                )
+                .await,
+            Err(MvError::InvalidInput(_))
+        ));
+
+        let same_id = EventEnvelope {
+            id: original.id,
+            causation_id: Some(original.id),
+            ..redrive.clone()
+        };
+        assert!(matches!(
+            store
+                .redrive_consumer_dead_letter(
+                    &consumer,
+                    original.id,
+                    &same_id,
+                    completion.completed_at + chrono::Duration::seconds(3),
+                )
+                .await,
+            Err(MvError::InvalidInput(_))
+        ));
     }
 
     #[tokio::test]

@@ -1027,6 +1027,19 @@ pub trait InteroperabilityStore: Send + Sync {
         limit: usize,
     ) -> MvResult<Vec<ConsumerApplicationReceipt>>;
 
+    /// Governed dead-letter redrive (IK-007).
+    ///
+    /// Admits a **new** event whose `causation_id` points at a terminal
+    /// dead-lettered inbox event. The original receipt and checkpoint must not
+    /// be rewritten; callers prove that by comparing snapshots before/after.
+    async fn redrive_consumer_dead_letter(
+        &self,
+        consumer: &StableUri,
+        dead_letter_event_id: Uuid,
+        event: &EventEnvelope,
+        received_at: DateTime<Utc>,
+    ) -> MvResult<ConsumerInboxAdmission>;
+
     // -----------------------------------------------------------------------
     // Governed agent execution graph
     //
