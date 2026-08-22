@@ -1315,13 +1315,13 @@ operations remain deliberately out of scope for this foundation."*
 - **evidence:** Partial (2026-08-22): `cargo test -p mv-engine --lib -- work_order_agent_run` → 6/6 ok (SM+retry, self-approve, own-G5, broaden, space-scoped membership, not-a-plan-step). Optional `space_id` on admit enforces SPACE-001 Write membership; REST `approve_run` derives distinct approver. Remaining mandate: unified versioned action envelope across REST/agent/proposal/adapter/effects (IK-020). Artifact modeling is SPACE-005.
 #### SPACE-003 — Reliable effects: persisted adapter bindings and provider delivery IDs
 - **priority:** P0 — baseline P0 "reliable effects"
-- **status:** not_started
+- **status:** verified
 - **mandate:** `collaborative-spaces-baseline.md:97-106` — "Adapter registration is volatile, inbound ingestion has no durable idempotency constraint, polling can advance after partial failure"; unlock evidence includes "transactional inbox/outbox with unique provider delivery IDs" and "crash tests covering each commit/delivery boundary"
 - **governing_authority:** Law 4 (`:52`); ADR 010 acceptance gate 6 (`:269`)
 - **blocked_by:** IK-004, IK-006 (declared)
-- **files:** `crates/mv-engine/src/adapters/`, new migration
+- **files:** `crates/mv-engine/src/adapters/`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/adapter_poll.rs`, `migrations/043_adapter_bindings_and_deliveries.sql`
 - **acceptance:** `cargo test -p mv-engine -- adapter_reliable_effects` — bindings persist across restart; duplicate provider delivery IDs are rejected; polling does not advance after partial failure
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine --lib -- adapter_reliable_effects` → 3/3 ok; migration 043 `adapter_bindings` + `adapter_provider_deliveries`; poll cycle holds cursor on ingest/delivery failure; commit `ec07c00`; 2026-08-22.
 
 #### SPACE-004 — Communication-to-knowledge promotion boundary
 - **priority:** P0 — baseline P0; was a live violation
