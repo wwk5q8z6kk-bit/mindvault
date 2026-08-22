@@ -811,7 +811,7 @@ block production federation." All TM priorities below are copied verbatim.
 - **blocked_by:** none
 - **files:** `crates/mv-server/src/rest/federation.rs`, `config/default.toml`, `crates/mv-server/tests/federation_e2e.rs`
 - **acceptance:** `cargo test -p mv-server --test federation_e2e -- federation_disabled_by_default -- --test-threads=1` — federation routes return 501 unless `MINDVAULT_FEDERATION_ENABLED` is set, and enabling logs a warning naming this backlog item
-- **evidence:** `cargo test -p mv-server --test federation_e2e -- federation_disabled_by_default -- --test-threads=1` → ok; default off; opt-in `MINDVAULT_FEDERATION_ENABLED`; warning names FED-000; commit pending; 2026-08-22.
+- **evidence:** `cargo test -p mv-server --test federation_e2e -- federation_disabled_by_default -- --test-threads=1` → ok; default off; opt-in `MINDVAULT_FEDERATION_ENABLED`; warning names FED-000; commit ; 2026-08-22.
 
 #### FED-001 — TM-001 SSRF: endpoint policy, HTTPS, address validation, redirect control
 - **priority:** P0 — `FEDERATION_THREAT_MODEL.md:198` priority column: **High**
