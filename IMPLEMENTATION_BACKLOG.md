@@ -1312,7 +1312,7 @@ operations remain deliberately out of scope for this foundation."*
 - **blocked_by:** IK-002, SPACE-001 (declared) — SPACE-001 verified
 - **files:** `crates/mv-core/src/model/work_order.rs`, `crates/mv-engine/src/engine/work_order_ops.rs`, `crates/mv-server/src/rest/work_orders.rs`
 - **acceptance:** `cargo test -- work_order_agent_run` — state machines and retries; a run cannot approve or broaden its own grant; a task title or plan step cannot masquerade as an AgentRun (ADR 010:132-134)
-- **evidence:** `cargo test -p mv-engine --lib -- work_order_agent_run` → 5/5 ok (SM+retry rules, self-approve refuse, own-G5 refuse, broaden refuse, not-a-plan-step); REST `approve_run` derives distinct approver; `resume_approved_run(run_id, approver)` refuses self-approval; commit `HASH_SPACE002`; 2026-08-22. Follow-ups outside this slice: Space-scoped WorkOrders, unified action envelope across all surfaces (IK-020), Artifact modeling (SPACE-005).
+- **evidence:** `cargo test -p mv-engine --lib -- work_order_agent_run` → 5/5 ok (SM+retry rules, self-approve refuse, own-G5 refuse, broaden refuse, not-a-plan-step); REST `approve_run` derives distinct approver; `resume_approved_run(run_id, approver)` refuses self-approval; commit `ba59378`; 2026-08-22. Follow-ups outside this slice: Space-scoped WorkOrders, unified action envelope across all surfaces (IK-020), Artifact modeling (SPACE-005).
 
 #### SPACE-003 — Reliable effects: persisted adapter bindings and provider delivery IDs
 - **priority:** P0 — baseline P0 "reliable effects"
