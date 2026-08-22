@@ -77,6 +77,7 @@ pub async fn demo(config_path: &str) -> Result<()> {
                 }],
                 edges: Vec::new(),
             },
+            None,
         )
         .await
         .context("admit work order")?

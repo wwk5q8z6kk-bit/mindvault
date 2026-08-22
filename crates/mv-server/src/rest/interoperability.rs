@@ -154,6 +154,27 @@ pub(crate) fn node_create_admission_request(
     )
 }
 
+/// Build the admission question for Work Order admit (SPACE-002).
+///
+/// Same governing-node Tool Grant target as node create: the work order URI is
+/// minted during admission, so the grant target is the local node.
+pub(crate) fn work_order_admit_admission_request(
+    identity: &CommandIdentity,
+    local_node_id: Uuid,
+    idempotency_key: IdempotencyKey,
+    correlation_id: Uuid,
+    causation_id: Option<Uuid>,
+) -> CommandAdmissionRequest {
+    node_command_admission_request(
+        identity,
+        local_node_id,
+        StableUri::node(local_node_id),
+        idempotency_key,
+        correlation_id,
+        causation_id,
+    )
+}
+
 /// Resolve admission according to the configured mode.
 ///
 /// Returns `Ok(None)` when the mode is `Off`, so the caller emits an event that

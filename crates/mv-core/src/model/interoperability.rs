@@ -9,6 +9,7 @@ use super::KnowledgeNode;
 pub const EVENT_ENVELOPE_V1: &str = "mindvault.event-envelope/v1";
 pub const ACTION_RECEIPT_V1: &str = "mindvault.action-receipt/v1";
 pub const ACTION_ENVELOPE_V1: &str = "mindvault.action-envelope/v1";
+pub const ACTION_ENVELOPE_V2: &str = "mindvault.action-envelope/v2";
 pub const CONSUMER_APPLICATION_RECEIPT_V1: &str = "mindvault.consumer-application-receipt/v1";
 pub const JSON_SCHEMA_DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 pub const EVENT_TYPE_SCHEMA_EXTENSION: &str = "x-mindvault-event-type";
@@ -2635,6 +2636,13 @@ pub struct ActionEnvelope {
     pub policy_decision: AdmissionDecision,
     pub idempotency_key: IdempotencyKey,
     pub requested_at: DateTime<Utc>,
+    /// ADR 010 execution context (v2). Absent in v1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_order_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_run_id: Option<Uuid>,
 }
 
 /// Builder input that allows tests to omit required fields one at a time.
@@ -2749,17 +2757,45 @@ impl ActionEnvelope {
             policy_decision,
             idempotency_key,
             requested_at,
+            space_id: None,
+            work_order_id: None,
+            agent_run_id: None,
         };
         envelope.validate()?;
         Ok(envelope)
     }
 
+    /// Attach governed execution identifiers (SPACE-002 / ADR 014 v2).
+    pub fn with_execution_context(
+        mut self,
+        space_id: Option<Uuid>,
+        work_order_id: Option<Uuid>,
+        agent_run_id: Option<Uuid>,
+    ) -> Self {
+        self.envelope_version = ACTION_ENVELOPE_V2.into();
+        self.space_id = space_id;
+        self.work_order_id = work_order_id;
+        self.agent_run_id = agent_run_id;
+        self
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.envelope_version != ACTION_ENVELOPE_V1 {
+        if self.envelope_version != ACTION_ENVELOPE_V1
+            && self.envelope_version != ACTION_ENVELOPE_V2
+        {
             return Err(format!(
                 "unsupported action envelope version: {}",
                 self.envelope_version
             ));
+        }
+        if self.envelope_version == ACTION_ENVELOPE_V1
+            && (self.space_id.is_some()
+                || self.work_order_id.is_some()
+                || self.agent_run_id.is_some())
+        {
+            return Err(
+                "execution context fields require mindvault.action-envelope/v2".into(),
+            );
         }
         if self.action_id.is_nil() {
             return Err("action_id is required".into());
@@ -2787,7 +2823,7 @@ impl ActionEnvelope {
 
     /// Compact metadata safe to embed beside an event's admission block.
     pub fn attribution_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut metadata = serde_json::json!({
             "envelope_version": self.envelope_version,
             "action_id": self.action_id,
             "correlation_id": self.correlation_id,
@@ -2801,7 +2837,19 @@ impl ActionEnvelope {
             "policy_decision": self.policy_decision.policy_metadata(),
             "idempotency_key": self.idempotency_key.as_str(),
             "requested_at": self.requested_at.to_rfc3339(),
-        })
+        });
+        if self.envelope_version == ACTION_ENVELOPE_V2 {
+            if let Some(space_id) = self.space_id {
+                metadata["space_id"] = serde_json::json!(space_id);
+            }
+            if let Some(work_order_id) = self.work_order_id {
+                metadata["work_order_id"] = serde_json::json!(work_order_id);
+            }
+            if let Some(agent_run_id) = self.agent_run_id {
+                metadata["agent_run_id"] = serde_json::json!(agent_run_id);
+            }
+        }
+        metadata
     }
 }
 
@@ -3523,6 +3571,32 @@ mod tests {
         assert!(ActionEnvelope::try_new(missing_policy)
             .unwrap_err()
             .contains("policy_decision"));
+    }
+
+    #[test]
+    fn action_envelope_v2_carries_execution_context_in_metadata() {
+        let request = admission_request(AuthorityGrantKind::Tool, ContextCapability::Command);
+        let node_id = Uuid::now_v7();
+        let grant_id = Uuid::now_v7();
+        let principal = StableUri::principal(node_id, Uuid::now_v7());
+        let decision = AdmissionDecision::Admitted {
+            grant_id,
+            grant_uri: StableUri::authority_grant(node_id, grant_id),
+            grant_kind: AuthorityGrantKind::Tool,
+            capability: ContextCapability::Command,
+            delegation_depth_remaining: 0,
+            decided_at: Utc::now(),
+        };
+        let admitted = ActionEnvelope::from_admission(&request, &decision).unwrap();
+        let work_order_id = Uuid::now_v7();
+        let space_id = Uuid::now_v7();
+        let v2 = admitted.with_execution_context(Some(space_id), Some(work_order_id), None);
+        assert_eq!(v2.envelope_version, ACTION_ENVELOPE_V2);
+        v2.validate().expect("v2 envelope validates");
+        let metadata = v2.attribution_metadata();
+        assert_eq!(metadata["work_order_id"], serde_json::json!(work_order_id));
+        assert_eq!(metadata["space_id"], serde_json::json!(space_id));
+        assert!(metadata.get("agent_run_id").is_none());
     }
 
     /// Nil UUIDs count as missing; denied decisions carry empty grant_ids.

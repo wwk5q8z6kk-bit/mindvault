@@ -182,6 +182,7 @@ impl MindVaultEngine {
         principal: &StableUri,
         actor: &StableUri,
         proposal: &ProposedWorkOrder,
+        action_envelope: Option<ActionEnvelope>,
     ) -> MvResult<Result<WorkOrder, AdmissionRefusal>> {
         if proposal.nodes.is_empty() {
             return Ok(Err(AdmissionRefusal::Invalid {
@@ -306,8 +307,13 @@ impl MindVaultEngine {
             return Ok(Err(AdmissionRefusal::Invalid { reason }));
         }
 
-        let event =
-            Self::work_order_admitted_event(local_node_id, &work_order, nodes.len(), edges.len())?;
+        let event = Self::work_order_admitted_event(
+            local_node_id,
+            &work_order,
+            nodes.len(),
+            edges.len(),
+            action_envelope,
+        )?;
         let commit = self
             .store
             .nodes
@@ -1183,8 +1189,9 @@ impl MindVaultEngine {
         work_order: &WorkOrder,
         node_count: usize,
         edge_count: usize,
+        action_envelope: Option<ActionEnvelope>,
     ) -> MvResult<EventEnvelope> {
-        let data = serde_json::json!({
+        let mut data = serde_json::json!({
             "work_order_id": work_order.work_order_id,
             "node_count": node_count,
             "edge_count": edge_count,
@@ -1195,6 +1202,15 @@ impl MindVaultEngine {
                 "status": work_order.status.as_str(),
             })),
         });
+        if let Some(envelope) = action_envelope {
+            let envelope = envelope.with_execution_context(
+                work_order.space_id,
+                Some(work_order.work_order_id),
+                None,
+            );
+            data["admission"] = envelope.policy_decision.policy_metadata();
+            data["action_envelope"] = envelope.attribution_metadata();
+        }
         EventEnvelope::new(NewEventEnvelope {
             event_type: WORK_ORDER_ADMITTED_V1.into(),
             source: StableUri::node(local_node_id),
@@ -1468,7 +1484,7 @@ mod tests {
     ) -> (WorkOrder, AgentRun) {
         issue_tool_grant(engine, local_node_id, actor, &[target], key).await;
         let admitted = engine
-            .admit_work_order(actor, actor, &proposal(&[target], RiskTier::Low, key))
+            .admit_work_order(actor, actor, &proposal(&[target], RiskTier::Low, key), None)
             .await
             .unwrap()
             .expect("admissible");
@@ -1655,6 +1671,7 @@ mod tests {
                     RiskTier::Low,
                     "startable",
                 ),
+                None,
             )
             .await
             .unwrap()
@@ -1723,7 +1740,7 @@ mod tests {
         let mut request = proposal(&["mindvault://schemas/capped"], RiskTier::Low, "capped");
         request.nodes[0].max_attempts = 2;
         let admitted = engine
-            .admit_work_order(&actor, &actor, &request)
+            .admit_work_order(&actor, &actor, &request, None)
             .await
             .unwrap()
             .expect("admissible");
@@ -2016,7 +2033,7 @@ mod tests {
             "over-scoped",
         );
         let refusal = engine
-            .admit_work_order(&actor, &actor, &over_scoped)
+            .admit_work_order(&actor, &actor, &over_scoped, None)
             .await
             .unwrap()
             .expect_err("an over-scoped contract must be refused");
@@ -2044,7 +2061,7 @@ mod tests {
             "in-scope",
         );
         let admitted = engine
-            .admit_work_order(&actor, &actor, &in_scope)
+            .admit_work_order(&actor, &actor, &in_scope, None)
             .await
             .unwrap()
             .expect("an in-scope contract is admissible");
@@ -2118,6 +2135,7 @@ mod tests {
                     RiskTier::Low,
                     "context-only",
                 ),
+                None,
             )
             .await
             .unwrap()
@@ -2152,7 +2170,7 @@ mod tests {
         request.nodes.push(request.nodes[0].clone());
 
         let admitted = engine
-            .admit_work_order(&actor, &actor, &request)
+            .admit_work_order(&actor, &actor, &request, None)
             .await
             .unwrap()
             .expect("admissible");
@@ -2195,7 +2213,7 @@ mod tests {
         });
 
         let refusal = engine
-            .admit_work_order(&actor, &actor, &request)
+            .admit_work_order(&actor, &actor, &request, None)
             .await
             .unwrap()
             .expect_err("conflict edges are derived, not authored");
@@ -2232,7 +2250,7 @@ mod tests {
         });
 
         let refusal = engine
-            .admit_work_order(&actor, &actor, &request)
+            .admit_work_order(&actor, &actor, &request, None)
             .await
             .unwrap()
             .expect_err("a cyclic dependency graph is inadmissible");
@@ -2314,6 +2332,7 @@ mod tests {
                 &actor,
                 &actor,
                 &proposal(&["mindvault://schemas/gated"], RiskTier::Low, "gated"),
+                None,
             )
             .await
             .unwrap()
@@ -2460,6 +2479,7 @@ mod tests {
                     RiskTier::Low,
                     "executable",
                 ),
+                None,
             )
             .await
             .unwrap()
@@ -2534,6 +2554,7 @@ mod tests {
                     RiskTier::Low,
                     "self-approve",
                 ),
+                None,
             )
             .await
             .unwrap()
@@ -2592,6 +2613,7 @@ mod tests {
                     RiskTier::Low,
                     "self-g5",
                 ),
+                None,
             )
             .await
             .unwrap()
@@ -2688,6 +2710,7 @@ mod tests {
                     RiskTier::Low,
                     "space002-broaden",
                 ),
+                None,
             )
             .await
             .unwrap()
@@ -2752,7 +2775,7 @@ mod tests {
         scoped.space_id = Some(space.id);
 
         let denied = engine
-            .admit_work_order(&actor, &actor, &scoped)
+            .admit_work_order(&actor, &actor, &scoped, None)
             .await
             .unwrap()
             .expect_err("no membership must fail closed");
@@ -2782,7 +2805,7 @@ mod tests {
         );
         allowed.space_id = Some(space.id);
         let admitted = engine
-            .admit_work_order(&actor, &actor, &allowed)
+            .admit_work_order(&actor, &actor, &allowed, None)
             .await
             .unwrap()
             .expect("member may admit");
@@ -2824,6 +2847,108 @@ mod tests {
     }
 
     /// SPACE-002 — AgentRun is a distinct typed object; plan steps cannot masquerade.
+    #[tokio::test]
+    async fn work_order_admit_embeds_action_envelope_v2_in_event() {
+        let (engine, _dir) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let actor = StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, b"wo-envelope"));
+        issue_tool_grant(
+            &engine,
+            local_node_id,
+            &actor,
+            &["mindvault://schemas/executable"],
+            "wo-envelope-grant",
+        )
+        .await;
+
+        let grant_id = Uuid::now_v7();
+        let envelope = ActionEnvelope::try_new(NewActionEnvelope {
+            action_id: Some(Uuid::now_v7()),
+            correlation_id: Some(Uuid::now_v7()),
+            causation_id: None,
+            principal: Some(actor.clone()),
+            actor: Some(actor.clone()),
+            resource: Some(StableUri::node(local_node_id)),
+            subject: Some(StableUri::node(local_node_id)),
+            operation: Some(ContextCapability::Command),
+            grant_ids: Some(vec![grant_id]),
+            policy_decision: Some(AdmissionDecision::Admitted {
+                grant_id,
+                grant_uri: StableUri::authority_grant(local_node_id, grant_id),
+                grant_kind: AuthorityGrantKind::Tool,
+                capability: ContextCapability::Command,
+                delegation_depth_remaining: 0,
+                decided_at: Utc::now(),
+            }),
+            idempotency_key: Some(IdempotencyKey::parse("wo-envelope-admit").unwrap()),
+            requested_at: Some(Utc::now()),
+        })
+        .unwrap();
+        let admitted = engine
+            .admit_work_order(
+                &actor,
+                &actor,
+                &ProposedWorkOrder {
+                    goal: "envelope proof".into(),
+                    non_goals: Vec::new(),
+                    anchors: Vec::new(),
+                    success_criteria: vec!["admit".into()],
+                    prohibited_outcomes: Vec::new(),
+                    budget: WorkOrderBudget {
+                        wall_clock_secs: 60,
+                        run_attempts: 1,
+                        model_tokens: 100,
+                        effect_actions: 0,
+                    },
+                    sensitivity: Sensitivity::Internal,
+                    retention: RetentionClass::Operational,
+                    idempotency_key: "wo-envelope-admit".into(),
+                    space_id: None,
+                    nodes: vec![ProposedNode {
+                        purpose: "envelope".into(),
+                        executor_kind: ExecutorKind::Engine,
+                        risk_tier: RiskTier::Low,
+                        read_scope: Vec::new(),
+                        write_scope: vec![
+                            StableUri::parse("mindvault://schemas/executable").unwrap(),
+                        ],
+                        inputs: Vec::new(),
+                        timeout_secs: 30,
+                        max_attempts: 1,
+                    }],
+                    edges: Vec::new(),
+                },
+                Some(envelope),
+            )
+            .await
+            .unwrap()
+            .expect("admissible");
+
+        let events = engine
+            .store
+            .nodes
+            .list_pending_outbox_events(10)
+            .await
+            .unwrap();
+        let event = events
+            .iter()
+            .find(|event| event.event_type == WORK_ORDER_ADMITTED_V1)
+            .expect("admitted event on outbox");
+        let action_envelope = event
+            .data
+            .get("action_envelope")
+            .expect("action_envelope metadata");
+        assert_eq!(
+            action_envelope["envelope_version"],
+            ACTION_ENVELOPE_V2
+        );
+        assert_eq!(
+            action_envelope["work_order_id"],
+            serde_json::json!(admitted.work_order_id)
+        );
+        assert!(action_envelope.get("space_id").is_none());
+    }
+
     #[test]
     fn work_order_agent_run_is_not_a_plan_step() {
         fn assert_typed<T>() {}

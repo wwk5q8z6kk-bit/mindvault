@@ -20,7 +20,7 @@ use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use mv_core::{
     AgentRun, EdgeKind, ExecutorKind, GateId, GateOutcome, InteroperabilityStore,
-    ProvenanceReference, ProvenanceRelation, RetentionClass, RiskTier, RunArtifact,
+    IdempotencyKey, ProvenanceReference, ProvenanceRelation, RetentionClass, RiskTier, RunArtifact,
     RunFailureClass, Sensitivity, StableUri, WorkOrder, WorkOrderBudget, WorkOrderExport,
     WorkOrderStatus,
 };
@@ -327,10 +327,25 @@ pub(crate) async fn create_work_order(
         local_node_id,
         Uuid::new_v5(&local_node_id, subject.as_bytes()),
     );
+    let identity = crate::rest::interoperability::CommandIdentity::derive(&auth, local_node_id)
+        .map_err(|err| (StatusCode::UNAUTHORIZED, err))?;
+    let idempotency_key = IdempotencyKey::parse(&request.idempotency_key)
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    let action_envelope = crate::rest::interoperability::admit_command(
+        &state,
+        &crate::rest::interoperability::work_order_admit_admission_request(
+            &identity,
+            local_node_id,
+            idempotency_key,
+            Uuid::now_v7(),
+            None,
+        ),
+    )
+    .await?;
 
     let admitted = state
         .engine
-        .admit_work_order(&principal, &principal, &proposal)
+        .admit_work_order(&principal, &principal, &proposal, action_envelope)
         .await
         .map_err(crate::rest::map_mv_error)?
         .map_err(map_admission_refusal)?;
