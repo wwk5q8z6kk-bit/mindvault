@@ -7,6 +7,7 @@ mod interoperability_ops;
 mod mcp_ops;
 mod node_ops;
 mod outbox_dispatch;
+mod inbox_consumer;
 mod profile_ops;
 mod proposal_ops;
 mod relay_ops;
@@ -25,6 +26,10 @@ pub use interoperability_ops::{
 pub use outbox_dispatch::{
     spawn_outbox_dispatcher, HttpOutboxPublisher, LocalAckPublisher, OutboxDispatchTick,
     OutboxDispatcherConfig, OutboxPublisher,
+};
+pub use inbox_consumer::{
+    spawn_inbox_consumer, InboxConsumeTick, InboxConsumerConfig, InboxDomainHandler,
+    LocalIndexHandler,
 };
 pub use agent_run_executor::ExecutedRun;
 pub use work_order_ops::{
