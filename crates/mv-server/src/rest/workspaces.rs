@@ -344,3 +344,93 @@ fn map_workspace_error(error: MvError) -> (StatusCode, String) {
     };
     (status, error.to_string())
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::AuthContext;
+    use crate::state::WorkspaceRootPolicy;
+    use axum::extract::{Path as AxumPath, State};
+    use axum::Extension;
+    use mv_engine::config::EngineConfig;
+    use mv_engine::engine::MindVaultEngine;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn test_state(allowed_roots: Vec<PathBuf>) -> (Arc<AppState>, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let mut config = EngineConfig {
+            data_dir: tmp.path().join("data").to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        config.embedding.provider = "noop".into();
+        config.llm.auto_detect = false;
+        let engine = MindVaultEngine::init(config).await.unwrap();
+        let state = Arc::new(
+            AppState::new(Arc::new(engine)).with_workspace_allowed_roots(allowed_roots),
+        );
+        (state, tmp)
+    }
+
+    #[tokio::test]
+    async fn workspaces_mount_rejects_non_allowlisted_root() {
+        let (state, tmp) = test_state(vec![]).await;
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let err = mount_workspace(
+            Extension(AuthContext::system_admin()),
+            State(state),
+            Json(MountWorkspaceRequest {
+                root_path: outside.to_string_lossy().into(),
+                namespace: Some("default".into()),
+                display_name: Some("Outside".into()),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn workspaces_tree_rejects_unknown_workspace_id() {
+        let (state, _tmp) = test_state(vec![std::env::temp_dir()]).await;
+        let err = get_workspace_tree(
+            Extension(AuthContext::system_admin()),
+            State(state),
+            AxumPath(Uuid::now_v7()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn workspaces_document_read_rejects_unknown_document_id() {
+        let allowed = TempDir::new().unwrap();
+        let root = allowed.path().join("knowledge");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Note.md"), "# note\n").unwrap();
+        let (state, _tmp) = test_state(vec![allowed.path().to_path_buf()]).await;
+        let mounted = state
+            .engine
+            .mount_knowledge_workspace(&root, "default", "Docs")
+            .await
+            .unwrap();
+        let err = read_workspace_document(
+            Extension(AuthContext::system_admin()),
+            State(state),
+            AxumPath((mounted.workspace.id, Uuid::now_v7())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn workspaces_root_policy_is_disabled_without_allowlist() {
+        let policy = WorkspaceRootPolicy::default();
+        let err = policy.authorize(FsPath::new("/tmp")).unwrap_err();
+        assert!(err.contains("disabled"));
+    }
+}

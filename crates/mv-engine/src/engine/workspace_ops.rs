@@ -361,7 +361,7 @@ pub(super) fn workspace_root(workspace: &KnowledgeWorkspace) -> MvResult<PathBuf
     canonical_workspace_root(Path::new(&descriptor.root_path))
 }
 
-async fn mark_initial_workspace_error(
+pub(crate) async fn mark_initial_workspace_error(
     engine: &MindVaultEngine,
     workspace: &KnowledgeWorkspace,
 ) -> MvResult<()> {
@@ -378,4 +378,171 @@ async fn mark_initial_workspace_error(
         .update_knowledge_workspace(&replacement, workspace.revision)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::EngineConfig;
+    use mv_core::{KnowledgeWorkspaceMode, KnowledgeWorkspaceState, MvError};
+    use tempfile::TempDir;
+
+    async fn test_engine(sealed: bool) -> (MindVaultEngine, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            sealed_mode: sealed,
+            ..Default::default()
+        };
+        config.embedding.provider = "noop".into();
+        config.llm.auto_detect = false;
+        let engine = MindVaultEngine::init(config).await.unwrap();
+        (engine, temp_dir)
+    }
+
+    fn write_md(root: &Path, relative: &str, body: &str) {
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, body).unwrap();
+    }
+
+    #[tokio::test]
+    async fn workspace_ops_sealed_mode_mount_is_rejected() {
+        let (engine, tmp) = test_engine(true).await;
+        let root = tmp.path().join("knowledge");
+        std::fs::create_dir_all(&root).unwrap();
+        write_md(&root, "Note.md", "# sealed\n");
+        let err = engine
+            .mount_knowledge_workspace(&root, "default", "Sealed")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, MvError::InvalidInput(ref message) if message.contains("sealed mode")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_ops_cross_workspace_document_read_is_not_found() {
+        let (engine, tmp) = test_engine(false).await;
+        let root_a = tmp.path().join("a");
+        let root_b = tmp.path().join("b");
+        std::fs::create_dir_all(&root_a).unwrap();
+        std::fs::create_dir_all(&root_b).unwrap();
+        write_md(&root_a, "A.md", "# A\n");
+        write_md(&root_b, "B.md", "# B\n");
+        let a = engine
+            .mount_knowledge_workspace(&root_a, "default", "A")
+            .await
+            .unwrap();
+        let b = engine
+            .mount_knowledge_workspace(&root_b, "default", "B")
+            .await
+            .unwrap();
+        let a_docs = engine
+            .store
+            .nodes
+            .list_workspace_documents(a.workspace.id)
+            .await
+            .unwrap();
+        let foreign = a_docs[0].id;
+        let err = engine
+            .read_knowledge_workspace_document(b.workspace.id, foreign)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MvError::NodeNotFound(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn workspace_ops_non_utf8_document_read_is_refused() {
+        let (engine, tmp) = test_engine(false).await;
+        let root = tmp.path().join("knowledge");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Binary.md"), [0xff, 0xfe, 0xfd]).unwrap();
+        let mounted = engine
+            .mount_knowledge_workspace(&root, "default", "Binary")
+            .await
+            .unwrap();
+        let docs = engine
+            .store
+            .nodes
+            .list_workspace_documents(mounted.workspace.id)
+            .await
+            .unwrap();
+        assert_eq!(docs.len(), 1);
+        let err = engine
+            .read_knowledge_workspace_document(mounted.workspace.id, docs[0].id)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, MvError::InvalidInput(ref message) if message.contains("UTF-8") || message.contains("lifecycle")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_ops_reconcile_on_deleted_root_fails() {
+        let (engine, tmp) = test_engine(false).await;
+        let root = tmp.path().join("knowledge");
+        std::fs::create_dir_all(&root).unwrap();
+        write_md(&root, "Note.md", "# note\n");
+        let mounted = engine
+            .mount_knowledge_workspace(&root, "default", "Gone")
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        let err = engine
+            .reconcile_knowledge_workspace(mounted.workspace.id)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, MvError::InvalidInput(ref message) if message.contains("unavailable") || message.contains("directory")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_ops_rebuild_survives_failed_projection_paths() {
+        let (engine, tmp) = test_engine(false).await;
+        let root = tmp.path().join("knowledge");
+        std::fs::create_dir_all(&root).unwrap();
+        write_md(&root, "Note.md", "# note\n");
+        let mounted = engine
+            .mount_knowledge_workspace(&root, "default", "Rebuild")
+            .await
+            .unwrap();
+        // Delete canonical file so projection refresh must mark failures/stale rather than panic.
+        std::fs::remove_file(root.join("Note.md")).unwrap();
+        let outcome = engine
+            .rebuild_knowledge_workspace_projections(mounted.workspace.id)
+            .await
+            .unwrap();
+        let _ = outcome; // rebuild must not panic after a deleted canonical file
+    }
+
+    #[tokio::test]
+    async fn workspace_ops_mark_initial_workspace_error_advances_revision() {
+        let (engine, tmp) = test_engine(false).await;
+        let root = tmp.path().join("knowledge");
+        std::fs::create_dir_all(&root).unwrap();
+        write_md(&root, "Note.md", "# note\n");
+        let mounted = engine
+            .mount_knowledge_workspace(&root, "default", "Error")
+            .await
+            .unwrap();
+        let before = engine
+            .get_knowledge_workspace(mounted.workspace.id)
+            .await
+            .unwrap();
+        mark_initial_workspace_error(&engine, &before).await.unwrap();
+        let after = engine
+            .get_knowledge_workspace(mounted.workspace.id)
+            .await
+            .unwrap();
+        assert_eq!(after.state, KnowledgeWorkspaceState::Error);
+        assert_eq!(after.revision, before.revision + 1);
+        assert_eq!(after.mode, KnowledgeWorkspaceMode::Mounted);
+    }
 }

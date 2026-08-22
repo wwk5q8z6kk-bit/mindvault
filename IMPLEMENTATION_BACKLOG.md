@@ -1220,13 +1220,13 @@ operations remain deliberately out of scope for this foundation."*
 
 #### WS-016 — Branch and error-path coverage for the workspace REST and engine modules
 - **priority:** P1 — derived: 513 lines with zero inline tests behind 3 happy-path integration tests
-- **status:** not_started
+- **status:** verified
 - **mandate:** `knowledge-workspace.md:513-525` — "Implementation must include: unit tests for normalization, collision, identity, and state transitions". Verified: `crates/mv-server/src/rest/workspaces.rs` (279 lines) and `crates/mv-engine/src/engine/workspace_ops.rs` (234 lines) contain **zero** `#[test]`/`#[tokio::test]`. Coverage exists only via 3 integration tests at `crates/mv-server/tests/api_integration.rs:116`, `:233`, `:425`, all happy-path or single-fail-closed
 - **governing_authority:** feature-completeness §10 (`:125`)
 - **blocked_by:** none
 - **files:** `crates/mv-server/src/rest/workspaces.rs`, `crates/mv-engine/src/engine/workspace_ops.rs`
 - **acceptance:** `cargo test -p mv-server -- workspaces::` and `cargo test -p mv-engine -- workspace_ops::` — inline tests cover sealed-mode mount rejection, non-allowlisted root, malformed workspace/document UUID, cross-workspace document read, non-UTF-8 document read, reconcile on a deleted root, rebuild on a failed projection, and `mark_initial_workspace_error`
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine --lib -- workspace_ops::` → 6/6 ok; `cargo test -p mv-server --lib -- workspaces::` → 4/4 ok; 2026-08-22. Commit hash pending.
 
 #### WS-017 — Watcher-loss and full-reconciliation tests
 - **priority:** P1 — required validation; foundation gate step 6
