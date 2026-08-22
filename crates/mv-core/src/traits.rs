@@ -639,12 +639,43 @@ pub trait KnowledgeWorkspaceManifestStore: Send + Sync {
 
     /// Apply one authoritative reconciliation as a single transaction.
     ///
-    /// Returns `false` without committing any mutation when the workspace or
-    /// any document revision is stale.
+    /// `reconciliation.journal_events` are inserted in the same transaction
+    /// with per-workspace sequence numbers assigned in commit order, so the
+    /// manifest mutation and its durable journal rows commit or roll back
+    /// together. Returns `false` without committing any mutation when the
+    /// workspace or any document revision is stale.
     async fn apply_workspace_reconciliation(
         &self,
         reconciliation: &WorkspaceManifestReconciliation,
     ) -> MvResult<bool>;
+
+    /// Append one row to the durable workspace journal, assigning the next
+    /// per-workspace `event_seq`. Returns the stored row.
+    async fn append_workspace_event(&self, event: &WorkspaceEvent) -> MvResult<WorkspaceEvent>;
+
+    /// List journal rows for one workspace in `event_seq` order.
+    async fn list_workspace_events(
+        &self,
+        workspace_id: Uuid,
+        after_seq: Option<u64>,
+        limit: usize,
+    ) -> MvResult<Vec<WorkspaceEvent>>;
+
+    /// Record a conflict row and its journal event in one transaction,
+    /// returning the stored event with its assigned sequence.
+    async fn record_workspace_conflict(
+        &self,
+        conflict: &WorkspaceConflict,
+        event: &WorkspaceEvent,
+    ) -> MvResult<WorkspaceEvent>;
+
+    /// List conflicts for one workspace, optionally filtered by state, in
+    /// detection order.
+    async fn list_workspace_conflicts(
+        &self,
+        workspace_id: Uuid,
+        state: Option<WorkspaceConflictState>,
+    ) -> MvResult<Vec<WorkspaceConflict>>;
 }
 
 fn _assert_knowledge_workspace_manifest_store_object_safe(_: &dyn KnowledgeWorkspaceManifestStore) {
@@ -797,6 +828,14 @@ pub trait InteroperabilityStore: Send + Sync {
         schema_uri: &StableUri,
     ) -> MvResult<Vec<PublicSchemaRecord>>;
 
+    /// Atomically advance one immutable schema version through its governed
+    /// lifecycle and emit the matching durable event.
+    async fn transition_public_schema_lifecycle_with_event(
+        &self,
+        command: &PublicSchemaLifecycleCommand,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentSchemaCommit>;
+
     /// Atomically register one active source binding and its event.
     async fn commit_source_binding_with_event(
         &self,
@@ -805,6 +844,9 @@ pub trait InteroperabilityStore: Send + Sync {
     ) -> MvResult<IdempotentSourceBindingCommit>;
 
     async fn get_source_binding(&self, binding_id: Uuid) -> MvResult<Option<SourceBinding>>;
+
+    /// List the governed Source Binding registry in stable creation order.
+    async fn list_source_bindings(&self) -> MvResult<Vec<SourceBinding>>;
 
     async fn find_active_source_binding(
         &self,

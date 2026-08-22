@@ -191,6 +191,10 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             "/api/v1/workspaces/:workspace_id/documents/:document_id",
             get(workspaces::read_workspace_document),
         )
+        .route(
+            "/api/v1/workspaces/:id/conflicts",
+            get(workspaces::list_workspace_conflicts),
+        )
         // Governed agent execution graph. Command and query surfaces ship
         // together per constitutional law 2.
         .route(
@@ -228,6 +232,35 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
                 .post(interoperability::register_local_context_node),
         )
         .route(
+            "/api/v1/context-nodes",
+            get(interoperability::list_context_nodes).post(interoperability::register_context_node),
+        )
+        .route(
+            "/api/v1/context-nodes/:id",
+            get(interoperability::get_context_node),
+        )
+        .route(
+            "/api/v1/schemas",
+            post(interoperability::register_public_schema),
+        )
+        .route(
+            "/api/v1/schemas/:name/versions",
+            get(interoperability::list_public_schema_versions),
+        )
+        .route(
+            "/api/v1/schemas/:name/versions/:version",
+            get(interoperability::get_public_schema),
+        )
+        .route(
+            "/api/v1/source-bindings",
+            get(interoperability::list_source_bindings)
+                .post(interoperability::register_source_binding),
+        )
+        .route(
+            "/api/v1/source-bindings/:id",
+            get(interoperability::get_source_binding),
+        )
+        .route(
             "/api/v1/authority-grants",
             get(interoperability::list_authority_grants)
                 .post(interoperability::issue_authority_grant),
@@ -235,6 +268,10 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route(
             "/api/v1/authority-grants/:id",
             get(interoperability::get_authority_grant),
+        )
+        .route(
+            "/api/v1/authority-grants/:id/delegate",
+            post(interoperability::delegate_authority_grant),
         )
         .route(
             "/api/v1/authority-grants/:id/suspend",
@@ -16616,6 +16653,10 @@ mod tests {
         let engine = MindVaultEngine::init(config)
             .await
             .expect("test engine should initialize");
+        engine
+            .register_local_context_node("Admission Test Vault")
+            .await
+            .expect("admission tests require governed local identities");
         (Arc::new(engine), temp_dir)
     }
 
@@ -16677,6 +16718,15 @@ mod tests {
     async fn store_node_fails_closed_without_an_effective_grant() {
         let (engine, _tmp) = admission_engine().await;
         let state = admission_state(&engine, CommandAdmissionMode::Enforce);
+        let pending_before: Vec<_> = engine
+            .store
+            .nodes
+            .list_pending_outbox_events(10)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|event| event.id)
+            .collect();
 
         let (status, message) = store_node(
             Extension(AuthContext::system_admin()),
@@ -16701,7 +16751,11 @@ mod tests {
             .list_pending_outbox_events(10)
             .await
             .unwrap();
-        assert!(pending.is_empty(), "a refused command must emit no event");
+        assert_eq!(
+            pending.into_iter().map(|event| event.id).collect::<Vec<_>>(),
+            pending_before,
+            "a refused command must emit no event"
+        );
     }
 
     /// Observe records the decision and lets the command through.

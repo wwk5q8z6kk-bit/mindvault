@@ -21,6 +21,8 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "health", description = "Health check endpoints"),
         (name = "workspaces", description = "Allowlisted local Markdown workspace access"),
         (name = "context-nodes", description = "Local Context Node bootstrap and registry"),
+        (name = "schemas", description = "Immutable governed public-schema registry"),
+        (name = "source-bindings", description = "Governed external source-authority registry"),
         (name = "authority-grants", description = "Authority Grant issuance and lifecycle"),
         (name = "identities", description = "Governed identity registry"),
         (name = "nodes", description = "Knowledge node CRUD operations"),
@@ -74,6 +76,7 @@ use utoipa_swagger_ui::SwaggerUi;
         reconcile_workspace,
         rebuild_workspace_projections,
         read_workspace_document,
+        list_workspace_conflicts,
         // Nodes
         store_node,
         list_nodes,
@@ -297,9 +300,19 @@ use utoipa_swagger_ui::SwaggerUi;
         work_order_run_fail,
         context_nodes_local_get,
         context_nodes_local_register,
+        context_nodes_list,
+        context_nodes_register,
+        context_nodes_get,
+        public_schemas_register,
+        public_schema_versions_list,
+        public_schema_version_get,
+        source_bindings_list,
+        source_bindings_register,
+        source_bindings_get,
         authority_grants_list,
         authority_grants_issue,
         authority_grants_get,
+        authority_grants_delegate,
         authority_grants_suspend,
         authority_grants_revoke,
         authority_grants_resume,
@@ -477,6 +490,22 @@ async fn rebuild_workspace_projections() {}
     )
 )]
 async fn read_workspace_document() {}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{id}/conflicts",
+    tag = "workspaces",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Workspace UUID"),
+        ("state" = Option<String>, Query, description = "Review-state filter: open, reviewing, resolved, or dismissed. Defaults to open.")
+    ),
+    responses(
+        (status = 200, description = "Workspace conflicts with the documented resolution choices"),
+        (status = 400, description = "Unknown conflict state filter"),
+        (status = 404, description = "Workspace not found")
+    )
+)]
+async fn list_workspace_conflicts() {}
 
 #[utoipa::path(
     post,
@@ -1346,6 +1375,86 @@ async fn context_nodes_local_get() {}
 )]
 async fn context_nodes_local_register() {}
 
+#[utoipa::path(
+    get, path = "/api/v1/context-nodes", tag = "context-nodes",
+    params(("status" = Option<String>, Query, description = "Optional lifecycle-state filter")),
+    responses((status = 200, description = "Context Node registry"))
+)]
+async fn context_nodes_list() {}
+
+#[utoipa::path(
+    post, path = "/api/v1/context-nodes", tag = "context-nodes",
+    responses(
+        (status = 201, description = "Untrusted discovery descriptor registered"),
+        (status = 200, description = "Idempotent replay"),
+        (status = 403, description = "Admin or Tool Grant required")
+    )
+)]
+async fn context_nodes_register() {}
+
+#[utoipa::path(
+    get, path = "/api/v1/context-nodes/{id}", tag = "context-nodes",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "Context Node descriptor"),
+        (status = 404, description = "Context Node not found")
+    )
+)]
+async fn context_nodes_get() {}
+
+#[utoipa::path(
+    post, path = "/api/v1/schemas", tag = "schemas",
+    responses(
+        (status = 201, description = "Immutable public schema version registered"),
+        (status = 200, description = "Idempotent replay"),
+        (status = 403, description = "Admin or Tool Grant required")
+    )
+)]
+async fn public_schemas_register() {}
+
+#[utoipa::path(
+    get, path = "/api/v1/schemas/{name}/versions", tag = "schemas",
+    params(("name" = String, Path)),
+    responses((status = 200, description = "Registered versions for one public schema"))
+)]
+async fn public_schema_versions_list() {}
+
+#[utoipa::path(
+    get, path = "/api/v1/schemas/{name}/versions/{version}", tag = "schemas",
+    params(("name" = String, Path), ("version" = String, Path)),
+    responses(
+        (status = 200, description = "One immutable public schema version"),
+        (status = 404, description = "Schema version not found")
+    )
+)]
+async fn public_schema_version_get() {}
+
+#[utoipa::path(
+    get, path = "/api/v1/source-bindings", tag = "source-bindings",
+    responses((status = 200, description = "Governed Source Binding registry"))
+)]
+async fn source_bindings_list() {}
+
+#[utoipa::path(
+    post, path = "/api/v1/source-bindings", tag = "source-bindings",
+    responses(
+        (status = 201, description = "Source Binding registered"),
+        (status = 200, description = "Idempotent replay"),
+        (status = 403, description = "Admin or Tool Grant required")
+    )
+)]
+async fn source_bindings_register() {}
+
+#[utoipa::path(
+    get, path = "/api/v1/source-bindings/{id}", tag = "source-bindings",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "One governed Source Binding"),
+        (status = 404, description = "Source Binding not found")
+    )
+)]
+async fn source_bindings_get() {}
+
 #[utoipa::path(get, path = "/api/v1/authority-grants", tag = "authority-grants",
     responses((status = 200, description = "Grant list"), (status = 403, description = "Admin required")))]
 async fn authority_grants_list() {}
@@ -1362,6 +1471,16 @@ async fn authority_grants_issue() {}
     params(("id" = String, Path)),
     responses((status = 200, description = "Grant"), (status = 404, description = "Not found")))]
 async fn authority_grants_get() {}
+
+#[utoipa::path(post, path = "/api/v1/authority-grants/{id}/delegate", tag = "authority-grants",
+    params(("id" = String, Path)),
+    responses(
+        (status = 201, description = "Strictly narrower delegated grant issued"),
+        (status = 200, description = "Idempotent replay"),
+        (status = 400, description = "Delegation widens or violates the parent grant"),
+        (status = 403, description = "Caller is not the parent grantee")
+    ))]
+async fn authority_grants_delegate() {}
 
 #[utoipa::path(post, path = "/api/v1/authority-grants/{id}/suspend", tag = "authority-grants",
     params(("id" = String, Path)),

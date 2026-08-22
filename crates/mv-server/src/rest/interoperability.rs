@@ -15,17 +15,21 @@
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Extension, Json,
 };
 use chrono::{Duration, Utc};
 use mv_core::{
     ActionEnvelope, ActorKind, AdmissionDecision, AuthorityGrant, AuthorityGrantKind,
-    AuthorityGrantStatus, CommandAdmissionRequest, ContextCapability, ContextNodeRecord,
-    IdempotencyKey, IdentityRecord, InteroperabilityStore, MvError, RetentionClass, Sensitivity,
-    StableUri,
+    AuthorityGrantStatus, CommandAdmissionRequest, ContextCapability, ContextCapabilityManifest,
+    ContextNodeEndpoint, ContextNodePublicKey, ContextNodeRecord, ContextNodeStatus,
+    ContextNodeType, EventEnvelope, IdempotencyKey, IdentityRecord, InteroperabilityStore,
+    MaterializationMode, MvError, NewEventEnvelope, ProvenanceReference, ProvenanceRelation,
+    PublicSchemaRecord, RetentionClass, SchemaReference, Sensitivity, SourceBinding,
+    SourceConflictPolicy, SourceDeletionPolicy, SourceFreshness, StableUri, SyncDirection,
+    CONTEXT_NODE_REGISTERED_V1, PUBLIC_SCHEMA_REGISTERED_V1, SOURCE_BINDING_REGISTERED_V1,
 };
-use mv_engine::engine::IssueAuthorityGrantRequest;
+use mv_engine::engine::{DelegateAuthorityGrantRequest, IssueAuthorityGrantRequest};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -50,6 +54,7 @@ pub(crate) const COMMAND_ADMISSION_DENIED: &str = "command_admission_denied";
 /// There is deliberately no header for overriding the actor. An unauthenticated
 /// header naming an arbitrary actor would let a caller attribute its own
 /// commands to someone else.
+#[derive(Debug)]
 pub(crate) struct CommandIdentity {
     pub principal: StableUri,
     pub actor: StableUri,
@@ -62,6 +67,13 @@ impl CommandIdentity {
         auth: &AuthContext,
         local_node_id: Uuid,
     ) -> Result<Self, (StatusCode, String)> {
+        // Admission `off` is a compatibility mode: it must preserve the
+        // pre-kernel principal derivation and must not introduce a registry
+        // precondition for otherwise ordinary node mutations. Observe and
+        // enforce remain fail-closed through the governed identity registry.
+        if !state.command_admission.is_active() {
+            return Ok(Self::derive_v5(auth, local_node_id));
+        }
         let principal = state
             .engine
             .resolve_command_identity(local_node_id, auth.subject.as_deref())
@@ -73,8 +85,7 @@ impl CommandIdentity {
         })
     }
 
-    /// Transitional v5 derivation retained for unit tests of URI stability.
-    #[cfg(test)]
+    /// Transitional v5 derivation retained for admission-off compatibility.
     fn derive_v5(auth: &AuthContext, local_node_id: Uuid) -> Self {
         let subject = auth.subject.as_deref().unwrap_or("local-system");
         let principal_id = IdentityRecord::principal_id_for_subject(local_node_id, subject);
@@ -413,6 +424,526 @@ pub(crate) async fn get_local_context_node(
 }
 
 // ---------------------------------------------------------------------------
+// Public governed registries (IK-009)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct RegistryCommandContext {
+    local_node_id: Uuid,
+    identity: CommandIdentity,
+    idempotency_key: IdempotencyKey,
+    correlation_id: Uuid,
+    causation_id: Option<Uuid>,
+}
+
+async fn registry_command_context(
+    state: &AppState,
+    auth: &AuthContext,
+    headers: &HeaderMap,
+) -> Result<RegistryCommandContext, (StatusCode, String)> {
+    let local_node_id = state
+        .engine
+        .local_context_node_id()
+        .await
+        .map_err(map_context_node_error)?;
+    let identity = CommandIdentity::derive_async(state, auth, local_node_id).await?;
+    let idempotency_key = super::request_idempotency_key(headers)?;
+    let correlation_id = super::optional_uuid_header(headers, super::CORRELATION_ID_HEADER)?
+        .unwrap_or_else(Uuid::now_v7);
+    let causation_id = super::optional_uuid_header(headers, super::CAUSATION_ID_HEADER)?;
+    Ok(RegistryCommandContext {
+        local_node_id,
+        identity,
+        idempotency_key,
+        correlation_id,
+        causation_id,
+    })
+}
+
+async fn admit_registry_command(
+    state: &AppState,
+    command: &RegistryCommandContext,
+    subject: StableUri,
+) -> Result<(), (StatusCode, String)> {
+    admit_command(
+        state,
+        &node_command_admission_request(
+            &command.identity,
+            command.local_node_id,
+            subject,
+            command.idempotency_key.clone(),
+            command.correlation_id,
+            command.causation_id,
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+fn registry_event(
+    command: RegistryCommandContext,
+    event_type: &str,
+    event_schema_name: &str,
+    subject: StableUri,
+    data: serde_json::Value,
+    payload_digest: String,
+) -> Result<EventEnvelope, (StatusCode, String)> {
+    EventEnvelope::new(NewEventEnvelope {
+        event_type: event_type.into(),
+        source: StableUri::node(command.local_node_id),
+        subject: subject.clone(),
+        schema: SchemaReference::new(
+            StableUri::schema(event_schema_name)
+                .map_err(|message| (StatusCode::INTERNAL_SERVER_ERROR, message))?,
+            "1.0.0",
+        )
+        .map_err(|message| (StatusCode::INTERNAL_SERVER_ERROR, message))?,
+        principal: command.identity.principal,
+        actor: command.identity.actor,
+        correlation_id: command.correlation_id,
+        causation_id: command.causation_id,
+        idempotency_key: command.idempotency_key,
+        payload_digest,
+        sensitivity: Sensitivity::Internal,
+        retention: RetentionClass::Durable,
+        provenance: vec![ProvenanceReference {
+            resource: subject,
+            relation: ProvenanceRelation::PrimarySource,
+        }],
+        data,
+    })
+    .map_err(|message| (StatusCode::BAD_REQUEST, message))
+}
+
+fn map_registry_error(err: MvError) -> (StatusCode, String) {
+    match &err {
+        MvError::VaultSealed => (StatusCode::LOCKED, err.to_string()),
+        MvError::InvalidInput(_) => (StatusCode::BAD_REQUEST, err.to_string()),
+        MvError::IdempotencyConflict(message)
+        | MvError::Conflict(message)
+        | MvError::CanonicalSourceConflict(message) => (StatusCode::CONFLICT, message.clone()),
+        MvError::NotFound(message) => (StatusCode::NOT_FOUND, message.clone()),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RegistryRegistrationView<T> {
+    pub record: T,
+    pub newly_registered: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RegisterPublicSchemaRequest {
+    pub name: String,
+    pub version: String,
+    pub definition: serde_json::Value,
+}
+
+/// `POST /api/v1/schemas` — register one immutable public schema version.
+pub(crate) async fn register_public_schema(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<RegisterPublicSchemaRequest>,
+) -> Result<
+    (
+        StatusCode,
+        Json<RegistryRegistrationView<PublicSchemaRecord>>,
+    ),
+    (StatusCode, String),
+> {
+    require_admin(&auth)?;
+    let schema = SchemaReference::new(
+        StableUri::schema(&body.name).map_err(|err| (StatusCode::BAD_REQUEST, err))?,
+        body.version,
+    )
+    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let subject = StableUri::schema_version(&schema.uri, &schema.version)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let command = registry_command_context(&state, &auth, &headers).await?;
+    admit_registry_command(&state, &command, subject.clone()).await?;
+    let record =
+        PublicSchemaRecord::new(schema, body.definition, command.identity.principal.clone())
+            .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let data = serde_json::json!({
+        "schema_uri": record.schema.uri.as_str(),
+        "schema_version": record.schema.version,
+        "content_digest": record.content_digest,
+    });
+    let event = registry_event(
+        command,
+        PUBLIC_SCHEMA_REGISTERED_V1,
+        "public-schema-registered",
+        subject,
+        data.clone(),
+        mv_core::canonical_json_sha256(&data),
+    )?;
+    let registration = state
+        .engine
+        .register_public_schema(record, event)
+        .await
+        .map_err(map_registry_error)?;
+    Ok((
+        if registration.newly_registered {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(RegistryRegistrationView {
+            record: registration.record,
+            newly_registered: registration.newly_registered,
+        }),
+    ))
+}
+
+/// `GET /api/v1/schemas/{name}/versions/{version}`.
+pub(crate) async fn get_public_schema(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path((name, version)): Path<(String, String)>,
+) -> Result<Json<PublicSchemaRecord>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let reference = SchemaReference::new(
+        StableUri::schema(&name).map_err(|err| (StatusCode::BAD_REQUEST, err))?,
+        version,
+    )
+    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let record = state
+        .engine
+        .get_public_schema(&reference)
+        .await
+        .map_err(map_registry_error)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                "public schema version not found".into(),
+            )
+        })?;
+    Ok(Json(record))
+}
+
+/// `GET /api/v1/schemas/{name}/versions`.
+pub(crate) async fn list_public_schema_versions(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<PublicSchemaRecord>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let schema_uri = StableUri::schema(&name).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    Ok(Json(
+        state
+            .engine
+            .list_public_schema_versions(&schema_uri)
+            .await
+            .map_err(map_registry_error)?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RegisterSourceBindingRequest {
+    pub resource_uri: StableUri,
+    pub external_system: String,
+    pub external_account_id: String,
+    pub external_object_id: String,
+    pub authoritative_source: StableUri,
+    pub provenance_ref: StableUri,
+    pub authoritative_fields: Option<Vec<String>>,
+    pub sync_direction: Option<SyncDirection>,
+    pub last_seen_version: Option<String>,
+    pub last_seen_at: Option<chrono::DateTime<Utc>>,
+    pub last_sync_cursor: Option<String>,
+    pub content_hash: Option<String>,
+    pub materialization_mode: Option<MaterializationMode>,
+    pub freshness: Option<SourceFreshness>,
+    pub conflict_policy: Option<SourceConflictPolicy>,
+    pub deletion_policy: Option<SourceDeletionPolicy>,
+    pub retention_class: Option<RetentionClass>,
+    pub sensitivity: Option<Sensitivity>,
+}
+
+/// `POST /api/v1/source-bindings` — register one governed source mapping.
+pub(crate) async fn register_source_binding(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<RegisterSourceBindingRequest>,
+) -> Result<(StatusCode, Json<RegistryRegistrationView<SourceBinding>>), (StatusCode, String)> {
+    require_admin(&auth)?;
+    let command = registry_command_context(&state, &auth, &headers).await?;
+    let local_node_id = command.local_node_id;
+    let binding_id = Uuid::new_v5(
+        &local_node_id,
+        format!(
+            "mindvault:rest-source-binding:v1:{}:{}",
+            command.identity.principal.as_str(),
+            command.idempotency_key.as_str()
+        )
+        .as_bytes(),
+    );
+    let mut record = SourceBinding::new(
+        body.resource_uri,
+        StableUri::node(local_node_id),
+        body.external_system,
+        body.external_account_id,
+        body.external_object_id,
+        body.authoritative_source,
+        body.provenance_ref,
+    )
+    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    record.binding_id = binding_id;
+    if let Some(value) = body.authoritative_fields {
+        record.authoritative_fields = value;
+    }
+    if let Some(value) = body.sync_direction {
+        record.sync_direction = value;
+    }
+    record.last_seen_version = body.last_seen_version;
+    record.last_seen_at = body.last_seen_at;
+    record.last_sync_cursor = body.last_sync_cursor;
+    record.content_hash = body.content_hash;
+    if let Some(value) = body.materialization_mode {
+        record.materialization_mode = value;
+    }
+    if let Some(value) = body.freshness {
+        record.freshness = value;
+    }
+    if let Some(value) = body.conflict_policy {
+        record.conflict_policy = value;
+    }
+    if let Some(value) = body.deletion_policy {
+        record.deletion_policy = value;
+    }
+    if let Some(value) = body.retention_class {
+        record.retention_class = value;
+    }
+    if let Some(value) = body.sensitivity {
+        record.sensitivity = value;
+    }
+    record
+        .validate()
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let subject = StableUri::source_binding(local_node_id, record.binding_id);
+    admit_registry_command(&state, &command, subject.clone()).await?;
+    // Digest every semantic command field without persisting sensitive provider
+    // identifiers in the public event body. This makes same-key reuse with any
+    // changed registration term fail closed while keeping the outbox minimal.
+    let command_payload = serde_json::json!({
+        "binding_id": record.binding_id,
+        "revision": record.revision,
+        "resource_uri": record.resource_uri,
+        "context_node": record.context_node,
+        "external_system": record.external_system,
+        "external_account_id": record.external_account_id,
+        "external_object_id": record.external_object_id,
+        "authoritative_source": record.authoritative_source,
+        "authoritative_fields": record.authoritative_fields,
+        "sync_direction": record.sync_direction,
+        "last_seen_version": record.last_seen_version,
+        "last_seen_at": record.last_seen_at,
+        "last_sync_cursor": record.last_sync_cursor,
+        "content_hash": record.content_hash,
+        "materialization_mode": record.materialization_mode,
+        "freshness": record.freshness,
+        "conflict_policy": record.conflict_policy,
+        "deletion_policy": record.deletion_policy,
+        "retention_class": record.retention_class,
+        "sensitivity": record.sensitivity,
+        "provenance_ref": record.provenance_ref,
+        "status": record.status,
+        "supersedes_binding_id": record.supersedes_binding_id,
+    });
+    let payload_digest = mv_core::canonical_json_sha256(&command_payload);
+    let data = serde_json::json!({
+        "binding_id": record.binding_id,
+        "resource_uri": record.resource_uri.as_str(),
+        "external_system": record.external_system,
+        "materialization_mode": record.materialization_mode.as_str(),
+    });
+    let event = registry_event(
+        command,
+        SOURCE_BINDING_REGISTERED_V1,
+        "source-binding-registered",
+        subject,
+        data,
+        payload_digest,
+    )?;
+    let registration = state
+        .engine
+        .register_source_binding(record, event)
+        .await
+        .map_err(map_registry_error)?;
+    Ok((
+        if registration.newly_registered {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(RegistryRegistrationView {
+            record: registration.record,
+            newly_registered: registration.newly_registered,
+        }),
+    ))
+}
+
+pub(crate) async fn get_source_binding(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<SourceBinding>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let record = state
+        .engine
+        .get_source_binding(id)
+        .await
+        .map_err(map_registry_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Source Binding not found".into()))?;
+    Ok(Json(record))
+}
+
+pub(crate) async fn list_source_bindings(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<SourceBinding>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    Ok(Json(
+        state
+            .engine
+            .list_source_bindings()
+            .await
+            .map_err(map_registry_error)?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RegisterContextNodeRequest {
+    pub node_id: Uuid,
+    pub node_type: ContextNodeType,
+    pub owner_actor_id: StableUri,
+    pub governing_node_id: StableUri,
+    pub display_name: String,
+    #[serde(default)]
+    pub capabilities: Vec<ContextCapability>,
+    #[serde(default)]
+    pub supported_protocols: Vec<mv_core::ContextProtocolProfile>,
+    #[serde(default)]
+    pub supported_schema_versions: Vec<SchemaReference>,
+    #[serde(default)]
+    pub public_keys: Vec<ContextNodePublicKey>,
+    #[serde(default)]
+    pub endpoints: Vec<ContextNodeEndpoint>,
+    #[serde(default)]
+    pub data_residency: Vec<String>,
+}
+
+/// `POST /api/v1/context-nodes` — register an untrusted discovery descriptor.
+pub(crate) async fn register_context_node(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<RegisterContextNodeRequest>,
+) -> Result<
+    (
+        StatusCode,
+        Json<RegistryRegistrationView<ContextNodeRecord>>,
+    ),
+    (StatusCode, String),
+> {
+    require_admin(&auth)?;
+    let manifest = ContextCapabilityManifest::new(
+        body.capabilities,
+        body.supported_protocols,
+        body.supported_schema_versions,
+    )
+    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let mut record = ContextNodeRecord::discovered(
+        body.node_id,
+        body.node_type,
+        body.owner_actor_id,
+        body.governing_node_id,
+        body.display_name,
+        manifest,
+    )
+    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    record.public_keys = body.public_keys;
+    record.endpoints = body.endpoints;
+    record.data_residency = body.data_residency;
+    record
+        .validate()
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let subject = record.node_uri.clone();
+    let command = registry_command_context(&state, &auth, &headers).await?;
+    admit_registry_command(&state, &command, subject.clone()).await?;
+    let data = serde_json::json!({
+        "node_id": record.node_id,
+        "revision": record.revision,
+        "node_type": record.node_type.as_str(),
+        "status": record.status.as_str(),
+        "record_digest": record.semantic_digest(),
+        "capability_digest": record.capability_manifest.content_digest,
+    });
+    let event = registry_event(
+        command,
+        CONTEXT_NODE_REGISTERED_V1,
+        "context-node-registered",
+        subject,
+        data,
+        record.semantic_digest(),
+    )?;
+    let registration = state
+        .engine
+        .register_context_node(record, event)
+        .await
+        .map_err(map_registry_error)?;
+    Ok((
+        if registration.newly_registered {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(RegistryRegistrationView {
+            record: registration.record,
+            newly_registered: registration.newly_registered,
+        }),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ListContextNodesQuery {
+    pub status: Option<ContextNodeStatus>,
+}
+
+pub(crate) async fn get_context_node(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ContextNodeRecord>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let record = state
+        .engine
+        .get_context_node(id)
+        .await
+        .map_err(map_registry_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Context Node not found".into()))?;
+    Ok(Json(record))
+}
+
+pub(crate) async fn list_context_nodes(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ListContextNodesQuery>,
+) -> Result<Json<Vec<ContextNodeRecord>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    Ok(Json(
+        state
+            .engine
+            .list_context_nodes(query.status)
+            .await
+            .map_err(map_registry_error)?,
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Authority Grant issuance and lifecycle (IK-001b)
 // ---------------------------------------------------------------------------
 
@@ -430,7 +961,11 @@ pub(crate) struct AuthorityGrantView {
     pub capabilities: Vec<String>,
     pub sensitivity_ceiling: String,
     pub retention_ceiling: String,
+    pub allow_redistribution: bool,
+    pub allow_model_training: bool,
     pub purpose: String,
+    pub parent_grant_id: Option<Uuid>,
+    pub delegation_depth_remaining: u8,
     pub status: String,
     pub status_reason: Option<String>,
     pub not_before: String,
@@ -462,7 +997,11 @@ impl AuthorityGrantView {
                 .collect(),
             sensitivity_ceiling: grant.sensitivity_ceiling.as_str().to_string(),
             retention_ceiling: grant.retention_ceiling.as_str().to_string(),
+            allow_redistribution: grant.allow_redistribution,
+            allow_model_training: grant.allow_model_training,
             purpose: grant.purpose.clone(),
+            parent_grant_id: grant.parent_grant_id,
+            delegation_depth_remaining: grant.delegation_depth_remaining,
             status: grant.status.as_str().to_string(),
             status_reason: grant.status_reason.clone(),
             not_before: grant.not_before.to_rfc3339(),
@@ -496,6 +1035,31 @@ pub(crate) struct IssueAuthorityGrantBody {
     /// Defaults to `durable` so a freshly issued Tool Grant can admit node creates.
     #[serde(default = "default_durable")]
     pub retention_ceiling: String,
+    #[serde(default)]
+    pub allow_redistribution: bool,
+    #[serde(default)]
+    pub allow_model_training: bool,
+    #[serde(default)]
+    pub delegation_depth_remaining: u8,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DelegateAuthorityGrantBody {
+    /// Full grantee principal URI. Mutually exclusive with `grantee_subject`.
+    pub grantee: Option<String>,
+    pub grantee_subject: Option<String>,
+    /// Omitted terms safely inherit the parent's exact boundary.
+    pub targets: Option<Vec<String>>,
+    pub capabilities: Option<Vec<String>>,
+    pub purpose: String,
+    pub not_before: Option<String>,
+    pub expires_at: Option<String>,
+    pub sensitivity_ceiling: Option<String>,
+    pub retention_ceiling: Option<String>,
+    pub allow_redistribution: Option<bool>,
+    pub allow_model_training: Option<bool>,
+    pub delegation_depth_remaining: Option<u8>,
     pub idempotency_key: String,
 }
 
@@ -525,6 +1089,8 @@ pub(crate) struct ListAuthorityGrantsQuery {
 fn map_grant_error(err: MvError) -> (StatusCode, String) {
     match &err {
         MvError::VaultSealed => (StatusCode::LOCKED, err.to_string()),
+        MvError::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
+        MvError::AccessDenied(_) => (StatusCode::FORBIDDEN, err.to_string()),
         MvError::InvalidInput(_) => (StatusCode::BAD_REQUEST, err.to_string()),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
@@ -536,6 +1102,38 @@ fn parse_kind(value: &str) -> Result<AuthorityGrantKind, (StatusCode, String)> {
 
 fn parse_capability(value: &str) -> Result<ContextCapability, (StatusCode, String)> {
     ContextCapability::from_str(value).map_err(|err| (StatusCode::BAD_REQUEST, err))
+}
+
+async fn resolve_grantee(
+    state: &AppState,
+    local_node_id: Uuid,
+    grantee: Option<&str>,
+    grantee_subject: Option<&str>,
+) -> Result<StableUri, (StatusCode, String)> {
+    match (grantee, grantee_subject) {
+        (Some(uri), None) => StableUri::parse(uri).map_err(|err| (StatusCode::BAD_REQUEST, err)),
+        (None, Some(subject)) => {
+            if subject.trim().is_empty() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "grantee_subject must not be empty".into(),
+                ));
+            }
+            state
+                .engine
+                .principal_for_subject(local_node_id, subject)
+                .await
+                .map_err(map_grant_error)
+        }
+        (None, None) => Err((
+            StatusCode::BAD_REQUEST,
+            "provide grantee or grantee_subject".into(),
+        )),
+        (Some(_), Some(_)) => Err((
+            StatusCode::BAD_REQUEST,
+            "provide only one of grantee or grantee_subject".into(),
+        )),
+    }
 }
 
 /// `POST /api/v1/authority-grants` — issue a Context or Tool Grant.
@@ -557,34 +1155,13 @@ pub(crate) async fn issue_authority_grant(
         .await
         .map_err(map_grant_error)?;
 
-    let grantee = match (&body.grantee, &body.grantee_subject) {
-        (Some(uri), None) => StableUri::parse(uri).map_err(|err| (StatusCode::BAD_REQUEST, err))?,
-        (None, Some(subject)) => {
-            if subject.trim().is_empty() {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    "grantee_subject must not be empty".into(),
-                ));
-            }
-            state
-                .engine
-                .principal_for_subject(local_node_id, subject)
-                .await
-                .map_err(map_grant_error)?
-        }
-        (None, None) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "provide grantee or grantee_subject".into(),
-            ));
-        }
-        (Some(_), Some(_)) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "provide only one of grantee or grantee_subject".into(),
-            ));
-        }
-    };
+    let grantee = resolve_grantee(
+        &state,
+        local_node_id,
+        body.grantee.as_deref(),
+        body.grantee_subject.as_deref(),
+    )
+    .await?;
 
     let kind = parse_kind(&body.kind)?;
     let targets = match body.targets {
@@ -640,11 +1217,148 @@ pub(crate) async fn issue_authority_grant(
             expires_at,
             sensitivity_ceiling,
             retention_ceiling,
+            allow_redistribution: body.allow_redistribution,
+            allow_model_training: body.allow_model_training,
+            delegation_depth_remaining: body.delegation_depth_remaining,
             idempotency_key,
         })
         .await
         .map_err(map_grant_error)?;
 
+    let status = if issuance.newly_issued {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((
+        status,
+        Json(AuthorityGrantView::from_grant(
+            &issuance.grant,
+            issuance.newly_issued,
+        )),
+    ))
+}
+
+/// `POST /api/v1/authority-grants/:id/delegate` — derive narrower authority.
+///
+/// The authenticated writer must resolve to the parent grantee. Omitted terms
+/// inherit the parent boundary, while remaining delegation depth defaults to
+/// one less. Domain and storage validation reject every widening attempt.
+pub(crate) async fn delegate_authority_grant(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(parent_grant_id): Path<Uuid>,
+    Json(body): Json<DelegateAuthorityGrantBody>,
+) -> Result<(StatusCode, Json<AuthorityGrantView>), (StatusCode, String)> {
+    authorize_write(&auth)?;
+    if body.purpose.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "purpose must not be empty".into()));
+    }
+
+    let parent = state
+        .engine
+        .get_authority_grant(parent_grant_id)
+        .await
+        .map_err(map_grant_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "authority grant not found".into()))?;
+    let local_node_id = parent.governing_node.context_node_uuid().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "invalid governing Context Node URI".into(),
+        )
+    })?;
+    let grantor = state
+        .engine
+        .principal_for_subject(
+            local_node_id,
+            auth.subject.as_deref().unwrap_or("local-system"),
+        )
+        .await
+        .map_err(map_grant_error)?;
+    let grantee = resolve_grantee(
+        &state,
+        local_node_id,
+        body.grantee.as_deref(),
+        body.grantee_subject.as_deref(),
+    )
+    .await?;
+
+    let targets = match body.targets {
+        Some(values) if !values.is_empty() => values
+            .into_iter()
+            .map(|value| StableUri::parse(value).map_err(|err| (StatusCode::BAD_REQUEST, err)))
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => {
+            return Err((StatusCode::BAD_REQUEST, "targets must not be empty".into()));
+        }
+        None => parent.targets.clone(),
+    };
+    let capabilities = match body.capabilities {
+        Some(values) if !values.is_empty() => values
+            .iter()
+            .map(|value| parse_capability(value))
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "capabilities must not be empty".into(),
+            ));
+        }
+        None => parent.capabilities.clone(),
+    };
+    let not_before = match body.not_before {
+        Some(value) => chrono::DateTime::parse_from_rfc3339(&value)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|err| (StatusCode::BAD_REQUEST, format!("not_before: {err}")))?,
+        None => Utc::now(),
+    };
+    let expires_at = match body.expires_at {
+        Some(value) => chrono::DateTime::parse_from_rfc3339(&value)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|err| (StatusCode::BAD_REQUEST, format!("expires_at: {err}")))?,
+        None => parent.expires_at,
+    };
+    let sensitivity_ceiling = match body.sensitivity_ceiling {
+        Some(value) => {
+            Sensitivity::from_str(&value).map_err(|err| (StatusCode::BAD_REQUEST, err))?
+        }
+        None => parent.sensitivity_ceiling,
+    };
+    let retention_ceiling = match body.retention_ceiling {
+        Some(value) => {
+            RetentionClass::from_str(&value).map_err(|err| (StatusCode::BAD_REQUEST, err))?
+        }
+        None => parent.retention_ceiling,
+    };
+    let idempotency_key = IdempotencyKey::parse(&body.idempotency_key)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+
+    let issuance = state
+        .engine
+        .delegate_authority_grant(DelegateAuthorityGrantRequest {
+            parent_grant_id,
+            grantor,
+            grantee,
+            targets,
+            capabilities,
+            purpose: body.purpose,
+            not_before,
+            expires_at,
+            sensitivity_ceiling,
+            retention_ceiling,
+            allow_redistribution: body
+                .allow_redistribution
+                .unwrap_or(parent.allow_redistribution),
+            allow_model_training: body
+                .allow_model_training
+                .unwrap_or(parent.allow_model_training),
+            delegation_depth_remaining: body
+                .delegation_depth_remaining
+                .unwrap_or_else(|| parent.delegation_depth_remaining.saturating_sub(1)),
+            idempotency_key,
+        })
+        .await
+        .map_err(map_grant_error)?;
     let status = if issuance.newly_issued {
         StatusCode::CREATED
     } else {

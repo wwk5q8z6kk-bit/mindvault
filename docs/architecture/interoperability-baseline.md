@@ -24,10 +24,10 @@ revisioned Context Node descriptors, and purpose-bound Context/Tool Grants.
 The outbox now also has a transport-neutral lease/retry/dead-letter lifecycle
 with immutable, attributable action receipts. A durable consumer inbox records
 idempotent admission, application leases and receipts, and local stream
-checkpoints. These components still do not share a live transport publisher,
-authenticated remote admission, CloudEvents
-profile, extension manifest, federated trust model, public grant admission
-boundary, or semantic portability contract.
+checkpoints. Authenticated REST now exposes the governed grant lifecycle and
+strictly narrowing delegation. These components still do not share a live
+transport publisher, authenticated remote admission, CloudEvents profile,
+extension manifest, federated trust model, or semantic portability contract.
 
 Existing components should be migrated behind the constitution’s contracts.
 They should not be relabeled as proof that the contracts already exist.
@@ -75,9 +75,9 @@ receipt contract.
 
 ### API access is not semantic interoperability
 
-OpenAPI and transport parity expose operations, but the governed schemas and
-Source Bindings currently have internal command/query contracts rather than
-public transport parity, and no explicit translation-loss policy exists. Two
+OpenAPI and transport parity expose operations. Governed schemas, Source
+Bindings, and discovered Context Nodes now have authenticated REST
+command/query contracts, but no explicit translation-loss policy exists. Two
 clients can still exchange JSON while disagreeing about identity, authority,
 freshness, or provenance.
 
@@ -131,16 +131,17 @@ The initial executable slice is documented in
 node identity, the versioned internal event envelope, atomic,
 principal-scoped idempotent node creation, immutable schema registration, and
 governed Source Binding registration and rebinding, revisioned Context Node
-descriptors, internal Context/Tool Grant issuance and lifecycle resolution,
+descriptors, authenticated Context/Tool Grant transport with narrowing delegation,
 the durable outbox dispatch state machine with immutable per-attempt action
 receipts, and a durable consumer inbox with application receipts and local
 stream checkpoints.
 
 It does not claim completion of the constitutional kernel. Governed Context
-Node remote trust proof, schema lifecycle commands, authenticated inbox
-transport admission, outbox transport publication, connector lifecycle,
-public registry and grant transports, admission enforcement, and conformance
-fixtures remain required before the end-to-end proof. A published receipt
+Node remote trust proof, authenticated inbox transport admission, connector
+lifecycle, and end-to-end conformance fixtures remain required before the
+end-to-end proof. Public registry registration now uses
+Tool Grant admission; authenticated remote publication remains separately
+gated. A published receipt
 currently proves acknowledgement by one declared destination, not downstream
 consumer application or global exactly-once delivery. Consumer checkpoints use
 local admission sequence numbers and therefore cannot detect gaps in a remote

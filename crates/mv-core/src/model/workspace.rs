@@ -7,6 +7,19 @@ use crate::workspace_path::WorkspacePathIssue;
 
 pub const WORKSPACE_DOCUMENT_PAYLOAD_SCHEMA_V1: &str = "mindvault.workspace-document/v1";
 pub const WORKSPACE_DESCRIPTOR_PAYLOAD_SCHEMA_V1: &str = "mindvault.workspace-descriptor/v1";
+pub const WORKSPACE_EVENT_PAYLOAD_SCHEMA_V1: &str = "mindvault.workspace-event/v1";
+pub const WORKSPACE_CONFLICT_PAYLOAD_SCHEMA_V1: &str = "mindvault.workspace-conflict/v1";
+
+/// The four conflict resolutions ratified by the workspace document contract
+/// (`knowledge-workspace-document-contract.md`: keep current, restore known
+/// revision, save the competing revision to a new portable path, or merge
+/// through an explicitly reviewed proposal).
+pub const WORKSPACE_CONFLICT_RESOLUTIONS_V1: [&str; 4] = [
+    "keep_current",
+    "restore_known_revision",
+    "save_competing_revision_to_new_path",
+    "merge_via_reviewed_proposal",
+];
 
 macro_rules! string_enum {
     (
@@ -174,6 +187,72 @@ string_enum! {
     }
 }
 
+string_enum! {
+    /// Actor categories recorded by the durable workspace journal.
+    pub enum WorkspaceEventActorKind {
+        User => "user",
+        System => "system",
+        Migration => "migration",
+        External => "external",
+        Plugin => "plugin",
+        Mcp => "mcp",
+        Automation => "automation",
+        AiProposal => "ai_proposal",
+    }
+}
+
+string_enum! {
+    /// Workspace operations recorded by the durable journal.
+    pub enum WorkspaceEventOperation {
+        Mount => "mount",
+        Scan => "scan",
+        Create => "create",
+        Update => "update",
+        Move => "move",
+        Trash => "trash",
+        Restore => "restore",
+        ExternalCreate => "external_create",
+        ExternalUpdate => "external_update",
+        ExternalMove => "external_move",
+        ExternalDelete => "external_delete",
+        ConflictResolve => "conflict_resolve",
+        MigrationStage => "migration_stage",
+        MigrationCommit => "migration_commit",
+        MigrationRollback => "migration_rollback",
+    }
+}
+
+string_enum! {
+    /// Lifecycle status of one durable workspace journal row.
+    pub enum WorkspaceEventStatus {
+        Prepared => "prepared",
+        Completed => "completed",
+        Aborted => "aborted",
+        Conflict => "conflict",
+    }
+}
+
+string_enum! {
+    /// Conflict categories detected at the workspace mutation boundary.
+    pub enum WorkspaceConflictKind {
+        StaleWrite => "stale_write",
+        PathCollision => "path_collision",
+        AmbiguousRename => "ambiguous_rename",
+        ExternalDivergence => "external_divergence",
+        UnsafePath => "unsafe_path",
+        RestoreCollision => "restore_collision",
+    }
+}
+
+string_enum! {
+    /// Review state of one workspace conflict row.
+    pub enum WorkspaceConflictState {
+        Open => "open",
+        Resolved => "resolved",
+        Dismissed => "dismissed",
+    }
+}
+
 /// Managed database record for a file-first knowledge workspace.
 ///
 /// Root locators and other sensitive descriptors remain inside
@@ -266,12 +345,180 @@ pub struct WorkspaceDocumentManifestUpdate {
 }
 
 /// Atomic manifest mutations produced by one authoritative filesystem scan.
+///
+/// `journal_events` are inserted in the same transaction as the manifest
+/// mutations so the state change and its durable journal row commit or roll
+/// back together (constitutional law 4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceManifestReconciliation {
     pub expected_workspace_revision: u64,
     pub workspace_replacement: KnowledgeWorkspace,
     pub document_inserts: Vec<KnowledgeWorkspaceDocument>,
     pub document_updates: Vec<WorkspaceDocumentManifestUpdate>,
+    pub journal_events: Vec<WorkspaceEvent>,
+}
+
+/// One document-level before/after content-hash pair in a journal payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceEventDocumentDelta {
+    pub document_id: Option<Uuid>,
+    pub relative_path: Option<String>,
+    pub before_hash: Option<String>,
+    pub after_hash: Option<String>,
+}
+
+/// Versioned payload stored in `workspace_events.event_payload`.
+///
+/// The canonical artifact boundary is the content hash: every journaled
+/// operation records the before/after content hashes it observed so recovery
+/// never has to guess which bytes a mutation saw.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceEventPayloadV1 {
+    pub schema: String,
+    pub summary: String,
+    pub documents: Vec<WorkspaceEventDocumentDelta>,
+    pub attributes: std::collections::BTreeMap<String, String>,
+}
+
+impl WorkspaceEventPayloadV1 {
+    pub fn new(summary: impl Into<String>) -> Self {
+        Self {
+            schema: WORKSPACE_EVENT_PAYLOAD_SCHEMA_V1.to_string(),
+            summary: summary.into(),
+            documents: Vec::new(),
+            attributes: std::collections::BTreeMap::new(),
+        }
+    }
+
+    pub fn has_supported_schema(&self) -> bool {
+        self.schema == WORKSPACE_EVENT_PAYLOAD_SCHEMA_V1
+    }
+}
+
+/// One durable workspace journal row.
+///
+/// Rows are append-only at this layer: `event_seq` is assigned by the
+/// manifest store as the next per-workspace sequence number, so any value
+/// set by the caller is ignored on insert.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceEvent {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub document_id: Option<Uuid>,
+    pub event_seq: u64,
+    pub correlation_id: Uuid,
+    pub actor_kind: WorkspaceEventActorKind,
+    pub actor_id: Option<String>,
+    pub operation: WorkspaceEventOperation,
+    pub status: WorkspaceEventStatus,
+    pub event_payload: Vec<u8>,
+    pub payload_format: WorkspaceManifestPayloadFormat,
+    pub prepared_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+impl WorkspaceEvent {
+    pub fn new(
+        workspace_id: Uuid,
+        document_id: Option<Uuid>,
+        correlation_id: Uuid,
+        actor_kind: WorkspaceEventActorKind,
+        operation: WorkspaceEventOperation,
+        status: WorkspaceEventStatus,
+        event_payload: Vec<u8>,
+        payload_format: WorkspaceManifestPayloadFormat,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::now_v7(),
+            workspace_id,
+            document_id,
+            event_seq: 0,
+            correlation_id,
+            actor_kind,
+            actor_id: None,
+            operation,
+            status,
+            event_payload,
+            payload_format,
+            prepared_at: now,
+            completed_at: (status != WorkspaceEventStatus::Prepared).then_some(now),
+        }
+    }
+
+    pub fn with_actor_id(mut self, actor_id: impl Into<String>) -> Self {
+        self.actor_id = Some(actor_id.into());
+        self
+    }
+}
+
+/// Versioned payload stored in `workspace_conflicts.conflict_payload`.
+///
+/// Carries the competing hashes and the detection evidence; the resolution
+/// menu is contract-fixed (`WORKSPACE_CONFLICT_RESOLUTIONS_V1`) and is
+/// rendered by the API rather than duplicated into every row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceConflictPayloadV1 {
+    pub schema: String,
+    pub relative_path: Option<String>,
+    pub expected_hash: Option<String>,
+    pub observed_hash: Option<String>,
+    pub evidence: String,
+}
+
+impl WorkspaceConflictPayloadV1 {
+    pub fn new(evidence: impl Into<String>) -> Self {
+        Self {
+            schema: WORKSPACE_CONFLICT_PAYLOAD_SCHEMA_V1.to_string(),
+            relative_path: None,
+            expected_hash: None,
+            observed_hash: None,
+            evidence: evidence.into(),
+        }
+    }
+
+    pub fn has_supported_schema(&self) -> bool {
+        self.schema == WORKSPACE_CONFLICT_PAYLOAD_SCHEMA_V1
+    }
+}
+
+/// One durable workspace conflict row awaiting or recording review.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceConflict {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub document_id: Option<Uuid>,
+    pub source_event_id: Option<Uuid>,
+    pub conflict_kind: WorkspaceConflictKind,
+    pub state: WorkspaceConflictState,
+    pub conflict_payload: Vec<u8>,
+    pub payload_format: WorkspaceManifestPayloadFormat,
+    pub created_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+impl WorkspaceConflict {
+    pub fn new(
+        workspace_id: Uuid,
+        document_id: Option<Uuid>,
+        source_event_id: Option<Uuid>,
+        conflict_kind: WorkspaceConflictKind,
+        conflict_payload: Vec<u8>,
+        payload_format: WorkspaceManifestPayloadFormat,
+    ) -> Self {
+        Self {
+            id: Uuid::now_v7(),
+            workspace_id,
+            document_id,
+            source_event_id,
+            conflict_kind,
+            state: WorkspaceConflictState::Open,
+            conflict_payload,
+            payload_format,
+            created_at: Utc::now(),
+            resolved_at: None,
+        }
+    }
 }
 
 #[cfg(test)]

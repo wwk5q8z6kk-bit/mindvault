@@ -6,11 +6,13 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use mv_core::{
     KnowledgeWorkspace, KnowledgeWorkspaceDocument, KnowledgeWorkspaceManifestStore,
-    KnowledgeWorkspaceState, MvError, MvResult, PortableWorkspacePathPolicy,
-    WorkspaceDescriptorPayloadV1, WorkspaceDocumentContentStatus, WorkspaceDocumentLifecycle,
-    WorkspaceDocumentManifestUpdate, WorkspaceDocumentPayloadV1, WorkspaceFileIdentityHint,
-    WorkspaceManifestPayloadFormat, WorkspaceManifestReconciliation, WorkspacePathAssessment,
-    WorkspaceProjectionState,
+    KnowledgeWorkspaceState, MvError, MvResult, PortableWorkspacePathPolicy, WorkspaceConflict,
+    WorkspaceConflictPayloadV1, WorkspaceDescriptorPayloadV1, WorkspaceDocumentContentStatus,
+    WorkspaceDocumentLifecycle, WorkspaceDocumentManifestUpdate, WorkspaceDocumentPayloadV1,
+    WorkspaceEvent, WorkspaceEventActorKind, WorkspaceEventDocumentDelta,
+    WorkspaceEventOperation, WorkspaceEventPayloadV1, WorkspaceEventStatus,
+    WorkspaceFileIdentityHint, WorkspaceManifestPayloadFormat, WorkspaceManifestReconciliation,
+    WorkspacePathAssessment, WorkspaceProjectionState,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -403,6 +405,27 @@ pub fn decode_workspace_descriptor(
     Ok(descriptor)
 }
 
+pub fn decode_workspace_conflict_payload(
+    conflict: &WorkspaceConflict,
+) -> MvResult<WorkspaceConflictPayloadV1> {
+    if conflict.payload_format != WorkspaceManifestPayloadFormat::JsonV1 {
+        return Err(MvError::InvalidInput(
+            "workspace conflict requires a decrypted json-v1 view".into(),
+        ));
+    }
+    let payload =
+        serde_json::from_slice::<WorkspaceConflictPayloadV1>(&conflict.conflict_payload)
+            .map_err(|error| {
+                MvError::InvalidInput(format!("workspace conflict payload is invalid: {error}"))
+            })?;
+    if !payload.has_supported_schema() {
+        return Err(MvError::InvalidInput(
+            "workspace conflict payload schema is unsupported".into(),
+        ));
+    }
+    Ok(payload)
+}
+
 pub fn build_workspace_tree(
     workspace: &KnowledgeWorkspace,
     manifest_documents: &[KnowledgeWorkspaceDocument],
@@ -563,6 +586,10 @@ pub struct WorkspaceReconciliationPlan {
     pub diagnostics: Vec<WorkspaceScanDiagnostic>,
     pub unchanged_documents: usize,
     pub renamed_documents: usize,
+    /// Before/after content hashes for every manifest mutation in the plan.
+    /// The reconciler records them in the durable journal row that shares the
+    /// reconciliation transaction.
+    pub journal_deltas: Vec<WorkspaceEventDocumentDelta>,
 }
 
 #[derive(Debug, Clone)]
@@ -599,18 +626,21 @@ where
         build_reconciliation_plan(workspace, existing, scan)
     }
 
+    /// Reconcile the manifest with the canonical filesystem, journaling the
+    /// scan in the same transaction as the manifest mutation (law 4).
     pub async fn reconcile(
         &self,
         workspace: &KnowledgeWorkspace,
         root: &Path,
+        correlation_id: uuid::Uuid,
     ) -> MvResult<WorkspaceReconciliationOutcome> {
         let plan = self.plan(workspace, root).await?;
         let inserted_documents = plan.manifest.document_inserts.len();
         let updated_documents = plan.manifest.document_updates.len();
-        let applied = self
-            .store
-            .apply_workspace_reconciliation(&plan.manifest)
-            .await?;
+        let journal_event = scan_journal_event(workspace.id, correlation_id, &plan)?;
+        let mut manifest = plan.manifest;
+        manifest.journal_events = vec![journal_event];
+        let applied = self.store.apply_workspace_reconciliation(&manifest).await?;
 
         Ok(WorkspaceReconciliationOutcome {
             applied,
@@ -622,6 +652,48 @@ where
             projection: crate::engine::WorkspaceProjectionOutcome::default(),
         })
     }
+}
+
+/// Build the durable journal row for one authoritative scan. The row commits
+/// with the reconciliation transaction, so a stale revision journals nothing.
+fn scan_journal_event(
+    workspace_id: uuid::Uuid,
+    correlation_id: uuid::Uuid,
+    plan: &WorkspaceReconciliationPlan,
+) -> MvResult<WorkspaceEvent> {
+    let mut payload =
+        WorkspaceEventPayloadV1::new("authoritative filesystem scan reconciled the manifest");
+    payload.documents = plan.journal_deltas.clone();
+    payload.attributes.insert(
+        "inserted_documents".to_string(),
+        plan.manifest.document_inserts.len().to_string(),
+    );
+    payload.attributes.insert(
+        "updated_documents".to_string(),
+        plan.manifest.document_updates.len().to_string(),
+    );
+    payload.attributes.insert(
+        "unchanged_documents".to_string(),
+        plan.unchanged_documents.to_string(),
+    );
+    payload.attributes.insert(
+        "renamed_documents".to_string(),
+        plan.renamed_documents.to_string(),
+    );
+    payload.attributes.insert(
+        "diagnostics".to_string(),
+        plan.diagnostics.len().to_string(),
+    );
+    Ok(WorkspaceEvent::new(
+        workspace_id,
+        None,
+        correlation_id,
+        WorkspaceEventActorKind::System,
+        WorkspaceEventOperation::Scan,
+        WorkspaceEventStatus::Completed,
+        serde_json::to_vec(&payload)?,
+        WorkspaceManifestPayloadFormat::JsonV1,
+    ))
 }
 
 pub fn build_reconciliation_plan(
@@ -643,6 +715,7 @@ pub fn build_reconciliation_plan(
     } = scan;
     let mut inserts = Vec::new();
     let mut updates = Vec::new();
+    let mut journal_deltas = Vec::new();
     let mut unchanged_documents = 0;
     let mut renamed_documents = 0;
     let mut matched_ids = HashSet::new();
@@ -697,6 +770,7 @@ pub fn build_reconciliation_plan(
         if let Some(existing) = by_token.get(observation.path_token.as_str()) {
             matched_ids.insert(existing.id);
             if let Some(update) = replacement_if_changed(existing, &observation, false)? {
+                journal_deltas.push(journal_delta_for_update(existing, &observation));
                 updates.push(update);
             } else {
                 unchanged_documents += 1;
@@ -721,6 +795,7 @@ pub fn build_reconciliation_plan(
                         MvError::Internal("rename replacement unexpectedly unchanged".into())
                     })?,
                 );
+                journal_deltas.push(journal_delta_for_update(existing, &observation));
                 renamed_documents += 1;
             }
             RenameCandidateMatch::Ambiguous {
@@ -739,10 +814,14 @@ pub fn build_reconciliation_plan(
                     Some(observation.payload.relative_path.clone()),
                     "stable document identity could not be selected without guessing".into(),
                 ));
-                inserts.push(document_from_observation(workspace.id, &observation)?);
+                let document = document_from_observation(workspace.id, &observation)?;
+                journal_deltas.push(journal_delta_for_insert(&document, &observation));
+                inserts.push(document);
             }
             RenameCandidateMatch::None => {
-                inserts.push(document_from_observation(workspace.id, &observation)?);
+                let document = document_from_observation(workspace.id, &observation)?;
+                journal_deltas.push(journal_delta_for_insert(&document, &observation));
+                inserts.push(document);
             }
         }
     }
@@ -771,6 +850,16 @@ pub fn build_reconciliation_plan(
                 Some("canonical file was not observed during reconciliation".into());
             replacement.document_payload = serde_json::to_vec(&payload)?;
         }
+        journal_deltas.push(WorkspaceEventDocumentDelta {
+            document_id: Some(existing.id),
+            relative_path: parsed_existing
+                .get(&existing.id)
+                .map(|payload| payload.relative_path.clone()),
+            before_hash: parsed_existing
+                .get(&existing.id)
+                .and_then(|payload| payload.content_hash.clone()),
+            after_hash: None,
+        });
         updates.push(WorkspaceDocumentManifestUpdate {
             expected_revision: existing.revision,
             replacement,
@@ -804,11 +893,44 @@ pub fn build_reconciliation_plan(
             workspace_replacement,
             document_inserts: inserts,
             document_updates: updates,
+            journal_events: Vec::new(),
         },
         diagnostics,
         unchanged_documents,
         renamed_documents,
+        journal_deltas,
     })
+}
+
+/// Journal delta for a document replaced by a scan observation: the before
+/// hash comes from the persisted manifest payload, the after hash from the
+/// observed canonical bytes.
+fn journal_delta_for_update(
+    existing: &KnowledgeWorkspaceDocument,
+    observation: &ScannedWorkspaceDocument,
+) -> WorkspaceEventDocumentDelta {
+    let before_hash = serde_json::from_slice::<WorkspaceDocumentPayloadV1>(&existing.document_payload)
+        .ok()
+        .and_then(|payload| payload.content_hash);
+    WorkspaceEventDocumentDelta {
+        document_id: Some(existing.id),
+        relative_path: Some(observation.payload.relative_path.clone()),
+        before_hash,
+        after_hash: observation.payload.content_hash.clone(),
+    }
+}
+
+/// Journal delta for a newly observed document: no prior known bytes.
+fn journal_delta_for_insert(
+    document: &KnowledgeWorkspaceDocument,
+    observation: &ScannedWorkspaceDocument,
+) -> WorkspaceEventDocumentDelta {
+    WorkspaceEventDocumentDelta {
+        document_id: Some(document.id),
+        relative_path: Some(observation.payload.relative_path.clone()),
+        before_hash: None,
+        after_hash: observation.payload.content_hash.clone(),
+    }
 }
 
 fn replacement_if_changed(
@@ -1157,7 +1279,10 @@ fn file_identity_hint(_metadata: &fs::Metadata) -> Option<WorkspaceFileIdentityH
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mv_core::{KnowledgeWorkspaceMode, WorkspaceManifestPayloadFormat};
+    use mv_core::{
+        KnowledgeWorkspaceMode, WorkspaceEventOperation, WorkspaceEventPayloadV1,
+        WorkspaceEventStatus, WorkspaceManifestPayloadFormat,
+    };
     use mv_storage::sqlite::SqliteNodeStore;
     use tempfile::tempdir;
 
@@ -1332,7 +1457,7 @@ mod tests {
         let reconciler = WorkspaceReconciler::new(&store, WorkspaceScanner::default());
 
         let first = reconciler
-            .reconcile(&workspace, directory.path())
+            .reconcile(&workspace, directory.path(), uuid::Uuid::now_v7())
             .await
             .unwrap();
         assert!(first.applied);
@@ -1354,7 +1479,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let renamed = reconciler
-            .reconcile(&current_workspace, directory.path())
+            .reconcile(&current_workspace, directory.path(), uuid::Uuid::now_v7())
             .await
             .unwrap();
 
@@ -1404,6 +1529,70 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn reconciliation_journals_the_scan_with_before_after_hashes() {
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("One.md"), b"first").unwrap();
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let workspace = mounted_workspace();
+        store.insert_knowledge_workspace(&workspace).await.unwrap();
+        let reconciler = WorkspaceReconciler::new(&store, WorkspaceScanner::default());
+
+        let correlation = uuid::Uuid::now_v7();
+        let first = reconciler
+            .reconcile(&workspace, directory.path(), correlation)
+            .await
+            .unwrap();
+        assert!(first.applied);
+
+        let events = store
+            .list_workspace_events(workspace.id, None, 100)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].operation, WorkspaceEventOperation::Scan);
+        assert_eq!(events[0].status, WorkspaceEventStatus::Completed);
+        assert_eq!(events[0].correlation_id, correlation);
+        let payload: WorkspaceEventPayloadV1 =
+            serde_json::from_slice(&events[0].event_payload).unwrap();
+        assert_eq!(payload.documents.len(), 1);
+        assert_eq!(
+            payload.documents[0].relative_path.as_deref(),
+            Some("One.md")
+        );
+        assert!(payload.documents[0].before_hash.is_none());
+        assert!(payload.documents[0].after_hash.is_some());
+
+        // An external edit journals the before/after content hashes.
+        fs::write(directory.path().join("One.md"), b"second").unwrap();
+        let current = store
+            .get_knowledge_workspace(workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let second = reconciler
+            .reconcile(&current, directory.path(), uuid::Uuid::now_v7())
+            .await
+            .unwrap();
+        assert!(second.applied);
+
+        let events = store
+            .list_workspace_events(workspace.id, None, 100)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        let payload: WorkspaceEventPayloadV1 =
+            serde_json::from_slice(&events[1].event_payload).unwrap();
+        let delta = payload
+            .documents
+            .iter()
+            .find(|delta| delta.relative_path.as_deref() == Some("One.md"))
+            .unwrap();
+        assert!(delta.before_hash.is_some());
+        assert!(delta.after_hash.is_some());
+        assert_ne!(delta.before_hash, delta.after_hash);
     }
 
     #[test]

@@ -32,6 +32,27 @@ pub struct LocalContextNodeRegistration {
     pub newly_registered: bool,
 }
 
+/// Outcome of a governed public-schema registration command.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PublicSchemaRegistration {
+    pub record: PublicSchemaRecord,
+    pub newly_registered: bool,
+}
+
+/// Outcome of a governed Source Binding registration command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceBindingRegistration {
+    pub record: SourceBinding,
+    pub newly_registered: bool,
+}
+
+/// Outcome of registering a newly discovered Context Node descriptor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextNodeRegistration {
+    pub record: ContextNodeRecord,
+    pub newly_registered: bool,
+}
+
 /// Outcome of [`MindVaultEngine::register_identity`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdentityRegistration {
@@ -75,6 +96,28 @@ pub struct IssueAuthorityGrantRequest {
     pub expires_at: chrono::DateTime<Utc>,
     pub sensitivity_ceiling: Sensitivity,
     pub retention_ceiling: RetentionClass,
+    pub allow_redistribution: bool,
+    pub allow_model_training: bool,
+    pub delegation_depth_remaining: u8,
+    pub idempotency_key: IdempotencyKey,
+}
+
+/// Parameters for deriving one strictly narrower grant from an existing parent.
+#[derive(Debug, Clone)]
+pub struct DelegateAuthorityGrantRequest {
+    pub parent_grant_id: Uuid,
+    pub grantor: StableUri,
+    pub grantee: StableUri,
+    pub targets: Vec<StableUri>,
+    pub capabilities: Vec<ContextCapability>,
+    pub purpose: String,
+    pub not_before: chrono::DateTime<Utc>,
+    pub expires_at: chrono::DateTime<Utc>,
+    pub sensitivity_ceiling: Sensitivity,
+    pub retention_ceiling: RetentionClass,
+    pub allow_redistribution: bool,
+    pub allow_model_training: bool,
+    pub delegation_depth_remaining: u8,
     pub idempotency_key: IdempotencyKey,
 }
 
@@ -215,6 +258,115 @@ impl MindVaultEngine {
         self.ensure_unsealed_for_node_io().await?;
         let local_node_id = self.store.nodes.local_context_node_id().await?;
         self.store.nodes.get_context_node(local_node_id).await
+    }
+
+    /// Register one immutable public schema version and its durable event.
+    pub async fn register_public_schema(
+        &self,
+        record: PublicSchemaRecord,
+        event: EventEnvelope,
+    ) -> MvResult<PublicSchemaRegistration> {
+        self.ensure_unsealed_for_node_io().await?;
+        let commit = self
+            .store
+            .nodes
+            .commit_public_schema_with_event(&record, &event)
+            .await?;
+        Ok(PublicSchemaRegistration {
+            record: commit.schema,
+            newly_registered: !commit.replayed,
+        })
+    }
+
+    /// Fetch one immutable public schema version.
+    pub async fn get_public_schema(
+        &self,
+        reference: &SchemaReference,
+    ) -> MvResult<Option<PublicSchemaRecord>> {
+        self.ensure_unsealed_for_node_io().await?;
+        self.store.nodes.get_public_schema(reference).await
+    }
+
+    /// List all registered versions for one stable public schema URI.
+    pub async fn list_public_schema_versions(
+        &self,
+        schema_uri: &StableUri,
+    ) -> MvResult<Vec<PublicSchemaRecord>> {
+        self.ensure_unsealed_for_node_io().await?;
+        self.store
+            .nodes
+            .list_public_schema_versions(schema_uri)
+            .await
+    }
+
+    /// Register one governed Source Binding and its durable event.
+    pub async fn register_source_binding(
+        &self,
+        record: SourceBinding,
+        event: EventEnvelope,
+    ) -> MvResult<SourceBindingRegistration> {
+        self.ensure_unsealed_for_node_io().await?;
+        let commit = self
+            .store
+            .nodes
+            .commit_source_binding_with_event(&record, &event)
+            .await?;
+        Ok(SourceBindingRegistration {
+            record: commit.binding,
+            newly_registered: !commit.replayed,
+        })
+    }
+
+    /// Fetch one Source Binding by stable identifier.
+    pub async fn get_source_binding(&self, binding_id: Uuid) -> MvResult<Option<SourceBinding>> {
+        self.ensure_unsealed_for_node_io().await?;
+        self.store.nodes.get_source_binding(binding_id).await
+    }
+
+    /// List the governed Source Binding registry.
+    pub async fn list_source_bindings(&self) -> MvResult<Vec<SourceBinding>> {
+        self.ensure_unsealed_for_node_io().await?;
+        self.store.nodes.list_source_bindings().await
+    }
+
+    /// Register one untrusted, discovered Context Node descriptor and its event.
+    pub async fn register_context_node(
+        &self,
+        record: ContextNodeRecord,
+        event: EventEnvelope,
+    ) -> MvResult<ContextNodeRegistration> {
+        self.ensure_unsealed_for_node_io().await?;
+        if record.status != ContextNodeStatus::Discovered
+            || record.trust_class != ContextNodeTrustClass::untrusted()
+        {
+            return Err(MvError::InvalidInput(
+                "public Context Node registration only accepts untrusted discoveries".into(),
+            ));
+        }
+        let commit = self
+            .store
+            .nodes
+            .commit_context_node_with_event(&record, &event)
+            .await?;
+        Ok(ContextNodeRegistration {
+            record: commit.context_node,
+            newly_registered: !commit.replayed,
+        })
+    }
+
+    /// Fetch one Context Node descriptor by stable identifier.
+    pub async fn get_context_node(&self, node_id: Uuid) -> MvResult<Option<ContextNodeRecord>> {
+        self.ensure_unsealed_for_node_io().await?;
+        self.store.nodes.get_context_node(node_id).await
+    }
+
+    /// List Context Node descriptors with an optional lifecycle filter.
+    pub async fn list_context_nodes(
+        &self,
+        status: Option<ContextNodeStatus>,
+    ) -> MvResult<Vec<ContextNodeRecord>> {
+        self.ensure_unsealed_for_node_io().await?;
+        self.store.nodes.list_context_nodes(status).await
     }
 
     fn identity_legacy_fallback_enabled() -> bool {
@@ -411,21 +563,105 @@ impl MindVaultEngine {
         // minting a rival grant whose digest would conflict.
         grant.grant_id = Uuid::new_v5(&local_node_id, request.idempotency_key.as_str().as_bytes());
         grant.grant_uri = StableUri::authority_grant(local_node_id, grant.grant_id);
+        grant.sensitivity_ceiling = request.sensitivity_ceiling;
+        grant.retention_ceiling = request.retention_ceiling;
+        grant.allow_redistribution = request.allow_redistribution;
+        grant.allow_model_training = request.allow_model_training;
+        grant.delegation_depth_remaining = request.delegation_depth_remaining;
+        grant.validate().map_err(MvError::InvalidInput)?;
+
+        self.commit_authority_grant_issuance(grant, request.idempotency_key)
+            .await
+    }
+
+    /// Derive a grant whose authority is a strict subset of an effective parent.
+    ///
+    /// The authenticated caller must resolve to the parent's grantee. The
+    /// storage transaction remains the final authority for complete-chain
+    /// effectiveness and subset validation, closing races with lifecycle
+    /// transitions between this read and commit.
+    pub async fn delegate_authority_grant(
+        &self,
+        request: DelegateAuthorityGrantRequest,
+    ) -> MvResult<AuthorityGrantIssuance> {
+        self.ensure_unsealed_for_node_io().await?;
+        let parent = self
+            .store
+            .nodes
+            .get_authority_grant(request.parent_grant_id)
+            .await?
+            .ok_or_else(|| MvError::NotFound("authority-grant parent does not exist".into()))?;
+        if parent.grantee != request.grantor {
+            return Err(MvError::AccessDenied(
+                "only the parent grant grantee may delegate its authority".into(),
+            ));
+        }
+
+        let mut grant = match parent.kind {
+            AuthorityGrantKind::Tool => AuthorityGrant::new_tool(
+                parent.governing_node.clone(),
+                request.grantor,
+                request.grantee,
+                request.targets,
+                request.capabilities,
+                request.purpose,
+                request.expires_at,
+            ),
+            AuthorityGrantKind::Context => AuthorityGrant::new_context(
+                parent.governing_node.clone(),
+                request.grantor,
+                request.grantee,
+                request.targets,
+                request.capabilities,
+                request.purpose,
+                request.expires_at,
+            ),
+        }
+        .map_err(MvError::InvalidInput)?;
+        let local_node_id = parent
+            .governing_node
+            .context_node_uuid()
+            .ok_or_else(|| MvError::InvalidInput("invalid governing Context Node URI".into()))?;
+        let identity_material = format!(
+            "authority-grant-delegation:{}:{}",
+            parent.grant_id,
+            request.idempotency_key.as_str()
+        );
+        grant.grant_id = Uuid::new_v5(&local_node_id, identity_material.as_bytes());
+        grant.grant_uri = StableUri::authority_grant(local_node_id, grant.grant_id);
+        grant.parent_grant_id = Some(parent.grant_id);
+        grant.not_before = request.not_before;
+        grant.sensitivity_ceiling = request.sensitivity_ceiling;
+        grant.retention_ceiling = request.retention_ceiling;
+        grant.allow_redistribution = request.allow_redistribution;
+        grant.allow_model_training = request.allow_model_training;
+        grant.delegation_depth_remaining = request.delegation_depth_remaining;
+        grant.validate().map_err(MvError::InvalidInput)?;
+
+        self.commit_authority_grant_issuance(grant, request.idempotency_key)
+            .await
+    }
+
+    async fn commit_authority_grant_issuance(
+        &self,
+        grant: AuthorityGrant,
+        idempotency_key: IdempotencyKey,
+    ) -> MvResult<AuthorityGrantIssuance> {
         if let Some(existing) = self.store.nodes.get_authority_grant(grant.grant_id).await? {
             return Ok(AuthorityGrantIssuance {
                 grant: existing,
                 newly_issued: false,
             });
         }
-        grant.sensitivity_ceiling = request.sensitivity_ceiling;
-        grant.retention_ceiling = request.retention_ceiling;
-        grant.validate().map_err(MvError::InvalidInput)?;
+        let node_uri = grant.governing_node.clone();
+        let grantor = grant.grantor.clone();
 
         let data = serde_json::json!({
             "grant_id": grant.grant_id,
             "grant_kind": grant.kind.as_str(),
             "grantee_uri": grant.grantee.as_str(),
             "governing_node_uri": grant.governing_node.as_str(),
+            "parent_grant_id": grant.parent_grant_id,
             "record_digest": grant.semantic_digest(),
         });
         let mut event = EventEnvelope::new(NewEventEnvelope {
@@ -441,7 +677,7 @@ impl MindVaultEngine {
             actor: grantor,
             correlation_id: Uuid::now_v7(),
             causation_id: None,
-            idempotency_key: request.idempotency_key,
+            idempotency_key,
             payload_digest: canonical_json_sha256(&data),
             sensitivity: Sensitivity::Internal,
             retention: RetentionClass::Durable,
@@ -1275,6 +1511,9 @@ mod tests {
                 expires_at: Utc::now() + Duration::days(1),
                 sensitivity_ceiling: Sensitivity::Internal,
                 retention_ceiling: RetentionClass::Durable,
+                allow_redistribution: false,
+                allow_model_training: false,
+                delegation_depth_remaining: 0,
                 idempotency_key: IdempotencyKey::parse("issue-tool-for-create").unwrap(),
             })
             .await
@@ -1308,6 +1547,9 @@ mod tests {
             expires_at: Utc::now() + Duration::days(1),
             sensitivity_ceiling: Sensitivity::Internal,
             retention_ceiling: RetentionClass::Durable,
+            allow_redistribution: false,
+            allow_model_training: false,
+            delegation_depth_remaining: 0,
             idempotency_key: IdempotencyKey::parse("issue-once").unwrap(),
         };
         let first = engine.issue_authority_grant(request.clone()).await.unwrap();
@@ -1334,6 +1576,9 @@ mod tests {
                 expires_at: Utc::now() + Duration::days(1),
                 sensitivity_ceiling: Sensitivity::Internal,
                 retention_ceiling: RetentionClass::Durable,
+                allow_redistribution: false,
+                allow_model_training: false,
+                delegation_depth_remaining: 0,
                 idempotency_key: IdempotencyKey::parse("issue-for-lifecycle").unwrap(),
             })
             .await
@@ -1468,6 +1713,9 @@ mod tests {
                 expires_at: Utc::now() + Duration::days(1),
                 sensitivity_ceiling: Sensitivity::Internal,
                 retention_ceiling: RetentionClass::Durable,
+                allow_redistribution: false,
+                allow_model_training: false,
+                delegation_depth_remaining: 0,
                 idempotency_key: IdempotencyKey::parse("issue-for-durable-admit").unwrap(),
             })
             .await

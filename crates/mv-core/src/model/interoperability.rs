@@ -15,6 +15,8 @@ pub const EVENT_TYPE_SCHEMA_EXTENSION: &str = "x-mindvault-event-type";
 const MAX_PUBLIC_SCHEMA_BYTES: usize = 1024 * 1024;
 pub const KNOWLEDGE_NODE_CREATED_V1: &str = "dev.mindvault.knowledge.node.created.v1";
 pub const PUBLIC_SCHEMA_REGISTERED_V1: &str = "dev.mindvault.schema.registered.v1";
+pub const PUBLIC_SCHEMA_LIFECYCLE_TRANSITIONED_V1: &str =
+    "dev.mindvault.schema.lifecycle.transitioned.v1";
 pub const SOURCE_BINDING_REGISTERED_V1: &str = "dev.mindvault.source-binding.registered.v1";
 pub const SOURCE_BINDING_REBOUND_V1: &str = "dev.mindvault.source-binding.rebound.v1";
 pub const CONTEXT_NODE_REGISTERED_V1: &str = "dev.mindvault.context-node.registered.v1";
@@ -558,6 +560,15 @@ interoperability_string_enum! {
     }
 }
 
+impl PublicSchemaLifecycle {
+    pub const fn can_transition_to(self, target: Self) -> bool {
+        matches!(
+            (self, target),
+            (Self::Active, Self::Deprecated) | (Self::Deprecated, Self::Withdrawn)
+        )
+    }
+}
+
 /// Immutable, content-addressed definition for one public schema version.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PublicSchemaRecord {
@@ -569,6 +580,10 @@ pub struct PublicSchemaRecord {
     pub owner: StableUri,
     pub created_at: DateTime<Utc>,
     pub deprecated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub withdrawn_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub replacement: Option<SchemaReference>,
 }
 
 impl PublicSchemaRecord {
@@ -586,6 +601,8 @@ impl PublicSchemaRecord {
             owner,
             created_at: Utc::now(),
             deprecated_at: None,
+            withdrawn_at: None,
+            replacement: None,
         };
         record.validate()?;
         Ok(record)
@@ -635,14 +652,71 @@ impl PublicSchemaRecord {
         if canonical_json_sha256(&self.definition) != self.content_digest {
             return Err("schema content digest does not match its canonical definition".into());
         }
-        match (self.lifecycle, self.deprecated_at) {
-            (PublicSchemaLifecycle::Active, Some(_)) => {
-                return Err("an active public schema cannot have a deprecation time".into())
+        match self.lifecycle {
+            PublicSchemaLifecycle::Active => {
+                if self.deprecated_at.is_some()
+                    || self.withdrawn_at.is_some()
+                    || self.replacement.is_some()
+                {
+                    return Err(
+                        "an active public schema cannot carry lifecycle migration metadata".into(),
+                    );
+                }
             }
-            (PublicSchemaLifecycle::Deprecated | PublicSchemaLifecycle::Withdrawn, None) => {
-                return Err("a non-active public schema requires a deprecation time".into())
+            PublicSchemaLifecycle::Deprecated => {
+                if self.deprecated_at.is_none() || self.withdrawn_at.is_some() {
+                    return Err(
+                        "a deprecated public schema requires only a deprecation time".into(),
+                    );
+                }
             }
-            _ => {}
+            PublicSchemaLifecycle::Withdrawn => {
+                let (Some(deprecated_at), Some(withdrawn_at), Some(replacement)) = (
+                    self.deprecated_at,
+                    self.withdrawn_at,
+                    self.replacement.as_ref(),
+                ) else {
+                    return Err(
+                        "a withdrawn public schema requires deprecation, withdrawal, and replacement metadata"
+                            .into(),
+                    );
+                };
+                if withdrawn_at < deprecated_at {
+                    return Err("schema withdrawal cannot precede deprecation".into());
+                }
+                if replacement == &self.schema {
+                    return Err("a withdrawn public schema cannot replace itself".into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Governed request to advance one immutable public schema version through its
+/// lifecycle. Authority and idempotency remain bound to the accompanying event
+/// envelope; this value captures the state transition and migration intent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicSchemaLifecycleCommand {
+    pub schema: SchemaReference,
+    pub target: PublicSchemaLifecycle,
+    pub replacement: Option<SchemaReference>,
+    pub reason: String,
+}
+
+impl PublicSchemaLifecycleCommand {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.target == PublicSchemaLifecycle::Active {
+            return Err("schema lifecycle commands cannot reactivate a version".into());
+        }
+        if self.reason.trim().is_empty() || self.reason.len() > 1024 {
+            return Err("schema lifecycle reason must be between 1 and 1024 bytes".into());
+        }
+        if self.replacement.as_ref() == Some(&self.schema) {
+            return Err("a public schema version cannot replace itself".into());
+        }
+        if self.target == PublicSchemaLifecycle::Withdrawn && self.replacement.is_none() {
+            return Err("schema withdrawal requires an explicit replacement version".into());
         }
         Ok(())
     }
@@ -3060,6 +3134,40 @@ mod tests {
         assert!(invalid_event_type
             .unwrap_err()
             .contains(EVENT_TYPE_SCHEMA_EXTENSION));
+    }
+
+    #[test]
+    fn public_schema_lifecycle_is_forward_only_and_backward_deserializable() {
+        assert!(PublicSchemaLifecycle::Active.can_transition_to(PublicSchemaLifecycle::Deprecated));
+        assert!(
+            PublicSchemaLifecycle::Deprecated.can_transition_to(PublicSchemaLifecycle::Withdrawn)
+        );
+        assert!(!PublicSchemaLifecycle::Active.can_transition_to(PublicSchemaLifecycle::Withdrawn));
+        assert!(!PublicSchemaLifecycle::Withdrawn.can_transition_to(PublicSchemaLifecycle::Active));
+
+        let schema = PublicSchemaRecord::new(
+            SchemaReference::new(StableUri::schema("lifecycle-test").unwrap(), "1.0.0").unwrap(),
+            serde_json::json!({
+                "$schema": JSON_SCHEMA_DRAFT_2020_12,
+                "type": "object",
+            }),
+            StableUri::parse("mindvault://governance/node").unwrap(),
+        )
+        .unwrap();
+        let mut legacy_json = serde_json::to_value(schema).unwrap();
+        legacy_json.as_object_mut().unwrap().remove("withdrawn_at");
+        legacy_json.as_object_mut().unwrap().remove("replacement");
+        let restored: PublicSchemaRecord = serde_json::from_value(legacy_json).unwrap();
+        assert!(restored.withdrawn_at.is_none());
+        assert!(restored.replacement.is_none());
+
+        let withdrawal = PublicSchemaLifecycleCommand {
+            schema: restored.schema.clone(),
+            target: PublicSchemaLifecycle::Withdrawn,
+            replacement: None,
+            reason: "migration complete".into(),
+        };
+        assert!(withdrawal.validate().unwrap_err().contains("replacement"));
     }
 
     #[test]

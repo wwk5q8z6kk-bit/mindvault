@@ -121,43 +121,43 @@ Do these first.
 
 #### DOC-001 — Retract `DEVELOPMENT_PLAN.md` "Phase 3: Complete" and `[x] Build federation engine`
 - **priority:** P0 — the claim directly contradicts a ratified release gate
-- **status:** not_started
+- **status:** verified
 - **mandate:** `FEDERATION_THREAT_MODEL.md:22` — "Production federation must remain disabled until the high-priority release gates"; contradicted by `DEVELOPMENT_PLAN.md:441` ("**Status:** Complete") and `DEVELOPMENT_PLAN.md:452` ("[x] Build federation engine (peer management)")
 - **governing_authority:** Law 13 (`INTEROPERABILITY_CONSTITUTION.md:73`)
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (437-462)
 - **acceptance:** `grep -n "Status:\*\* Complete" DEVELOPMENT_PLAN.md` returns nothing in the Remaining Work section; federation line reads `[~] Federation engine — experimental transport only; production disabled per FEDERATION_THREAT_MODEL.md:22`
-- **evidence:** —
+- **evidence:** `grep -n "Status:\*\* Complete" DEVELOPMENT_PLAN.md` → no matches; federation line reads as specified (DEVELOPMENT_PLAN.md:552) — 2026-08-21, uncommitted working tree
 
 #### DOC-002 — Extend the `DEVELOPMENT_PLAN.md` migrations table from 025 to 037
 - **priority:** P0 — schema inventory is used to plan migrations; 12 rows missing
-- **status:** not_started
+- **status:** verified
 - **mandate:** `DEVELOPMENT_PLAN.md:391-415` ends at "| 025 | Public shares | Ready |"; `migrations/` contains 026-037
 - **governing_authority:** feature-completeness §1 (`INTEROPERABILITY_CONSTITUTION.md:116`)
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (391-415, and 344 "all 25 migrations")
 - **acceptance:** `ls migrations/*.sql | wc -l` equals the row count of the migrations table; rows exist for 026 node_comments, 027 mcp_connectors, 028 sealed_node_payloads, 029 key_epoch_reencryption, 030 conversation_turn_sources, 031 knowledge_workspace_manifest, 032 interoperability_kernel, 033 governed_interoperability_registries, 034 context_node_registry, 035 authority_grants, 036 outbox_dispatch_and_action_receipts, 037 consumer_inbox_checkpoints
-- **evidence:** —
+- **evidence:** `ls migrations/*.sql | wc -l` = 41 = migrations table row count (rows 001-041, incl. 038-040 and 041 marked Uncommitted; stale "all 25 migrations" claims corrected) — 2026-08-21, uncommitted working tree
 
 #### DOC-003 — Replace `DEVELOPMENT_PLAN.md:351`'s definition of "Complete"
 - **priority:** P0 — this sentence is the root cause of DOC-001 and DOC-009
-- **status:** not_started
+- **status:** verified
 - **mandate:** `DEVELOPMENT_PLAN.md:351` — "'Complete' here means code is present in the repository"
 - **governing_authority:** feature-completeness §10 (`INTEROPERABILITY_CONSTITUTION.md:125`) — "automated contract and conformance tests"
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (349-351)
 - **acceptance:** line 351 states that completeness for any capability governed by the constitution means the feature-completeness contract is satisfied and points to `IMPLEMENTATION_BACKLOG.md`; the phrase "code is present in the repository" no longer appears
-- **evidence:** —
+- **evidence:** phrase "code is present in the repository" absent (verified incl. across line wraps); DEVELOPMENT_PLAN.md:421-424 defines completeness via the ten-point feature-completeness contract and points to `IMPLEMENTATION_BACKLOG.md` — 2026-08-21, uncommitted working tree
 
 #### DOC-004 — Register the four unregistered contracts in the constitution
 - **priority:** P0 — unregistered contracts are invisible to anyone following the constitution
-- **status:** not_started
+- **status:** verified
 - **mandate:** `INTEROPERABILITY_CONSTITUTION.md:171-177` lists 7 supporting contracts; missing `ACTION_RECEIPT_MODEL.md`, `AUTHORITY_GRANT_MODEL.md`, `CONSUMER_INBOX_MODEL.md`, `interoperability-kernel-v1.md`
 - **governing_authority:** `INTEROPERABILITY_CONSTITUTION.md:169` "Supporting contracts"
 - **blocked_by:** none
 - **files:** `INTEROPERABILITY_CONSTITUTION.md` (169-177)
 - **acceptance:** all 11 files under `docs/architecture/` referenced by ADR 011 or the kernel doc appear in the list; `for f in $(grep -o 'docs/architecture/[A-Za-z_-]*\.md' INTEROPERABILITY_CONSTITUTION.md); do test -f "$f"; done` passes
-- **evidence:** —
+- **evidence:** acceptance loop passes (no missing files); the four contracts are listed at INTEROPERABILITY_CONSTITUTION.md:178-181 — registrations already present in working tree, acceptance re-run 2026-08-21, uncommitted working tree
 
 #### DOC-005 — Add `AUTHORITY_GRANT_MODEL.md` to `docs/README.md`
 - **priority:** P1 — the doc index registers 12 of 13 new contracts
@@ -171,13 +171,13 @@ Do these first.
 
 #### DOC-006 — Register `IMPLEMENTATION_BACKLOG.md` in the constitution
 - **priority:** P0 — without this the backlog is an orphan and repeats the drift it exists to prevent
-- **status:** not_started
+- **status:** verified
 - **mandate:** `INTEROPERABILITY_CONSTITUTION.md:169-177` "Supporting contracts"
 - **governing_authority:** `INTEROPERABILITY_CONSTITUTION.md:28-37` priority and conflict rule
 - **blocked_by:** none
 - **files:** `INTEROPERABILITY_CONSTITUTION.md`
 - **acceptance:** `grep -c IMPLEMENTATION_BACKLOG INTEROPERABILITY_CONSTITUTION.md` ≥ 1
-- **evidence:** —
+- **evidence:** `grep -c IMPLEMENTATION_BACKLOG INTEROPERABILITY_CONSTITUTION.md` = 1 (Execution tracking section, INTEROPERABILITY_CONSTITUTION.md:187) — already present in working tree, acceptance re-run 2026-08-21, uncommitted working tree
 
 #### DOC-007 — Point `DEVELOPMENT_PLAN.md` at the backlog for execution tracking
 - **priority:** P1 — readers currently land on the all-`[x]` board first
@@ -363,34 +363,34 @@ interoperability kernel."
 - **evidence:** `DeadLetterRedriveCommand` + `redrive_outbox_dead_letter` / `redrive_consumer_inbox_dead_letter` on `InteroperabilityStore`; admin REST `POST /api/v1/outbox/events/:id/redrive` and `POST /api/v1/consumer-inbox/events/:id/redrive`. Observed: 2 `dead_letter_redrive` storage tests passed — new event carries `causation_id` to the dead letter; terminal action receipt and consumer checkpoint JSON unchanged after redrive and idempotent replay.
 
 #### IK-008 — Schema lifecycle commands and replacement migration guard
-- **priority:** P1 — transitions deliberately blocked pending this contract
-- **status:** not_started
-- **mandate:** `docs/architecture/interoperability-kernel-v1.md:75-76` — "Lifecycle transitions are deliberately blocked until they receive their own governed command/event contract and replacement migration guard"
+- **priority:** P1 — governed retirement and replacement safety are registry invariants
+- **status:** verified
+- **mandate:** `docs/architecture/interoperability-kernel-v1.md:77-86` — lifecycle transitions require an atomic command/event contract, an active replacement, and a pending-outbox guard
 - **governing_authority:** Law 14 (`:75`)
 - **blocked_by:** none
-- **files:** `migrations/033_governed_interoperability_registries.sql` successor, `crates/mv-core/src/model/interoperability.rs`, `crates/mv-storage/src/sqlite.rs`
+- **files:** `migrations/041_public_schema_lifecycle.sql`, `crates/mv-core/src/model/interoperability.rs`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`
 - **acceptance:** `cargo test -p mv-storage -- schema_lifecycle` — a schema can be deprecated/withdrawn only through the governed command with an emitted event; withdrawing a schema with live outbox references fails closed
-- **evidence:** —
+- **evidence:** Migration `041_public_schema_lifecycle.sql`; `PublicSchemaLifecycleCommand`; `InteroperabilityStore::transition_public_schema_lifecycle_with_event`; registered `dev.mindvault.schema.lifecycle.transitioned.v1` schema; SQLite enforcement for immutable definitions, `active -> deprecated -> withdrawn`, active replacement, pending-outbox guard, and matching governance event. Observed: both focused `schema_lifecycle` tests passed, all 121 `mv-storage` tests passed, `cargo check --workspace` passed, and all 1,065 workspace tests passed.
 
 #### IK-009 — Public registry transports (schemas, bindings, Context Nodes)
 - **priority:** P1 — release gate before the end-to-end proof
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/architecture/interoperability-baseline.md:139-141` — "public registry and grant transports, admission enforcement, and conformance fixtures remain required before the end-to-end proof"; `interoperability-kernel-v1.md:17` — "public registry APIs"
 - **governing_authority:** Law 2 (`:46`); feature-completeness §2-3 (`:117-118`)
 - **blocked_by:** IK-001 (declared)
-- **files:** new `crates/mv-server/src/rest/interoperability.rs`, `crates/mv-server/src/rest.rs`, `crates/mv-server/src/openapi.rs`
-- **acceptance:** `cargo test -p mv-server -- registry_api` — schema, Source Binding, and Context Node registration/query are reachable over REST with grant admission; the routes appear in generated OpenAPI. *(Verified today: zero `/api/v1/schemas|source-bindings|context-nodes|grants` routes exist.)*
-- **evidence:** —
+- **files:** `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-engine/src/engine/interoperability_ops.rs`, `crates/mv-server/src/rest/interoperability.rs`, `crates/mv-server/src/rest.rs`, `crates/mv-server/src/openapi.rs`, `crates/mv-server/tests/api_integration.rs`
+- **acceptance:** `cargo test -p mv-server -- registry_api` — schema, Source Binding, and Context Node registration/query are reachable over REST with grant admission; the routes appear in generated OpenAPI.
+- **evidence:** Seven authenticated REST paths now expose immutable schema versions, governed Source Bindings, and untrusted discovered Context Nodes. Writes require admin authorization and pass through Tool Grant admission; reads retain normal read authorization. Source Binding identity is stable across exact idempotent retries. Observed: both focused `registry_api` integration tests passed, `cargo check -p mv-server --tests` and `cargo check --workspace` passed, and all 1,068 workspace tests passed.
 
 #### IK-010 — Public grant transport
 - **priority:** P1 — named a later integration gate
-- **status:** not_started
+- **status:** **verified** (2026-08-03)
 - **mandate:** `AUTHORITY_GRANT_MODEL.md:96-97` — "public grant APIs, and signatures remain later integration gates"
 - **governing_authority:** Law 7 (`:60`), Law 8 (`:62`)
 - **blocked_by:** IK-001, IK-009 (inferred)
-- **files:** `crates/mv-server/src/rest/interoperability.rs`, `crates/mv-server/src/openapi.rs`
+- **files:** `crates/mv-engine/src/engine/mod.rs`, `crates/mv-engine/src/engine/interoperability_ops.rs`, `crates/mv-server/src/rest/interoperability.rs`, `crates/mv-server/src/rest.rs`, `crates/mv-server/src/openapi.rs`, `crates/mv-server/tests/api_integration.rs`
 - **acceptance:** `cargo test -p mv-server -- grant_api` — issue, list, delegate, suspend, revoke over REST; a delegation attempt that widens targets, capabilities, validity, sensitivity, retention, or depth is rejected
-- **evidence:** —
+- **evidence:** Authenticated REST and generated OpenAPI now expose issue/list/get/delegate/suspend/revoke/resume. Root issue and lifecycle mutation remain admin-only; delegation requires write authorization and binds the caller's governed principal to the parent grantee. The engine constructs the child and SQLite revalidates the effective parent chain and strict subset atomically. Both focused `grant_api` integration tests passed, `cargo check -p mv-server --tests` and `cargo check --workspace` passed, and all 1,070 workspace tests passed with zero failures.
 
 #### IK-011 — Grant retention-ceiling enforcement at use time
 - **priority:** P1 — named a later integration gate
@@ -1053,13 +1053,13 @@ open, and migration 031 shipped schema for five tables that nothing reads.
 
 #### WS-001 — `workspace_events` has no reader or writer
 - **priority:** P0 — Law 4 requires durable events for workspace mutations; the table exists to satisfy it and is empty of code
-- **status:** not_started
+- **status:** verified
 - **mandate:** `migrations/031_knowledge_workspace_manifest.sql:70` creates the table; the only Rust reference is a table-existence assertion at `crates/mv-storage/src/sqlite.rs:9980`; `knowledge-workspace-baseline.md:41` — "add mandatory durable workspace mutation journal"
 - **governing_authority:** Law 4 (`:52`); ADR 009 §Costs (`docs/adr/009-workspace-identity-and-mutation-boundary.md:211-212`) — "Existing audit and node-version implementations are insufficient for the durable workspace journal"
 - **blocked_by:** none
 - **files:** `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-engine/src/engine/workspace_ops.rs`
 - **acceptance:** `cargo test -p mv-storage -- workspace_event_journal` — every mount, reconcile, projection, and (later) mutation writes a journal row with correlation ID and before/after hashes; the row survives restart
-- **evidence:** —
+- **evidence:** `cargo test -p mv-storage -- workspace_event_journal` → 3 passed, 0 failed (sequence assignment + restart survival, stale-reconciliation rollback, invalid-row rejection); scan events commit in the reconciliation transaction, mount/projection rows carry correlation IDs and per-document before/after hashes — 2026-08-21, uncommitted working tree
 
 #### WS-002 — `workspace_document_versions` has no reader or writer
 - **priority:** P0 — canonical rollback depends on it
@@ -1073,13 +1073,13 @@ open, and migration 031 shipped schema for five tables that nothing reads.
 
 #### WS-003 — `workspace_conflicts` has no reader or writer, and `GET .../conflicts` is unrouted
 - **priority:** P0 — expected-hash conflicts are the core write-safety mechanism
-- **status:** not_started
+- **status:** verified
 - **mandate:** `migrations/031_knowledge_workspace_manifest.sql:148`; only reference is `crates/mv-storage/src/sqlite.rs:9982`; ADR 009:155 specifies `GET /api/v1/workspaces/{workspace_id}/conflicts`, which is not among the 5 routes mounted at `crates/mv-server/src/rest.rs:171-188`
 - **governing_authority:** ADR 009 §Workspace API shape (`:137-155`); ADR 009 gate 4 (`:221`)
 - **blocked_by:** none
 - **files:** `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/rest/workspaces.rs`, `crates/mv-server/src/rest.rs`
 - **acceptance:** `cargo test -p mv-server -- workspace_conflicts` — an expected-hash mismatch creates a conflict row and leaves canonical bytes unchanged; the route lists open conflicts with the four documented resolutions (`document-contract:169-171`)
-- **evidence:** —
+- **evidence:** `cargo test -p mv-server -- workspace_conflicts` → 1 passed, 0 failed (`workspace_conflicts_route_lists_stale_write_conflicts_with_documented_resolutions`: stale-hash guard fails closed with canonical bytes byte-identical, conflict + journal event recorded atomically, route lists the open conflict with all four resolutions; state filter validated) — 2026-08-21, uncommitted working tree
 
 #### WS-004 — `workspace_migrations` has no reader or writer
 - **priority:** P1 — Stage 3 depends on it

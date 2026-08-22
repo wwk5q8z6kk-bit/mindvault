@@ -2,8 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use mv_core::{
-    KnowledgeNode, KnowledgeWorkspaceDocument, KnowledgeWorkspaceManifestStore, MvError, MvResult,
-    NodeStore, WorkspaceDocumentLifecycle, WorkspaceDocumentPayloadV1, WorkspaceProjectionState,
+    KnowledgeNode, KnowledgeWorkspace, KnowledgeWorkspaceDocument,
+    KnowledgeWorkspaceManifestStore, MvError, MvResult, NodeStore, WorkspaceDocumentLifecycle,
+    WorkspaceDocumentPayloadV1, WorkspaceEvent, WorkspaceEventActorKind,
+    WorkspaceEventDocumentDelta, WorkspaceEventOperation, WorkspaceEventPayloadV1,
+    WorkspaceEventStatus, WorkspaceManifestPayloadFormat, WorkspaceProjectionState,
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -35,13 +38,15 @@ impl MindVaultEngine {
         &self,
         workspace_id: Uuid,
     ) -> MvResult<WorkspaceProjectionOutcome> {
-        self.project_knowledge_workspace(workspace_id, true).await
+        self.project_knowledge_workspace(workspace_id, true, Uuid::now_v7())
+            .await
     }
 
     pub(crate) async fn project_knowledge_workspace(
         &self,
         workspace_id: Uuid,
         force: bool,
+        correlation_id: Uuid,
     ) -> MvResult<WorkspaceProjectionOutcome> {
         let workspace = self.get_knowledge_workspace(workspace_id).await?;
         let root = workspace_root(&workspace)?;
@@ -195,6 +200,7 @@ impl MindVaultEngine {
             }
         }
 
+        let mut journal_deltas = Vec::new();
         for (document, _node) in projected {
             if failed_ids.contains(&document.id) {
                 outcome.failed_documents += 1;
@@ -215,7 +221,22 @@ impl MindVaultEngine {
                 )
                 .await
             {
-                Ok(true) => outcome.projected_documents += 1,
+                Ok(true) => {
+                    outcome.projected_documents += 1;
+                    let manifest_hash =
+                        decode_workspace_document_payload(&document)
+                            .ok()
+                            .and_then(|payload| payload.content_hash);
+                    let observed = observations.get(&document.path_token);
+                    journal_deltas.push(WorkspaceEventDocumentDelta {
+                        document_id: Some(document.id),
+                        relative_path: observed
+                            .map(|document| document.payload.relative_path.clone()),
+                        before_hash: manifest_hash,
+                        after_hash: observed
+                            .and_then(|document| document.payload.content_hash.clone()),
+                    });
+                }
                 Ok(false) => {
                     outcome.failed_documents += 1;
                     tracing::warn!(
@@ -246,7 +267,87 @@ impl MindVaultEngine {
             force,
             "knowledge workspace projections completed"
         );
+        self.journal_workspace_projection(
+            &workspace,
+            correlation_id,
+            force,
+            &outcome,
+            journal_deltas,
+        )
+        .await;
         Ok(outcome)
+    }
+
+    /// Append one durable journal row summarizing a projection run. The
+    /// per-document before/after hashes prove the projected bytes are the
+    /// reconciled canonical bytes. Projection is a rebuildable derived-state
+    /// sync, so a journal failure is logged rather than failing the run.
+    async fn journal_workspace_projection(
+        &self,
+        workspace: &KnowledgeWorkspace,
+        correlation_id: Uuid,
+        force: bool,
+        outcome: &WorkspaceProjectionOutcome,
+        journal_deltas: Vec<WorkspaceEventDocumentDelta>,
+    ) {
+        let mut payload = WorkspaceEventPayloadV1::new(
+            "projected workspace documents into node, search, and graph stores",
+        );
+        payload.documents = journal_deltas;
+        payload
+            .attributes
+            .insert("detail".to_string(), "projection".to_string());
+        payload
+            .attributes
+            .insert("force".to_string(), force.to_string());
+        payload.attributes.insert(
+            "attempted_documents".to_string(),
+            outcome.attempted_documents.to_string(),
+        );
+        payload.attributes.insert(
+            "projected_documents".to_string(),
+            outcome.projected_documents.to_string(),
+        );
+        payload.attributes.insert(
+            "removed_documents".to_string(),
+            outcome.removed_documents.to_string(),
+        );
+        payload.attributes.insert(
+            "unchanged_documents".to_string(),
+            outcome.unchanged_documents.to_string(),
+        );
+        payload.attributes.insert(
+            "failed_documents".to_string(),
+            outcome.failed_documents.to_string(),
+        );
+        let event_payload = match serde_json::to_vec(&payload) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(
+                    workspace_id = %workspace.id,
+                    error = %error,
+                    "workspace projection journal payload failed to serialize"
+                );
+                return;
+            }
+        };
+        let event = WorkspaceEvent::new(
+            workspace.id,
+            None,
+            correlation_id,
+            WorkspaceEventActorKind::System,
+            WorkspaceEventOperation::Update,
+            WorkspaceEventStatus::Completed,
+            event_payload,
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        if let Err(error) = self.store.nodes.append_workspace_event(&event).await {
+            tracing::warn!(
+                workspace_id = %workspace.id,
+                error = %error,
+                "workspace projection journal append failed"
+            );
+        }
     }
 
     async fn build_workspace_projection_node(

@@ -118,6 +118,20 @@ fn json_request(method: Method, uri: &str, body: Option<Value>) -> Request<Body>
     }
 }
 
+fn idempotent_json_request(
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+    idempotency_key: &'static str,
+) -> Request<Body> {
+    let mut request = json_request(method, uri, body);
+    request.headers_mut().insert(
+        "idempotency-key",
+        idempotency_key.parse().expect("valid idempotency key"),
+    );
+    request
+}
+
 async fn body_json(resp: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
@@ -457,6 +471,186 @@ async fn workspace_mount_fails_closed_without_an_allowlisted_root() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn workspace_conflicts_route_lists_stale_write_conflicts_with_documented_resolutions() {
+    for key in [
+        "MINDVAULT_AUTH_TOKEN",
+        "MINDVAULT_AUTH_ROLE",
+        "MINDVAULT_AUTH_NAMESPACE",
+        "MINDVAULT_JWT_SECRET",
+        "MINDVAULT_JWT_ISSUER",
+        "MINDVAULT_JWT_AUDIENCE",
+        "MINDVAULT_NAMESPACE_NODE_QUOTA",
+        "MINDVAULT_WORKSPACE_ALLOWED_ROOTS",
+        "MINDVAULT_COMMAND_ADMISSION_MODE",
+    ] {
+        std::env::remove_var(key);
+    }
+    std::env::set_var("MINDVAULT_RATE_LIMIT_REQUESTS", "1000000");
+    let tmp = TempDir::new().expect("tempdir");
+    let workspace_root = tmp.path().join("knowledge");
+    std::fs::create_dir_all(workspace_root.join("Projects")).unwrap();
+    let canonical_path = workspace_root.join("Projects/MindVault.md");
+    std::fs::write(&canonical_path, "# MindVault\n\nFile-first knowledge.").unwrap();
+    let data_dir = tmp.path().join("data");
+    let config = test_config(&data_dir.to_string_lossy());
+    let engine = Arc::new(MindVaultEngine::init(config).await.expect("engine init"));
+    let state = Arc::new(
+        AppState::new(engine.clone())
+            .with_workspace_allowed_roots(vec![tmp.path().to_path_buf()]),
+    );
+    let router = create_router(state);
+
+    let mount = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/workspaces",
+            Some(json!({
+                "root_path": workspace_root,
+                "namespace": "default"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(mount.status(), StatusCode::CREATED);
+    let mounted = body_json(mount).await;
+    let workspace_id = mounted["workspace"]["id"].as_str().expect("workspace id");
+
+    let tree = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/workspaces/{workspace_id}/tree"),
+            None,
+        ))
+        .await
+        .unwrap();
+    let tree = body_json(tree).await;
+    let document_id = tree["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["relative_path"] == "Projects/MindVault.md")
+        .and_then(|entry| entry["document_id"].as_str())
+        .expect("document id")
+        .to_string();
+
+    let read = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/workspaces/{workspace_id}/documents/{document_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    let read = body_json(read).await;
+    let observed_hash = read["content_hash"].as_str().expect("content hash");
+
+    // An expected-hash mismatch fails closed: the guard records a conflict
+    // and the canonical bytes are left untouched.
+    let bytes_before = std::fs::read(&canonical_path).unwrap();
+    let stale_hash =
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+    let guard = engine
+        .guard_workspace_document_write(
+            Uuid::parse_str(workspace_id).unwrap(),
+            Uuid::parse_str(&document_id).unwrap(),
+            stale_hash,
+        )
+        .await;
+    assert!(
+        matches!(guard, Err(mv_core::MvError::CanonicalSourceConflict(_))),
+        "stale expected hash must fail closed with a canonical-source conflict"
+    );
+    assert_eq!(
+        std::fs::read(&canonical_path).unwrap(),
+        bytes_before,
+        "canonical bytes must be unchanged after a rejected guarded write"
+    );
+
+    let conflicts = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/workspaces/{workspace_id}/conflicts"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(conflicts.status(), StatusCode::OK);
+    let conflicts = body_json(conflicts).await;
+    let conflicts = conflicts.as_array().expect("conflict list");
+    assert_eq!(conflicts.len(), 1);
+    let conflict = &conflicts[0];
+    assert_eq!(conflict["workspace_id"], workspace_id);
+    assert_eq!(conflict["document_id"], document_id);
+    assert_eq!(conflict["conflict_kind"], "stale_write");
+    assert_eq!(conflict["state"], "open");
+    assert_eq!(conflict["relative_path"], "Projects/MindVault.md");
+    assert_eq!(conflict["expected_hash"], stale_hash);
+    assert_eq!(conflict["observed_hash"], observed_hash);
+    assert!(
+        conflict["source_event_id"].as_str().is_some(),
+        "conflict must link to its durable journal event"
+    );
+    assert_eq!(
+        conflict["resolutions"].as_array().unwrap(),
+        &vec![
+            json!("keep_current"),
+            json!("restore_known_revision"),
+            json!("save_competing_revision_to_new_path"),
+            json!("merge_via_reviewed_proposal"),
+        ]
+    );
+
+    // State filters: resolved is empty, unknown states are rejected.
+    let resolved = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/workspaces/{workspace_id}/conflicts?state=resolved"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resolved.status(), StatusCode::OK);
+    assert_eq!(body_json(resolved).await.as_array().unwrap().len(), 0);
+
+    let bogus = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/workspaces/{workspace_id}/conflicts?state=bogus"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(bogus.status(), StatusCode::BAD_REQUEST);
+
+    // A matching expected hash passes the guard and records no new conflict.
+    let guard = engine
+        .guard_workspace_document_write(
+            Uuid::parse_str(workspace_id).unwrap(),
+            Uuid::parse_str(&document_id).unwrap(),
+            observed_hash,
+        )
+        .await
+        .expect("matching hash must pass the guard");
+    assert_eq!(guard.observed_content_hash, observed_hash);
+    let conflicts = router
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/workspaces/{workspace_id}/conflicts"),
+            None,
+        ))
+        .await
+        .unwrap();
+    let conflicts = body_json(conflicts).await;
+    assert_eq!(conflicts.as_array().unwrap().len(), 1);
 }
 
 fn test_env_lock() -> &'static Mutex<()> {
@@ -2487,6 +2681,17 @@ async fn node_create_fails_closed_under_enforced_command_admission() {
     let config = test_config(&tmp.path().to_string_lossy());
     let (router, _tmp) = setup_with_config(config, tmp).await;
 
+    let registered = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/context-nodes/local",
+            Some(json!({ "display_name": "Admission Test Vault" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(registered.status(), StatusCode::CREATED);
+
     let resp = router
         .clone()
         .oneshot(json_request(
@@ -2591,6 +2796,461 @@ async fn local_context_node_registers_idempotently_over_http() {
     let body = body_json(fetched).await;
     assert_eq!(body["node_id"], node_id);
     assert_eq!(body["status"], "active");
+}
+
+/// IK-009 — the three governed registries expose command and query transports,
+/// and every registration command passes through Tool Grant admission.
+#[tokio::test]
+async fn registry_api_registers_queries_and_enforces_tool_grants() {
+    let _mode = ScopedEnvVar::set("MINDVAULT_COMMAND_ADMISSION_MODE", "enforce");
+    let tmp = TempDir::new().expect("tempdir");
+    let config = test_config(&tmp.path().to_string_lossy());
+    let (router, _tmp) = setup_with_config(config, tmp).await;
+
+    let local = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/context-nodes/local",
+            Some(json!({ "display_name": "Registry Vault" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(local.status(), StatusCode::CREATED);
+    let local = body_json(local).await;
+    let local_node_id = local["node_id"].as_str().expect("local node id");
+
+    let schema_body = json!({
+        "name": "registry-api-record",
+        "version": "1.0.0",
+        "definition": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": ["resource_uri"]
+        }
+    });
+    let denied = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/schemas",
+            Some(schema_body.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    let issued = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/authority-grants",
+            Some(json!({
+                "grantee_subject": "local-system",
+                "purpose": "administer the governed public registries",
+                "idempotency_key": "issue-registry-api-tool-grant"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(issued.status(), StatusCode::CREATED);
+
+    let schema = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/schemas",
+            Some(schema_body),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(schema.status(), StatusCode::CREATED);
+    let schema = body_json(schema).await;
+    assert_eq!(schema["newly_registered"], true);
+    assert_eq!(schema["record"]["lifecycle"], "active");
+
+    let fetched_schema = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            "/api/v1/schemas/registry-api-record/versions/1.0.0",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(fetched_schema.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(fetched_schema).await["schema"]["version"],
+        "1.0.0"
+    );
+    let schema_versions = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            "/api/v1/schemas/registry-api-record/versions",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(schema_versions.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(schema_versions).await.as_array().unwrap().len(),
+        1
+    );
+
+    let resource_id = Uuid::now_v7();
+    let source_binding_body = json!({
+        "resource_uri": format!("mindvault://{local_node_id}/knowledge/{resource_id}"),
+        "external_system": "calendar",
+        "external_account_id": "registry-account",
+        "external_object_id": "event-42",
+        "authoritative_source": "mindvault://sources/calendar",
+        "provenance_ref": format!("mindvault://{local_node_id}/knowledge/{resource_id}"),
+        "materialization_mode": "reference_only",
+        "retention_class": "operational",
+        "sensitivity": "internal"
+    });
+    let source_binding = router
+        .clone()
+        .oneshot(idempotent_json_request(
+            Method::POST,
+            "/api/v1/source-bindings",
+            Some(source_binding_body.clone()),
+            "register-calendar-source-binding",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(source_binding.status(), StatusCode::CREATED);
+    let source_binding = body_json(source_binding).await;
+    let binding_id = source_binding["record"]["binding_id"]
+        .as_str()
+        .expect("binding id");
+    assert_eq!(source_binding["record"]["external_system"], "calendar");
+
+    let replayed_binding = router
+        .clone()
+        .oneshot(idempotent_json_request(
+            Method::POST,
+            "/api/v1/source-bindings",
+            Some(source_binding_body.clone()),
+            "register-calendar-source-binding",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(replayed_binding.status(), StatusCode::OK);
+    let replayed_binding = body_json(replayed_binding).await;
+    assert_eq!(replayed_binding["newly_registered"], false);
+    assert_eq!(replayed_binding["record"]["binding_id"], binding_id);
+
+    let mut conflicting_source_binding = source_binding_body;
+    conflicting_source_binding["sensitivity"] = json!("confidential");
+    let conflict = router
+        .clone()
+        .oneshot(idempotent_json_request(
+            Method::POST,
+            "/api/v1/source-bindings",
+            Some(conflicting_source_binding),
+            "register-calendar-source-binding",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+
+    let fetched_binding = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/source-bindings/{binding_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(fetched_binding.status(), StatusCode::OK);
+    assert_eq!(body_json(fetched_binding).await["binding_id"], binding_id);
+    let bindings = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/source-bindings", None))
+        .await
+        .unwrap();
+    assert_eq!(bindings.status(), StatusCode::OK);
+    assert_eq!(body_json(bindings).await.as_array().unwrap().len(), 1);
+
+    let remote_node_id = Uuid::now_v7();
+    let remote_owner_id = Uuid::now_v7();
+    let context_node = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/context-nodes",
+            Some(json!({
+                "node_id": remote_node_id,
+                "node_type": "application",
+                "owner_actor_id": format!(
+                    "mindvault://{remote_node_id}/identity/principal/{remote_owner_id}"
+                ),
+                "governing_node_id": format!("mindvault://{remote_node_id}/node"),
+                "display_name": "Calendar Context",
+                "capabilities": ["discover", "health"]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(context_node.status(), StatusCode::CREATED);
+    let context_node = body_json(context_node).await;
+    assert_eq!(context_node["record"]["status"], "discovered");
+    assert_eq!(context_node["record"]["trust_class"], "untrusted");
+
+    let fetched_context = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/context-nodes/{remote_node_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(fetched_context.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(fetched_context).await["display_name"],
+        "Calendar Context"
+    );
+    let discovered = router
+        .oneshot(json_request(
+            Method::GET,
+            "/api/v1/context-nodes?status=discovered",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(discovered.status(), StatusCode::OK);
+    let discovered = body_json(discovered).await;
+    assert_eq!(discovered.as_array().unwrap().len(), 1);
+    assert_eq!(discovered[0]["node_id"], remote_node_id.to_string());
+}
+
+#[test]
+fn registry_api_routes_appear_in_generated_openapi() {
+    use utoipa::OpenApi;
+
+    let document = mv_server::openapi::ApiDoc::openapi();
+    for path in [
+        "/api/v1/schemas",
+        "/api/v1/schemas/{name}/versions",
+        "/api/v1/schemas/{name}/versions/{version}",
+        "/api/v1/source-bindings",
+        "/api/v1/source-bindings/{id}",
+        "/api/v1/context-nodes",
+        "/api/v1/context-nodes/{id}",
+    ] {
+        assert!(
+            document.paths.paths.contains_key(path),
+            "generated OpenAPI is missing {path}"
+        );
+    }
+}
+
+/// IK-010 — the public grant transport delegates only strictly narrower terms.
+#[tokio::test]
+async fn grant_api_issues_lists_delegates_suspends_revokes_and_rejects_widening() {
+    let (router, _tmp) = setup().await;
+    let registered = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/context-nodes/local",
+            Some(json!({ "display_name": "Delegation Vault" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(registered.status(), StatusCode::CREATED);
+    let local_node = body_json(registered).await;
+    let local_node_id = Uuid::parse_str(local_node["node_id"].as_str().unwrap()).unwrap();
+    let node_uri = local_node["node_uri"].as_str().unwrap().to_string();
+    let child_grantee = StableUri::principal(local_node_id, Uuid::now_v7())
+        .as_str()
+        .to_string();
+    let parent_expires_at = chrono::Utc::now() + chrono::Duration::hours(4);
+
+    let issued = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/authority-grants",
+            Some(json!({
+                "kind": "context",
+                "grantee_subject": "local-system",
+                "targets": [node_uri],
+                "capabilities": ["query", "read"],
+                "purpose": "bounded public delegation root",
+                "expires_at": parent_expires_at.to_rfc3339(),
+                "sensitivity_ceiling": "internal",
+                "retention_ceiling": "operational",
+                "delegation_depth_remaining": 2,
+                "idempotency_key": "grant-api-root"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(issued.status(), StatusCode::CREATED);
+    let parent = body_json(issued).await;
+    let parent_id = parent["grant_id"].as_str().unwrap().to_string();
+    assert_eq!(parent["delegation_depth_remaining"], 2);
+
+    let child_expires_at = parent_expires_at - chrono::Duration::hours(1);
+    let delegated = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/authority-grants/{parent_id}/delegate"),
+            Some(json!({
+                "grantee": child_grantee,
+                "targets": [node_uri],
+                "capabilities": ["read"],
+                "purpose": "narrow read delegation",
+                "expires_at": child_expires_at.to_rfc3339(),
+                "sensitivity_ceiling": "public",
+                "retention_ceiling": "ephemeral",
+                "delegation_depth_remaining": 1,
+                "idempotency_key": "grant-api-child"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(delegated.status(), StatusCode::CREATED);
+    let child = body_json(delegated).await;
+    let child_id = child["grant_id"].as_str().unwrap().to_string();
+    assert_eq!(child["parent_grant_id"], parent_id);
+    assert_eq!(child["capabilities"], json!(["read"]));
+    assert_eq!(child["delegation_depth_remaining"], 1);
+
+    let registered_attacker = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/identities",
+            Some(json!({
+                "subject_binding": "shared-token",
+                "actor_kind": "human",
+                "display_name": "Delegation Attacker",
+                "idempotency_key": "grant-api-attacker-identity"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(registered_attacker.status(), StatusCode::CREATED);
+    std::env::set_var("MINDVAULT_AUTH_TOKEN", "grant-api-attacker-token");
+    std::env::set_var("MINDVAULT_AUTH_ROLE", "write");
+    let mut unauthorized_request = json_request(
+        Method::POST,
+        &format!("/api/v1/authority-grants/{parent_id}/delegate"),
+        Some(json!({
+            "grantee": child_grantee,
+            "purpose": "must not delegate another principal's grant",
+            "idempotency_key": "grant-api-unauthorized-delegation"
+        })),
+    );
+    unauthorized_request.headers_mut().insert(
+        "authorization",
+        "Bearer grant-api-attacker-token".parse().unwrap(),
+    );
+    let unauthorized = router.clone().oneshot(unauthorized_request).await.unwrap();
+    std::env::remove_var("MINDVAULT_AUTH_TOKEN");
+    std::env::remove_var("MINDVAULT_AUTH_ROLE");
+    assert_eq!(unauthorized.status(), StatusCode::FORBIDDEN);
+
+    let outside_target = StableUri::node(Uuid::now_v7()).as_str().to_string();
+    let widening_attempts = [
+        ("targets", "targets", json!([outside_target])),
+        ("capabilities", "capabilities", json!(["discover"])),
+        (
+            "validity",
+            "expires_at",
+            json!((parent_expires_at + chrono::Duration::hours(1)).to_rfc3339()),
+        ),
+        ("sensitivity", "sensitivity_ceiling", json!("confidential")),
+        ("retention", "retention_ceiling", json!("durable")),
+        ("depth", "delegation_depth_remaining", json!(2)),
+    ];
+    for (case, field, widened_value) in widening_attempts {
+        let mut request = json!({
+            "grantee": child_grantee,
+            "targets": [node_uri],
+            "capabilities": ["read"],
+            "purpose": format!("reject {case} widening"),
+            "expires_at": child_expires_at.to_rfc3339(),
+            "sensitivity_ceiling": "public",
+            "retention_ceiling": "ephemeral",
+            "delegation_depth_remaining": 1,
+            "idempotency_key": format!("grant-api-reject-{case}")
+        });
+        request
+            .as_object_mut()
+            .unwrap()
+            .insert(field.to_string(), widened_value);
+        let rejected = router
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                &format!("/api/v1/authority-grants/{parent_id}/delegate"),
+                Some(request),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            rejected.status(),
+            StatusCode::BAD_REQUEST,
+            "{case} widening must fail closed"
+        );
+    }
+
+    let listed = router
+        .clone()
+        .oneshot(json_request(Method::GET, "/api/v1/authority-grants", None))
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed = body_json(listed).await;
+    assert_eq!(listed.as_array().unwrap().len(), 2);
+
+    let suspended = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/authority-grants/{child_id}/suspend"),
+            Some(json!({
+                "reason": "delegated access review",
+                "idempotency_key": "grant-api-suspend-child"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(suspended.status(), StatusCode::OK);
+    assert_eq!(body_json(suspended).await["status"], "suspended");
+
+    let revoked = router
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/authority-grants/{parent_id}/revoke"),
+            Some(json!({
+                "reason": "root authority withdrawn",
+                "idempotency_key": "grant-api-revoke-root"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), StatusCode::OK);
+    assert_eq!(body_json(revoked).await["status"], "revoked");
+}
+
+#[test]
+fn grant_api_delegate_route_appears_in_generated_openapi() {
+    use utoipa::OpenApi;
+
+    let document = mv_server::openapi::ApiDoc::openapi();
+    assert!(document
+        .paths
+        .paths
+        .contains_key("/api/v1/authority-grants/{id}/delegate"));
 }
 
 /// IK-001b — issue a Tool Grant over HTTP, then enforce admits a node create.

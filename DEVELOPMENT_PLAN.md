@@ -399,7 +399,7 @@ This section is the operational source of truth for day-to-day execution.
 
 - [x] Plugin framework + management UI
 - [x] Performance profiling + large-vault benchmarks (SQLite/Engine/Vector benchmarks baselined)
-- [x] Onboarding/docs + migration polish (migration runner with schema_version inserts for all 25 migrations, docs + ADRs)
+- [x] Onboarding/docs + migration polish (migration runner with schema_version inserts for all migrations, docs + ADRs)
 - [x] AI sidecar proxy endpoints (optional local OpenAI-compatible bridge)
 - [x] Public share links (backend + web admin UI + Svelte/Tauri UI + public viewer)
 - [x] Community module support and marketplace considerations (manifest: repository/license/homepage/checksum/min_version/keywords; SHA-256 verification on install; 5 new tests)
@@ -411,7 +411,7 @@ This section is the operational source of truth for day-to-day execution.
 > and in the A→Z Program Map predate the Interoperability Constitution and mark
 > items complete under the weaker definition below. Do not plan from them.
 
-Note: “Complete” in the tables below means **only that code is present in the
+Note: “Complete” in the tables below means **only that code exists in the
 repository**. It does not mean the capability is governed, reachable,
 conformance-tested, or safe to enable. That weaker definition is why several
 rows read "Complete" for subsystems whose own contracts still gate them — most
@@ -499,6 +499,9 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 | 036 | Outbox dispatch and action receipts             | Ready   |
 | 037 | Consumer inbox and checkpoints                  | Ready   |
 | 038 | Work Orders and Agent Runs                      | Ready   |
+| 039 | Command admission decisions                     | Ready   |
+| 040 | Identity registry                               | Ready   |
+| 041 | Public schema lifecycle                         | Uncommitted |
 
 ### Frontend Components (SvelteKit + Tauri)
 
@@ -546,8 +549,8 @@ Backend:
 - [x] Build autonomy gate (rules, quiet hours, rate limiting)
 - [x] Build reflection engine (feedback, confidence adjustment)
 - [x] Build sync engine (vector clocks, snapshot export/import)
-- [~] Build federation engine (peer management) — code present; peers are held in
-      process memory and production federation is gated (`FED-000`)
+- [~] Federation engine — experimental transport only; production disabled per FEDERATION_THREAT_MODEL.md:22
+      (peer management code present; peers are held in process memory; `FED-000`)
 - [x] Build metrics collector
 - [x] Build encrypted backup/restore
 - [x] Add migration tools (Markdown/Obsidian/CSV) with dry-run
@@ -573,13 +576,13 @@ Frontend:
 
 ### Phase 4: Ecosystem & Polish
 
-**Status:** Complete
+**Status:** Code complete, governance incomplete.
 
 - [x] Define plugin framework (hooks, manifest, registry)
 - [x] Wire plugin registry to REST endpoints
 - [x] Build plugin management UI (/plugins)
 - [x] Performance profiling + optimization pass (Criterion benchmarks: SQLite 6, Engine 4, Vector 6; baseline established)
-- [x] Documentation, onboarding, and migration polish (migration runner with schema_version inserts for all 25 migrations; docs: onboarding, plugin-development, CONTRIBUTING, 7 ADRs, architecture)
+- [x] Documentation, onboarding, and migration polish (migration runner with schema_version inserts for all migrations; docs: onboarding, plugin-development, CONTRIBUTING, 7 ADRs, architecture)
 - [x] Community module support (manifest community fields: repository/license/homepage/checksum/min_version/keywords; SHA-256 checksum verification on install; 5 new tests, 16 total plugin tests)
 - [x] Public share links: read-only public viewer for `/public/shares/:token`
 

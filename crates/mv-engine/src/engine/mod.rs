@@ -21,8 +21,8 @@ mod workspace_projection_ops;
 
 pub use interoperability_ops::{
     AuthorityGrantIssuance, AuthorityGrantTransition, BootstrapLocalIdentities,
-    DeadLetterRedriveOutcome, IdentityRegistration, IssueAuthorityGrantRequest,
-    LocalContextNodeRegistration,
+    DeadLetterRedriveOutcome, DelegateAuthorityGrantRequest, IdentityRegistration,
+    IssueAuthorityGrantRequest, LocalContextNodeRegistration,
 };
 pub use inbox_consumer::{
     spawn_inbox_consumer, InboxConsumerConfig, InboxConsumerTick, InboxDomainHandler,
@@ -36,7 +36,7 @@ pub use outbox_http_publisher::{HttpOutboxPublisher, HttpOutboxPublisherConfig};
 pub use work_order_ops::{
     AdmissionRefusal, ProposedEdge, ProposedNode, ProposedWorkOrder, RunReadiness,
 };
-pub use workspace_ops::WorkspaceMountResult;
+pub use workspace_ops::{WorkspaceMountResult, WorkspaceWriteGuard};
 pub use workspace_projection_ops::WorkspaceProjectionOutcome;
 
 use std::path::PathBuf;

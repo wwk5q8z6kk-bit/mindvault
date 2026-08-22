@@ -1,7 +1,8 @@
 # Authority Grant Model
 
-- **Status:** Implemented core and storage contract
+- **Status:** Implemented core, storage, and authenticated REST contract
 - **Effective:** 2026-07-26
+- **Last updated:** 2026-08-03
 - **Governing law:** `INTEROPERABILITY_CONSTITUTION.md`
 
 ## Purpose
@@ -114,12 +115,14 @@ An authorization lookup fails closed unless all of the following hold:
 4. requested sensitivity and retention are at or below their grant ceilings;
 5. every parent exists, is effective, and still contains the child terms.
 
-External tool execution, non-admin public grant APIs, and signatures remain
-later integration gates. Admin-only grant issuance and lifecycle
-(`POST/GET /api/v1/authority-grants`, suspend/revoke/resume) are implemented
-(IK-001b, ADR 013). Immutable outbox publication-attempt receipts now exist, but
-they do not themselves authorize an external side effect. No external side
-effect is authorized by this storage slice alone.
+Authenticated public grant transport is implemented for issue/list/get,
+delegation, and suspend/revoke/resume (`IK-001b`, `IK-010`, ADR 013). Root
+issuance and lifecycle mutation remain admin-only. Delegation requires normal
+write authorization and binds the caller's governed principal to the parent
+grantee; the storage transaction independently rejects any widened child or
+ineffective ancestor. External tool execution and grant signatures remain
+later integration gates. Immutable outbox publication-attempt receipts now
+exist, but they do not themselves authorize an external side effect.
 
 ### Command admission (implemented)
 
@@ -153,6 +156,8 @@ position so an operator can watch denials fall to zero first.
 
 - A Context Grant cannot carry `execute`, `command`, or another Tool capability.
 - A Tool Grant cannot carry `read`, `query`, or another Context capability.
+- REST delegation rejects widening of targets, capabilities, validity,
+  sensitivity, retention, data-use permissions, or delegation depth.
 - Retrying issuance cannot create a duplicate grant or event.
 - A child cannot expand targets, capabilities, time, data use, or delegation.
 - Suspending or revoking a parent immediately makes descendants ineffective.

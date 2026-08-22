@@ -296,6 +296,10 @@ impl SqliteNodeStore {
                 40,
                 include_str!("../../../migrations/040_identity_registry.sql"),
             ),
+            (
+                41,
+                include_str!("../../../migrations/041_public_schema_lifecycle.sql"),
+            ),
         ];
 
         // Migration 001 must always run first to create schema_version table.
@@ -823,6 +827,66 @@ fn row_to_workspace_document(
         revision: parse_workspace_revision(8, row.get(8)?)?,
         created_at: parse_dt_strict(9, &created_at)?,
         updated_at: parse_dt_strict(10, &updated_at)?,
+    })
+}
+
+fn row_to_workspace_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceEvent> {
+    let id: String = row.get(0)?;
+    let workspace_id: String = row.get(1)?;
+    let document_id: Option<String> = row.get(2)?;
+    let correlation_id: String = row.get(4)?;
+    let actor_kind: String = row.get(5)?;
+    let operation: String = row.get(7)?;
+    let status: String = row.get(8)?;
+    let payload_format: String = row.get(10)?;
+    let prepared_at: String = row.get(11)?;
+    let completed_at: Option<String> = row.get(12)?;
+
+    Ok(WorkspaceEvent {
+        id: parse_uuid_str(0, &id)?,
+        workspace_id: parse_uuid_str(1, &workspace_id)?,
+        document_id: document_id
+            .map(|value| parse_uuid_str(2, &value))
+            .transpose()?,
+        event_seq: parse_workspace_revision(3, row.get(3)?)?,
+        correlation_id: parse_uuid_str(4, &correlation_id)?,
+        actor_kind: parse_workspace_enum(5, &actor_kind)?,
+        actor_id: row.get(6)?,
+        operation: parse_workspace_enum(7, &operation)?,
+        status: parse_workspace_enum(8, &status)?,
+        event_payload: row.get(9)?,
+        payload_format: parse_workspace_enum(10, &payload_format)?,
+        prepared_at: parse_dt_strict(11, &prepared_at)?,
+        completed_at: parse_optional_dt_strict(12, completed_at)?,
+    })
+}
+
+fn row_to_workspace_conflict(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceConflict> {
+    let id: String = row.get(0)?;
+    let workspace_id: String = row.get(1)?;
+    let document_id: Option<String> = row.get(2)?;
+    let source_event_id: Option<String> = row.get(3)?;
+    let conflict_kind: String = row.get(4)?;
+    let state: String = row.get(5)?;
+    let payload_format: String = row.get(7)?;
+    let created_at: String = row.get(8)?;
+    let resolved_at: Option<String> = row.get(9)?;
+
+    Ok(WorkspaceConflict {
+        id: parse_uuid_str(0, &id)?,
+        workspace_id: parse_uuid_str(1, &workspace_id)?,
+        document_id: document_id
+            .map(|value| parse_uuid_str(2, &value))
+            .transpose()?,
+        source_event_id: source_event_id
+            .map(|value| parse_uuid_str(3, &value))
+            .transpose()?,
+        conflict_kind: parse_workspace_enum(4, &conflict_kind)?,
+        state: parse_workspace_enum(5, &state)?,
+        conflict_payload: row.get(6)?,
+        payload_format: parse_workspace_enum(7, &payload_format)?,
+        created_at: parse_dt_strict(8, &created_at)?,
+        resolved_at: parse_optional_dt_strict(9, resolved_at)?,
     })
 }
 
@@ -1528,6 +1592,25 @@ impl SqliteNodeStore {
         let owner_uri: String = row.get(6)?;
         let created_at: String = row.get(7)?;
         let deprecated_at: Option<String> = row.get(8)?;
+        let withdrawn_at: Option<String> = row.get(9)?;
+        let replacement_schema_uri: Option<String> = row.get(10)?;
+        let replacement_schema_version: Option<String> = row.get(11)?;
+        let replacement = match (replacement_schema_uri, replacement_schema_version) {
+            (Some(uri), Some(version)) => Some(
+                SchemaReference::new(
+                    StableUri::parse(uri).map_err(|err| Self::as_sql_conversion_error(10, err))?,
+                    version,
+                )
+                .map_err(|err| Self::as_sql_conversion_error(11, err))?,
+            ),
+            (None, None) => None,
+            _ => {
+                return Err(Self::as_sql_conversion_error(
+                    10,
+                    "schema replacement URI and version must both be present",
+                ))
+            }
+        };
         let record = PublicSchemaRecord {
             schema: SchemaReference::new(
                 StableUri::parse(schema_uri)
@@ -1547,6 +1630,8 @@ impl SqliteNodeStore {
                 .map_err(|err| Self::as_sql_conversion_error(6, err))?,
             created_at: parse_dt_strict(7, &created_at)?,
             deprecated_at: parse_optional_dt_strict(8, deprecated_at)?,
+            withdrawn_at: parse_optional_dt_strict(9, withdrawn_at)?,
+            replacement,
         };
         record
             .validate()
@@ -1561,7 +1646,8 @@ impl SqliteNodeStore {
         connection
             .query_row(
                 "SELECT schema_uri, schema_version, media_type, definition_json,
-                        content_digest, lifecycle, owner_uri, created_at, deprecated_at
+                        content_digest, lifecycle, owner_uri, created_at, deprecated_at,
+                        withdrawn_at, replacement_schema_uri, replacement_schema_version
                  FROM interoperability_public_schemas
                  WHERE schema_uri = ?1 AND schema_version = ?2",
                 params![reference.uri.as_str(), &reference.version],
@@ -4075,7 +4161,8 @@ impl InteroperabilityStore for SqliteNodeStore {
             let mut statement = connection
                 .prepare(
                     "SELECT schema_uri, schema_version, media_type, definition_json,
-                            content_digest, lifecycle, owner_uri, created_at, deprecated_at
+                            content_digest, lifecycle, owner_uri, created_at, deprecated_at,
+                            withdrawn_at, replacement_schema_uri, replacement_schema_version
                      FROM interoperability_public_schemas
                      WHERE schema_uri = ?1
                      ORDER BY created_at ASC, schema_version ASC",
@@ -4093,6 +4180,186 @@ impl InteroperabilityStore for SqliteNodeStore {
                 );
             }
             Ok(schemas)
+        })
+    }
+
+    async fn transition_public_schema_lifecycle_with_event(
+        &self,
+        command: &PublicSchemaLifecycleCommand,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentSchemaCommit> {
+        command.validate().map_err(MvError::InvalidInput)?;
+        let expected_subject =
+            StableUri::schema_version(&command.schema.uri, &command.schema.version)
+                .map_err(MvError::InvalidInput)?;
+        let replacement_uri = command
+            .replacement
+            .as_ref()
+            .map(|reference| reference.uri.as_str());
+        let replacement_version = command
+            .replacement
+            .as_ref()
+            .map(|reference| reference.version.as_str());
+        if event.subject != expected_subject
+            || event
+                .data
+                .get("schema_uri")
+                .and_then(|value| value.as_str())
+                != Some(command.schema.uri.as_str())
+            || event
+                .data
+                .get("schema_version")
+                .and_then(|value| value.as_str())
+                != Some(command.schema.version.as_str())
+            || event
+                .data
+                .get("to_lifecycle")
+                .and_then(|value| value.as_str())
+                != Some(command.target.as_str())
+            || event.data.get("reason").and_then(|value| value.as_str())
+                != Some(command.reason.as_str())
+            || event
+                .data
+                .get("replacement_schema_uri")
+                .and_then(|value| value.as_str())
+                != replacement_uri
+            || event
+                .data
+                .get("replacement_schema_version")
+                .and_then(|value| value.as_str())
+                != replacement_version
+        {
+            return Err(MvError::InvalidInput(
+                "schema lifecycle event must match the governed command".into(),
+            ));
+        }
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin schema lifecycle transition: {err}")))?;
+        let local_node_id = Self::ensure_local_context_node(&transaction)?;
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            local_node_id,
+            PUBLIC_SCHEMA_LIFECYCLE_TRANSITIONED_V1,
+            "public-schema-lifecycle-transitioned",
+        )?;
+
+        if let Some(existing_event) = Self::resolve_governance_replay(
+            &transaction,
+            event,
+            PUBLIC_SCHEMA_LIFECYCLE_TRANSITIONED_V1,
+        )? {
+            let existing_schema =
+                Self::load_public_schema_from_connection(&transaction, &command.schema)?
+                    .ok_or_else(|| {
+                        MvError::Storage(
+                            "schema lifecycle replay references a missing schema".into(),
+                        )
+                    })?;
+            transaction.commit().map_err(|err| {
+                MvError::Storage(format!("finish schema lifecycle replay: {err}"))
+            })?;
+            return Ok(IdempotentSchemaCommit {
+                schema: existing_schema,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        let current = Self::load_public_schema_from_connection(&transaction, &command.schema)?
+            .ok_or_else(|| MvError::InvalidInput("public schema version does not exist".into()))?;
+        if !current.lifecycle.can_transition_to(command.target)
+            || event
+                .data
+                .get("from_lifecycle")
+                .and_then(|value| value.as_str())
+                != Some(current.lifecycle.as_str())
+        {
+            return Err(MvError::InvalidInput(
+                "public schema lifecycle transition is not allowed or does not match its event"
+                    .into(),
+            ));
+        }
+        if current.replacement.is_some() && current.replacement != command.replacement {
+            return Err(MvError::InvalidInput(
+                "public schema replacement cannot change after deprecation".into(),
+            ));
+        }
+        if let Some(replacement) = command.replacement.as_ref() {
+            let replacement_record =
+                Self::load_public_schema_from_connection(&transaction, replacement)?.ok_or_else(
+                    || MvError::InvalidInput("public schema replacement is not registered".into()),
+                )?;
+            if replacement_record.lifecycle != PublicSchemaLifecycle::Active {
+                return Err(MvError::InvalidInput(
+                    "public schema replacement must be active".into(),
+                ));
+            }
+        }
+        if command.target == PublicSchemaLifecycle::Withdrawn {
+            let has_live_references: bool = transaction
+                .query_row(
+                    "SELECT EXISTS (
+                         SELECT 1 FROM interoperability_outbox
+                         WHERE schema_uri = ?1 AND schema_version = ?2
+                           AND delivery_state = 'pending'
+                     )",
+                    params![command.schema.uri.as_str(), &command.schema.version],
+                    |row| row.get(0),
+                )
+                .map_err(|err| {
+                    MvError::Storage(format!("check live schema outbox references: {err}"))
+                })?;
+            if has_live_references {
+                return Err(MvError::InvalidInput(
+                    "public schema cannot be withdrawn while live outbox references remain".into(),
+                ));
+            }
+        }
+
+        let deprecated_at = current.deprecated_at.unwrap_or(event.occurred_at);
+        let withdrawn_at =
+            (command.target == PublicSchemaLifecycle::Withdrawn).then_some(event.occurred_at);
+        Self::insert_outbox_event(&transaction, event)?;
+        let updated = transaction
+            .execute(
+                "UPDATE interoperability_public_schemas
+                 SET lifecycle = ?1, deprecated_at = ?2, withdrawn_at = ?3,
+                     replacement_schema_uri = ?4, replacement_schema_version = ?5
+                 WHERE schema_uri = ?6 AND schema_version = ?7",
+                params![
+                    command.target.as_str(),
+                    deprecated_at.to_rfc3339(),
+                    withdrawn_at.map(|value| value.to_rfc3339()),
+                    replacement_uri,
+                    replacement_version,
+                    command.schema.uri.as_str(),
+                    &command.schema.version,
+                ],
+            )
+            .map_err(|err| {
+                MvError::Storage(format!("transition public schema lifecycle: {err}"))
+            })?;
+        if updated != 1 {
+            return Err(MvError::Storage(
+                "public schema lifecycle transition updated an unexpected row count".into(),
+            ));
+        }
+        let schema = Self::load_public_schema_from_connection(&transaction, &command.schema)?
+            .ok_or_else(|| MvError::Storage("transitioned public schema is missing".into()))?;
+        transaction.commit().map_err(|err| {
+            MvError::Storage(format!("commit schema lifecycle transition: {err}"))
+        })?;
+        Ok(IdempotentSchemaCommit {
+            schema,
+            event: event.clone(),
+            replayed: false,
         })
     }
 
@@ -4199,6 +4466,33 @@ impl InteroperabilityStore for SqliteNodeStore {
     async fn get_source_binding(&self, binding_id: Uuid) -> MvResult<Option<SourceBinding>> {
         self.with_conn(|connection| {
             self.load_source_binding_from_connection(connection, binding_id)
+        })
+    }
+
+    async fn list_source_bindings(&self) -> MvResult<Vec<SourceBinding>> {
+        self.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT binding_id, revision, resource_uri, context_node_uri,
+                            external_system, external_account_key, external_object_key,
+                            status, supersedes_binding_id, record_payload, payload_format,
+                            payload_wrapped_dek, created_at, updated_at
+                     FROM interoperability_source_bindings
+                     ORDER BY created_at ASC, binding_id ASC",
+                )
+                .map_err(|err| {
+                    MvError::Storage(format!("prepare source-binding registry query: {err}"))
+                })?;
+            let rows = statement
+                .query_map([], |row| self.row_to_source_binding(row))
+                .map_err(|err| MvError::Storage(format!("query source-binding registry: {err}")))?;
+            let mut bindings = Vec::new();
+            for row in rows {
+                bindings.push(row.map_err(|err| {
+                    MvError::Storage(format!("read source-binding registry record: {err}"))
+                })?);
+            }
+            Ok(bindings)
         })
     }
 
@@ -11493,6 +11787,12 @@ const WORKSPACE_SELECT: &str = "SELECT id, namespace, mode, state, descriptor_pa
 const WORKSPACE_DOCUMENT_SELECT: &str = "SELECT id, workspace_id, path_token, document_payload, \
     payload_format, lifecycle_state, projection_state, projected_node_id, revision, created_at, \
     updated_at FROM workspace_documents";
+const WORKSPACE_EVENT_SELECT: &str = "SELECT id, workspace_id, document_id, event_seq, \
+    correlation_id, actor_kind, actor_id, operation, status, event_payload, payload_format, \
+    prepared_at, completed_at FROM workspace_events";
+const WORKSPACE_CONFLICT_SELECT: &str = "SELECT id, workspace_id, document_id, source_event_id, \
+    conflict_kind, state, conflict_payload, payload_format, created_at, resolved_at \
+    FROM workspace_conflicts";
 
 fn checked_workspace_revision(revision: u64) -> MvResult<i64> {
     if revision == 0 {
@@ -11569,6 +11869,79 @@ fn validate_workspace_document_record(
         document.payload_format,
     )?;
     checked_workspace_revision(document.revision)
+}
+
+fn validate_workspace_event_record(sealed_mode: bool, event: &WorkspaceEvent) -> MvResult<()> {
+    if event.correlation_id.is_nil() {
+        return Err(MvError::InvalidInput(
+            "workspace journal correlation id must not be nil".into(),
+        ));
+    }
+    validate_manifest_payload(sealed_mode, &event.event_payload, event.payload_format)
+}
+
+fn validate_workspace_conflict_record(
+    sealed_mode: bool,
+    conflict: &WorkspaceConflict,
+) -> MvResult<()> {
+    validate_manifest_payload(
+        sealed_mode,
+        &conflict.conflict_payload,
+        conflict.payload_format,
+    )
+}
+
+/// Insert one journal row inside an open transaction, returning the stored
+/// row with its store-assigned per-workspace sequence number.
+fn insert_workspace_event_row(
+    transaction: &rusqlite::Transaction<'_>,
+    event: &WorkspaceEvent,
+    event_seq: u64,
+) -> MvResult<WorkspaceEvent> {
+    let event_seq = checked_workspace_revision(event_seq)?;
+    transaction
+        .execute(
+            "INSERT INTO workspace_events (
+                id, workspace_id, document_id, event_seq, correlation_id,
+                actor_kind, actor_id, operation, status, event_payload,
+                payload_format, prepared_at, completed_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                event.id.to_string(),
+                event.workspace_id.to_string(),
+                event.document_id.map(|value| value.to_string()),
+                event_seq,
+                event.correlation_id.to_string(),
+                event.actor_kind.as_str(),
+                event.actor_id,
+                event.operation.as_str(),
+                event.status.as_str(),
+                event.event_payload,
+                event.payload_format.as_str(),
+                event.prepared_at.to_rfc3339(),
+                event.completed_at.map(|value| value.to_rfc3339()),
+            ],
+        )
+        .map_err(|err| MvError::Storage(format!("insert workspace event failed: {err}")))?;
+    let mut stored = event.clone();
+    stored.event_seq = u64::try_from(event_seq)
+        .map_err(|_| MvError::Storage("workspace event sequence overflow".into()))?;
+    Ok(stored)
+}
+
+fn next_workspace_event_seq(
+    transaction: &rusqlite::Transaction<'_>,
+    workspace_id: Uuid,
+) -> MvResult<u64> {
+    let next: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(event_seq), 0) + 1 FROM workspace_events WHERE workspace_id = ?1",
+            params![workspace_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(|err| MvError::Storage(format!("assign workspace event sequence failed: {err}")))?;
+    u64::try_from(next)
+        .map_err(|_| MvError::Storage("workspace event sequence overflow".into()))
 }
 
 #[async_trait]
@@ -11841,6 +12214,14 @@ impl KnowledgeWorkspaceManifestStore for SqliteNodeStore {
             validate_workspace_document_record(self.sealed_mode(), document)?;
             checked_workspace_revision(update.expected_revision)?;
         }
+        for event in &reconciliation.journal_events {
+            if event.workspace_id != workspace.id {
+                return Err(MvError::InvalidInput(
+                    "reconciliation journal event belongs to another workspace".into(),
+                ));
+            }
+            validate_workspace_event_record(self.sealed_mode(), event)?;
+        }
 
         self.with_conn(|conn| {
             let transaction = conn.unchecked_transaction().map_err(|err| {
@@ -11941,10 +12322,163 @@ impl KnowledgeWorkspaceManifestStore for SqliteNodeStore {
                 }
             }
 
+            let mut next_event_seq = None;
+            for event in &reconciliation.journal_events {
+                let event_seq = match next_event_seq {
+                    Some(seq) => seq,
+                    None => next_workspace_event_seq(&transaction, workspace.id)?,
+                };
+                insert_workspace_event_row(&transaction, event, event_seq)?;
+                next_event_seq = Some(event_seq + 1);
+            }
+
             transaction.commit().map_err(|err| {
                 MvError::Storage(format!("commit workspace reconciliation failed: {err}"))
             })?;
             Ok(true)
+        })
+    }
+
+    async fn append_workspace_event(&self, event: &WorkspaceEvent) -> MvResult<WorkspaceEvent> {
+        validate_workspace_event_record(self.sealed_mode(), event)?;
+        let mut conn = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| {
+                MvError::Storage(format!("begin workspace journal append failed: {err}"))
+            })?;
+        let event_seq = next_workspace_event_seq(&transaction, event.workspace_id)?;
+        let stored = insert_workspace_event_row(&transaction, event, event_seq)?;
+        transaction.commit().map_err(|err| {
+            MvError::Storage(format!("commit workspace journal append failed: {err}"))
+        })?;
+        Ok(stored)
+    }
+
+    async fn list_workspace_events(
+        &self,
+        workspace_id: Uuid,
+        after_seq: Option<u64>,
+        limit: usize,
+    ) -> MvResult<Vec<WorkspaceEvent>> {
+        if !(1..=1000).contains(&limit) {
+            return Err(MvError::InvalidInput(
+                "workspace journal limit must be between 1 and 1000".into(),
+            ));
+        }
+        let after_seq = after_seq
+            .map(checked_workspace_revision)
+            .transpose()?
+            .unwrap_or(0);
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(&format!(
+                    "{WORKSPACE_EVENT_SELECT} WHERE workspace_id = ?1 AND event_seq > ?2 \
+                     ORDER BY event_seq LIMIT ?3"
+                ))
+                .map_err(|err| {
+                    MvError::Storage(format!("prepare workspace journal list failed: {err}"))
+                })?;
+            let rows = statement
+                .query_map(
+                    params![workspace_id.to_string(), after_seq, limit as i64],
+                    row_to_workspace_event,
+                )
+                .map_err(|err| {
+                    MvError::Storage(format!("list workspace events failed: {err}"))
+                })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|err| {
+                MvError::Storage(format!("collect workspace events failed: {err}"))
+            })
+        })
+    }
+
+    async fn record_workspace_conflict(
+        &self,
+        conflict: &WorkspaceConflict,
+        event: &WorkspaceEvent,
+    ) -> MvResult<WorkspaceEvent> {
+        validate_workspace_conflict_record(self.sealed_mode(), conflict)?;
+        validate_workspace_event_record(self.sealed_mode(), event)?;
+        if conflict.workspace_id != event.workspace_id {
+            return Err(MvError::InvalidInput(
+                "workspace conflict and its journal event must share one workspace".into(),
+            ));
+        }
+        let mut conn = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| {
+                MvError::Storage(format!("begin workspace conflict commit failed: {err}"))
+            })?;
+        let event_seq = next_workspace_event_seq(&transaction, conflict.workspace_id)?;
+        let stored = insert_workspace_event_row(&transaction, event, event_seq)?;
+        transaction
+            .execute(
+                "INSERT INTO workspace_conflicts (
+                    id, workspace_id, document_id, source_event_id, conflict_kind, state,
+                    conflict_payload, payload_format, created_at, resolved_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    conflict.id.to_string(),
+                    conflict.workspace_id.to_string(),
+                    conflict.document_id.map(|value| value.to_string()),
+                    conflict.source_event_id.map(|value| value.to_string()),
+                    conflict.conflict_kind.as_str(),
+                    conflict.state.as_str(),
+                    conflict.conflict_payload,
+                    conflict.payload_format.as_str(),
+                    conflict.created_at.to_rfc3339(),
+                    conflict.resolved_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .map_err(|err| {
+                MvError::Storage(format!("insert workspace conflict failed: {err}"))
+            })?;
+        transaction.commit().map_err(|err| {
+            MvError::Storage(format!("commit workspace conflict failed: {err}"))
+        })?;
+        Ok(stored)
+    }
+
+    async fn list_workspace_conflicts(
+        &self,
+        workspace_id: Uuid,
+        state: Option<WorkspaceConflictState>,
+    ) -> MvResult<Vec<WorkspaceConflict>> {
+        self.with_conn(|conn| {
+            let sql = match state {
+                Some(_) => format!(
+                    "{WORKSPACE_CONFLICT_SELECT} WHERE workspace_id = ?1 AND state = ?2 \
+                     ORDER BY created_at, id"
+                ),
+                None => format!(
+                    "{WORKSPACE_CONFLICT_SELECT} WHERE workspace_id = ?1 ORDER BY created_at, id"
+                ),
+            };
+            let mut statement = conn.prepare(&sql).map_err(|err| {
+                MvError::Storage(format!("prepare workspace conflict list failed: {err}"))
+            })?;
+            let rows = match state {
+                Some(value) => statement.query_map(
+                    params![workspace_id.to_string(), value.as_str()],
+                    row_to_workspace_conflict,
+                ),
+                None => statement
+                    .query_map(params![workspace_id.to_string()], row_to_workspace_conflict),
+            }
+            .map_err(|err| {
+                MvError::Storage(format!("list workspace conflicts failed: {err}"))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|err| {
+                MvError::Storage(format!("collect workspace conflicts failed: {err}"))
+            })
         })
     }
 }
@@ -12056,6 +12590,78 @@ mod tests {
             data,
         })
         .unwrap()
+    }
+
+    async fn register_test_public_schema(
+        store: &SqliteNodeStore,
+        local_node_id: Uuid,
+        name: &str,
+        event_type: Option<&str>,
+    ) -> PublicSchemaRecord {
+        let mut definition = serde_json::json!({
+            "$schema": JSON_SCHEMA_DRAFT_2020_12,
+            "type": "object",
+        });
+        if let Some(event_type) = event_type {
+            definition[EVENT_TYPE_SCHEMA_EXTENSION] = serde_json::json!(event_type);
+        }
+        let schema = PublicSchemaRecord::new(
+            SchemaReference::new(StableUri::schema(name).unwrap(), "1.0.0").unwrap(),
+            definition,
+            StableUri::node(local_node_id),
+        )
+        .unwrap();
+        let subject =
+            StableUri::schema_version(&schema.schema.uri, &schema.schema.version).unwrap();
+        let event = governance_event(
+            local_node_id,
+            PUBLIC_SCHEMA_REGISTERED_V1,
+            "public-schema-registered",
+            subject,
+            &format!("register-{name}"),
+            serde_json::json!({
+                "schema_uri": schema.schema.uri.as_str(),
+                "schema_version": schema.schema.version,
+                "content_digest": schema.content_digest,
+            }),
+        );
+        store
+            .commit_public_schema_with_event(&schema, &event)
+            .await
+            .unwrap();
+        schema
+    }
+
+    fn public_schema_lifecycle_event(
+        local_node_id: Uuid,
+        command: &PublicSchemaLifecycleCommand,
+        from: PublicSchemaLifecycle,
+        key: &str,
+    ) -> EventEnvelope {
+        let subject =
+            StableUri::schema_version(&command.schema.uri, &command.schema.version).unwrap();
+        governance_event(
+            local_node_id,
+            PUBLIC_SCHEMA_LIFECYCLE_TRANSITIONED_V1,
+            "public-schema-lifecycle-transitioned",
+            subject,
+            key,
+            serde_json::json!({
+                "schema_uri": command.schema.uri.as_str(),
+                "schema_version": command.schema.version,
+                "from_lifecycle": from.as_str(),
+                "to_lifecycle": command.target.as_str(),
+                "replacement_schema_uri": command
+                    .replacement
+                    .as_ref()
+                    .map(|reference| reference.uri.as_str()),
+                "replacement_schema_version": command
+                    .replacement
+                    .as_ref()
+                    .map(|reference| reference.version.as_str()),
+                "reason": command.reason,
+            }),
+        )
     }
 
     fn context_node_event(
@@ -12705,7 +13311,7 @@ mod tests {
                         row.get(0)
                     })
                     .map_err(|err| MvError::Storage(err.to_string()))?;
-                assert_eq!(schema_version, 38);
+                assert_eq!(schema_version, 41);
                 Ok(())
             })
             .unwrap();
@@ -12898,6 +13504,7 @@ mod tests {
                 expected_revision: 2,
                 replacement: stale_replacement,
             }],
+            journal_events: Vec::new(),
         };
 
         assert!(!store
@@ -12943,6 +13550,355 @@ mod tests {
             store.insert_knowledge_workspace(&workspace).await,
             Err(MvError::InvalidInput(message))
                 if message.contains("requires mvenc-v1")
+        ));
+    }
+
+    fn workspace_journal_event(
+        workspace_id: Uuid,
+        correlation_id: Uuid,
+        operation: WorkspaceEventOperation,
+        documents: Vec<WorkspaceEventDocumentDelta>,
+    ) -> WorkspaceEvent {
+        let mut payload = WorkspaceEventPayloadV1::new("test journal row");
+        payload.documents = documents;
+        WorkspaceEvent::new(
+            workspace_id,
+            None,
+            correlation_id,
+            WorkspaceEventActorKind::System,
+            operation,
+            WorkspaceEventStatus::Completed,
+            serde_json::to_vec(&payload).unwrap(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        )
+    }
+
+    fn journal_delta(
+        relative_path: &str,
+        before_hash: Option<&str>,
+        after_hash: Option<&str>,
+    ) -> WorkspaceEventDocumentDelta {
+        WorkspaceEventDocumentDelta {
+            document_id: None,
+            relative_path: Some(relative_path.to_string()),
+            before_hash: before_hash.map(str::to_string),
+            after_hash: after_hash.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_event_journal_assigns_sequences_and_survives_restart() {
+        let directory = tempdir().unwrap();
+        let db_path = directory.path().join("workspace-journal.db");
+        let correlation_id = Uuid::now_v7();
+        let workspace = KnowledgeWorkspace::new(
+            "personal",
+            KnowledgeWorkspaceMode::Mounted,
+            br#"{"display_name":"Journal Vault"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        let workspace_id = workspace.id;
+
+        {
+            let store = SqliteNodeStore::open(&db_path).unwrap();
+            store.insert_knowledge_workspace(&workspace).await.unwrap();
+
+            // Mount writes the first journal row: no prior state, only after hashes.
+            let mount = workspace_journal_event(
+                workspace_id,
+                correlation_id,
+                WorkspaceEventOperation::Mount,
+                vec![journal_delta("Notes/A.md", None, Some("sha256:a"))],
+            );
+            let mount = store.append_workspace_event(&mount).await.unwrap();
+            assert_eq!(mount.event_seq, 1);
+
+            // Reconcile journals its scan row in the same transaction as the
+            // manifest mutation.
+            let document = KnowledgeWorkspaceDocument::new(
+                workspace_id,
+                "e".repeat(64),
+                br#"{"relative_path":"Notes/A.md","content_hash":"sha256:a"}"#.to_vec(),
+                WorkspaceManifestPayloadFormat::JsonV1,
+            );
+            let mut workspace_replacement = workspace.clone();
+            workspace_replacement.state = KnowledgeWorkspaceState::Ready;
+            workspace_replacement.revision = 2;
+            workspace_replacement.updated_at = Utc::now();
+            let scan = workspace_journal_event(
+                workspace_id,
+                correlation_id,
+                WorkspaceEventOperation::Scan,
+                vec![journal_delta("Notes/A.md", None, Some("sha256:a"))],
+            );
+            let reconciliation = WorkspaceManifestReconciliation {
+                expected_workspace_revision: 1,
+                workspace_replacement,
+                document_inserts: vec![document.clone()],
+                document_updates: Vec::new(),
+                journal_events: vec![scan],
+            };
+            assert!(store
+                .apply_workspace_reconciliation(&reconciliation)
+                .await
+                .unwrap());
+
+            // Projection writes a row whose before/after hashes prove the
+            // projected bytes are the reconciled bytes.
+            let projection = workspace_journal_event(
+                workspace_id,
+                correlation_id,
+                WorkspaceEventOperation::Update,
+                vec![journal_delta(
+                    "Notes/A.md",
+                    Some("sha256:a"),
+                    Some("sha256:a"),
+                )],
+            );
+            let projection = store.append_workspace_event(&projection).await.unwrap();
+            assert_eq!(projection.event_seq, 3);
+
+            let events = store
+                .list_workspace_events(workspace_id, None, 100)
+                .await
+                .unwrap();
+            assert_eq!(events.len(), 3);
+            assert!(events
+                .iter()
+                .all(|event| event.correlation_id == correlation_id));
+            assert_eq!(events[0].operation, WorkspaceEventOperation::Mount);
+            assert_eq!(events[1].operation, WorkspaceEventOperation::Scan);
+            assert_eq!(events[2].operation, WorkspaceEventOperation::Update);
+
+            let scan_payload: WorkspaceEventPayloadV1 =
+                serde_json::from_slice(&events[1].event_payload).unwrap();
+            assert!(scan_payload.has_supported_schema());
+            assert_eq!(scan_payload.documents[0].before_hash, None);
+            assert_eq!(
+                scan_payload.documents[0].after_hash.as_deref(),
+                Some("sha256:a")
+            );
+            let projection_payload: WorkspaceEventPayloadV1 =
+                serde_json::from_slice(&events[2].event_payload).unwrap();
+            assert_eq!(
+                projection_payload.documents[0].before_hash,
+                projection_payload.documents[0].after_hash
+            );
+
+            let tail = store
+                .list_workspace_events(workspace_id, Some(1), 1)
+                .await
+                .unwrap();
+            assert_eq!(tail.len(), 1);
+            assert_eq!(tail[0].event_seq, 2);
+        }
+
+        // The journal is durable: every row survives a store restart.
+        let reopened = SqliteNodeStore::open(&db_path).unwrap();
+        let events = reopened
+            .list_workspace_events(workspace_id, None, 100)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.operation)
+                .collect::<Vec<_>>(),
+            vec![
+                WorkspaceEventOperation::Mount,
+                WorkspaceEventOperation::Scan,
+                WorkspaceEventOperation::Update,
+            ]
+        );
+        assert!(events
+            .iter()
+            .all(|event| event.correlation_id == correlation_id));
+        let mount_payload: WorkspaceEventPayloadV1 =
+            serde_json::from_slice(&events[0].event_payload).unwrap();
+        assert_eq!(
+            mount_payload.documents[0].after_hash.as_deref(),
+            Some("sha256:a")
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_event_journal_rolls_back_with_a_stale_reconciliation() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let workspace = KnowledgeWorkspace::new(
+            "personal",
+            KnowledgeWorkspaceMode::Mounted,
+            br#"{"display_name":"Atomic Journal Vault"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        store.insert_knowledge_workspace(&workspace).await.unwrap();
+
+        let mut workspace_replacement = workspace.clone();
+        workspace_replacement.state = KnowledgeWorkspaceState::Ready;
+        workspace_replacement.revision = 3;
+        workspace_replacement.updated_at = Utc::now();
+        let scan = workspace_journal_event(
+            workspace.id,
+            Uuid::now_v7(),
+            WorkspaceEventOperation::Scan,
+            vec![journal_delta("Notes/B.md", None, Some("sha256:b"))],
+        );
+        let reconciliation = WorkspaceManifestReconciliation {
+            expected_workspace_revision: 2,
+            workspace_replacement,
+            document_inserts: Vec::new(),
+            document_updates: Vec::new(),
+            journal_events: vec![scan],
+        };
+
+        assert!(!store
+            .apply_workspace_reconciliation(&reconciliation)
+            .await
+            .unwrap());
+        assert!(store
+            .list_workspace_events(workspace.id, None, 100)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn workspace_event_journal_rejects_invalid_rows() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let workspace = KnowledgeWorkspace::new(
+            "personal",
+            KnowledgeWorkspaceMode::Mounted,
+            br#"{"display_name":"Guarded Journal Vault"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        store.insert_knowledge_workspace(&workspace).await.unwrap();
+
+        let mut empty_payload = workspace_journal_event(
+            workspace.id,
+            Uuid::now_v7(),
+            WorkspaceEventOperation::Mount,
+            Vec::new(),
+        );
+        empty_payload.event_payload = Vec::new();
+        assert!(matches!(
+            store.append_workspace_event(&empty_payload).await,
+            Err(MvError::InvalidInput(message)) if message.contains("must not be empty")
+        ));
+
+        let mut nil_correlation = workspace_journal_event(
+            workspace.id,
+            Uuid::now_v7(),
+            WorkspaceEventOperation::Mount,
+            Vec::new(),
+        );
+        nil_correlation.correlation_id = Uuid::nil();
+        assert!(matches!(
+            store.append_workspace_event(&nil_correlation).await,
+            Err(MvError::InvalidInput(message)) if message.contains("correlation id")
+        ));
+        assert!(store
+            .list_workspace_events(workspace.id, None, 100)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn workspace_conflict_recording_is_atomic_with_its_journal_event() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let workspace = KnowledgeWorkspace::new(
+            "personal",
+            KnowledgeWorkspaceMode::Mounted,
+            br#"{"display_name":"Conflict Vault"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        store.insert_knowledge_workspace(&workspace).await.unwrap();
+        let document = KnowledgeWorkspaceDocument::new(
+            workspace.id,
+            "f".repeat(64),
+            br#"{"relative_path":"Notes/C.md","content_hash":"sha256:c"}"#.to_vec(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        store.insert_workspace_document(&document).await.unwrap();
+
+        let correlation_id = Uuid::now_v7();
+        let mut event_payload =
+            WorkspaceEventPayloadV1::new("guarded write rejected: stale expected content hash");
+        event_payload.documents.push(WorkspaceEventDocumentDelta {
+            document_id: Some(document.id),
+            relative_path: Some("Notes/C.md".to_string()),
+            before_hash: Some("sha256:c".to_string()),
+            after_hash: Some("sha256:c".to_string()),
+        });
+        let event = WorkspaceEvent::new(
+            workspace.id,
+            Some(document.id),
+            correlation_id,
+            WorkspaceEventActorKind::System,
+            WorkspaceEventOperation::Update,
+            WorkspaceEventStatus::Conflict,
+            serde_json::to_vec(&event_payload).unwrap(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        let mut conflict_payload =
+            WorkspaceConflictPayloadV1::new("expected content hash did not match canonical bytes");
+        conflict_payload.relative_path = Some("Notes/C.md".to_string());
+        conflict_payload.expected_hash = Some("sha256:stale".to_string());
+        conflict_payload.observed_hash = Some("sha256:c".to_string());
+        let conflict = WorkspaceConflict::new(
+            workspace.id,
+            Some(document.id),
+            Some(event.id),
+            WorkspaceConflictKind::StaleWrite,
+            serde_json::to_vec(&conflict_payload).unwrap(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+
+        let stored = store
+            .record_workspace_conflict(&conflict, &event)
+            .await
+            .unwrap();
+        assert_eq!(stored.event_seq, 1);
+
+        let open = store
+            .list_workspace_conflicts(workspace.id, Some(WorkspaceConflictState::Open))
+            .await
+            .unwrap();
+        assert_eq!(open, vec![conflict.clone()]);
+        assert!(store
+            .list_workspace_conflicts(workspace.id, Some(WorkspaceConflictState::Resolved))
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .list_workspace_conflicts(workspace.id, None)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let events = store
+            .list_workspace_events(workspace.id, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].status, WorkspaceEventStatus::Conflict);
+        assert_eq!(open[0].source_event_id, Some(events[0].id));
+
+        // A conflict and its event must share one workspace.
+        let foreign = WorkspaceConflict::new(
+            Uuid::now_v7(),
+            None,
+            None,
+            WorkspaceConflictKind::StaleWrite,
+            serde_json::to_vec(&conflict_payload).unwrap(),
+            WorkspaceManifestPayloadFormat::JsonV1,
+        );
+        assert!(matches!(
+            store.record_workspace_conflict(&foreign, &event).await,
+            Err(MvError::InvalidInput(message)) if message.contains("share one workspace")
         ));
     }
 
@@ -13804,6 +14760,178 @@ mod tests {
                 .await,
             Err(MvError::InvalidInput(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn schema_lifecycle_is_governed_atomic_and_idempotent() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let replacement =
+            register_test_public_schema(&store, local_node_id, "lifecycle-replacement", None).await;
+        let target =
+            register_test_public_schema(&store, local_node_id, "lifecycle-target", None).await;
+
+        let direct_update = store.with_conn(|connection| {
+            connection
+                .execute(
+                    "UPDATE interoperability_public_schemas
+                     SET lifecycle = 'deprecated', deprecated_at = ?1
+                     WHERE schema_uri = ?2 AND schema_version = ?3",
+                    params![
+                        Utc::now().to_rfc3339(),
+                        target.schema.uri.as_str(),
+                        &target.schema.version,
+                    ],
+                )
+                .map(|_| ())
+                .map_err(|err| MvError::Storage(err.to_string()))
+        });
+        assert!(matches!(direct_update, Err(MvError::Storage(message))
+            if message.contains("governance event")));
+
+        let deprecate = PublicSchemaLifecycleCommand {
+            schema: target.schema.clone(),
+            target: PublicSchemaLifecycle::Deprecated,
+            replacement: Some(replacement.schema.clone()),
+            reason: "superseded by the replacement schema".into(),
+        };
+        let deprecate_event = public_schema_lifecycle_event(
+            local_node_id,
+            &deprecate,
+            PublicSchemaLifecycle::Active,
+            "deprecate-lifecycle-target",
+        );
+        let deprecated = store
+            .transition_public_schema_lifecycle_with_event(&deprecate, &deprecate_event)
+            .await
+            .unwrap();
+        assert!(!deprecated.replayed);
+        assert_eq!(
+            deprecated.schema.lifecycle,
+            PublicSchemaLifecycle::Deprecated
+        );
+        assert_eq!(
+            deprecated.schema.replacement,
+            Some(replacement.schema.clone())
+        );
+        assert!(deprecated.schema.deprecated_at.is_some());
+        assert!(deprecated.schema.withdrawn_at.is_none());
+
+        let deprecate_retry = public_schema_lifecycle_event(
+            local_node_id,
+            &deprecate,
+            PublicSchemaLifecycle::Active,
+            "deprecate-lifecycle-target",
+        );
+        let replay = store
+            .transition_public_schema_lifecycle_with_event(&deprecate, &deprecate_retry)
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.event.id, deprecated.event.id);
+
+        let withdraw = PublicSchemaLifecycleCommand {
+            schema: target.schema.clone(),
+            target: PublicSchemaLifecycle::Withdrawn,
+            replacement: Some(replacement.schema.clone()),
+            reason: "migration window completed".into(),
+        };
+        let withdraw_event = public_schema_lifecycle_event(
+            local_node_id,
+            &withdraw,
+            PublicSchemaLifecycle::Deprecated,
+            "withdraw-lifecycle-target",
+        );
+        let withdrawn = store
+            .transition_public_schema_lifecycle_with_event(&withdraw, &withdraw_event)
+            .await
+            .unwrap();
+        assert_eq!(withdrawn.schema.lifecycle, PublicSchemaLifecycle::Withdrawn);
+        assert!(withdrawn.schema.withdrawn_at.is_some());
+        assert_eq!(
+            store.get_public_schema(&target.schema).await.unwrap(),
+            Some(withdrawn.schema)
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_lifecycle_with_live_outbox_reference_fails_closed() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let replacement =
+            register_test_public_schema(&store, local_node_id, "live-reference-replacement", None)
+                .await;
+        let target = register_test_public_schema(
+            &store,
+            local_node_id,
+            "live-reference-target",
+            Some("dev.mindvault.test.live-schema.v1"),
+        )
+        .await;
+        let live_event = governance_event(
+            local_node_id,
+            "dev.mindvault.test.live-schema.v1",
+            "live-reference-target",
+            StableUri::parse("mindvault://tests/live-schema-subject").unwrap(),
+            "live-schema-event",
+            serde_json::json!({"test": "pending reference"}),
+        );
+        {
+            let mut connection = store.conn().lock().unwrap();
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            SqliteNodeStore::insert_outbox_event(&transaction, &live_event).unwrap();
+            transaction.commit().unwrap();
+        }
+
+        let deprecate = PublicSchemaLifecycleCommand {
+            schema: target.schema.clone(),
+            target: PublicSchemaLifecycle::Deprecated,
+            replacement: Some(replacement.schema.clone()),
+            reason: "prepare callers to migrate".into(),
+        };
+        let deprecate_event = public_schema_lifecycle_event(
+            local_node_id,
+            &deprecate,
+            PublicSchemaLifecycle::Active,
+            "deprecate-live-reference-target",
+        );
+        store
+            .transition_public_schema_lifecycle_with_event(&deprecate, &deprecate_event)
+            .await
+            .unwrap();
+
+        let withdraw = PublicSchemaLifecycleCommand {
+            schema: target.schema.clone(),
+            target: PublicSchemaLifecycle::Withdrawn,
+            replacement: Some(replacement.schema.clone()),
+            reason: "attempt withdrawal while delivery is pending".into(),
+        };
+        let withdraw_event = public_schema_lifecycle_event(
+            local_node_id,
+            &withdraw,
+            PublicSchemaLifecycle::Deprecated,
+            "withdraw-live-reference-target",
+        );
+        assert!(matches!(
+            store
+                .transition_public_schema_lifecycle_with_event(&withdraw, &withdraw_event)
+                .await,
+            Err(MvError::InvalidInput(message)) if message.contains("live outbox references")
+        ));
+        assert!(store
+            .get_outbox_event(withdraw_event.id)
+            .await
+            .unwrap()
+            .is_none());
+        let stored = store
+            .get_public_schema(&target.schema)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.lifecycle, PublicSchemaLifecycle::Deprecated);
+        assert!(stored.withdrawn_at.is_none());
     }
 
     #[tokio::test]

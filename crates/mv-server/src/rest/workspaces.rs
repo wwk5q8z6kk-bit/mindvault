@@ -5,11 +5,14 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
-use mv_core::{KnowledgeWorkspace, MvError};
+use mv_core::{
+    KnowledgeWorkspace, MvError, WorkspaceConflict, WorkspaceConflictState,
+    WORKSPACE_CONFLICT_RESOLUTIONS_V1,
+};
 use mv_engine::engine::WorkspaceProjectionOutcome;
 use mv_engine::workspace::{
-    decode_workspace_descriptor, WorkspaceDocumentRead, WorkspaceReconciliationOutcome,
-    WorkspaceTree,
+    decode_workspace_conflict_payload, decode_workspace_descriptor, WorkspaceDocumentRead,
+    WorkspaceReconciliationOutcome, WorkspaceTree,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -22,6 +25,31 @@ use crate::state::AppState;
 #[derive(Debug, Deserialize)]
 pub(crate) struct ListWorkspacesQuery {
     namespace: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ListWorkspaceConflictsQuery {
+    /// Optional review-state filter; defaults to `open` conflicts only.
+    state: Option<String>,
+}
+
+/// One workspace conflict awaiting or recording review, with the resolution
+/// choices documented by the workspace document contract.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct WorkspaceConflictSummary {
+    id: Uuid,
+    workspace_id: Uuid,
+    document_id: Option<Uuid>,
+    source_event_id: Option<Uuid>,
+    conflict_kind: String,
+    state: String,
+    summary: String,
+    relative_path: Option<String>,
+    expected_hash: Option<String>,
+    observed_hash: Option<String>,
+    resolutions: Vec<String>,
+    created_at: DateTime<Utc>,
+    resolved_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,6 +233,36 @@ pub(crate) async fn read_workspace_document(
     Ok(Json(document))
 }
 
+pub(crate) async fn list_workspace_conflicts(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(workspace_id): Path<Uuid>,
+    Query(query): Query<ListWorkspaceConflictsQuery>,
+) -> Result<Json<Vec<WorkspaceConflictSummary>>, (StatusCode, String)> {
+    let workspace = authorized_workspace(&auth, &state, workspace_id).await?;
+    let state_filter = match query.state.as_deref() {
+        None => Some(WorkspaceConflictState::Open),
+        Some(raw) => Some(raw.parse::<WorkspaceConflictState>().map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "unknown conflict state '{raw}'; expected one of: open, reviewing, resolved,                      dismissed"
+                ),
+            )
+        })?),
+    };
+    let conflicts = state
+        .engine
+        .list_knowledge_workspace_conflicts(workspace.id, state_filter)
+        .await
+        .map_err(map_workspace_error)?;
+    conflicts
+        .into_iter()
+        .map(conflict_summary)
+        .collect::<Result<Vec<_>, _>>()
+        .map(Json)
+}
+
 async fn authorized_workspace(
     auth: &AuthContext,
     state: &AppState,
@@ -254,6 +312,30 @@ fn reconciliation_response(
         projection: outcome.projection,
         diagnostics: outcome.diagnostics,
     }
+}
+
+fn conflict_summary(
+    conflict: WorkspaceConflict,
+) -> Result<WorkspaceConflictSummary, (StatusCode, String)> {
+    let payload = decode_workspace_conflict_payload(&conflict).map_err(map_workspace_error)?;
+    Ok(WorkspaceConflictSummary {
+        id: conflict.id,
+        workspace_id: conflict.workspace_id,
+        document_id: conflict.document_id,
+        source_event_id: conflict.source_event_id,
+        conflict_kind: conflict.conflict_kind.as_str().into(),
+        state: conflict.state.as_str().into(),
+        summary: payload.evidence,
+        relative_path: payload.relative_path,
+        expected_hash: payload.expected_hash,
+        observed_hash: payload.observed_hash,
+        resolutions: WORKSPACE_CONFLICT_RESOLUTIONS_V1
+            .iter()
+            .map(|resolution| (*resolution).to_string())
+            .collect(),
+        created_at: conflict.created_at,
+        resolved_at: conflict.resolved_at,
+    })
 }
 
 fn default_workspace_name(root: &FsPath) -> String {

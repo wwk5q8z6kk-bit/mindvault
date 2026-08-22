@@ -1,9 +1,10 @@
 # Interoperability Kernel v1: Transactional, Registry, Grant, and Delivery Slices
 
-- **Status:** Implemented transactional, governed-registry, Context Node, grant, and durable producer/consumer delivery-control slices
+- **Status:** Implemented transactional, governed-registry and schema-lifecycle, Context Node, grant, and durable producer/consumer delivery-control slices
 - **Date:** 2026-07-26
+- **Last updated:** 2026-08-03
 - **Decision:** ADR 011
-- **Scope:** Canonical node creation, public schemas, Source Bindings, Context Nodes, Authority Grants, outbox delivery, consumer inboxes, immutable receipts, and local checkpoints
+- **Scope:** Canonical node creation, public schemas and lifecycle transitions, Source Bindings, Context Nodes, Authority Grants, outbox delivery, consumer inboxes, immutable receipts, and local checkpoints
 
 ## Purpose
 
@@ -13,8 +14,7 @@ durable transaction, a retried command cannot create duplicate canonical
 state, and external-object authority is represented as governed core data.
 
 It is a kernel foundation, not completion of the full interoperability kernel.
-Connector manifests, federation, schema lifecycle commands, public registry
-APIs, action-envelope enforcement, authenticated live transport publishers,
+Connector manifests, federation, authenticated live transport publishers,
 remote signature verification, and protocol translation remain later gated
 work.
 
@@ -71,9 +71,19 @@ content-addressed public schema versions. Every definition:
   type.
 
 Schema registration and its `dev.mindvault.schema.registered.v1` event commit in
-one immediate SQLite transaction. Schema rows cannot be updated or deleted in
-this slice. Lifecycle transitions are deliberately blocked until they receive
-their own governed command/event contract and replacement migration guard.
+one immediate SQLite transaction. Schema definitions and ownership remain
+immutable, and schema rows cannot be deleted.
+
+Migration `041_public_schema_lifecycle.sql` adds the governed lifecycle path.
+`PublicSchemaLifecycleCommand` and
+`dev.mindvault.schema.lifecycle.transitioned.v1` advance versions only from
+`active` to `deprecated` and then from `deprecated` to `withdrawn`, atomically
+with the matching durable event. Reactivation and skipped states fail closed.
+Withdrawal requires an explicitly registered active replacement, preserves the
+original deprecation time, and is refused while a pending outbox event still
+references the retiring schema version. SQLite triggers independently enforce
+the immutable-definition, legal-transition, replacement, live-reference, and
+matching-governance-event invariants.
 
 SQLite independently enforces event admission: every outbox insert must name an
 active registered schema whose `x-mindvault-event-type` exactly matches the
@@ -105,6 +115,26 @@ unregistered connector identity into authority. Connector polling, credential
 access, content materialization, and external execution are outside this
 slice.
 
+## Public registry transports
+
+IK-009 exposes the governed registry boundary through authenticated REST and
+generated OpenAPI:
+
+- `POST /api/v1/schemas`, `GET /api/v1/schemas/{name}/versions`, and
+  `GET /api/v1/schemas/{name}/versions/{version}`;
+- `GET|POST /api/v1/source-bindings` and `GET /api/v1/source-bindings/{id}`;
+- `GET|POST /api/v1/context-nodes` and `GET /api/v1/context-nodes/{id}`.
+
+All reads retain the server's existing read authorization. Registration is
+admin-only, requires a registered local Context Node, and passes through Tool
+Grant command admission before storage. Each successful write uses the
+existing atomic registry-record plus event transaction. Source Binding IDs are
+derived from the local node, governed principal, and idempotency key so an
+exact HTTP retry resolves to the original registration; reuse with changed
+semantics conflicts. Remote Context Node registration is deliberately limited
+to an untrusted `discovered` descriptor. Trust activation, lifecycle mutation,
+and provider execution remain separate governed commands.
+
 ## Context Nodes and Authority Grants
 
 Migration `034_context_node_registry.sql` adds governed, revisioned Context
@@ -124,6 +154,13 @@ Issuance and lifecycle transitions share the governance transaction and
 idempotent event contract. Complete grant records use sealed payload storage
 when vault sealing is enabled. See `CONTEXT_NODE_MODEL.md` and
 `AUTHORITY_GRANT_MODEL.md`.
+
+IK-010 exposes authenticated issue/list/get/delegate/suspend/revoke/resume REST
+commands in generated OpenAPI. Root issuance and lifecycle mutation remain
+admin-only. Delegation accepts a writer only when the caller resolves to the
+parent grantee, inherits omitted terms from the parent, and commits through the
+same immediate SQLite transaction that revalidates the complete parent chain
+and strict-subset rules.
 
 ## Command and replay contract
 
@@ -253,11 +290,10 @@ before projection recovery can be considered complete.
 - The event contains stable identities and policy metadata but excludes node
   content.
 - Existing REST authorization and quota checks remain in place. The grant
-  resolver is now wired to public command admission on `POST /api/v1/nodes`,
-  behind `MINDVAULT_COMMAND_ADMISSION_MODE` (`off` by default). Admission is
-  additive — it never replaces the role, namespace, or quota checks — and runs
-  after the idempotent-replay lookup and before the quota check. See
-  `AUTHORITY_GRANT_MODEL.md` § Command admission.
+  resolver is wired to public command admission on node mutations and governed
+  registry registration, behind `MINDVAULT_COMMAND_ADMISSION_MODE` (`off` by
+  default). Admission is additive — it never replaces role, namespace, quota,
+  or admin checks. See `AUTHORITY_GRANT_MODEL.md` § Command admission.
 - Unknown envelope versions, invalid schema-version tokens, malformed URIs,
   invalid digests, empty provenance, non-object data, and unregistered or
   mismatched event schemas fail closed.
@@ -302,6 +338,17 @@ update, and delete whenever command admission is active. The envelope carries
 action/correlation IDs, principal, acting actor, resource, operation, grant IDs,
 and the policy decision. Space, work-order, budget, and outcome fields from
 ADR 010 remain deferred to the Trust Ledger slice.
+
+Public registry transports (`IK-009`) now cover immutable schema registration
+and version queries, Source Binding registration/list/get, and untrusted
+discovered Context Node registration/list/get. Focused integration tests prove
+Tool Grant enforcement, retry-safe Source Binding identity, all query paths,
+and generated OpenAPI coverage.
+
+Public grant transport (`IK-010`) now adds explicit delegation to the existing
+issue/list/get and lifecycle routes. Focused integration tests prove caller
+binding and rejection of widened targets, capabilities, validity, sensitivity,
+retention, and delegation depth, plus generated OpenAPI coverage.
 
 The outbox dispatcher runtime (`IK-004`) claims under a lease, completes through
 the existing receipt binding, and ships a local-ack publisher so pending events
