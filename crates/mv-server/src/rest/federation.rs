@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::{
@@ -14,6 +15,40 @@ use mv_engine::federation::{FederatedResult, FederationPeer};
 
 use crate::auth::{authorize_read, authorize_write, AuthContext};
 use crate::state::AppState;
+
+/// FED-000 — production federation stays off until FED-001..FED-010 are verified.
+///
+/// Opt-in only via `MINDVAULT_FEDERATION_ENABLED=1|true|yes|on`. When enabled,
+/// log once naming this backlog item so operators cannot mistake experimental
+/// transport for a production security boundary.
+fn federation_enabled() -> bool {
+    std::env::var("MINDVAULT_FEDERATION_ENABLED")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn require_federation_enabled() -> Result<(), (StatusCode, String)> {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if federation_enabled() {
+        if !WARNED.swap(true, Ordering::SeqCst) {
+            tracing::warn!(
+                target: "mindvault::federation",
+                "MINDVAULT_FEDERATION_ENABLED is set; production federation remains gated by FED-000 until FED-001..FED-010 are verified (IMPLEMENTATION_BACKLOG.md / FEDERATION_THREAT_MODEL.md)"
+            );
+        }
+        Ok(())
+    } else {
+        Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "federation is disabled by default (FED-000); set MINDVAULT_FEDERATION_ENABLED=1 only for development after accepting FEDERATION_THREAT_MODEL.md residual risk".into(),
+        ))
+    }
+}
 
 // --- DTOs ---
 
@@ -78,6 +113,7 @@ pub async fn list_peers(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     authorize_read(&auth)?;
+    require_federation_enabled()?;
 
     let peers = state.engine.federation.list_peers().await;
     Ok(Json(serde_json::json!({
@@ -92,6 +128,7 @@ pub async fn federation_identity(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     authorize_read(&auth)?;
+    require_federation_enabled()?;
 
     let mut profile = state
         .engine
@@ -161,6 +198,7 @@ pub async fn add_peer(
     Json(body): Json<AddPeerDto>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     authorize_write(&auth)?;
+    require_federation_enabled()?;
 
     let mut peer = FederationPeer::new(body.vault_id, body.display_name, body.endpoint);
 
@@ -195,6 +233,7 @@ pub async fn federation_handshake(
     Json(body): Json<HandshakeDto>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     authorize_write(&auth)?;
+    require_federation_enabled()?;
 
     let peer = state
         .engine
@@ -229,6 +268,7 @@ pub async fn remove_peer(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     authorize_write(&auth)?;
+    require_federation_enabled()?;
 
     let uuid = Uuid::parse_str(&id)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid peer id: {e}")))?;
@@ -248,6 +288,7 @@ pub async fn federated_query(
     Json(body): Json<FederatedQueryDto>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     authorize_read(&auth)?;
+    require_federation_enabled()?;
 
     let limit = body.limit.unwrap_or(50);
     let results = state
@@ -272,6 +313,7 @@ pub async fn peer_health(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     authorize_read(&auth)?;
+    require_federation_enabled()?;
 
     let uuid = Uuid::parse_str(&id)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid peer id: {e}")))?;

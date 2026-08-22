@@ -56,6 +56,9 @@ pub(crate) struct CreateWorkOrderRequest {
     sensitivity: Option<String>,
     #[serde(default)]
     retention: Option<String>,
+    /// Optional Collaborative Space UUID (SPACE-002). Personal-vault orders omit it.
+    #[serde(default)]
+    space_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -946,6 +949,7 @@ fn build_proposal(
         sensitivity,
         retention,
         idempotency_key: request.idempotency_key.clone(),
+        space_id: request.space_id,
         nodes,
         edges,
     })
@@ -956,7 +960,8 @@ fn build_proposal(
 fn map_admission_refusal(refusal: AdmissionRefusal) -> (StatusCode, String) {
     match refusal {
         AdmissionRefusal::WriteScopeOutsideGrant { .. }
-        | AdmissionRefusal::ReadScopeOutsideGrant { .. } => {
+        | AdmissionRefusal::ReadScopeOutsideGrant { .. }
+        | AdmissionRefusal::SpaceAuthorizationDenied { .. } => {
             (StatusCode::FORBIDDEN, refusal.to_string())
         }
         AdmissionRefusal::DependencyCycle { .. } | AdmissionRefusal::Invalid { .. } => {

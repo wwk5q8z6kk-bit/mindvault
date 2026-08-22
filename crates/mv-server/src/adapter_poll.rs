@@ -17,10 +17,12 @@ pub struct AdapterPollConfig {
 
 impl AdapterPollConfig {
     pub fn from_env() -> Self {
+        // Default off until SPACE-003 reliable-effects gates land. Opt in with
+        // MINDVAULT_ADAPTER_POLL_ENABLED=1.
         let enabled = std::env::var("MINDVAULT_ADAPTER_POLL_ENABLED")
             .ok()
             .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-            .unwrap_or(true);
+            .unwrap_or(false);
         let interval_secs = std::env::var("MINDVAULT_ADAPTER_POLL_INTERVAL_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())

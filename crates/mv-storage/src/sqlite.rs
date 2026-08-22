@@ -15483,6 +15483,7 @@ mod tests {
             principal: principal.clone(),
             actor: principal,
             governing_node: StableUri::node(local_node_id),
+            space_id: None,
             goal: "summarize the meeting into candidate decisions".into(),
             non_goals: vec!["do not contact external services".into()],
             anchors: Vec::new(),

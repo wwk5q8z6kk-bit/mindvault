@@ -28,8 +28,8 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 use mv_core::{
-    AgentRun, GateId, GateResult, InteroperabilityStore, RiskTier, RunArtifact, StableUri,
-    WorkOrder, WorkOrderBudget, WorkOrderNode, WorkOrderSpend, WriteLease,
+    AgentRun, AutonomyStore, GateId, GateResult, InteroperabilityStore, RiskTier, RunArtifact,
+    StableUri, WorkOrder, WorkOrderBudget, WorkOrderNode, WorkOrderSpend, WriteLease,
 };
 use mv_engine::config::EngineConfig;
 use mv_engine::engine::MindVaultEngine;
@@ -559,7 +559,7 @@ fn item_10_conformance_coverage_is_declared() {
 
     let engine = std::fs::read_to_string(manifest.join("../mv-engine/src/engine/work_order_ops.rs"))
         .expect("mv-engine work_order_ops");
-    assert_eq!(count_test_attrs(&engine), 14, "mv-engine work_order_ops tests");
+    assert_eq!(count_test_attrs(&engine), 20, "mv-engine work_order_ops tests");
 
     let api = std::fs::read_to_string(manifest.join("tests/api_integration.rs"))
         .expect("api_integration");
@@ -676,6 +676,19 @@ async fn wedge_value_proof_trusted_work_completes_over_http() {
         .await
         .unwrap();
     assert_eq!(issued.status(), StatusCode::CREATED, "grant: {:?}", issued);
+
+    // Avoid self-approval deadlock (SPACE-002): with auth-disabled admin as
+    // both run actor and approver, park+approve would fail closed. Autonomy
+    // clears the park so the HTTP execute path remains the wedge proof.
+    let mut rule = mv_core::AutonomyRule::global(0.0);
+    rule.allowed_intent_types = vec!["work_order.run.engine".into()];
+    rule.max_actions_per_hour = 100;
+    engine
+        .store
+        .nodes
+        .add_autonomy_rule(&rule)
+        .await
+        .unwrap();
 
     let created = router
         .clone()
@@ -810,8 +823,12 @@ async fn wedge_value_proof_trusted_work_completes_over_http() {
         replay.status()
     );
 
-    // Keep the engine handle live through setup teardown semantics.
-    let _ = engine.store.nodes.local_context_node_id().await;
+    let counters = engine.metrics.get_counters().await;
+    assert_eq!(
+        counters.get("trusted_work_completed").copied().unwrap_or(0),
+        1,
+        "WATW interim counter must increment on production-path execute"
+    );
 }
 
 async fn body_json(resp: axum::response::Response) -> Value {

@@ -84,6 +84,9 @@ pub struct ProposedWorkOrder {
     pub sensitivity: Sensitivity,
     pub retention: RetentionClass,
     pub idempotency_key: String,
+    /// When set, admission requires an active Space membership that permits
+    /// Write for the Work Order principal (SPACE-002 / ADR 010).
+    pub space_id: Option<Uuid>,
     pub nodes: Vec<ProposedNode>,
     pub edges: Vec<ProposedEdge>,
 }
@@ -105,6 +108,8 @@ pub enum AdmissionRefusal {
     },
     /// The dependency graph is cyclic across non-conflict edges.
     DependencyCycle { contracts: usize },
+    /// Space-scoped admission failed the membership matrix (SPACE-002).
+    SpaceAuthorizationDenied { reason: String },
     /// The proposal is malformed.
     Invalid { reason: String },
 }
@@ -132,6 +137,9 @@ impl std::fmt::Display for AdmissionRefusal {
                 formatter,
                 "dependency graph is cyclic across {contracts} contracts"
             ),
+            Self::SpaceAuthorizationDenied { reason } => {
+                write!(formatter, "space authorization denied: {reason}")
+            }
             Self::Invalid { reason } => write!(formatter, "invalid work order: {reason}"),
         }
     }
@@ -260,6 +268,15 @@ impl MindVaultEngine {
             }));
         }
 
+        if let Some(space_id) = proposal.space_id {
+            if let Err(refusal) = self
+                .authorize_space_scoped_admission(principal, space_id, now)
+                .await?
+            {
+                return Ok(Err(refusal));
+            }
+        }
+
         let work_order = WorkOrder {
             work_order_id,
             revision: 1,
@@ -267,6 +284,7 @@ impl MindVaultEngine {
             principal: principal.clone(),
             actor: actor.clone(),
             governing_node,
+            space_id: proposal.space_id,
             goal: proposal.goal.clone(),
             non_goals: proposal.non_goals.clone(),
             anchors: proposal.anchors.clone(),
@@ -296,6 +314,43 @@ impl MindVaultEngine {
             .commit_work_order_with_event(&work_order, &nodes, &edges, &event)
             .await?;
         Ok(Ok(commit.work_order))
+    }
+
+    /// SPACE-002 — Space-scoped Work Orders require active Write membership.
+    async fn authorize_space_scoped_admission(
+        &self,
+        principal: &StableUri,
+        space_id: Uuid,
+        at: chrono::DateTime<Utc>,
+    ) -> MvResult<Result<(), AdmissionRefusal>> {
+        let Some(space) = self.store.nodes.get_space(space_id).await? else {
+            return Ok(Err(AdmissionRefusal::SpaceAuthorizationDenied {
+                reason: "space does not exist".into(),
+            }));
+        };
+        if space.state != SpaceState::Active {
+            return Ok(Err(AdmissionRefusal::SpaceAuthorizationDenied {
+                reason: format!("space is not active ({})", space.state.as_str()),
+            }));
+        }
+        let Some(principal_id) = principal.trailing_uuid() else {
+            return Ok(Err(AdmissionRefusal::SpaceAuthorizationDenied {
+                reason: "principal URI is not a governed identity principal".into(),
+            }));
+        };
+        let membership = self
+            .store
+            .nodes
+            .get_space_membership(space_id, principal_id)
+            .await?;
+        match authorize_space_operation(membership.as_ref(), space_id, SpaceOperation::Write, at) {
+            SpaceAuthDecision::Allow => Ok(Ok(())),
+            SpaceAuthDecision::Deny(reason) => {
+                Ok(Err(AdmissionRefusal::SpaceAuthorizationDenied {
+                    reason: reason.into(),
+                }))
+            }
+        }
     }
 
     /// Resolve one contract's declared read and write scope against effective
@@ -1385,6 +1440,7 @@ mod tests {
             sensitivity: Sensitivity::Internal,
             retention: RetentionClass::Operational,
             idempotency_key: key.into(),
+            space_id: None,
             nodes: vec![ProposedNode {
                 purpose: "extract decisions".into(),
                 executor_kind: ExecutorKind::Engine,
@@ -2651,6 +2707,87 @@ mod tests {
             .unwrap();
         assert_eq!(after.len(), 1, "failed admit must not mint a rival grant");
         assert_eq!(after[0].targets, before[0].targets);
+    }
+
+    /// SPACE-002 — Space-scoped Work Orders require Write membership.
+    #[tokio::test]
+    async fn work_order_agent_run_space_scoped_requires_membership() {
+        let (engine, _dir) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let principal_id = Uuid::new_v5(&local_node_id, b"space-agent");
+        let actor = StableUri::principal(local_node_id, principal_id);
+        issue_tool_grant(
+            &engine,
+            local_node_id,
+            &actor,
+            &["mindvault://schemas/executable"],
+            "space-scoped-grant",
+        )
+        .await;
+
+        let identity = IdentityRecord::new(local_node_id, "space-agent", ActorKind::Agent, "Agent");
+        assert_eq!(identity.principal_id, principal_id);
+        engine
+            .store
+            .nodes
+            .upsert_identity_record(&identity)
+            .await
+            .unwrap();
+
+        let workspace = CollabWorkspace::new("wedge-ws", "Wedge Workspace");
+        engine
+            .store
+            .nodes
+            .insert_collab_workspace(&workspace)
+            .await
+            .unwrap();
+        let space = Space::new(workspace.id, "trusted-work", "Trusted Work");
+        engine.store.nodes.insert_space(&space).await.unwrap();
+
+        let mut scoped = proposal(
+            &["mindvault://schemas/executable"],
+            RiskTier::Low,
+            "space-scoped-no-member",
+        );
+        scoped.space_id = Some(space.id);
+
+        let denied = engine
+            .admit_work_order(&actor, &actor, &scoped)
+            .await
+            .unwrap()
+            .expect_err("no membership must fail closed");
+        match denied {
+            AdmissionRefusal::SpaceAuthorizationDenied { reason } => {
+                assert!(
+                    reason.contains("membership") || reason.contains("denied"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected SpaceAuthorizationDenied, got {other:?}"),
+        }
+
+        let membership =
+            SpaceMembership::new(space.id, principal_id, ActorKind::Agent, SpaceRole::Member);
+        engine
+            .store
+            .nodes
+            .upsert_space_membership(&membership)
+            .await
+            .unwrap();
+
+        let mut allowed = proposal(
+            &["mindvault://schemas/executable"],
+            RiskTier::Low,
+            "space-scoped-member",
+        );
+        allowed.space_id = Some(space.id);
+        let admitted = engine
+            .admit_work_order(&actor, &actor, &allowed)
+            .await
+            .unwrap()
+            .expect("member may admit");
+        assert_eq!(admitted.space_id, Some(space.id));
+        assert_eq!(admitted.status, WorkOrderStatus::Admitted);
     }
 
     /// SPACE-002 — state-machine transitions and identical-retry classification.

@@ -398,6 +398,10 @@ pub struct WorkOrder {
     pub principal: StableUri,
     pub actor: StableUri,
     pub governing_node: StableUri,
+    /// Optional Collaborative Space this Work Order is authorized under
+    /// (ADR 010 / SPACE-002). Personal-vault orders leave this unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<Uuid>,
     pub goal: String,
     pub non_goals: Vec<String>,
     pub anchors: Vec<StableUri>,

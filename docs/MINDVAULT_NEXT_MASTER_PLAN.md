@@ -22,6 +22,17 @@ This document supersedes [`DEVELOPMENT_PLAN.md`](../DEVELOPMENT_PLAN.md) for pro
 
 ## Progress Reconciliation (as of 2026-07-31)
 
+### Unicorn strategy delta (2026-07-31)
+
+Authoritative commercial wedge and thesis scoring live in [`docs/strategy/unicorn/`](../strategy/unicorn/README.md).
+
+- **Primary wedge:** Trusted Agent Work for AI-native teams (`PRIMARY_WEDGE_DECISION.md`).
+- **Fallback:** Sovereign personal AI context OS.
+- **Rejected as primary:** gateway-first control plane; protocol-company; marketplace-first.
+- **Production-path proof:** `cargo test -p mv-server --test work_order_conformance -- wedge_value_proof_trusted_work_completes_over_http`.
+- Platform end-state (Vaults + Spaces + evidence + agents + interop) remains; wedge sequencing overrides indiscriminate breadth.
+
+
 Honest mapping against the current repository. **Do not read “planned” as “done.”**
 
 | Area | Plan phase | Repo reality | Backlog groups |

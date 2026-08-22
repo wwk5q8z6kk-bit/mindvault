@@ -2,8 +2,10 @@
 //!
 //! Each adapter implements [`ExternalAdapter`] to send/receive messages through
 //! external services (Slack, Discord, email, etc.). Inbound messages are converted
-//! to [`RelayMessage`] objects and flow through the relay engine, automatically
-//! creating vault nodes for searchability.
+//! to [`RelayMessage`] objects and flow through the relay engine as communication
+//! only (SPACE-004). Knowledge-graph promotion requires an explicit
+//! `promote_relay_message` (or equivalent governed) path — adapters must not
+//! auto-insert vault nodes.
 
 pub mod discord;
 pub mod email;

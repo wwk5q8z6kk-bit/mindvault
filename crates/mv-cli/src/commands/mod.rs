@@ -17,6 +17,7 @@ pub mod secret;
 pub mod server;
 pub mod stats;
 pub mod store;
+pub mod trusted_work;
 
 use anyhow::Context;
 use mv_core::ConfigSection;

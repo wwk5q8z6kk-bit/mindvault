@@ -182,6 +182,27 @@ impl MindVaultEngine {
                 ))
             })?;
 
+        // North-star input metric: Weekly Accepted Trusted Works (WATW) uses
+        // completed governed Engine runs with passing required gates as the
+        // interim proxy until a separate human-acceptance UI lands.
+        self.metrics
+            .increment("trusted_work_completed", 1)
+            .await;
+        self.metrics
+            .record_histogram(
+                "trusted_work_gate_count",
+                gate_results.len() as f64,
+            )
+            .await;
+        tracing::info!(
+            target: "mindvault::watw",
+            run_id = %completed.run_id,
+            work_order_id = %completed.work_order_id,
+            artifact_digest = %artifact.content_digest,
+            gates = gate_results.len(),
+            "trusted_work_completed"
+        );
+
         Ok(ExecutedRun {
             run: completed,
             artifact,
