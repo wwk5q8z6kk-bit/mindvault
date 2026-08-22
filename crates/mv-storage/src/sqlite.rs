@@ -304,6 +304,10 @@ impl SqliteNodeStore {
                 42,
                 include_str!("../../../migrations/042_collab_spaces_and_membership.sql"),
             ),
+            (
+                43,
+                include_str!("../../../migrations/043_adapter_bindings_and_deliveries.sql"),
+            ),
         ];
 
         // Migration 001 must always run first to create schema_version table.
@@ -11022,6 +11026,140 @@ fn row_to_trust_model(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrustModel> {
     })
 }
 
+
+// ---------------------------------------------------------------------------
+// AdapterBindingStore (SPACE-003)
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl AdapterBindingStore for SqliteNodeStore {
+    async fn upsert_adapter_binding(&self, binding: &AdapterBindingRecord) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO adapter_bindings (
+                    id, adapter_type, name, enabled, settings_json, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                    adapter_type = excluded.adapter_type,
+                    name = excluded.name,
+                    enabled = excluded.enabled,
+                    settings_json = excluded.settings_json,
+                    updated_at = excluded.updated_at",
+                params![
+                    binding.id.to_string(),
+                    binding.adapter_type,
+                    binding.name,
+                    if binding.enabled { 1 } else { 0 },
+                    binding.settings_json,
+                    binding.created_at,
+                    binding.updated_at,
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("upsert adapter binding failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_adapter_binding(&self, id: Uuid) -> MvResult<Option<AdapterBindingRecord>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, adapter_type, name, enabled, settings_json, created_at, updated_at
+                     FROM adapter_bindings WHERE id = ?1",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare adapter binding get: {err}")))?;
+            let mut rows = statement
+                .query(params![id.to_string()])
+                .map_err(|err| MvError::Storage(format!("query adapter binding: {err}")))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(
+                    row_to_adapter_binding(row)
+                        .map_err(|err| MvError::Storage(err.to_string()))?,
+                )),
+                None => Ok(None),
+            }
+        })
+    }
+
+    async fn list_adapter_bindings(&self) -> MvResult<Vec<AdapterBindingRecord>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, adapter_type, name, enabled, settings_json, created_at, updated_at
+                     FROM adapter_bindings
+                     ORDER BY created_at ASC, id ASC",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare adapter binding list: {err}")))?;
+            let rows = statement
+                .query_map([], row_to_adapter_binding)
+                .map_err(|err| MvError::Storage(format!("list adapter bindings: {err}")))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|err| MvError::Storage(format!("collect adapter bindings: {err}")))
+        })
+    }
+
+    async fn delete_adapter_binding(&self, id: Uuid) -> MvResult<bool> {
+        self.with_conn(|conn| {
+            let changed = conn
+                .execute(
+                    "DELETE FROM adapter_bindings WHERE id = ?1",
+                    params![id.to_string()],
+                )
+                .map_err(|err| MvError::Storage(format!("delete adapter binding: {err}")))?;
+            Ok(changed > 0)
+        })
+    }
+
+    async fn record_adapter_provider_delivery(
+        &self,
+        adapter_id: Uuid,
+        provider_delivery_id: &str,
+    ) -> MvResult<()> {
+        let delivery_id = provider_delivery_id.trim();
+        if delivery_id.is_empty() {
+            return Err(MvError::InvalidInput(
+                "provider delivery ID must not be empty".into(),
+            ));
+        }
+        let now = Utc::now().to_rfc3339();
+        self.with_conn(|conn| {
+            let result = conn.execute(
+                "INSERT INTO adapter_provider_deliveries (
+                    adapter_id, provider_delivery_id, received_at
+                 ) VALUES (?1, ?2, ?3)",
+                params![adapter_id.to_string(), delivery_id, now],
+            );
+            match result {
+                Ok(_) => Ok(()),
+                Err(rusqlite::Error::SqliteFailure(info, _))
+                    if info.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    Err(MvError::IdempotencyConflict(format!(
+                        "duplicate provider delivery ID for adapter {adapter_id}: {delivery_id}"
+                    )))
+                }
+                Err(err) => Err(MvError::Storage(format!(
+                    "record adapter provider delivery failed: {err}"
+                ))),
+            }
+        })
+    }
+}
+
+fn row_to_adapter_binding(row: &rusqlite::Row<'_>) -> rusqlite::Result<AdapterBindingRecord> {
+    let id: String = row.get(0)?;
+    let enabled: i64 = row.get(3)?;
+    Ok(AdapterBindingRecord {
+        id: parse_uuid_str(0, &id)?,
+        adapter_type: row.get(1)?,
+        name: row.get(2)?,
+        enabled: enabled != 0,
+        settings_json: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // AdapterPollStore
 // ---------------------------------------------------------------------------
@@ -12972,13 +13110,15 @@ mod tests {
                         row.get(0)
                     })
                     .map_err(|err| MvError::Storage(err.to_string()))?;
-                assert_eq!(schema_version, 42);
+                assert_eq!(schema_version, 43);
 
                 for collab in [
                     "collab_workspaces",
                     "spaces",
                     "space_memberships",
                     "space_resources",
+                    "adapter_bindings",
+                    "adapter_provider_deliveries",
                 ] {
                     let present: bool = conn
                         .query_row(

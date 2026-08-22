@@ -296,17 +296,20 @@ impl Default for AdapterRegistry {
 /// For each adapter:
 /// 1. Load the last cursor from the poll state store
 /// 2. Call `poll(cursor)` on the adapter
-/// 3. Convert inbound messages to vault nodes
-/// 4. Persist the new cursor
+/// 3. Invoke `node_callback` for each inbound message
+/// 4. Persist the new cursor **only if every callback succeeded**
 ///
-/// Returns the total number of new messages received.
-pub async fn run_poll_cycle<S>(
+/// SPACE-003: partial ingest failure must not advance the poll cursor.
+///
+/// Returns the total number of messages successfully ingested.
+pub async fn run_poll_cycle<S, F>(
     registry: &AdapterRegistry,
     poll_store: &S,
-    node_callback: impl Fn(AdapterInboundMessage, AdapterType) + Send + Sync,
+    node_callback: F,
 ) -> usize
 where
     S: mv_core::AdapterPollStore,
+    F: Fn(AdapterInboundMessage, AdapterType) -> MvResult<()> + Send + Sync,
 {
     let configs = registry.list_configs().await;
     let mut total = 0;
@@ -344,13 +347,30 @@ where
 
         let msg_count = messages.len();
         if msg_count > 0 {
+            let mut ingested = 0usize;
+            let mut failed = false;
             for msg in messages {
-                node_callback(msg, config.adapter_type);
+                match node_callback(msg, config.adapter_type) {
+                    Ok(()) => ingested += 1,
+                    Err(err) => {
+                        tracing::warn!(
+                            adapter = %adapter_name,
+                            error = %err,
+                            "adapter message ingest failed; holding poll cursor"
+                        );
+                        failed = true;
+                        break;
+                    }
+                }
             }
 
-            // Persist cursor
+            if failed {
+                // SPACE-003: do not advance past a partial failure.
+                continue;
+            }
+
             if let Err(e) = poll_store
-                .upsert_poll_state(&adapter_name, &new_cursor, msg_count as u64)
+                .upsert_poll_state(&adapter_name, &new_cursor, ingested as u64)
                 .await
             {
                 tracing::warn!(
@@ -360,7 +380,7 @@ where
                 );
             }
 
-            total += msg_count;
+            total += ingested;
         } else if cursor.as_deref() != Some(&new_cursor) {
             // Update cursor even if no messages (e.g., cursor changed)
             let _ = poll_store
@@ -400,7 +420,7 @@ impl AdapterPollScheduler {
     ) -> tokio::task::JoinHandle<()>
     where
         S: mv_core::AdapterPollStore + 'static,
-        F: Fn(AdapterInboundMessage, AdapterType) + Send + Sync + 'static,
+        F: Fn(AdapterInboundMessage, AdapterType) -> MvResult<()> + Send + Sync + 'static,
     {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
@@ -913,7 +933,7 @@ mod tests {
     async fn poll_cycle_no_adapters() {
         let registry = AdapterRegistry::new();
         let store = MockPollStore::new();
-        let count = run_poll_cycle(&registry, &store, |_, _| {}).await;
+        let count = run_poll_cycle(&registry, &store, |_, _| Ok(())).await;
         assert_eq!(count, 0);
     }
 
@@ -929,7 +949,7 @@ mod tests {
         registry.register(config, adapter).await;
 
         let store = MockPollStore::new();
-        let count = run_poll_cycle(&registry, &store, |_, _| {}).await;
+        let count = run_poll_cycle(&registry, &store, |_, _| Ok(())).await;
         assert_eq!(count, 1);
         assert_eq!(store.get_cursor("test-slack"), Some("42".to_string()));
     }
@@ -942,7 +962,7 @@ mod tests {
         registry.register(config, adapter).await;
 
         let store = MockPollStore::with_cursor("cursor-test", "10");
-        let _count = run_poll_cycle(&registry, &store, |_, _| {}).await;
+        let _count = run_poll_cycle(&registry, &store, |_, _| Ok(())).await;
         // Adapter receives cursor but returns no messages.
         // The cursor should remain "10" or be updated to "0" (adapter returns "0")
         // Since cursor changed from "10" to "0" and messages is 0, it updates
@@ -964,6 +984,7 @@ mod tests {
 
         let count = run_poll_cycle(&registry, &store, move |msg, _adapter_type| {
             received_clone.lock().unwrap().push(msg.content);
+            Ok(())
         })
         .await;
 
@@ -995,7 +1016,7 @@ mod tests {
         registry.register(ok_config, ok_adapter).await;
 
         let store = MockPollStore::new();
-        let count = run_poll_cycle(&registry, &store, |_, _| {}).await;
+        let count = run_poll_cycle(&registry, &store, |_, _| Ok(())).await;
         // Only the successful adapter's messages should count
         assert_eq!(count, 1);
     }
@@ -1013,9 +1034,115 @@ mod tests {
         registry.register(config, adapter).await;
 
         let store = MockPollStore::new();
-        let count = run_poll_cycle(&registry, &store, |_, _| {}).await;
+        let count = run_poll_cycle(&registry, &store, |_, _| Ok(())).await;
         assert_eq!(count, 0);
         // Cursor should not be set for disabled adapter
         assert!(store.get_cursor("disabled-adapter").is_none());
     }
+
+    fn binding_record_from_config(config: &AdapterConfig) -> mv_core::AdapterBindingRecord {
+        mv_core::AdapterBindingRecord {
+            id: config.id,
+            adapter_type: config.adapter_type.as_str().to_string(),
+            name: config.name.clone(),
+            enabled: config.enabled,
+            settings_json: serde_json::to_string(&config.settings).unwrap(),
+            created_at: config.created_at.to_rfc3339(),
+            updated_at: config.updated_at.map(|ts| ts.to_rfc3339()),
+        }
+    }
+
+    #[tokio::test]
+    async fn adapter_reliable_effects_bindings_persist_across_restart() {
+        use mv_core::AdapterBindingStore;
+        use mv_storage::sqlite::SqliteNodeStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("adapter-bindings.db");
+        let config = AdapterConfig::new(AdapterType::Slack, "persist-slack")
+            .with_setting("webhook_url", "https://hooks.example/xxx");
+        let binding = binding_record_from_config(&config);
+
+        {
+            let store = SqliteNodeStore::open(&db_path).unwrap();
+            store.upsert_adapter_binding(&binding).await.unwrap();
+            let listed = store.list_adapter_bindings().await.unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].name, "persist-slack");
+        }
+
+        let store = SqliteNodeStore::open(&db_path).unwrap();
+        let restored = store
+            .get_adapter_binding(config.id)
+            .await
+            .unwrap()
+            .expect("binding survives reopen");
+        assert_eq!(restored.name, config.name);
+        assert_eq!(restored.adapter_type, "slack");
+        assert!(restored.enabled);
+        assert!(restored.settings_json.contains("webhook_url"));
+    }
+
+    #[tokio::test]
+    async fn adapter_reliable_effects_rejects_duplicate_provider_delivery_ids() {
+        use mv_core::AdapterBindingStore;
+        use mv_storage::sqlite::SqliteNodeStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteNodeStore::open(&dir.path().join("adapter-deliveries.db")).unwrap();
+        let adapter_id = Uuid::now_v7();
+        store
+            .record_adapter_provider_delivery(adapter_id, "slack:ts:1.2")
+            .await
+            .unwrap();
+        let err = store
+            .record_adapter_provider_delivery(adapter_id, "slack:ts:1.2")
+            .await
+            .expect_err("duplicate delivery must fail closed");
+        assert!(
+            matches!(err, mv_core::MvError::IdempotencyConflict(_)),
+            "unexpected: {err:?}"
+        );
+        // Distinct IDs still succeed.
+        store
+            .record_adapter_provider_delivery(adapter_id, "slack:ts:1.3")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn adapter_reliable_effects_poll_does_not_advance_after_partial_failure() {
+        let registry = AdapterRegistry::new();
+        let config = AdapterConfig::new(AdapterType::Slack, "partial-fail");
+        let messages = vec![
+            make_inbound("m1", "ok"),
+            make_inbound("m2", "boom"),
+            make_inbound("m3", "never"),
+        ];
+        let adapter = Arc::new(PollableMockAdapter::new("partial-fail", messages, "cursor-2"));
+        registry.register(config, adapter).await;
+
+        let store = MockPollStore::with_cursor("partial-fail", "cursor-1");
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_clone = Arc::clone(&seen);
+
+        let count = run_poll_cycle(&registry, &store, move |msg, _| {
+            seen_clone.lock().unwrap().push(msg.content.clone());
+            if msg.content == "boom" {
+                return Err(mv_core::MvError::Internal("ingest failed".into()));
+            }
+            Ok(())
+        })
+        .await;
+
+        assert_eq!(count, 0, "no successful batch completion");
+        assert_eq!(
+            store.get_cursor("partial-fail"),
+            Some("cursor-1".to_string()),
+            "cursor must remain at the prior value after partial failure"
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.as_slice(), ["ok", "boom"]);
+    }
+
 }

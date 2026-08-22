@@ -602,7 +602,42 @@ pub trait AdapterPollStore: Send + Sync {
     async fn delete_poll_state(&self, adapter_name: &str) -> MvResult<bool>;
 }
 
+
 fn _assert_adapter_poll_store_object_safe(_: &dyn AdapterPollStore) {}
+
+/// Durable adapter instance binding (SPACE-003).
+///
+/// Distinct from interop `SourceBinding`: this records registered messaging
+/// adapter configurations so they survive process restart.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AdapterBindingRecord {
+    pub id: Uuid,
+    pub adapter_type: String,
+    pub name: String,
+    pub enabled: bool,
+    pub settings_json: String,
+    pub created_at: String,
+    pub updated_at: Option<String>,
+}
+
+/// Persistence for adapter bindings and inbound provider delivery IDs.
+#[async_trait]
+pub trait AdapterBindingStore: Send + Sync {
+    async fn upsert_adapter_binding(&self, binding: &AdapterBindingRecord) -> MvResult<()>;
+    async fn get_adapter_binding(&self, id: Uuid) -> MvResult<Option<AdapterBindingRecord>>;
+    async fn list_adapter_bindings(&self) -> MvResult<Vec<AdapterBindingRecord>>;
+    async fn delete_adapter_binding(&self, id: Uuid) -> MvResult<bool>;
+
+    /// Record a provider delivery ID. Duplicate `(adapter_id, delivery_id)` is
+    /// `IdempotencyConflict`.
+    async fn record_adapter_provider_delivery(
+        &self,
+        adapter_id: Uuid,
+        provider_delivery_id: &str,
+    ) -> MvResult<()>;
+}
+
+fn _assert_adapter_binding_store_object_safe(_: &dyn AdapterBindingStore) {}
 
 /// Persistence boundary for the managed knowledge-workspace manifest.
 ///
