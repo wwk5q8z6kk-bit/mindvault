@@ -446,13 +446,13 @@ interoperability kernel."
 
 #### IK-016 — Durable projection checkpoint and recovery worker
 - **priority:** P1 — projection recovery is explicitly not complete
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:240-242` — "a durable projection checkpoint/worker is still required before projection recovery can be considered complete"
 - **governing_authority:** Law 4 (`:52`)
 - **blocked_by:** IK-004 (inferred)
-- **files:** `crates/mv-engine/src/engine/mod.rs`, `crates/mv-engine/src/enrichment.rs`, new migration
+- **files:** `crates/mv-engine/src/engine/projection_recovery.rs`, `crates/mv-engine/src/ingest.rs`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `migrations/044_projection_checkpoints.sql`
 - **acceptance:** `cargo test -p mv-engine -- projection_recovery` — killing the process between canonical commit and projection leaves a pending outbox event that the worker later reconciles; FTS/vector/graph converge
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine --lib -- projection_recovery` → 2/2 ok; `reconcile_projections_once` + migration 044 checkpoints; crash seed via `commit_node_create_with_event` only; FTS/vector/graph converge; outbox delivery stays pending; second tick is a no-op; commit `8fe9580`; 2026-08-22.
 
 #### IK-017 — Event coverage for all committed mutations
 - **priority:** P1 — Law 4 applies to every mutation; only node-create is covered
