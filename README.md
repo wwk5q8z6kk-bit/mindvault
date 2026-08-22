@@ -781,3 +781,8 @@ For full local pre-submit validation:
 ```bash
 ./scripts/verify_all.sh
 ```
+
+## License
+
+MindVault is proprietary, all-rights-reserved software. See
+[`LICENSE`](LICENSE) for the full terms.

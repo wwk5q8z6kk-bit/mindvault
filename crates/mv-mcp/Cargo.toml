@@ -2,6 +2,7 @@
 name = "mv-mcp"
 version.workspace = true
 edition.workspace = true
+license-file.workspace = true
 
 [features]
 default = []
