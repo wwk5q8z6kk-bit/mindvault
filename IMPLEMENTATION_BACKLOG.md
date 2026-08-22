@@ -1226,7 +1226,7 @@ operations remain deliberately out of scope for this foundation."*
 - **blocked_by:** none
 - **files:** `crates/mv-server/src/rest/workspaces.rs`, `crates/mv-engine/src/engine/workspace_ops.rs`
 - **acceptance:** `cargo test -p mv-server -- workspaces::` and `cargo test -p mv-engine -- workspace_ops::` — inline tests cover sealed-mode mount rejection, non-allowlisted root, malformed workspace/document UUID, cross-workspace document read, non-UTF-8 document read, reconcile on a deleted root, rebuild on a failed projection, and `mark_initial_workspace_error`
-- **evidence:** `cargo test -p mv-engine --lib -- workspace_ops::` → 6/6 ok; `cargo test -p mv-server --lib -- workspaces::` → 4/4 ok; 2026-08-22. Commit hash pending.
+- **evidence:** `cargo test -p mv-engine --lib -- workspace_ops::` → 6/6 ok; `cargo test -p mv-server --lib -- workspaces::` → 4/4 ok; commit `1a90df4`; 2026-08-22.
 
 #### WS-017 — Watcher-loss and full-reconciliation tests
 - **priority:** P1 — required validation; foundation gate step 6
