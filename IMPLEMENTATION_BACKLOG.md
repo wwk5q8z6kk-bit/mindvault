@@ -336,13 +336,13 @@ interoperability kernel."
 
 #### IK-005 — Authenticated live transport publisher (first destination)
 - **priority:** P0 — named gated work
-- **status:** not_started
+- **status:** in_progress
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:17-19` — "authenticated live transport publishers ... remain later gated work"
 - **governing_authority:** Law 4 (`:52`), Law 5 (`:54`)
 - **blocked_by:** IK-004 (declared)
-- **files:** `crates/mv-engine/src/engine/outbox_dispatch.rs`, `crates/mv-server/src/rest.rs`
+- **files:** `crates/mv-engine/src/engine/outbox_dispatch.rs`, `crates/mv-server/src/outbox_dispatch.rs`
 - **acceptance:** `cargo test -p mv-engine -- publisher_http` — a destination acknowledgement produces a `published` receipt; a transient failure produces `retry_scheduled` with a future `next_attempt_at`; a terminal failure produces `dead_lettered`
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine --lib -- publisher_http` → 3/3 ok; `HttpOutboxPublisher` maps 2xx→published, 5xx/408/429→retry_scheduled, other 4xx→dead_lettered; env `MINDVAULT_OUTBOX_HTTP_URL` + `MINDVAULT_OUTBOX_HTTP_BEARER_TOKEN`; 2026-08-22. Commit hash pending.
 
 #### IK-006 — Consumer transport listener and domain handler
 - **priority:** P0 — the inbox has no runtime
@@ -1615,11 +1615,10 @@ document, but each one either hides real defects or makes verification lie.
 5. **Wedge productization** — follow `docs/strategy/unicorn/PRIMARY_WEDGE_DECISION.md`
    (Trusted Agent Work). HTTP execute proof exists; instrument WATW; design partners.
 6. **IK-005..IK-007, IK-016, SPACE-003** — live reliable effects after wedge habit.
-7. **SPACE-001 then SPACE-002 acceptance** — multi-actor only when partners need it.
+7. **SPACE-002 acceptance** — Space-scoped WO/envelope/self-approval refusal (SPACE-001 verified).
 8. **WS-006..WS-013** — Stage 2 guarded writes behind the six unlock gates.
-9. **FED-000 first, then FED-001..FED-010** — federation stays off until all ten
-   are `verified`.
+9. **FED-001..FED-010** — FED-000 kill-switch verified; threat gates still open.
 10. **SLICE-001..SLICE-003** — broader interop proof after wedge retention evidence.
 
-Note (2026-07-31): **AGENT-001 is verified** (internal Engine/Low executor). Do not
-re-open it as missing. Strategy artifacts live under `docs/strategy/unicorn/`.
+Note (2026-07-31): **AGENT-001**, **SPACE-001**, and **FED-000** are verified.
+Wedge CLI: `mv trusted-work demo`. Strategy pack: `docs/strategy/unicorn/`.

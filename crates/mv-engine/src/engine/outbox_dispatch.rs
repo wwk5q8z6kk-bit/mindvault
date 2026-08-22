@@ -5,8 +5,9 @@
 //! missing worker: it claims under a lease, asks a publisher for one attempt
 //! result, and completes with exactly one immutable receipt.
 //!
-//! Live authenticated transports (HTTP, Slack, …) are IK-005. This slice ships
-//! a local-ack publisher so events stop accumulating as forever-pending.
+//! IK-004 ships the local-ack publisher so events stop accumulating as
+//! forever-pending. IK-005 adds `HttpOutboxPublisher`, the first authenticated
+//! live transport behind the same trait.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +15,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Utc};
 use mv_core::{
-    InteroperabilityStore, MvResult, OutboxDeliveryClaim, OutboxDeliveryCompletion,
+    InteroperabilityStore, MvError, MvResult, OutboxDeliveryClaim, OutboxDeliveryCompletion,
     OutboxDeliveryResult, StableUri,
 };
 use tokio::sync::broadcast;
@@ -44,6 +45,128 @@ impl OutboxPublisher for LocalAckPublisher {
         })
     }
 }
+
+/// First authenticated live transport publisher (IK-005).
+///
+/// POSTs the claimed event envelope as JSON to a configured HTTP endpoint with
+/// a bearer token. Status mapping is fail-closed for terminal 4xx: those become
+/// `DeadLettered` (never `Err`, which the dispatcher would treat as transient).
+#[derive(Debug, Clone)]
+pub struct HttpOutboxPublisher {
+    client: reqwest::Client,
+    endpoint: url::Url,
+    auth_header: String,
+    auth_value: String,
+    retry_backoff: ChronoDuration,
+}
+
+impl HttpOutboxPublisher {
+    pub fn new(endpoint: url::Url, bearer_token: impl Into<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            endpoint,
+            auth_header: "Authorization".into(),
+            auth_value: format!("Bearer {}", bearer_token.into()),
+            retry_backoff: ChronoDuration::seconds(30),
+        }
+    }
+
+    /// Build from `MINDVAULT_OUTBOX_HTTP_URL` + `MINDVAULT_OUTBOX_HTTP_BEARER_TOKEN`.
+    /// Returns `None` when the URL is unset (caller keeps local-ack).
+    pub fn from_env() -> MvResult<Option<Self>> {
+        let Some(raw_url) = std::env::var("MINDVAULT_OUTBOX_HTTP_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        let endpoint = url::Url::parse(&raw_url).map_err(|err| {
+            MvError::InvalidInput(format!("MINDVAULT_OUTBOX_HTTP_URL is invalid: {err}"))
+        })?;
+        if endpoint.scheme() != "http" && endpoint.scheme() != "https" {
+            return Err(MvError::InvalidInput(
+                "MINDVAULT_OUTBOX_HTTP_URL must be http or https".into(),
+            ));
+        }
+        let token = std::env::var("MINDVAULT_OUTBOX_HTTP_BEARER_TOKEN").map_err(|_| {
+            MvError::InvalidInput(
+                "MINDVAULT_OUTBOX_HTTP_BEARER_TOKEN is required when OUTBOX_HTTP_URL is set".into(),
+            )
+        })?;
+        if token.trim().is_empty() {
+            return Err(MvError::InvalidInput(
+                "MINDVAULT_OUTBOX_HTTP_BEARER_TOKEN must not be empty".into(),
+            ));
+        }
+        let mut publisher = Self::new(endpoint, token);
+        if let Ok(header) = std::env::var("MINDVAULT_OUTBOX_HTTP_AUTH_HEADER") {
+            let header = header.trim();
+            if !header.is_empty() {
+                publisher.auth_header = header.to_string();
+            }
+        }
+        Ok(Some(publisher))
+    }
+
+    fn map_status(&self, status: reqwest::StatusCode, body: &str, event_id: Uuid) -> OutboxDeliveryResult {
+        let code = status.as_u16();
+        let summary = truncate_error_summary(if body.trim().is_empty() {
+            status.canonical_reason().unwrap_or("http response")
+        } else {
+            body
+        });
+        if status.is_success() {
+            return OutboxDeliveryResult::Published {
+                delivery_reference: format!("http:{code}:{event_id}"),
+                response_digest: None,
+            };
+        }
+        let transient = matches!(code, 408 | 425 | 429) || status.is_server_error();
+        if transient {
+            OutboxDeliveryResult::RetryScheduled {
+                retry_at: Utc::now() + self.retry_backoff,
+                error_code: format!("http_{code}"),
+                error_summary: summary,
+            }
+        } else {
+            OutboxDeliveryResult::DeadLettered {
+                error_code: format!("http_{code}"),
+                error_summary: summary,
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl OutboxPublisher for HttpOutboxPublisher {
+    async fn publish(&self, claim: &OutboxDeliveryClaim) -> MvResult<OutboxDeliveryResult> {
+        let response = match self
+            .client
+            .post(self.endpoint.clone())
+            .header(&self.auth_header, &self.auth_value)
+            .header("content-type", "application/json")
+            .header("idempotency-key", claim.event.idempotency_key.as_str())
+            .header("x-mindvault-event-id", claim.event.id.to_string())
+            .json(&claim.event)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                return Ok(OutboxDeliveryResult::RetryScheduled {
+                    retry_at: Utc::now() + self.retry_backoff,
+                    error_code: "http_transport".into(),
+                    error_summary: truncate_error_summary(&error.to_string()),
+                });
+            }
+        };
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        Ok(self.map_status(status, &body, claim.event.id))
+    }
+}
+
 
 /// Runtime knobs for one dispatcher loop.
 #[derive(Debug, Clone)]
@@ -552,5 +675,135 @@ mod tests {
             .unwrap();
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].receipt_id, tick.receipts[0]);
+    }
+
+    fn http_dispatcher_config() -> OutboxDispatcherConfig {
+        OutboxDispatcherConfig {
+            destination: StableUri::parse("mindvault://destinations/http").unwrap(),
+            ..dispatcher_config()
+        }
+    }
+
+    #[tokio::test]
+    async fn publisher_http_ack_writes_published_receipt() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .match_header("authorization", "Bearer test-token")
+            .with_status(200)
+            .with_body(r#"{"ok":true}"#)
+            .create_async()
+            .await;
+
+        let (engine, _tmp) = test_engine().await;
+        let event_id = seed_outbox_event(&engine, "http-publish-ack").await;
+        let config = http_dispatcher_config();
+        let publisher =
+            HttpOutboxPublisher::new(url::Url::parse(&server.url()).unwrap(), "test-token");
+
+        let tick = engine
+            .dispatch_outbox_once(&publisher, &config)
+            .await
+            .unwrap();
+        assert_eq!(tick.claimed, 1);
+        assert_eq!(tick.completed, 1);
+        mock.assert_async().await;
+
+        let status = engine
+            .store
+            .nodes
+            .get_outbox_delivery_status(event_id)
+            .await
+            .unwrap()
+            .expect("status");
+        assert_eq!(status.state, OutboxDeliveryState::Published);
+
+        let receipts = engine
+            .store
+            .nodes
+            .list_action_receipts(event_id, 10)
+            .await
+            .unwrap();
+        assert_eq!(receipts.len(), 1);
+        let delivery = receipts[0].delivery_reference.as_deref().expect("delivery ref");
+        assert!(
+            delivery.starts_with("http:200:"),
+            "unexpected delivery_reference: {delivery}"
+        );
+        assert_eq!(
+            receipts[0].outcome,
+            mv_core::ActionReceiptOutcome::Published
+        );
+    }
+
+    #[tokio::test]
+    async fn publisher_http_transient_schedules_retry() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(503)
+            .with_body("upstream unavailable")
+            .create_async()
+            .await;
+
+        let (engine, _tmp) = test_engine().await;
+        let event_id = seed_outbox_event(&engine, "http-publish-retry").await;
+        let config = http_dispatcher_config();
+        let publisher =
+            HttpOutboxPublisher::new(url::Url::parse(&server.url()).unwrap(), "test-token");
+
+        let before = Utc::now();
+        let tick = engine
+            .dispatch_outbox_once(&publisher, &config)
+            .await
+            .unwrap();
+        assert_eq!(tick.claimed, 1);
+        assert_eq!(tick.completed, 1);
+        mock.assert_async().await;
+
+        let status = engine
+            .store
+            .nodes
+            .get_outbox_delivery_status(event_id)
+            .await
+            .unwrap()
+            .expect("status");
+        // RetryScheduled receipts leave the row Pending until next_attempt_at.
+        assert_eq!(status.state, OutboxDeliveryState::Pending);
+        assert!(status.next_attempt_at > before);
+    }
+
+    #[tokio::test]
+    async fn publisher_http_terminal_dead_letters() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(400)
+            .with_body("bad request")
+            .create_async()
+            .await;
+
+        let (engine, _tmp) = test_engine().await;
+        let event_id = seed_outbox_event(&engine, "http-publish-dead").await;
+        let config = http_dispatcher_config();
+        let publisher =
+            HttpOutboxPublisher::new(url::Url::parse(&server.url()).unwrap(), "test-token");
+
+        let tick = engine
+            .dispatch_outbox_once(&publisher, &config)
+            .await
+            .unwrap();
+        assert_eq!(tick.claimed, 1);
+        assert_eq!(tick.completed, 1);
+        mock.assert_async().await;
+
+        let status = engine
+            .store
+            .nodes
+            .get_outbox_delivery_status(event_id)
+            .await
+            .unwrap()
+            .expect("status");
+        assert_eq!(status.state, OutboxDeliveryState::DeadLetter);
     }
 }

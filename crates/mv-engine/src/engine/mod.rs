@@ -23,8 +23,8 @@ pub use interoperability_ops::{
     LocalContextNodeRegistration,
 };
 pub use outbox_dispatch::{
-    spawn_outbox_dispatcher, LocalAckPublisher, OutboxDispatchTick, OutboxDispatcherConfig,
-    OutboxPublisher,
+    spawn_outbox_dispatcher, HttpOutboxPublisher, LocalAckPublisher, OutboxDispatchTick,
+    OutboxDispatcherConfig, OutboxPublisher,
 };
 pub use agent_run_executor::ExecutedRun;
 pub use work_order_ops::{
