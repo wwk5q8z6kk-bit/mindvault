@@ -946,6 +946,24 @@ pub trait InteroperabilityStore: Send + Sync {
     /// events. Dispatchers must use `claim_outbox_events`.
     async fn list_pending_outbox_events(&self, limit: usize) -> MvResult<Vec<EventEnvelope>>;
 
+    /// Outbox events whose local FTS/vector/graph projections are not yet
+    /// `ready` (IK-016). Independent of transport `delivery_state`.
+    async fn list_outbox_events_needing_projection(
+        &self,
+        event_type: &str,
+        limit: usize,
+    ) -> MvResult<Vec<EventEnvelope>>;
+
+    async fn get_projection_checkpoint(
+        &self,
+        event_id: Uuid,
+    ) -> MvResult<Option<ProjectionCheckpoint>>;
+
+    async fn upsert_projection_checkpoint(
+        &self,
+        checkpoint: &ProjectionCheckpoint,
+    ) -> MvResult<()>;
+
     async fn get_outbox_delivery_status(
         &self,
         event_id: Uuid,

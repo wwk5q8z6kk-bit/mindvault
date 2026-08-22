@@ -308,6 +308,10 @@ impl SqliteNodeStore {
                 43,
                 include_str!("../../../migrations/043_adapter_bindings_and_deliveries.sql"),
             ),
+            (
+                44,
+                include_str!("../../../migrations/044_projection_checkpoints.sql"),
+            ),
         ];
 
         // Migration 001 must always run first to create schema_version table.
@@ -4400,6 +4404,121 @@ impl InteroperabilityStore for SqliteNodeStore {
                 events.push(Self::decode_outbox_event(&json)?);
             }
             Ok(events)
+        })
+    }
+
+    async fn list_outbox_events_needing_projection(
+        &self,
+        event_type: &str,
+        limit: usize,
+    ) -> MvResult<Vec<EventEnvelope>> {
+        if !(1..=1000).contains(&limit) {
+            return Err(MvError::InvalidInput(
+                "projection recovery limit must be between 1 and 1000".into(),
+            ));
+        }
+        if event_type.trim().is_empty() {
+            return Err(MvError::InvalidInput(
+                "projection recovery event_type must not be empty".into(),
+            ));
+        }
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT o.envelope_json
+                     FROM interoperability_outbox o
+                     WHERE o.event_type = ?1
+                       AND NOT EXISTS (
+                           SELECT 1
+                           FROM interoperability_projection_checkpoints c
+                           WHERE c.event_id = o.event_id
+                             AND c.status = 'ready'
+                       )
+                     ORDER BY o.created_at ASC, o.event_id ASC
+                     LIMIT ?2",
+                )
+                .map_err(|e| {
+                    MvError::Storage(format!("prepare projection recovery query: {e}"))
+                })?;
+            let rows = stmt
+                .query_map(params![event_type, limit as i64], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|e| {
+                    MvError::Storage(format!("query outbox events needing projection: {e}"))
+                })?;
+            let mut events = Vec::new();
+            for row in rows {
+                let json = row.map_err(|e| {
+                    MvError::Storage(format!("read outbox event needing projection: {e}"))
+                })?;
+                events.push(Self::decode_outbox_event(&json)?);
+            }
+            Ok(events)
+        })
+    }
+
+    async fn get_projection_checkpoint(
+        &self,
+        event_id: Uuid,
+    ) -> MvResult<Option<ProjectionCheckpoint>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT event_id, node_id, status, projected_at, error_summary, updated_at
+                 FROM interoperability_projection_checkpoints
+                 WHERE event_id = ?1",
+                params![event_id.to_string()],
+                |row| {
+                    let event_id_raw: String = row.get(0)?;
+                    let node_id_raw: String = row.get(1)?;
+                    let status_raw: String = row.get(2)?;
+                    let projected_at: Option<String> = row.get(3)?;
+                    let updated_at: String = row.get(5)?;
+                    Ok(ProjectionCheckpoint {
+                        event_id: parse_uuid_str(0, &event_id_raw)?,
+                        node_id: parse_uuid_str(1, &node_id_raw)?,
+                        status: status_raw
+                            .parse()
+                            .map_err(|err: String| Self::as_sql_conversion_error(2, err))?,
+                        projected_at: parse_optional_dt_strict(3, projected_at)?,
+                        error_summary: row.get(4)?,
+                        updated_at: parse_dt_strict(5, &updated_at)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load projection checkpoint: {err}")))
+        })
+    }
+
+    async fn upsert_projection_checkpoint(
+        &self,
+        checkpoint: &ProjectionCheckpoint,
+    ) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO interoperability_projection_checkpoints (
+                    event_id, node_id, status, projected_at, error_summary, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(event_id) DO UPDATE SET
+                    node_id = excluded.node_id,
+                    status = excluded.status,
+                    projected_at = excluded.projected_at,
+                    error_summary = excluded.error_summary,
+                    updated_at = excluded.updated_at",
+                params![
+                    checkpoint.event_id.to_string(),
+                    checkpoint.node_id.to_string(),
+                    checkpoint.status.as_str(),
+                    checkpoint
+                        .projected_at
+                        .map(|ts| ts.to_rfc3339()),
+                    checkpoint.error_summary,
+                    checkpoint.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("upsert projection checkpoint: {err}")))?;
+            Ok(())
         })
     }
 
@@ -13156,7 +13275,7 @@ mod tests {
                         row.get(0)
                     })
                     .map_err(|err| MvError::Storage(err.to_string()))?;
-                assert_eq!(schema_version, 43);
+                assert_eq!(schema_version, 44);
 
                 for collab in [
                     "collab_workspaces",
@@ -13165,6 +13284,7 @@ mod tests {
                     "space_resources",
                     "adapter_bindings",
                     "adapter_provider_deliveries",
+                    "interoperability_projection_checkpoints",
                 ] {
                     let present: bool = conn
                         .query_row(
@@ -13176,7 +13296,7 @@ mod tests {
                             |row| row.get(0),
                         )
                         .map_err(|err| MvError::Storage(err.to_string()))?;
-                    assert!(present, "expected SPACE-001 table {collab}");
+                    assert!(present, "expected SPACE/IK table {collab}");
                 }
 
                 for retired in ["plans", "plan_steps"] {

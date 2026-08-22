@@ -510,6 +510,7 @@ NodeStore, AgenticStore, ExchangeStore, SafeguardStore, FeedbackStore, AutonomyS
 | 041 | Retire superseded plans / plan_steps (AGENT-002)| Ready   |
 | 042 | Collab Spaces / Membership (SPACE-001)          | Ready   |
 | 043 | Adapter bindings + delivery IDs (SPACE-003)     | Ready   |
+| 044 | Projection checkpoints (IK-016)                 | Ready   |
 
 ### Frontend Components (SvelteKit + Tauri)
 

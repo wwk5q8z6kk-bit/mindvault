@@ -743,6 +743,17 @@ interoperability_string_enum! {
 }
 
 interoperability_string_enum! {
+    /// Local projection readiness for one outbox event (IK-016).
+    ///
+    /// Distinct from `OutboxDeliveryState`: transport acknowledgement does not
+    /// imply FTS/vector/graph projections have been applied.
+    pub enum ProjectionCheckpointStatus {
+        Ready => "ready",
+        Failed => "failed",
+    }
+}
+
+interoperability_string_enum! {
     /// Result recorded for one claimed publication attempt.
     pub enum ActionReceiptOutcome {
         Published => "published",
@@ -1181,6 +1192,46 @@ impl ConsumerCheckpoint {
             return Err("consumer checkpoint must record a terminal disposition".into());
         }
         Ok(())
+    }
+}
+
+/// Durable local projection readiness for one outbox event (IK-016).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionCheckpoint {
+    pub event_id: Uuid,
+    pub node_id: Uuid,
+    pub status: ProjectionCheckpointStatus,
+    pub projected_at: Option<DateTime<Utc>>,
+    pub error_summary: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl ProjectionCheckpoint {
+    pub fn ready(event_id: Uuid, node_id: Uuid, projected_at: DateTime<Utc>) -> Self {
+        Self {
+            event_id,
+            node_id,
+            status: ProjectionCheckpointStatus::Ready,
+            projected_at: Some(projected_at),
+            error_summary: None,
+            updated_at: projected_at,
+        }
+    }
+
+    pub fn failed(
+        event_id: Uuid,
+        node_id: Uuid,
+        updated_at: DateTime<Utc>,
+        error_summary: impl Into<String>,
+    ) -> Self {
+        Self {
+            event_id,
+            node_id,
+            status: ProjectionCheckpointStatus::Failed,
+            projected_at: None,
+            error_summary: Some(error_summary.into()),
+            updated_at,
+        }
     }
 }
 

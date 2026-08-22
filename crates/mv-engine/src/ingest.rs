@@ -83,7 +83,7 @@ impl IngestPipeline {
         Ok(commit)
     }
 
-    async fn index_and_enrich(&self, node: &KnowledgeNode) -> MvResult<()> {
+    pub(crate) async fn index_and_enrich(&self, node: &KnowledgeNode) -> MvResult<()> {
         // 1. Index in Tantivy
         self.fts.index_node(node)?;
         self.fts.commit()?;

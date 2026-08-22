@@ -8,6 +8,7 @@ mod mcp_ops;
 mod node_ops;
 mod outbox_dispatch;
 mod inbox_consumer;
+mod projection_recovery;
 mod profile_ops;
 mod proposal_ops;
 mod relay_ops;
@@ -31,6 +32,7 @@ pub use inbox_consumer::{
     spawn_inbox_consumer, InboxConsumeTick, InboxConsumerConfig, InboxDomainHandler,
     LocalIndexHandler,
 };
+pub use projection_recovery::ProjectionReconcileTick;
 pub use agent_run_executor::ExecutedRun;
 pub use work_order_ops::{
     AdmissionRefusal, ProposedEdge, ProposedNode, ProposedWorkOrder, RunReadiness,
