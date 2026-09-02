@@ -55,32 +55,21 @@ impl RelayEngine {
 
     // --- Messages ---
 
-    /// Send a message: store it, create a vault node for searchability, return the message.
+    /// Store an outbound relay message without promoting it to canonical knowledge.
     pub async fn send_message(
         &self,
-        mut message: RelayMessage,
-        namespace: &str,
+        message: RelayMessage,
+        _namespace: &str,
     ) -> MvResult<RelayMessage> {
-        // Create a KnowledgeNode for this conversation message
-        let node = KnowledgeNode::new(NodeKind::Conversation, message.content.clone())
-            .with_namespace(namespace.to_string())
-            .with_tags(vec![
-                "relay".to_string(),
-                format!("channel:{}", message.channel_id),
-            ]);
-
-        self.store.nodes.insert(&node).await?;
-        message.vault_node_id = Some(node.id);
-
         self.store.nodes.add_relay_message(&message).await?;
         Ok(message)
     }
 
-    /// Receive an inbound message (from another vault).
+    /// Store an inbound relay message without promoting it to canonical knowledge.
     pub async fn receive_message(
         &self,
         mut message: RelayMessage,
-        namespace: &str,
+        _namespace: &str,
     ) -> MvResult<RelayMessage> {
         message.direction = MessageDirection::Inbound;
         message.status = MessageStatus::Delivered;
@@ -111,17 +100,6 @@ impl RelayEngine {
             message
                 .metadata
                 .insert("blocked".to_string(), serde_json::Value::Bool(true));
-        } else {
-            let node = KnowledgeNode::new(NodeKind::Conversation, message.content.clone())
-                .with_namespace(namespace.to_string())
-                .with_tags(vec![
-                    "relay".to_string(),
-                    "inbound".to_string(),
-                    format!("channel:{}", message.channel_id),
-                ]);
-
-            self.store.nodes.insert(&node).await?;
-            message.vault_node_id = Some(node.id);
         }
 
         self.store.nodes.add_relay_message(&message).await?;
@@ -172,7 +150,34 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn inbound_message_creates_vault_node() {
+    async fn outbound_message_remains_relay_only() {
+        let store = Arc::new(UnifiedStore::in_memory(384).unwrap());
+        let engine = RelayEngine::new(Arc::clone(&store));
+
+        let contact = RelayContact::new("Alice", "pk-alice");
+        store.nodes.add_relay_contact(&contact).await.unwrap();
+
+        let channel = RelayChannel::direct(contact.id);
+        store.nodes.add_relay_channel(&channel).await.unwrap();
+
+        let stored = engine
+            .send_message(RelayMessage::outbound(channel.id, "Hello"), "default")
+            .await
+            .unwrap();
+
+        assert_eq!(stored.status, MessageStatus::Pending);
+        assert!(stored.vault_node_id.is_none());
+        let retrieved = engine.get_message(stored.id).await.unwrap().unwrap();
+        assert_eq!(retrieved.content, "Hello");
+        assert!(retrieved.vault_node_id.is_none());
+        assert_eq!(
+            store.nodes.count(&QueryFilters::default()).await.unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn inbound_message_remains_relay_only() {
         let store = Arc::new(UnifiedStore::in_memory(384).unwrap());
         let engine = RelayEngine::new(Arc::clone(&store));
 
@@ -186,7 +191,14 @@ mod tests {
         let stored = engine.receive_message(message, "default").await.unwrap();
 
         assert_eq!(stored.status, MessageStatus::Delivered);
-        assert!(stored.vault_node_id.is_some());
+        assert!(stored.vault_node_id.is_none());
+        let retrieved = engine.get_message(stored.id).await.unwrap().unwrap();
+        assert_eq!(retrieved.content, "Hello");
+        assert!(retrieved.vault_node_id.is_none());
+        assert_eq!(
+            store.nodes.count(&QueryFilters::default()).await.unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
