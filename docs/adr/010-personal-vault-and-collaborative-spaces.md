@@ -168,6 +168,17 @@ communication store. They do not automatically become canonical Personal Vault
 or Space knowledge. Promotion records source message IDs, extractor or actor,
 evidence, confidence, policy, and approval.
 
+Relay send and receive enforce this boundary by storing `RelayMessage` records
+without creating `KnowledgeNode::Conversation` records. The optional
+`vault_node_id` remains for compatibility with existing records; this change
+does not migrate, delete, or alter those records. A future remediation for
+legacy links must be separately approved and non-destructive: first produce a
+reviewable inventory with provenance and retention decisions, then apply only
+explicitly approved actions.
+
+Inbound email attachment bytes and metadata remain relay-scoped data. They are
+not attached to or text-indexed through a canonical knowledge node.
+
 ### Storage and synchronization
 
 The Personal Vault keeps the local-first SQLite and derived-index architecture.

@@ -2835,3 +2835,91 @@ async fn authority_grant_lifecycle_enables_enforced_node_create() {
         "grants: {grants}"
     );
 }
+
+#[tokio::test]
+async fn relay_messages_remain_outside_the_vault_graph_over_http() {
+    let (router, _tmp) = setup().await;
+
+    let contact = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/relay/contacts",
+            Some(json!({
+                "display_name": "Relay peer",
+                "public_key": "relay-peer-key",
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(contact.status(), StatusCode::CREATED);
+    let contact = body_json(contact).await;
+    let contact_id = contact["id"].as_str().expect("contact id");
+
+    let channel = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/relay/channels",
+            Some(json!({
+                "member_contact_ids": [contact_id],
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(channel.status(), StatusCode::CREATED);
+    let channel = body_json(channel).await;
+    let channel_id = channel["id"].as_str().expect("channel id");
+
+    let outbound = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/relay/channels/{channel_id}/messages"),
+            Some(json!({ "content": "outbound relay content" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(outbound.status(), StatusCode::CREATED);
+    assert!(body_json(outbound).await["vault_node_id"].is_null());
+
+    let inbound = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            &format!("/api/v1/relay/channels/{channel_id}/inbound"),
+            Some(json!({
+                "content": "inbound relay content",
+                "sender_contact_id": contact_id,
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(inbound.status(), StatusCode::CREATED);
+    assert!(body_json(inbound).await["vault_node_id"].is_null());
+
+    let messages = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/relay/channels/{channel_id}/messages"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(messages.status(), StatusCode::OK);
+    let messages = body_json(messages).await;
+    assert_eq!(messages.as_array().expect("relay messages").len(), 2);
+    assert!(messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|message| message["vault_node_id"].is_null()));
+
+    let nodes = router
+        .oneshot(json_request(Method::GET, "/api/v1/nodes", None))
+        .await
+        .unwrap();
+    assert_eq!(nodes.status(), StatusCode::OK);
+    assert!(body_json(nodes).await.as_array().unwrap().is_empty());
+}

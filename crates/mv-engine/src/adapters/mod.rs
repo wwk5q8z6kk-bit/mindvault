@@ -2,8 +2,7 @@
 //!
 //! Each adapter implements [`ExternalAdapter`] to send/receive messages through
 //! external services (Slack, Discord, email, etc.). Inbound messages are converted
-//! to [`RelayMessage`] objects and flow through the relay engine, automatically
-//! creating vault nodes for searchability.
+//! to [`RelayMessage`] objects and flow through the relay engine as relay data.
 
 pub mod discord;
 pub mod email;
