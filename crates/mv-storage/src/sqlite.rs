@@ -12092,6 +12092,88 @@ mod tests {
     }
 
     #[test]
+    fn migration_ledger_is_continuous_from_work_orders_through_command_admission() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let expected_versions = [35, 36, 37, 38, 39];
+
+        store
+            .with_conn(|conn| {
+                let mut statement = conn
+                    .prepare(
+                        "SELECT version FROM schema_version
+                         WHERE version BETWEEN 35 AND 39
+                         ORDER BY version",
+                    )
+                    .map_err(|err| MvError::Storage(err.to_string()))?;
+                let versions = statement
+                    .query_map([], |row| row.get::<_, i64>(0))
+                    .map_err(|err| MvError::Storage(err.to_string()))?;
+                let versions = versions
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|err| MvError::Storage(err.to_string()))?;
+
+                assert_eq!(versions, expected_versions);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn rerunning_command_admission_migration_backfills_legacy_ledger_without_data_loss() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+
+        store
+            .with_conn(|conn| {
+                conn.execute("DELETE FROM schema_version WHERE version = 39", [])
+                    .map_err(|err| MvError::Storage(err.to_string()))?;
+                conn.execute(
+                    "INSERT INTO interoperability_command_admission_decisions (
+                        decision_id, principal_uri, actor_uri, idempotency_key, correlation_id,
+                        request_id, resource_uri, subject_uri, operation, required_grant_kind,
+                        decision, denial_reason, admission_digest, decided_at, created_at
+                     ) VALUES (
+                        'legacy-decision', 'mindvault://principal/legacy',
+                        'mindvault://actor/legacy', 'legacy-key', 'legacy-correlation',
+                        'legacy-request', 'mindvault://resource/legacy',
+                        'mindvault://subject/legacy', 'node.create', 'context', 'denied',
+                        'missing_grant', 'legacy-digest', '2026-09-02T00:00:00Z',
+                        '2026-09-02T00:00:00Z'
+                     )",
+                    [],
+                )
+                .map_err(|err| MvError::Storage(err.to_string()))?;
+                Ok(())
+            })
+            .unwrap();
+
+        store.run_migrations().unwrap();
+
+        store
+            .with_conn(|conn| {
+                let schema_version_count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM schema_version WHERE version = 39",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|err| MvError::Storage(err.to_string()))?;
+                let decision: String = conn
+                    .query_row(
+                        "SELECT decision FROM interoperability_command_admission_decisions
+                         WHERE decision_id = 'legacy-decision'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|err| MvError::Storage(err.to_string()))?;
+
+                assert_eq!(schema_version_count, 1);
+                assert_eq!(decision, "denied");
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
     fn knowledge_workspace_migration_installs_complete_manifest_contract() {
         let store = SqliteNodeStore::open_in_memory().unwrap();
         let expected_tables = [
@@ -12135,7 +12217,7 @@ mod tests {
                         row.get(0)
                     })
                     .map_err(|err| MvError::Storage(err.to_string()))?;
-                assert_eq!(schema_version, 38);
+                assert_eq!(schema_version, 39);
                 Ok(())
             })
             .unwrap();
