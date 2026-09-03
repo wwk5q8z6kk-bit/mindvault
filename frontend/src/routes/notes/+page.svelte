@@ -11,7 +11,7 @@
 	import type { KnowledgeNode } from '$lib/api/types';
 	import { buildAttachmentEmbedMarkdown } from '$lib/utils/attachments';
 	import { createNote, listNotes, updateNote, deleteNote } from '$lib/api/notes';
-	import { listNodes } from '$lib/api/nodes';
+	import { listNodesForKinds } from '$lib/notes/load';
 	import { kindLabel, kindBadgeClass } from '$lib/utils/kind-helpers';
 	import type { NodeKind } from '$lib/api/types';
 	import { assistAutoTag, assistTransform } from '$lib/api/assist';
@@ -209,29 +209,23 @@
 		try {
 			// Load notes from all note-like kinds
 			const allNotes: NoteWithKind[] = [];
-			for (const kind of NOTE_LIKE_KINDS) {
-				try {
-					const nodes = await listNodes({ kind, limit: 100 });
-					for (const node of nodes) {
-						// Skip daily notes (tagged with day:)
-						if (node.tags.some((t) => t.startsWith('day:'))) continue;
-						allNotes.push({
-							id: node.id,
-							title: node.title,
-							markdown: node.content ?? '',
-							namespace: node.namespace,
-							tags: node.tags,
-							backlinks: [],
-							pinned: Boolean(node.metadata?.pinned),
-							created_at: node.temporal.created_at,
-							updated_at: node.temporal.updated_at,
-							metadata: node.metadata,
-							kind: node.kind as NodeKind
-						});
-					}
-				} catch {
-					// Some kinds may not have any nodes, continue
-				}
+			const nodes = await listNodesForKinds(NOTE_LIKE_KINDS);
+			for (const node of nodes) {
+				// Skip daily notes (tagged with day:)
+				if (node.tags.some((t) => t.startsWith('day:'))) continue;
+				allNotes.push({
+					id: node.id,
+					title: node.title,
+					markdown: node.content ?? '',
+					namespace: node.namespace,
+					tags: node.tags,
+					backlinks: [],
+					pinned: Boolean(node.metadata?.pinned),
+					created_at: node.temporal.created_at,
+					updated_at: node.temporal.updated_at,
+					metadata: node.metadata,
+					kind: node.kind as NodeKind
+				});
 			}
 			// Sort by updated_at descending
 			allNotes.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
