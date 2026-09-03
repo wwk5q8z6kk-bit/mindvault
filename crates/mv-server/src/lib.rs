@@ -24,7 +24,13 @@ use mv_engine::engine::MindVaultEngine;
 use mv_engine::intent::IntentEngine;
 use mv_engine::watcher::WatcherAgent;
 use state::AppState;
+use tokio::net::{TcpListener, UnixListener};
+use tokio::task::JoinHandle;
+use tokio_stream::wrappers::TcpListenerStream;
 use uuid::Uuid;
+
+type ServerError = Box<dyn std::error::Error + Send + Sync>;
+type ServerResult = Result<(), ServerError>;
 
 pub struct ServerConfig {
     pub bind_host: String,
@@ -104,9 +110,7 @@ impl Default for ServerConfig {
 }
 
 /// Start the MindVault server with all transports.
-pub async fn start_server(
-    config: ServerConfig,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn start_server(config: ServerConfig) -> ServerResult {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -139,15 +143,6 @@ pub async fn start_server(
     let engine = Arc::new(engine);
     engine.proactive.set_engine(Arc::clone(&engine));
 
-    ensure_today_daily_note_on_startup_best_effort(&engine).await;
-    spawn_daily_note_scheduler(Arc::clone(&engine));
-
-    // Spawn enrichment worker if enabled
-    if let Some(worker) = enrichment_worker {
-        tokio::spawn(worker.run());
-        tracing::info!("enrichment worker spawned");
-    }
-
     // Shutdown broadcast for background agents
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
@@ -155,68 +150,42 @@ pub async fn start_server(
     let (agent_tx, _) = tokio::sync::broadcast::channel::<state::AgentNotification>(256);
 
     // Spawn watcher agent with notification forwarding
-    spawn_watcher_agent(
-        Arc::clone(&engine),
-        agent_tx.clone(),
-        shutdown_tx.subscribe(),
-    );
-
     let state = Arc::new(AppState::new_with_channels(engine, change_tx, agent_tx));
-    spawn_agent_change_processor(Arc::clone(&state), shutdown_tx.subscribe());
-    spawn_recurrence_and_reminder_scheduler(Arc::clone(&state));
-    spawn_google_calendar_sync(Arc::clone(&state.engine), shutdown_tx.subscribe());
-    adapter_poll::spawn_adapter_polling(Arc::clone(&state), shutdown_tx.subscribe());
-    outbox_dispatch::spawn_outbox_dispatching(Arc::clone(&state), shutdown_tx.subscribe());
-    email::spawn_email_adapter(Arc::clone(&state), shutdown_tx.subscribe());
-    workspace_watch::spawn_workspace_watcher(Arc::clone(&state), shutdown_tx.subscribe());
 
-    // Background task: expire stale proxy approvals every 60 seconds
-    {
-        let engine = Arc::clone(&state.engine);
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-            interval.tick().await; // first tick is immediate, skip it
-            loop {
-                interval.tick().await;
-                match engine.expire_approvals().await {
-                    Ok(0) => {}
-                    Ok(n) => tracing::debug!("expired {n} stale proxy approvals"),
-                    Err(e) => tracing::warn!("failed to expire proxy approvals: {e}"),
-                }
-            }
-        });
-    }
-
-    // Keychain lifecycle scheduler (credential expiry + auto-rotation)
-    state
-        .engine
-        .keychain
-        .start_lifecycle_scheduler(&state.engine.config.keychain)
-        .await;
-
-    // REST + WebSocket server
     let rest_state = Arc::clone(&state);
     let ws_state = Arc::clone(&state);
-    let bind_host = config.bind_host.clone();
     let cors_allowed_origins = config.cors_allowed_origins.clone();
-    let rest_port = config.rest_port;
-    let rest_handle = tokio::spawn(async move {
-        let app = rest::create_router_with_cors(rest_state, &cors_allowed_origins)
-            .merge(websocket::ws_router(ws_state));
-        tracing::info!("REST API listening on {bind_host}:{rest_port}");
-        let listener = tokio::net::TcpListener::bind(format!("{bind_host}:{rest_port}"))
+    let rest_app = rest::create_router_with_cors(rest_state, &cors_allowed_origins)
+        .merge(websocket::ws_router(ws_state));
+    let rest_listener = bind_tcp_listener("REST", &config.bind_host, config.rest_port).await?;
+
+    let grpc_listener = bind_tcp_listener("gRPC", &config.bind_host, config.grpc_port).await?;
+    let uds_listener = config
+        .socket_path
+        .as_deref()
+        .map(bind_unix_listener)
+        .transpose()?;
+
+    ensure_today_daily_note_on_startup_best_effort(&state.engine).await;
+    let mut background_handles = Vec::new();
+    if let Some(handle) =
+        spawn_daily_note_scheduler(Arc::clone(&state.engine), shutdown_tx.subscribe())
+    {
+        background_handles.push(handle);
+    }
+    if let Some(worker) = enrichment_worker {
+        tracing::info!("enrichment worker spawned");
+        background_handles.push(tokio::spawn(worker.run()));
+    }
+
+    let mut rest_handle = tokio::spawn(async move {
+        axum::serve(rest_listener, rest_app)
             .await
-            .expect("failed to bind REST port");
-        axum::serve(listener, app).await.ok();
+            .map_err(|err| transport_error("REST", format!("serve failed: {err}")))
     });
 
-    // gRPC server
     let grpc_state = Arc::clone(&state);
-    let grpc_bind_host = config.bind_host.clone();
-    let grpc_port = config.grpc_port;
-    let grpc_handle = tokio::spawn(async move {
-        tracing::info!("gRPC API listening on {grpc_bind_host}:{grpc_port}");
-        let addr = format!("{grpc_bind_host}:{grpc_port}").parse().unwrap();
+    let mut grpc_handle = tokio::spawn(async move {
         let service = grpc::MindVaultGrpc::new(Arc::clone(&grpc_state));
         let keychain_service = grpc::KeychainGrpc::new(grpc_state);
         tonic::transport::Server::builder()
@@ -226,73 +195,236 @@ pub async fn start_server(
             .add_service(
                 grpc::proto::keychain_service_server::KeychainServiceServer::new(keychain_service),
             )
-            .serve(addr)
+            .serve_with_incoming(TcpListenerStream::new(grpc_listener))
             .await
-            .ok();
+            .map_err(|err| transport_error("gRPC", format!("serve failed: {err}")))
     });
 
-    // Unix Domain Socket (REST API over UDS)
-    if let Some(ref sock_path) = config.socket_path {
-        let uds_state = Arc::clone(&state);
-        let sock = sock_path.clone();
-        tokio::spawn(async move {
-            let _ = std::fs::remove_file(&sock);
-            if let Some(parent) = std::path::Path::new(&sock).parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            tracing::info!("UDS listening on {sock}");
-            let uds_listener = match tokio::net::UnixListener::bind(&sock) {
-                Ok(l) => l,
-                Err(e) => {
-                    tracing::error!("failed to bind UDS at {sock}: {e}");
-                    return;
-                }
-            };
+    let mut uds_handle = uds_listener.map(|uds_listener| {
+        let uds_app = rest::create_router(Arc::clone(&state));
+        tokio::spawn(serve_uds(uds_listener, uds_app, shutdown_tx.subscribe()))
+    });
 
-            let app = rest::create_router(uds_state);
+    if let Some(handle) = spawn_watcher_agent(
+        Arc::clone(&state.engine),
+        state.agent_tx.clone(),
+        shutdown_tx.subscribe(),
+    ) {
+        background_handles.push(handle);
+    }
+    if let Some(handle) = spawn_agent_change_processor(Arc::clone(&state), shutdown_tx.subscribe())
+    {
+        background_handles.push(handle);
+    }
+    if let Some(handle) =
+        spawn_recurrence_and_reminder_scheduler(Arc::clone(&state), shutdown_tx.subscribe())
+    {
+        background_handles.push(handle);
+    }
+    if let Some(handle) =
+        spawn_google_calendar_sync(Arc::clone(&state.engine), shutdown_tx.subscribe())
+    {
+        background_handles.push(handle);
+    }
+    if let Some(handle) =
+        adapter_poll::spawn_adapter_polling(Arc::clone(&state), shutdown_tx.subscribe())
+    {
+        background_handles.push(handle);
+    }
+    if let Some(handle) =
+        outbox_dispatch::spawn_outbox_dispatching(Arc::clone(&state), shutdown_tx.subscribe())
+    {
+        background_handles.push(handle);
+    }
+    if let Some(handle) = email::spawn_email_adapter(Arc::clone(&state), shutdown_tx.subscribe()) {
+        background_handles.push(handle);
+    }
+    if let Some(handle) =
+        workspace_watch::spawn_workspace_watcher(Arc::clone(&state), shutdown_tx.subscribe())
+    {
+        background_handles.push(handle);
+    }
+
+    // Background task: expire stale proxy approvals every 60 seconds
+    let approval_expiry_handle = {
+        let engine = Arc::clone(&state.engine);
+        let mut shutdown_rx = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await; // first tick is immediate, skip it
             loop {
-                match uds_listener.accept().await {
-                    Ok((stream, _addr)) => {
-                        let app = app.clone();
-                        tokio::spawn(async move {
-                            let io = hyper_util::rt::TokioIo::new(stream);
-                            let service = hyper::service::service_fn(move |req| {
-                                let app = app.clone();
-                                async move {
-                                    let resp = tower::ServiceExt::oneshot(app, req).await;
-                                    resp
-                                }
-                            });
-                            if let Err(e) = hyper_util::server::conn::auto::Builder::new(
-                                hyper_util::rt::TokioExecutor::new(),
-                            )
-                            .serve_connection(io, service)
-                            .await
-                            {
-                                tracing::error!("UDS connection error: {e}");
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!("UDS accept error: {e}");
+                tokio::select! {
+                    _ = shutdown_rx.recv() => break,
+                    _ = interval.tick() => {
+                        match engine.expire_approvals().await {
+                            Ok(0) => {}
+                            Ok(n) => tracing::debug!("expired {n} stale proxy approvals"),
+                            Err(e) => tracing::warn!("failed to expire proxy approvals: {e}"),
+                        }
                     }
                 }
             }
-        });
-    }
+        })
+    };
+
+    // Keychain lifecycle scheduler (credential expiry + auto-rotation)
+    state
+        .engine
+        .keychain
+        .start_lifecycle_scheduler(&state.engine.config.keychain)
+        .await;
 
     tracing::info!("MindVault server started");
 
-    tokio::select! {
-        _ = rest_handle => {},
-        _ = grpc_handle => {},
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("shutting down...");
-            let _ = shutdown_tx.send(());
+    let outcome = if let Some(uds_handle) = uds_handle.as_mut() {
+        tokio::select! {
+            biased;
+            result = &mut rest_handle => transport_task_result("REST", result),
+            result = &mut grpc_handle => transport_task_result("gRPC", result),
+            result = uds_handle => transport_task_result("UDS", result),
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("shutting down...");
+                Ok(())
+            }
         }
+    } else {
+        tokio::select! {
+            biased;
+            result = &mut rest_handle => transport_task_result("REST", result),
+            result = &mut grpc_handle => transport_task_result("gRPC", result),
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("shutting down...");
+                Ok(())
+            }
+        }
+    };
+
+    let _ = shutdown_tx.send(());
+    state.engine.keychain.stop_lifecycle_scheduler().await;
+    rest_handle.abort();
+    grpc_handle.abort();
+    if let Some(uds_handle) = uds_handle {
+        uds_handle.abort();
+    }
+    for handle in background_handles {
+        handle.abort();
+    }
+    approval_expiry_handle.abort();
+    if outcome.is_err() {
+        tracing::error!("MindVault server transport failed");
+    } else {
+        tracing::info!("shutting down...");
     }
 
-    Ok(())
+    outcome
+}
+
+async fn bind_tcp_listener(
+    transport: &str,
+    bind_host: &str,
+    port: u16,
+) -> Result<TcpListener, ServerError> {
+    let address = format!("{bind_host}:{port}");
+    let listener = TcpListener::bind(&address)
+        .await
+        .map_err(|err| transport_error(transport, format!("failed to bind {address}: {err}")))?;
+    tracing::info!("{transport} API listening on {address}");
+    Ok(listener)
+}
+
+fn bind_unix_listener(socket_path: &str) -> Result<UnixListener, ServerError> {
+    let path = Path::new(socket_path);
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|err| {
+            transport_error(
+                "UDS",
+                format!(
+                    "failed to remove existing socket at {}: {err}",
+                    path.display()
+                ),
+            )
+        })?;
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            transport_error(
+                "UDS",
+                format!(
+                    "failed to create socket directory {}: {err}",
+                    parent.display()
+                ),
+            )
+        })?;
+    }
+    let listener = UnixListener::bind(path).map_err(|err| {
+        transport_error(
+            "UDS",
+            format!("failed to bind socket at {}: {err}", path.display()),
+        )
+    })?;
+    tracing::info!("UDS listening on {}", path.display());
+    Ok(listener)
+}
+
+async fn serve_uds(
+    listener: UnixListener,
+    app: axum::Router,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) -> ServerResult {
+    let mut connections = tokio::task::JoinSet::new();
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                connections.abort_all();
+                while connections.join_next().await.is_some() {}
+                return Ok(());
+            }
+            result = connections.join_next(), if !connections.is_empty() => {
+                if let Some(Err(err)) = result {
+                    return Err(transport_error("UDS", format!("connection task failed: {err}")));
+                }
+            }
+            accepted = listener.accept() => {
+                let (stream, _) = accepted
+                    .map_err(|err| transport_error("UDS", format!("accept failed: {err}")))?;
+                let app = app.clone();
+                connections.spawn(async move {
+                    let io = hyper_util::rt::TokioIo::new(stream);
+                    let service = hyper::service::service_fn(move |req| {
+                        let app = app.clone();
+                        async move { tower::ServiceExt::oneshot(app, req).await }
+                    });
+                    if let Err(err) = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection(io, service)
+                    .await
+                    {
+                        tracing::error!("UDS connection error: {err}");
+                    }
+                });
+            }
+        }
+    }
+}
+
+fn transport_error(transport: &str, message: String) -> ServerError {
+    std::io::Error::other(format!("{transport} transport {message}")).into()
+}
+
+fn transport_task_result(
+    transport: &str,
+    result: Result<ServerResult, tokio::task::JoinError>,
+) -> ServerResult {
+    match result {
+        Ok(Ok(())) => Err(transport_error(
+            transport,
+            "stopped unexpectedly".to_string(),
+        )),
+        Ok(Err(err)) => Err(err),
+        Err(err) => Err(transport_error(transport, format!("task failed: {err}"))),
+    }
 }
 
 fn ensure_startup_unsealed(engine: &MindVaultEngine) -> Result<(), std::io::Error> {
@@ -356,11 +488,11 @@ fn spawn_watcher_agent(
     engine: Arc<MindVaultEngine>,
     agent_tx: tokio::sync::broadcast::Sender<state::AgentNotification>,
     shutdown_rx: tokio::sync::broadcast::Receiver<()>,
-) {
+) -> Option<JoinHandle<()>> {
     let watcher_config = engine.config.watcher.clone();
     if !watcher_config.enabled {
         tracing::info!("watcher agent disabled by config");
-        return;
+        return None;
     }
 
     let intent_engine = IntentEngine::new(Arc::clone(&engine.store)).with_llm(engine.llm.clone());
@@ -392,27 +524,28 @@ fn spawn_watcher_agent(
         .with_notifier(notifier),
     );
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         agent.run_loop(shutdown_rx).await;
     });
 
     tracing::info!("watcher agent spawned");
+    Some(handle)
 }
 
 fn spawn_agent_change_processor(
     state: Arc<AppState>,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
-) {
+) -> Option<JoinHandle<()>> {
     if !state.engine.config.watcher.enabled {
         tracing::info!("agent change processor disabled by config");
-        return;
+        return None;
     }
 
     let intent_engine =
         IntentEngine::new(Arc::clone(&state.engine.store)).with_llm(state.engine.llm.clone());
     let mut change_rx = state.change_tx.subscribe();
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = shutdown_rx.recv() => {
@@ -435,6 +568,7 @@ fn spawn_agent_change_processor(
     });
 
     tracing::info!("agent change processor spawned");
+    Some(handle)
 }
 
 async fn process_agent_change_notification(
@@ -623,7 +757,10 @@ async fn ensure_today_daily_note_on_startup_best_effort(engine: &Arc<MindVaultEn
     }
 }
 
-fn spawn_daily_note_scheduler(engine: Arc<MindVaultEngine>) {
+fn spawn_daily_note_scheduler(
+    engine: Arc<MindVaultEngine>,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) -> Option<JoinHandle<()>> {
     if !daily_note_scheduler_enabled(&engine.config) {
         if engine.config.daily_notes.enabled
             && !engine.config.daily_notes.midnight_scheduler_enabled
@@ -633,10 +770,10 @@ fn spawn_daily_note_scheduler(engine: Arc<MindVaultEngine>) {
                 "mindvault_daily_note_scheduler_disabled_by_config"
             );
         }
-        return;
+        return None;
     }
 
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         loop {
             let sleep_duration = duration_until_next_utc_midnight(Utc::now());
             tracing::info!(
@@ -644,7 +781,10 @@ fn spawn_daily_note_scheduler(engine: Arc<MindVaultEngine>) {
                 namespace = %engine.config.daily_notes.namespace,
                 "mindvault_daily_note_scheduler_sleep_until_next_utc_midnight"
             );
-            tokio::time::sleep(sleep_duration).await;
+            tokio::select! {
+                _ = shutdown_rx.recv() => break,
+                _ = tokio::time::sleep(sleep_duration) => {}
+            }
 
             if engine.config.sealed_mode && !engine.keychain.is_unsealed_sync() {
                 continue;
@@ -670,16 +810,19 @@ fn spawn_daily_note_scheduler(engine: Arc<MindVaultEngine>) {
                 }
             }
         }
-    });
+    }))
 }
 
 fn daily_note_scheduler_enabled(config: &EngineConfig) -> bool {
     config.daily_notes.enabled && config.daily_notes.midnight_scheduler_enabled
 }
 
-fn spawn_recurrence_and_reminder_scheduler(state: Arc<AppState>) {
+fn spawn_recurrence_and_reminder_scheduler(
+    state: Arc<AppState>,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) -> Option<JoinHandle<()>> {
     if !state.engine.config.recurrence.enabled {
-        return;
+        return None;
     }
 
     let interval_secs = state
@@ -694,10 +837,13 @@ fn spawn_recurrence_and_reminder_scheduler(state: Arc<AppState>) {
         .recurrence
         .max_instances_per_template
         .max(1);
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         loop {
             if state.engine.config.sealed_mode && !state.engine.keychain.is_unsealed_sync() {
-                tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                tokio::select! {
+                    _ = shutdown_rx.recv() => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {}
+                }
                 continue;
             }
 
@@ -730,24 +876,27 @@ fn spawn_recurrence_and_reminder_scheduler(state: Arc<AppState>) {
             // Dispatch task reminders with WebSocket/webhook notifications
             dispatch_task_reminders_with_notifications(&state, now, interval_secs).await;
 
-            tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+            tokio::select! {
+                _ = shutdown_rx.recv() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {}
+            }
         }
-    });
+    }))
 }
 
 fn spawn_google_calendar_sync(
     engine: Arc<MindVaultEngine>,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
-) {
+) -> Option<JoinHandle<()>> {
     let config = engine.config.google_calendar.clone();
     if !config.enabled {
-        return;
+        return None;
     }
 
     let interval_secs = config.sync_interval_secs.max(60);
     let calendar_id = config.calendar_id.clone();
     let calendar_id_for_task = calendar_id.clone();
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
         interval.tick().await;
         loop {
@@ -788,6 +937,7 @@ fn spawn_google_calendar_sync(
     });
 
     tracing::info!(interval_secs, calendar_id = %calendar_id, "google calendar sync spawned");
+    Some(handle)
 }
 
 async fn dispatch_task_reminders_with_notifications(
@@ -955,6 +1105,46 @@ mod tests {
     use chrono::TimeZone;
     use mv_engine::engine::MindVaultEngine;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn transport_tcp_bind_conflict_is_returned() {
+        let listener = bind_tcp_listener("test", "127.0.0.1", 0)
+            .await
+            .expect("first bind should succeed");
+        let port = listener.local_addr().expect("listener address").port();
+
+        let err = bind_tcp_listener("test", "127.0.0.1", port)
+            .await
+            .expect_err("second bind should fail");
+
+        assert!(err.to_string().contains("failed to bind"));
+    }
+
+    #[tokio::test]
+    async fn transport_task_failure_is_returned() {
+        let task = tokio::spawn(async {
+            std::future::pending::<()>().await;
+            Ok::<(), ServerError>(())
+        });
+        task.abort();
+
+        let err = transport_task_result("REST", task.await)
+            .expect_err("cancelled transport task should fail startup");
+
+        assert!(err.to_string().contains("REST transport task failed"));
+    }
+
+    #[tokio::test]
+    async fn transport_task_error_is_propagated() {
+        let task = tokio::spawn(async {
+            Err::<(), ServerError>(std::io::Error::other("test serve failure").into())
+        });
+
+        let err = transport_task_result("REST", task.await)
+            .expect_err("transport error should propagate");
+
+        assert_eq!(err.to_string(), "test serve failure");
+    }
 
     #[test]
     fn daily_note_scheduler_respects_enabled_flags() {

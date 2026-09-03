@@ -195,10 +195,10 @@ pub fn spawn_outbox_dispatcher(
     mut shutdown_rx: broadcast::Receiver<()>,
     config: OutboxDispatcherConfig,
     publisher: Arc<dyn OutboxPublisher>,
-) {
+) -> Option<tokio::task::JoinHandle<()>> {
     if !config.enabled {
         tracing::info!("outbox dispatcher disabled");
-        return;
+        return None;
     }
 
     tracing::info!(
@@ -209,7 +209,7 @@ pub fn spawn_outbox_dispatcher(
     );
 
     let interval_secs = config.interval_secs;
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
         interval.tick().await;
         loop {
@@ -239,7 +239,7 @@ pub fn spawn_outbox_dispatcher(
                 }
             }
         }
-    });
+    }))
 }
 
 #[cfg(test)]

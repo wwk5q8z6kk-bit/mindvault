@@ -32,14 +32,17 @@ impl AdapterPollConfig {
     }
 }
 
-pub fn spawn_adapter_polling(state: Arc<AppState>, mut shutdown_rx: broadcast::Receiver<()>) {
+pub fn spawn_adapter_polling(
+    state: Arc<AppState>,
+    mut shutdown_rx: broadcast::Receiver<()>,
+) -> Option<tokio::task::JoinHandle<()>> {
     let config = AdapterPollConfig::from_env();
     if !config.enabled {
         tracing::info!("adapter polling disabled");
-        return;
+        return None;
     }
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_secs(config.interval_secs));
         interval.tick().await;
@@ -62,6 +65,7 @@ pub fn spawn_adapter_polling(state: Arc<AppState>, mut shutdown_rx: broadcast::R
         interval_secs = config.interval_secs,
         "adapter poller spawned"
     );
+    Some(handle)
 }
 
 async fn poll_once(state: &Arc<AppState>) -> MvResult<()> {
