@@ -4,10 +4,10 @@
 //! required gate evidence to a terminal state. No external dispatcher, provider
 //! call, or third-party agent is invoked — ADR 012 / WORK_ORDER_MODEL scope.
 
+use super::MindVaultEngine;
 use chrono::{Duration, Utc};
 use mv_core::*;
 use uuid::Uuid;
-use super::MindVaultEngine;
 /// Result of one internal execution pass.
 #[derive(Debug, Clone)]
 pub struct ExecutedRun {
@@ -168,19 +168,16 @@ impl MindVaultEngine {
             gate_results.push(result);
         }
 
-        let completed = self
-            .complete_run(run_id)
-            .await?
-            .map_err(|outstanding| {
-                MvError::Conflict(format!(
-                    "execution left outstanding gates: {}",
-                    outstanding
-                        .iter()
-                        .map(|g| g.as_str())
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ))
-            })?;
+        let completed = self.complete_run(run_id).await?.map_err(|outstanding| {
+            MvError::Conflict(format!(
+                "execution left outstanding gates: {}",
+                outstanding
+                    .iter()
+                    .map(|g| g.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ))
+        })?;
 
         Ok(ExecutedRun {
             run: completed,
@@ -314,4 +311,3 @@ impl MindVaultEngine {
         .await
     }
 }
-

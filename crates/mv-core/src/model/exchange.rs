@@ -835,7 +835,11 @@ pub struct RelayPromotionRequest {
 }
 
 impl RelayPromotionRequest {
-    pub fn explicit(message_id: Uuid, actor: impl Into<String>, evidence: impl Into<String>) -> Self {
+    pub fn explicit(
+        message_id: Uuid,
+        actor: impl Into<String>,
+        evidence: impl Into<String>,
+    ) -> Self {
         Self {
             message_id,
             namespace: "default".into(),

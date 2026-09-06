@@ -947,7 +947,6 @@ fn html_to_text(html: &str) -> String {
     output
 }
 
-
 async fn persist_relay_message_attachments(
     state: &Arc<AppState>,
     message_id: Uuid,
