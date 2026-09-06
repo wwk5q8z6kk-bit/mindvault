@@ -32,6 +32,7 @@ pub const WORK_ORDER_LIFECYCLE_TRANSITIONED_V1: &str =
 pub const AGENT_RUN_STARTED_V1: &str = "dev.mindvault.agent-run.started.v1";
 pub const AGENT_RUN_LIFECYCLE_TRANSITIONED_V1: &str =
     "dev.mindvault.agent-run.lifecycle.transitioned.v1";
+pub const IDENTITY_REGISTERED_V1: &str = "dev.mindvault.identity.registered.v1";
 
 /// A portable MindVault identifier.
 ///
@@ -2221,9 +2222,128 @@ pub struct IdempotentSourceBindingCommit {
     pub replayed: bool,
 }
 
+interoperability_string_enum! {
+    /// Actor kind for governed identity records (ADR 010 §Actors).
+    pub enum ActorKind {
+        Human => "human",
+        Agent => "agent",
+        Service => "service",
+        Integration => "integration",
+    }
+}
+
+interoperability_string_enum! {
+    pub enum IdentityStatus {
+        Active => "active",
+        Suspended => "suspended",
+        Revoked => "revoked",
+    }
+}
+
+/// Governed identity record for one principal under a Context Node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityRecord {
+    pub principal_id: Uuid,
+    pub revision: u64,
+    pub principal_uri: StableUri,
+    pub governing_node_uri: StableUri,
+    pub actor_kind: ActorKind,
+    pub display_name: String,
+    pub subject_binding: String,
+    pub subject_binding_digest: String,
+    pub status: IdentityStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl IdentityRecord {
+    /// Deterministic principal UUID for an auth subject under one local node.
+    pub fn principal_id_for_subject(local_node_id: Uuid, subject: &str) -> Uuid {
+        Uuid::new_v5(&local_node_id, subject.as_bytes())
+    }
+
+    pub fn subject_binding_digest(subject_binding: &str) -> String {
+        let digest = Sha256::digest(subject_binding.as_bytes());
+        digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    pub fn bootstrap(
+        local_node_id: Uuid,
+        subject_binding: impl Into<String>,
+        actor_kind: ActorKind,
+        display_name: impl Into<String>,
+    ) -> Result<Self, String> {
+        let subject_binding = subject_binding.into();
+        if subject_binding.trim().is_empty() {
+            return Err("identity subject binding must not be empty".into());
+        }
+        let principal_id = Self::principal_id_for_subject(local_node_id, &subject_binding);
+        let now = Utc::now();
+        let record = Self {
+            principal_id,
+            revision: 1,
+            principal_uri: StableUri::principal(local_node_id, principal_id),
+            governing_node_uri: StableUri::node(local_node_id),
+            actor_kind,
+            display_name: display_name.into(),
+            subject_binding_digest: Self::subject_binding_digest(&subject_binding),
+            subject_binding,
+            status: IdentityStatus::Active,
+            created_at: now,
+            updated_at: now,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub fn semantic_digest(&self) -> String {
+        canonical_json_sha256(
+            &serde_json::to_value(self)
+                .expect("serializing an in-memory IdentityRecord cannot fail"),
+        )
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.revision == 0 {
+            return Err("identity revision must be at least one".into());
+        }
+        let local_node_id = self
+            .governing_node_uri
+            .context_node_uuid()
+            .ok_or_else(|| "governing node id must be a canonical Context Node URI".to_string())?;
+        if self.principal_uri != StableUri::principal(local_node_id, self.principal_id) {
+            return Err(
+                "identity principal URI must be derived from its stable principal id".into(),
+            );
+        }
+        validate_display_text(&self.display_name, "identity display name", 256)?;
+        if self.subject_binding.trim().is_empty() || self.subject_binding.len() > 512 {
+            return Err("identity subject binding must be 1-512 trimmed bytes".into());
+        }
+        validate_sha256(
+            &self.subject_binding_digest,
+            "identity subject binding digest",
+        )?;
+        if self.subject_binding_digest != Self::subject_binding_digest(&self.subject_binding) {
+            return Err("identity subject binding digest does not match its binding".into());
+        }
+        if self.updated_at < self.created_at {
+            return Err("identity update time cannot precede creation".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct IdempotentContextNodeCommit {
     pub context_node: ContextNodeRecord,
+    pub event: EventEnvelope,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct IdempotentIdentityCommit {
+    pub identity: IdentityRecord,
     pub event: EventEnvelope,
     pub replayed: bool,
 }
@@ -3308,6 +3428,13 @@ mod tests {
             .policy_metadata()
             .to_string()
             .contains("no_effective_grant"));
+    }
+
+    #[test]
+    fn actor_kind_parses_portable_tokens() {
+        assert_eq!(ActorKind::Human.as_str(), "human");
+        assert_eq!("agent".parse::<ActorKind>().unwrap(), ActorKind::Agent);
+        assert!("bot".parse::<ActorKind>().is_err());
     }
 
     /// IK-002: ActionEnvelope rejects each required attribution field when missing.

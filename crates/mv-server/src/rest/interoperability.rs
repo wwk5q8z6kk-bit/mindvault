@@ -20,9 +20,10 @@ use axum::{
 };
 use chrono::{Duration, Utc};
 use mv_core::{
-    ActionEnvelope, AdmissionDecision, AuthorityGrant, AuthorityGrantKind, AuthorityGrantStatus,
-    CommandAdmissionRequest, ContextCapability, ContextNodeRecord, IdempotencyKey,
-    InteroperabilityStore, MvError, RetentionClass, Sensitivity, StableUri,
+    ActionEnvelope, ActorKind, AdmissionDecision, AuthorityGrant, AuthorityGrantKind,
+    AuthorityGrantStatus, CommandAdmissionRequest, ContextCapability, ContextNodeRecord,
+    IdempotencyKey, IdentityRecord, InteroperabilityStore, MvError, RetentionClass, Sensitivity,
+    StableUri,
 };
 use mv_engine::engine::IssueAuthorityGrantRequest;
 use serde::{Deserialize, Serialize};
@@ -43,10 +44,8 @@ pub(crate) const COMMAND_ADMISSION_DENIED: &str = "command_admission_denied";
 
 /// The identities a command is attributed to.
 ///
-/// `actor` equals `principal` in this slice, and that is honest rather than a
-/// placeholder: the authenticated credential *is* the acting identity today,
-/// and there is no governed identity registry that could resolve a distinct
-/// accountable human behind it. Separating them requires that registry.
+/// `actor` equals `principal` in this slice when no distinct acting actor is
+/// recorded separately. Both resolve through the governed identity registry.
 ///
 /// There is deliberately no header for overriding the actor. An unauthenticated
 /// header naming an arbitrary actor would let a caller attribute its own
@@ -57,14 +56,28 @@ pub(crate) struct CommandIdentity {
 }
 
 impl CommandIdentity {
-    /// Derive the principal URI for an authenticated caller.
-    ///
-    /// The derivation is `Uuid::new_v5(local_node_id, subject)` and must stay
-    /// byte-identical: the node-create replay index is principal-scoped, so a
-    /// changed principal URI would silently orphan every prior idempotency key.
-    pub(crate) fn derive(auth: &AuthContext, local_node_id: Uuid) -> Self {
+    /// Resolve the principal URI through the governed identity registry.
+    pub(crate) async fn derive_async(
+        state: &AppState,
+        auth: &AuthContext,
+        local_node_id: Uuid,
+    ) -> Result<Self, (StatusCode, String)> {
+        let principal = state
+            .engine
+            .resolve_command_identity(local_node_id, auth.subject.as_deref())
+            .await
+            .map_err(map_context_node_error)?;
+        Ok(Self {
+            actor: principal.clone(),
+            principal,
+        })
+    }
+
+    /// Transitional v5 derivation retained for unit tests of URI stability.
+    #[cfg(test)]
+    fn derive_v5(auth: &AuthContext, local_node_id: Uuid) -> Self {
         let subject = auth.subject.as_deref().unwrap_or("local-system");
-        let principal_id = Uuid::new_v5(&local_node_id, subject.as_bytes());
+        let principal_id = IdentityRecord::principal_id_for_subject(local_node_id, subject);
         let principal = StableUri::principal(local_node_id, principal_id);
         Self {
             actor: principal.clone(),
@@ -208,7 +221,7 @@ mod tests {
     #[test]
     fn command_identity_derives_a_stable_principal_uri() {
         let node_id = Uuid::now_v7();
-        let identity = CommandIdentity::derive(&auth_with_subject(Some("owner")), node_id);
+        let identity = CommandIdentity::derive_v5(&auth_with_subject(Some("owner")), node_id);
 
         let expected = StableUri::principal(node_id, Uuid::new_v5(&node_id, b"owner"));
         assert_eq!(identity.principal, expected);
@@ -218,11 +231,11 @@ mod tests {
         );
 
         // Stable across calls.
-        let again = CommandIdentity::derive(&auth_with_subject(Some("owner")), node_id);
+        let again = CommandIdentity::derive_v5(&auth_with_subject(Some("owner")), node_id);
         assert_eq!(again.principal, expected);
 
         // A different subject is a different principal.
-        let other = CommandIdentity::derive(&auth_with_subject(Some("delegate")), node_id);
+        let other = CommandIdentity::derive_v5(&auth_with_subject(Some("delegate")), node_id);
         assert_ne!(other.principal, expected);
     }
 
@@ -230,7 +243,7 @@ mod tests {
     #[test]
     fn a_missing_subject_derives_the_local_system_principal() {
         let node_id = Uuid::now_v7();
-        let identity = CommandIdentity::derive(&auth_with_subject(None), node_id);
+        let identity = CommandIdentity::derive_v5(&auth_with_subject(None), node_id);
         let expected = StableUri::principal(node_id, Uuid::new_v5(&node_id, b"local-system"));
         assert_eq!(identity.principal, expected);
     }
@@ -240,7 +253,7 @@ mod tests {
     fn a_node_create_request_targets_the_governing_node() {
         let node_id = Uuid::now_v7();
         let resource_id = Uuid::now_v7();
-        let identity = CommandIdentity::derive(&auth_with_subject(Some("owner")), node_id);
+        let identity = CommandIdentity::derive_v5(&auth_with_subject(Some("owner")), node_id);
         let request = node_create_admission_request(
             &identity,
             node_id,
@@ -553,7 +566,11 @@ pub(crate) async fn issue_authority_grant(
                     "grantee_subject must not be empty".into(),
                 ));
             }
-            state.engine.principal_for_subject(local_node_id, subject)
+            state
+                .engine
+                .principal_for_subject(local_node_id, subject)
+                .await
+                .map_err(map_grant_error)?
         }
         (None, None) => {
             return Err((
@@ -753,4 +770,148 @@ pub(crate) async fn resume_authority_grant(
     // Resume clears the reason in the engine; the request still requires one
     // for audit attribution of the transition intent.
     transition_grant(&auth, &state, grant_id, AuthorityGrantStatus::Active, body).await
+}
+
+// ---------------------------------------------------------------------------
+// Governed identity registry (IK-003)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct IdentityView {
+    pub principal_id: Uuid,
+    pub revision: u64,
+    pub principal_uri: String,
+    pub governing_node_uri: String,
+    pub actor_kind: String,
+    pub display_name: String,
+    pub subject_binding: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub newly_registered: bool,
+}
+
+impl IdentityView {
+    fn from_record(record: &IdentityRecord, newly_registered: bool) -> Self {
+        Self {
+            principal_id: record.principal_id,
+            revision: record.revision,
+            principal_uri: record.principal_uri.as_str().to_string(),
+            governing_node_uri: record.governing_node_uri.as_str().to_string(),
+            actor_kind: record.actor_kind.as_str().to_string(),
+            display_name: record.display_name.clone(),
+            subject_binding: record.subject_binding.clone(),
+            status: record.status.as_str().to_string(),
+            created_at: record.created_at.to_rfc3339(),
+            updated_at: record.updated_at.to_rfc3339(),
+            newly_registered,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RegisterIdentityRequest {
+    pub subject_binding: String,
+    pub actor_kind: String,
+    pub display_name: String,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ListIdentitiesQuery {
+    pub governing_node_uri: Option<String>,
+}
+
+fn parse_actor_kind(value: &str) -> Result<ActorKind, (StatusCode, String)> {
+    value
+        .parse()
+        .map_err(|err: String| (StatusCode::BAD_REQUEST, err))
+}
+
+/// `POST /api/v1/identities` — register one governed identity.
+pub(crate) async fn register_identity(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<RegisterIdentityRequest>,
+) -> Result<(StatusCode, Json<IdentityView>), (StatusCode, String)> {
+    require_admin(&auth)?;
+    let local_node_id = state
+        .engine
+        .store
+        .nodes
+        .local_context_node_id()
+        .await
+        .map_err(map_context_node_error)?;
+    let actor_kind = parse_actor_kind(&body.actor_kind)?;
+    let idempotency_key = IdempotencyKey::parse(body.idempotency_key)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let registration = state
+        .engine
+        .register_identity(
+            local_node_id,
+            &body.subject_binding,
+            actor_kind,
+            &body.display_name,
+            idempotency_key,
+        )
+        .await
+        .map_err(map_context_node_error)?;
+    let status = if registration.newly_registered {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((
+        status,
+        Json(IdentityView::from_record(
+            &registration.record,
+            registration.newly_registered,
+        )),
+    ))
+}
+
+/// `GET /api/v1/identities` — list governed identities.
+pub(crate) async fn list_identities(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ListIdentitiesQuery>,
+) -> Result<Json<Vec<IdentityView>>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let governing_node_uri = match query.governing_node_uri {
+        Some(value) => Some(StableUri::parse(value).map_err(|err| (StatusCode::BAD_REQUEST, err))?),
+        None => None,
+    };
+    let records = state
+        .engine
+        .store
+        .nodes
+        .list_identities(governing_node_uri.as_ref())
+        .await
+        .map_err(map_context_node_error)?;
+    Ok(Json(
+        records
+            .iter()
+            .map(|record| IdentityView::from_record(record, false))
+            .collect(),
+    ))
+}
+
+/// `GET /api/v1/identities/{principal_id}` — read one identity by principal id.
+pub(crate) async fn get_identity(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(principal_id): Path<String>,
+) -> Result<Json<IdentityView>, (StatusCode, String)> {
+    authorize_read(&auth)?;
+    let principal_id = Uuid::parse_str(&principal_id)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid principal id".into()))?;
+    let record = state
+        .engine
+        .store
+        .nodes
+        .get_identity(principal_id)
+        .await
+        .map_err(map_context_node_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "identity not found".into()))?;
+    Ok(Json(IdentityView::from_record(&record, false)))
 }

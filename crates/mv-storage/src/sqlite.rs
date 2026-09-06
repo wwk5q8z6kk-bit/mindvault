@@ -292,6 +292,10 @@ impl SqliteNodeStore {
                 39,
                 include_str!("../../../migrations/039_command_admission_decisions.sql"),
             ),
+            (
+                40,
+                include_str!("../../../migrations/040_identity_registry.sql"),
+            ),
         ];
 
         // Migration 001 must always run first to create schema_version table.
@@ -719,6 +723,25 @@ fn event_authority_grant_id(event: &EventEnvelope) -> MvResult<Uuid> {
         .ok_or_else(|| MvError::InvalidInput("event data is missing grant_id".into()))?;
     Uuid::parse_str(value)
         .map_err(|err| MvError::InvalidInput(format!("event grant_id is invalid: {err}")))
+}
+
+fn event_identity_principal_id(event: &EventEnvelope) -> MvResult<Uuid> {
+    let value = event
+        .data
+        .get("principal_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| MvError::InvalidInput("event data is missing principal_id".into()))?;
+    Uuid::parse_str(value)
+        .map_err(|err| MvError::InvalidInput(format!("event principal_id is invalid: {err}")))
+}
+
+fn event_identity_revision(event: &EventEnvelope, default: u64) -> MvResult<u64> {
+    match event.data.get("revision") {
+        Some(value) => value.as_u64().ok_or_else(|| {
+            MvError::InvalidInput("event identity revision must be an unsigned integer".into())
+        }),
+        None => Ok(default),
+    }
 }
 
 fn event_authority_grant_revision(event: &EventEnvelope, default: u64) -> MvResult<u64> {
@@ -1621,6 +1644,176 @@ impl SqliteNodeStore {
         Ok(())
     }
 
+    fn validate_identity_event_record(
+        event: &EventEnvelope,
+        identity: &IdentityRecord,
+        require_revision: bool,
+        require_identity_fields: bool,
+    ) -> MvResult<()> {
+        let principal_id = event_identity_principal_id(event)?;
+        let revision = event_identity_revision(event, identity.revision)?;
+        let record_digest = identity.semantic_digest();
+        if event.subject != identity.principal_uri
+            || principal_id != identity.principal_id
+            || (require_revision && revision != identity.revision)
+            || event
+                .data
+                .get("record_digest")
+                .and_then(|value| value.as_str())
+                != Some(record_digest.as_str())
+            || event.payload_digest != record_digest
+            || (require_identity_fields
+                && (event
+                    .data
+                    .get("actor_kind")
+                    .and_then(|value| value.as_str())
+                    != Some(identity.actor_kind.as_str())
+                    || event.data.get("status").and_then(|value| value.as_str())
+                        != Some(identity.status.as_str())
+                    || event
+                        .data
+                        .get("subject_binding_digest")
+                        .and_then(|value| value.as_str())
+                        != Some(identity.subject_binding_digest.as_str())))
+        {
+            return Err(MvError::InvalidInput(
+                "identity event must match the governed identity revision".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn row_to_identity(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<IdentityRecord> {
+        let principal_id: String = row.get(0)?;
+        let revision: u64 = row.get(1)?;
+        let principal_uri: String = row.get(2)?;
+        let governing_node_uri: String = row.get(3)?;
+        let subject_binding: String = row.get(4)?;
+        let subject_binding_digest: String = row.get(5)?;
+        let actor_kind: String = row.get(6)?;
+        let status: String = row.get(7)?;
+        let record_digest: String = row.get(8)?;
+        let payload: Vec<u8> = row.get(9)?;
+        let payload_format: String = row.get(10)?;
+        let wrapped_dek: Option<String> = row.get(11)?;
+
+        let identity: IdentityRecord = self
+            .decode_governance_record(
+                &payload,
+                &payload_format,
+                wrapped_dek.as_deref(),
+                "identity record",
+            )
+            .map_err(|err| Self::as_sql_conversion_error(9, err.to_string()))?;
+        identity
+            .validate()
+            .map_err(|err| Self::as_sql_conversion_error(9, err))?;
+
+        let stored_actor_kind: ActorKind = actor_kind
+            .parse()
+            .map_err(|err: String| Self::as_sql_conversion_error(6, err))?;
+        let stored_status: IdentityStatus = status
+            .parse()
+            .map_err(|err: String| Self::as_sql_conversion_error(7, err))?;
+        let stored_principal_id = parse_uuid_str(0, &principal_id)?;
+        let stored_principal_uri =
+            StableUri::parse(principal_uri).map_err(|err| Self::as_sql_conversion_error(2, err))?;
+        let stored_governing_node_uri = StableUri::parse(governing_node_uri)
+            .map_err(|err| Self::as_sql_conversion_error(3, err))?;
+
+        if identity.principal_id != stored_principal_id
+            || identity.revision != revision
+            || identity.principal_uri != stored_principal_uri
+            || identity.governing_node_uri != stored_governing_node_uri
+            || identity.subject_binding != subject_binding
+            || identity.subject_binding_digest != subject_binding_digest
+            || identity.actor_kind != stored_actor_kind
+            || identity.status != stored_status
+            || identity.semantic_digest() != record_digest
+        {
+            return Err(Self::as_sql_conversion_error(
+                9,
+                "identity indexed fields do not match its payload",
+            ));
+        }
+
+        Ok(identity)
+    }
+
+    fn load_identity_from_connection(
+        &self,
+        connection: &Connection,
+        principal_id: Uuid,
+    ) -> MvResult<Option<IdentityRecord>> {
+        connection
+            .query_row(
+                "SELECT principal_id, revision, principal_uri, governing_node_uri, subject_binding,
+                        subject_binding_digest, actor_kind, status, record_digest, record_payload,
+                        payload_format, payload_wrapped_dek, created_at, updated_at
+                 FROM interoperability_identity_records
+                 WHERE principal_id = ?1",
+                params![principal_id.to_string()],
+                |row| self.row_to_identity(row),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load identity record: {err}")))
+    }
+
+    fn load_identity_by_subject_from_connection(
+        &self,
+        connection: &Connection,
+        governing_node_uri: &StableUri,
+        subject_binding: &str,
+    ) -> MvResult<Option<IdentityRecord>> {
+        let digest = IdentityRecord::subject_binding_digest(subject_binding);
+        connection
+            .query_row(
+                "SELECT principal_id, revision, principal_uri, governing_node_uri, subject_binding,
+                        subject_binding_digest, actor_kind, status, record_digest, record_payload,
+                        payload_format, payload_wrapped_dek, created_at, updated_at
+                 FROM interoperability_identity_records
+                 WHERE governing_node_uri = ?1 AND subject_binding_digest = ?2",
+                params![governing_node_uri.as_str(), digest],
+                |row| self.row_to_identity(row),
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load identity by subject binding: {err}")))
+    }
+
+    fn insert_identity(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        identity: &IdentityRecord,
+    ) -> MvResult<()> {
+        let (payload, payload_format, wrapped_dek) =
+            self.encode_governance_record(identity, "identity record")?;
+        transaction
+            .execute(
+                "INSERT INTO interoperability_identity_records
+                 (principal_id, revision, principal_uri, governing_node_uri, subject_binding,
+                  subject_binding_digest, actor_kind, status, record_digest, record_payload,
+                  payload_format, payload_wrapped_dek, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                params![
+                    identity.principal_id.to_string(),
+                    identity.revision,
+                    identity.principal_uri.as_str(),
+                    identity.governing_node_uri.as_str(),
+                    identity.subject_binding,
+                    identity.subject_binding_digest,
+                    identity.actor_kind.as_str(),
+                    identity.status.as_str(),
+                    identity.semantic_digest(),
+                    payload,
+                    payload_format,
+                    wrapped_dek,
+                    identity.created_at.to_rfc3339(),
+                    identity.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert identity record: {err}")))?;
+        Ok(())
+    }
     fn insert_context_node(
         &self,
         transaction: &rusqlite::Transaction<'_>,
@@ -2816,6 +3009,170 @@ impl InteroperabilityStore for SqliteNodeStore {
             context_node: context_node.clone(),
             event: event.clone(),
             replayed: false,
+        })
+    }
+
+    async fn commit_identity_with_event(
+        &self,
+        identity: &IdentityRecord,
+        event: &EventEnvelope,
+    ) -> MvResult<IdempotentIdentityCommit> {
+        identity.validate().map_err(MvError::InvalidInput)?;
+        if identity.revision != 1 {
+            return Err(MvError::InvalidInput(
+                "new identity records must start at revision one".into(),
+            ));
+        }
+        Self::validate_identity_event_record(event, identity, false, true)?;
+        if event
+            .data
+            .get("actor_kind")
+            .and_then(|value| value.as_str())
+            != Some(identity.actor_kind.as_str())
+            || event.data.get("status").and_then(|value| value.as_str())
+                != Some(identity.status.as_str())
+            || event
+                .data
+                .get("subject_binding_digest")
+                .and_then(|value| value.as_str())
+                != Some(identity.subject_binding_digest.as_str())
+        {
+            return Err(MvError::InvalidInput(
+                "identity registration event must identify actor kind, status, and subject binding digest".into(),
+            ));
+        }
+
+        let mut connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| MvError::Storage(format!("begin identity registration: {err}")))?;
+        let local_node_id = Self::ensure_local_context_node(&transaction)?;
+        Self::validate_governance_event(
+            &transaction,
+            event,
+            local_node_id,
+            IDENTITY_REGISTERED_V1,
+            "identity-registered",
+        )?;
+
+        if let Some(existing_event) =
+            Self::resolve_governance_replay(&transaction, event, IDENTITY_REGISTERED_V1)?
+        {
+            let existing_principal_id = event_identity_principal_id(&existing_event)?;
+            let existing_identity = self
+                .load_identity_from_connection(&transaction, existing_principal_id)?
+                .ok_or_else(|| {
+                    MvError::Storage(
+                        "identity replay references a missing identity revision".into(),
+                    )
+                })?;
+            transaction
+                .commit()
+                .map_err(|err| MvError::Storage(format!("finish identity replay: {err}")))?;
+            return Ok(IdempotentIdentityCommit {
+                identity: existing_identity,
+                event: existing_event,
+                replayed: true,
+            });
+        }
+
+        if let Some(existing) = self.load_identity_by_subject_from_connection(
+            &transaction,
+            &identity.governing_node_uri,
+            &identity.subject_binding,
+        )? {
+            transaction.commit().map_err(|err| {
+                MvError::Storage(format!("finish existing identity lookup: {err}"))
+            })?;
+            return Ok(IdempotentIdentityCommit {
+                identity: existing,
+                event: event.clone(),
+                replayed: true,
+            });
+        }
+
+        self.insert_identity(&transaction, identity)?;
+        Self::insert_outbox_event(&transaction, event)?;
+        transaction
+            .commit()
+            .map_err(|err| MvError::Storage(format!("commit identity registration: {err}")))?;
+        Ok(IdempotentIdentityCommit {
+            identity: identity.clone(),
+            event: event.clone(),
+            replayed: false,
+        })
+    }
+
+    async fn get_identity(&self, principal_id: Uuid) -> MvResult<Option<IdentityRecord>> {
+        self.with_conn(|connection| self.load_identity_from_connection(connection, principal_id))
+    }
+
+    async fn get_identity_by_subject_binding(
+        &self,
+        governing_node_uri: &StableUri,
+        subject_binding: &str,
+    ) -> MvResult<Option<IdentityRecord>> {
+        self.with_conn(|connection| {
+            self.load_identity_by_subject_from_connection(
+                connection,
+                governing_node_uri,
+                subject_binding,
+            )
+        })
+    }
+
+    async fn list_identities(
+        &self,
+        governing_node_uri: Option<&StableUri>,
+    ) -> MvResult<Vec<IdentityRecord>> {
+        self.with_conn(|connection| {
+            let sql = if governing_node_uri.is_some() {
+                "SELECT principal_id, revision, principal_uri, governing_node_uri, subject_binding,
+                        subject_binding_digest, actor_kind, status, record_digest, record_payload,
+                        payload_format, payload_wrapped_dek, created_at, updated_at
+                 FROM interoperability_identity_records
+                 WHERE governing_node_uri = ?1
+                 ORDER BY subject_binding ASC, principal_id ASC"
+            } else {
+                "SELECT principal_id, revision, principal_uri, governing_node_uri, subject_binding,
+                        subject_binding_digest, actor_kind, status, record_digest, record_payload,
+                        payload_format, payload_wrapped_dek, created_at, updated_at
+                 FROM interoperability_identity_records
+                 ORDER BY governing_node_uri ASC, subject_binding ASC, principal_id ASC"
+            };
+            let mut statement = connection
+                .prepare(sql)
+                .map_err(|err| MvError::Storage(format!("prepare identity query: {err}")))?;
+            let mut identities = Vec::new();
+            if let Some(governing_node_uri) = governing_node_uri {
+                let rows = statement
+                    .query_map(params![governing_node_uri.as_str()], |row| {
+                        self.row_to_identity(row)
+                    })
+                    .map_err(|err| MvError::Storage(format!("query identities: {err}")))?;
+                for row in rows {
+                    identities.push(
+                        row.map_err(|err| {
+                            MvError::Storage(format!("read identity record: {err}"))
+                        })?,
+                    );
+                }
+            } else {
+                let rows = statement
+                    .query_map([], |row| self.row_to_identity(row))
+                    .map_err(|err| MvError::Storage(format!("query identities: {err}")))?;
+                for row in rows {
+                    identities.push(
+                        row.map_err(|err| {
+                            MvError::Storage(format!("read identity record: {err}"))
+                        })?,
+                    );
+                }
+            }
+            Ok(identities)
         })
     }
 
@@ -12135,7 +12492,7 @@ mod tests {
                         row.get(0)
                     })
                     .map_err(|err| MvError::Storage(err.to_string()))?;
-                assert_eq!(schema_version, 38);
+                assert_eq!(schema_version, 40);
                 Ok(())
             })
             .unwrap();
@@ -12374,6 +12731,182 @@ mod tests {
             Err(MvError::InvalidInput(message))
                 if message.contains("requires mvenc-v1")
         ));
+    }
+
+    fn identity_event(
+        local_node_id: Uuid,
+        identity: &IdentityRecord,
+        key: &str,
+        data: serde_json::Value,
+    ) -> EventEnvelope {
+        let mut event = governance_event(
+            local_node_id,
+            IDENTITY_REGISTERED_V1,
+            "identity-registered",
+            identity.principal_uri.clone(),
+            key,
+            data,
+        );
+        event.principal = identity.principal_uri.clone();
+        event.actor = identity.principal_uri.clone();
+        event.payload_digest = identity.semantic_digest();
+        event
+    }
+
+    #[tokio::test]
+    async fn identity_registry_registers_and_reads_actor_kind() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let identity =
+            IdentityRecord::bootstrap(local_node_id, "owner", ActorKind::Human, "Owner").unwrap();
+        let data = serde_json::json!({
+            "principal_id": identity.principal_id,
+            "actor_kind": identity.actor_kind.as_str(),
+            "status": identity.status.as_str(),
+            "record_digest": identity.semantic_digest(),
+            "subject_binding_digest": identity.subject_binding_digest,
+        });
+        let event = identity_event(local_node_id, &identity, "identity-register-owner", data);
+        let commit = store
+            .commit_identity_with_event(&identity, &event)
+            .await
+            .unwrap();
+        assert!(!commit.replayed);
+        let loaded = store
+            .get_identity(identity.principal_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.actor_kind, ActorKind::Human);
+        assert_eq!(loaded.subject_binding, "owner");
+    }
+
+    #[tokio::test]
+    async fn identity_registry_subject_binding_lookup_returns_record() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let node_uri = StableUri::node(local_node_id);
+        let identity = IdentityRecord::bootstrap(
+            local_node_id,
+            "local-system",
+            ActorKind::Human,
+            "Local System",
+        )
+        .unwrap();
+        let data = serde_json::json!({
+            "principal_id": identity.principal_id,
+            "actor_kind": identity.actor_kind.as_str(),
+            "status": identity.status.as_str(),
+            "record_digest": identity.semantic_digest(),
+            "subject_binding_digest": identity.subject_binding_digest,
+        });
+        store
+            .commit_identity_with_event(
+                &identity,
+                &identity_event(
+                    local_node_id,
+                    &identity,
+                    "identity-register-local-system",
+                    data,
+                ),
+            )
+            .await
+            .unwrap();
+        let loaded = store
+            .get_identity_by_subject_binding(&node_uri, "local-system")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.principal_id, identity.principal_id);
+    }
+
+    #[tokio::test]
+    async fn identity_registry_local_system_principal_id_matches_v5_derivation() {
+        let local_node_id = Uuid::now_v7();
+        let identity = IdentityRecord::bootstrap(
+            local_node_id,
+            "local-system",
+            ActorKind::Human,
+            "Local System",
+        )
+        .unwrap();
+        assert_eq!(
+            identity.principal_id,
+            IdentityRecord::principal_id_for_subject(local_node_id, "local-system")
+        );
+        assert_eq!(
+            identity.principal_uri,
+            StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, b"local-system"),)
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_registry_duplicate_subject_binding_is_idempotent() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let identity = IdentityRecord::bootstrap(
+            local_node_id,
+            "local-context-owner",
+            ActorKind::Human,
+            "Local Context Owner",
+        )
+        .unwrap();
+        let data = serde_json::json!({
+            "principal_id": identity.principal_id,
+            "actor_kind": identity.actor_kind.as_str(),
+            "status": identity.status.as_str(),
+            "record_digest": identity.semantic_digest(),
+            "subject_binding_digest": identity.subject_binding_digest,
+        });
+        let event = identity_event(
+            local_node_id,
+            &identity,
+            "identity-register-owner-once",
+            data.clone(),
+        );
+        let first = store
+            .commit_identity_with_event(&identity, &event)
+            .await
+            .unwrap();
+        assert!(!first.replayed);
+        let retry = identity_event(
+            local_node_id,
+            &identity,
+            "identity-register-owner-again",
+            data,
+        );
+        let second = store
+            .commit_identity_with_event(&identity, &retry)
+            .await
+            .unwrap();
+        assert!(second.replayed);
+        assert_eq!(second.identity.principal_id, identity.principal_id);
+    }
+
+    #[tokio::test]
+    async fn identity_registry_bootstrap_schema_digest_matches_definition() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let schema_reference =
+            SchemaReference::new(StableUri::schema("identity-registered").unwrap(), "1.0.0")
+                .unwrap();
+        let schema = store
+            .get_public_schema(&schema_reference)
+            .await
+            .unwrap()
+            .expect("identity registration schema");
+
+        assert_eq!(
+            schema.definition["$schema"],
+            "https://json-schema.org/draft/2020-12/schema"
+        );
+        assert_eq!(
+            schema.content_digest,
+            "95c98ffd9423c88e1483973ba594583760b8d1a119f5b3d26a5c602cf984d7b1"
+        );
+        assert_eq!(
+            schema.content_digest,
+            canonical_json_sha256(&schema.definition)
+        );
     }
 
     #[tokio::test]

@@ -22,6 +22,7 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "workspaces", description = "Allowlisted local Markdown workspace access"),
         (name = "context-nodes", description = "Local Context Node bootstrap and registry"),
         (name = "authority-grants", description = "Authority Grant issuance and lifecycle"),
+        (name = "identities", description = "Governed identity registry"),
         (name = "nodes", description = "Knowledge node CRUD operations"),
         (name = "recall", description = "Semantic recall and search"),
         (name = "graph", description = "Relationship graph operations"),
@@ -1376,6 +1377,17 @@ async fn authority_grants_revoke() {}
     params(("id" = String, Path)),
     responses((status = 200, description = "Resumed"), (status = 400, description = "Invalid transition")))]
 async fn authority_grants_resume() {}
+
+#[utoipa::path(get, path = "/api/v1/identities", tag = "identities",
+    responses((status = 200, description = "Identity list")))]
+async fn identities_list() {}
+#[utoipa::path(post, path = "/api/v1/identities", tag = "identities",
+    responses((status = 201, description = "Identity registered"), (status = 403, description = "Admin required")))]
+async fn identities_register() {}
+#[utoipa::path(get, path = "/api/v1/identities/{principal_id}", tag = "identities",
+    params(("principal_id" = String, Path)),
+    responses((status = 200, description = "Identity"), (status = 404, description = "Not found")))]
+async fn identities_get() {}
 
 // --- Agent ---
 #[utoipa::path(get, path = "/api/v1/agent/context", tag = "agent", responses((status = 200)))]

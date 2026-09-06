@@ -18,8 +18,8 @@ mod workspace_ops;
 mod workspace_projection_ops;
 
 pub use interoperability_ops::{
-    AuthorityGrantIssuance, AuthorityGrantTransition, IssueAuthorityGrantRequest,
-    LocalContextNodeRegistration,
+    AuthorityGrantIssuance, AuthorityGrantTransition, BootstrapLocalIdentities,
+    IdentityRegistration, IssueAuthorityGrantRequest, LocalContextNodeRegistration,
 };
 pub use outbox_dispatch::{
     spawn_outbox_dispatcher, LocalAckPublisher, OutboxDispatchTick, OutboxDispatcherConfig,

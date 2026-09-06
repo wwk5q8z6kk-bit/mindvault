@@ -32,6 +32,19 @@ pub struct LocalContextNodeRegistration {
     pub newly_registered: bool,
 }
 
+/// Outcome of [`MindVaultEngine::register_identity`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityRegistration {
+    pub record: IdentityRecord,
+    pub newly_registered: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapLocalIdentities {
+    pub local_system: IdentityRecord,
+    pub local_context_owner: IdentityRecord,
+}
+
 /// Outcome of [`MindVaultEngine::issue_authority_grant`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorityGrantIssuance {
@@ -110,6 +123,11 @@ impl MindVaultEngine {
         let local_node_id = self.store.nodes.local_context_node_id().await?;
 
         if let Some(existing) = self.store.nodes.get_context_node(local_node_id).await? {
+            // Migration 040 can be applied to a vault whose local Context Node
+            // descriptor predates the identity registry. Re-running this
+            // idempotent bootstrap ensures those vaults receive the canonical
+            // local principals too.
+            self.bootstrap_local_identities(local_node_id).await?;
             return Ok(LocalContextNodeRegistration {
                 record: existing,
                 newly_registered: false,
@@ -123,7 +141,7 @@ impl MindVaultEngine {
         )
         .map_err(MvError::InvalidInput)?;
 
-        let owner = self.local_owner_principal(local_node_id);
+        let owner = self.derived_owner_principal(local_node_id);
         let mut record = ContextNodeRecord::discovered(
             local_node_id,
             ContextNodeType::Personal,
@@ -176,10 +194,12 @@ impl MindVaultEngine {
             .nodes
             .commit_context_node_with_event(&record, &event)
             .await?;
-        Ok(LocalContextNodeRegistration {
+        let registration = LocalContextNodeRegistration {
             record: commit.context_node,
             newly_registered: !commit.replayed,
-        })
+        };
+        self.bootstrap_local_identities(local_node_id).await?;
+        Ok(registration)
     }
 
     /// Read the local Context Node descriptor, if it has been registered.
@@ -189,17 +209,177 @@ impl MindVaultEngine {
         self.store.nodes.get_context_node(local_node_id).await
     }
 
-    /// The owner principal this vault attributes its own governance acts to.
-    ///
-    /// Derived rather than stored so it is stable across restarts without a
-    /// migration. It is the same shape the REST layer derives for an
-    /// authenticated caller, and it must stay stable: grants reference it as
-    /// grantor, and changing the derivation would orphan them.
-    fn local_owner_principal(&self, local_node_id: Uuid) -> StableUri {
+    fn identity_legacy_fallback_enabled() -> bool {
+        std::env::var("MINDVAULT_IDENTITY_LEGACY_FALLBACK")
+            .ok()
+            .as_deref()
+            == Some("1")
+    }
+
+    fn derived_owner_principal(&self, local_node_id: Uuid) -> StableUri {
         StableUri::principal(
             local_node_id,
-            Uuid::new_v5(&local_node_id, b"local-context-owner"),
+            IdentityRecord::principal_id_for_subject(local_node_id, "local-context-owner"),
         )
+    }
+
+    /// Bootstrap the vault's canonical local principals in the identity registry.
+    pub async fn bootstrap_local_identities(
+        &self,
+        local_node_id: Uuid,
+    ) -> MvResult<BootstrapLocalIdentities> {
+        let local_system = self
+            .register_identity(
+                local_node_id,
+                "local-system",
+                ActorKind::Human,
+                "Local System",
+                IdempotencyKey::parse(format!("bootstrap-local-system-{local_node_id}"))
+                    .map_err(MvError::InvalidInput)?,
+            )
+            .await?
+            .record;
+        let local_context_owner = self
+            .register_identity(
+                local_node_id,
+                "local-context-owner",
+                ActorKind::Human,
+                "Local Context Owner",
+                IdempotencyKey::parse(format!("bootstrap-local-context-owner-{local_node_id}"))
+                    .map_err(MvError::InvalidInput)?,
+            )
+            .await?
+            .record;
+        Ok(BootstrapLocalIdentities {
+            local_system,
+            local_context_owner,
+        })
+    }
+
+    /// Register one governed identity record, idempotently.
+    pub async fn register_identity(
+        &self,
+        local_node_id: Uuid,
+        subject_binding: &str,
+        actor_kind: ActorKind,
+        display_name: &str,
+        idempotency_key: IdempotencyKey,
+    ) -> MvResult<IdentityRegistration> {
+        self.ensure_unsealed_for_node_io().await?;
+        let identity =
+            IdentityRecord::bootstrap(local_node_id, subject_binding, actor_kind, display_name)
+                .map_err(MvError::InvalidInput)?;
+
+        if let Some(existing) = self
+            .store
+            .nodes
+            .get_identity_by_subject_binding(&StableUri::node(local_node_id), subject_binding)
+            .await?
+        {
+            return Ok(IdentityRegistration {
+                record: existing,
+                newly_registered: false,
+            });
+        }
+
+        let data = serde_json::json!({
+            "principal_id": identity.principal_id,
+            "actor_kind": identity.actor_kind.as_str(),
+            "status": identity.status.as_str(),
+            "record_digest": identity.semantic_digest(),
+            "subject_binding_digest": identity.subject_binding_digest,
+        });
+        let owner = self.local_owner_principal(local_node_id).await?;
+        let mut event = EventEnvelope::new(NewEventEnvelope {
+            event_type: IDENTITY_REGISTERED_V1.into(),
+            source: StableUri::node(local_node_id),
+            subject: identity.principal_uri.clone(),
+            schema: SchemaReference::new(
+                StableUri::schema("identity-registered").map_err(MvError::InvalidInput)?,
+                "1.0.0",
+            )
+            .map_err(MvError::InvalidInput)?,
+            principal: owner.clone(),
+            actor: owner,
+            correlation_id: Uuid::now_v7(),
+            causation_id: None,
+            idempotency_key,
+            payload_digest: canonical_json_sha256(&data),
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Durable,
+            provenance: vec![ProvenanceReference {
+                resource: identity.principal_uri.clone(),
+                relation: ProvenanceRelation::PrimarySource,
+            }],
+            data,
+        })
+        .map_err(MvError::InvalidInput)?;
+        event.payload_digest = identity.semantic_digest();
+
+        let commit = self
+            .store
+            .nodes
+            .commit_identity_with_event(&identity, &event)
+            .await?;
+        Ok(IdentityRegistration {
+            record: commit.identity,
+            newly_registered: !commit.replayed,
+        })
+    }
+
+    /// Resolve a command principal URI through the governed identity registry.
+    pub async fn resolve_command_identity(
+        &self,
+        local_node_id: Uuid,
+        subject: Option<&str>,
+    ) -> MvResult<StableUri> {
+        let subject = subject.unwrap_or("local-system");
+        if let Some(record) = self
+            .store
+            .nodes
+            .get_identity_by_subject_binding(&StableUri::node(local_node_id), subject)
+            .await?
+        {
+            return Ok(record.principal_uri);
+        }
+
+        // The two built-in local principals are governed bootstrap identities,
+        // not a legacy derivation fallback. A fresh vault may reach its first
+        // command before an operator explicitly registers the local Context
+        // Node (notably immediately after sealed-vault initialization), so
+        // materialize the descriptor and registry records idempotently and then
+        // resolve through storage again.
+        if matches!(subject, "local-system" | "local-context-owner") {
+            self.register_local_context_node("Personal Vault").await?;
+            if let Some(record) = self
+                .store
+                .nodes
+                .get_identity_by_subject_binding(&StableUri::node(local_node_id), subject)
+                .await?
+            {
+                return Ok(record.principal_uri);
+            }
+        }
+
+        if Self::identity_legacy_fallback_enabled() {
+            return Ok(self.derived_principal_for_subject(local_node_id, subject));
+        }
+        Err(MvError::InvalidInput(format!(
+            "unknown identity subject binding: {subject}"
+        )))
+    }
+
+    /// The owner principal this vault attributes its own governance acts to.
+    pub async fn local_owner_principal(&self, local_node_id: Uuid) -> MvResult<StableUri> {
+        if let Some(record) = self
+            .store
+            .nodes
+            .get_identity_by_subject_binding(&StableUri::node(local_node_id), "local-context-owner")
+            .await?
+        {
+            return Ok(record.principal_uri);
+        }
+        Ok(self.derived_owner_principal(local_node_id))
     }
 
     /// Issue one Context or Tool Grant governed by this vault's local node.
@@ -214,7 +394,7 @@ impl MindVaultEngine {
         self.ensure_unsealed_for_node_io().await?;
         let local_node_id = self.store.nodes.local_context_node_id().await?;
         let node_uri = StableUri::node(local_node_id);
-        let grantor = self.local_owner_principal(local_node_id);
+        let grantor = self.local_owner_principal(local_node_id).await?;
 
         let mut grant = match request.kind {
             AuthorityGrantKind::Tool => AuthorityGrant::new_tool(
@@ -401,11 +581,21 @@ impl MindVaultEngine {
     /// Kept public so grant issuance can name a grantee that will match
     /// `CommandIdentity::derive` for a given auth subject without the caller
     /// reconstructing the v5 scheme.
-    pub fn principal_for_subject(&self, local_node_id: Uuid, subject: &str) -> StableUri {
+    fn derived_principal_for_subject(&self, local_node_id: Uuid, subject: &str) -> StableUri {
         StableUri::principal(
             local_node_id,
-            Uuid::new_v5(&local_node_id, subject.as_bytes()),
+            IdentityRecord::principal_id_for_subject(local_node_id, subject),
         )
+    }
+
+    /// Resolve a grantee/principal URI through the registry when possible.
+    pub async fn principal_for_subject(
+        &self,
+        local_node_id: Uuid,
+        subject: &str,
+    ) -> MvResult<StableUri> {
+        self.resolve_command_identity(local_node_id, Some(subject))
+            .await
     }
 
     /// Resolve whether one command is authorized by an effective grant.
@@ -835,6 +1025,165 @@ mod tests {
             .await
             .expect_err("a context grant cannot carry a command");
         assert!(matches!(error, MvError::InvalidInput(_)), "got {error:?}");
+    }
+
+    #[tokio::test]
+    async fn identity_registry_bootstraps_local_system_and_owner() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = engine.store.nodes.local_context_node_id().await.unwrap();
+        let bootstrapped = engine
+            .bootstrap_local_identities(local_node_id)
+            .await
+            .unwrap();
+        assert_eq!(bootstrapped.local_system.subject_binding, "local-system");
+        assert_eq!(bootstrapped.local_system.actor_kind, ActorKind::Human);
+        assert_eq!(
+            bootstrapped.local_context_owner.subject_binding,
+            "local-context-owner"
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_registry_resolves_local_system_without_legacy_fallback() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let principal = engine
+            .resolve_command_identity(local_node_id, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            principal,
+            StableUri::principal(
+                local_node_id,
+                IdentityRecord::principal_id_for_subject(local_node_id, "local-system"),
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_registry_resolution_bootstraps_a_fresh_local_context_node() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = engine.store.nodes.local_context_node_id().await.unwrap();
+        assert!(engine.local_context_node().await.unwrap().is_none());
+
+        let principal = engine
+            .resolve_command_identity(local_node_id, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            principal,
+            StableUri::principal(
+                local_node_id,
+                IdentityRecord::principal_id_for_subject(local_node_id, "local-system"),
+            )
+        );
+        assert!(engine.local_context_node().await.unwrap().is_some());
+        assert_eq!(
+            engine
+                .store
+                .nodes
+                .list_identities(Some(&StableUri::node(local_node_id)))
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_registry_unknown_subject_fails_without_legacy_fallback() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let err = engine
+            .resolve_command_identity(local_node_id, Some("unknown-subject"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MvError::InvalidInput(_)));
+    }
+
+    #[tokio::test]
+    async fn identity_registry_bootstraps_when_local_context_node_already_exists() {
+        let (engine, _tmp) = test_engine().await;
+        let local_node_id = engine.store.nodes.local_context_node_id().await.unwrap();
+        let owner = engine.derived_owner_principal(local_node_id);
+        let manifest = ContextCapabilityManifest::new(
+            LOCAL_NODE_CAPABILITIES.to_vec(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut record = ContextNodeRecord::discovered(
+            local_node_id,
+            ContextNodeType::Personal,
+            owner.clone(),
+            StableUri::node(local_node_id),
+            "Pre-registry Personal Vault",
+            manifest,
+        )
+        .unwrap();
+        record.trust_class = ContextNodeTrustClass::local();
+        record.status = ContextNodeStatus::Active;
+        let data = serde_json::json!({
+            "node_id": record.node_id,
+            "node_type": record.node_type.as_str(),
+            "status": record.status.as_str(),
+            "record_digest": record.semantic_digest(),
+            "capability_digest": record.capability_manifest.content_digest,
+        });
+        let mut event = EventEnvelope::new(NewEventEnvelope {
+            event_type: CONTEXT_NODE_REGISTERED_V1.into(),
+            source: StableUri::node(local_node_id),
+            subject: record.node_uri.clone(),
+            schema: SchemaReference::new(
+                StableUri::schema("context-node-registered").unwrap(),
+                "1.0.0",
+            )
+            .unwrap(),
+            principal: owner.clone(),
+            actor: owner,
+            correlation_id: Uuid::now_v7(),
+            causation_id: None,
+            idempotency_key: IdempotencyKey::parse("pre-registry-local-node").unwrap(),
+            payload_digest: canonical_json_sha256(&data),
+            sensitivity: Sensitivity::Internal,
+            retention: RetentionClass::Durable,
+            provenance: vec![ProvenanceReference {
+                resource: record.node_uri.clone(),
+                relation: ProvenanceRelation::PrimarySource,
+            }],
+            data,
+        })
+        .unwrap();
+        event.payload_digest = record.semantic_digest();
+        engine
+            .store
+            .nodes
+            .commit_context_node_with_event(&record, &event)
+            .await
+            .unwrap();
+        assert!(engine
+            .store
+            .nodes
+            .list_identities(Some(&StableUri::node(local_node_id)))
+            .await
+            .unwrap()
+            .is_empty());
+
+        let registration = engine
+            .register_local_context_node("Ignored replacement name")
+            .await
+            .unwrap();
+        assert!(!registration.newly_registered);
+        let identities = engine
+            .store
+            .nodes
+            .list_identities(Some(&StableUri::node(local_node_id)))
+            .await
+            .unwrap();
+        assert_eq!(identities.len(), 2);
+        assert_eq!(identities[0].subject_binding, "local-context-owner");
+        assert_eq!(identities[1].subject_binding, "local-system");
     }
 
     /// Fresh vaults get an active self-governed descriptor they can issue grants against.
