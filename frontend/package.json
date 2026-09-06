@@ -51,6 +51,7 @@
 		"vitest-browser-svelte": "^2.0.2"
 	},
 	"dependencies": {
+		"@lucide/svelte": "^1.27.0",
 		"@tanstack/svelte-virtual": "^3.13.18",
 		"@tauri-apps/api": "^2.11.1",
 		"@tauri-apps/plugin-dialog": "^2.7.2",

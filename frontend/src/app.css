@@ -11,8 +11,7 @@
 		color: rgb(var(--mv-text));
 		@apply antialiased selection:bg-[rgb(var(--mv-accent))]/30 selection:text-[rgb(var(--mv-accent-strong))];
 		font-family:
-			'Outfit',
-			'Inter',
+			'Plus Jakarta Sans',
 			system-ui,
 			-apple-system,
 			sans-serif;
@@ -22,13 +21,7 @@
 	kbd,
 	samp,
 	pre {
-		font-family:
-			'JetBrains Mono',
-			'SFMono-Regular',
-			Consolas,
-			'Liberation Mono',
-			Menlo,
-			monospace;
+		font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
 	}
 
 	/* Custom Scrollbar for Webkit */
@@ -54,6 +47,11 @@
 
 	* {
 		border-color: rgb(var(--mv-border));
+	}
+
+	:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+		outline: 2px solid rgb(var(--mv-ring));
+		outline-offset: 2px;
 	}
 
 	.mv-card {
@@ -106,5 +104,16 @@
 
 	.mv-tabs {
 		@apply flex gap-1 rounded-xl bg-[rgb(var(--mv-panel-strong))]/60 p-1;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		*,
+		*::before,
+		*::after {
+			scroll-behavior: auto !important;
+			animation-duration: 0.01ms !important;
+			animation-iteration-count: 1 !important;
+			transition-duration: 0.01ms !important;
+		}
 	}
 }

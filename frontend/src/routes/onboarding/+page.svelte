@@ -72,7 +72,7 @@
 				</div>
 				<h1 class="text-2xl font-bold text-white">Welcome to MindVault</h1>
 				<p class="mt-3 text-sm text-slate-400">
-					Your local-first knowledge and execution workspace.
+					Your private, local-first vault for knowledge and execution.
 					<br />
 					Let's get you started in under a minute.
 				</p>
