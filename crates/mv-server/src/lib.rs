@@ -283,7 +283,6 @@ pub async fn start_server(config: ServerConfig) -> ServerResult {
             result = &mut grpc_handle => transport_task_result("gRPC", result),
             result = uds_handle => transport_task_result("UDS", result),
             _ = tokio::signal::ctrl_c() => {
-                tracing::info!("shutting down...");
                 Ok(())
             }
         }
