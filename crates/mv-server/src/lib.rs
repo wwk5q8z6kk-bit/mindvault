@@ -301,6 +301,10 @@ pub async fn start_server(config: ServerConfig) -> ServerResult {
 
     let _ = shutdown_tx.send(());
     state.engine.keychain.stop_lifecycle_scheduler().await;
+
+    // Give shutdown-aware workers a chance to observe the broadcast before forcing cancellation.
+    tokio::task::yield_now().await;
+
     rest_handle.abort();
     grpc_handle.abort();
     if let Some(uds_handle) = uds_handle {
