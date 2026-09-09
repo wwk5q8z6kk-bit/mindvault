@@ -65,11 +65,14 @@ struct KnownWorkspace {
     watch_error_reported: bool,
 }
 
-pub fn spawn_workspace_watcher(state: Arc<AppState>, shutdown_rx: broadcast::Receiver<()>) {
+pub fn spawn_workspace_watcher(
+    state: Arc<AppState>,
+    shutdown_rx: broadcast::Receiver<()>,
+) -> Option<tokio::task::JoinHandle<()>> {
     let config = WorkspaceWatchConfig::from_env();
     if !config.enabled {
         tracing::info!("knowledge workspace filesystem watcher disabled");
-        return;
+        return None;
     }
 
     tracing::info!(
@@ -80,7 +83,11 @@ pub fn spawn_workspace_watcher(state: Arc<AppState>, shutdown_rx: broadcast::Rec
         "knowledge workspace filesystem watcher spawning"
     );
 
-    tokio::spawn(run_workspace_watcher(state, config, shutdown_rx));
+    Some(tokio::spawn(run_workspace_watcher(
+        state,
+        config,
+        shutdown_rx,
+    )))
 }
 
 async fn run_workspace_watcher(

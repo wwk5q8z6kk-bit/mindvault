@@ -332,17 +332,17 @@ fn extract_email_from_contact(contact: &RelayContact) -> Option<String> {
 pub fn spawn_email_adapter(
     state: Arc<AppState>,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
-) {
+) -> Option<tokio::task::JoinHandle<()>> {
     if !state.engine.config.email.enabled {
         tracing::info!("email adapter disabled by config");
-        return;
+        return None;
     }
 
     let state_file = state_file_path(&state.engine.config.data_dir);
     let mut adapter_state = load_state(&state_file);
     let poll_interval_secs = state.engine.config.email.poll_interval_secs.max(30);
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(poll_interval_secs));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -365,6 +365,7 @@ pub fn spawn_email_adapter(
     });
 
     tracing::info!("email adapter spawned");
+    Some(handle)
 }
 
 async fn poll_and_ingest_emails(
