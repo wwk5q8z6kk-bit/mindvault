@@ -39,7 +39,7 @@ export interface RelayMessage {
 	content: string;
 	content_type: ContentType;
 	status: MessageStatus;
-	vault_node_id?: string;
+	vault_node_id?: string | null;
 	metadata: Record<string, unknown>;
 	created_at: string;
 	updated_at?: string;
