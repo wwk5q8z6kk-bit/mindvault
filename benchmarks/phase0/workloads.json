@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "fixture_seed": 20260725,
+  "tiers": {
+    "S": {"documents": 1000, "attachments": 100, "relationships": 5000},
+    "M": {"documents": 100000, "attachments": 10000, "relationships": 500000},
+    "L": {"documents": 1000000, "attachments": 100000, "relationships": 5000000}
+  },
+  "required_workloads": [
+    "exact_lookup",
+    "full_text_retrieval",
+    "vector_retrieval",
+    "graph_retrieval",
+    "hybrid_ranking",
+    "indexing_throughput",
+    "memory_usage",
+    "startup",
+    "attachment_extraction",
+    "sync",
+    "migration",
+    "backup_restore"
+  ],
+  "workloads": {
+    "exact_lookup": {
+      "description": "SQLite get-by-id and source identity lookup",
+      "command": null,
+      "legacy_probe_command": ["cargo", "bench", "-p", "mv-storage", "--bench", "sqlite_bench", "--", "get_by_id"],
+      "adapter_required": true,
+      "repetitions": 5,
+      "timeout_seconds": 1800,
+      "correctness": "100% expected ID/source match"
+    },
+    "full_text_retrieval": {
+      "description": "FTS quality and latency on fixed relevance judgments",
+      "command": null,
+      "adapter_required": true,
+      "repetitions": 5,
+      "timeout_seconds": 1800,
+      "correctness": "MRR, nDCG@10, Recall@10 versus judgments"
+    },
+    "vector_retrieval": {
+      "description": "LanceDB vector query plus brute-force recall reference",
+      "command": null,
+      "legacy_probe_command": ["cargo", "bench", "-p", "mv-storage", "--bench", "vector_bench", "--", "vector_search"],
+      "adapter_required": true,
+      "repetitions": 5,
+      "timeout_seconds": 1800,
+      "correctness": "Recall@10 versus brute-force cosine ranking"
+    },
+    "graph_retrieval": {
+      "description": "Typed traversal at fixed depth and high-degree fixtures",
+      "command": null,
+      "adapter_required": true,
+      "repetitions": 5,
+      "timeout_seconds": 1800,
+      "correctness": "Exact ordered node/edge set and authorization filter"
+    },
+    "hybrid_ranking": {
+      "description": "FTS/vector/graph candidate fusion and citation ledger",
+      "command": null,
+      "adapter_required": true,
+      "repetitions": 5,
+      "timeout_seconds": 1800,
+      "correctness": "nDCG/MRR plus deterministic candidate attribution"
+    },
+    "indexing_throughput": {
+      "description": "Canonical store plus current projection throughput",
+      "command": null,
+      "legacy_probe_command": ["cargo", "bench", "-p", "mv-engine", "--bench", "engine_bench", "--", "engine_batch_store"],
+      "adapter_required": true,
+      "repetitions": 3,
+      "timeout_seconds": 3600,
+      "correctness": "All committed versions present at projection watermark"
+    },
+    "memory_usage": {
+      "description": "Peak and steady RSS during M-tier ingest and retrieval",
+      "command": null,
+      "adapter_required": true,
+      "repetitions": 5,
+      "timeout_seconds": 3600,
+      "correctness": "Same query/index correctness as component workloads"
+    },
+    "startup": {
+      "description": "Process start to authenticated ready and first correct query",
+      "command": null,
+      "adapter_required": true,
+      "repetitions": 10,
+      "timeout_seconds": 600,
+      "correctness": "Health, schema, projection watermark, first query"
+    },
+    "attachment_extraction": {
+      "description": "Text/PDF/image/audio/video golden corpus with adversarial limits",
+      "command": null,
+      "adapter_required": true,
+      "repetitions": 3,
+      "timeout_seconds": 3600,
+      "correctness": "Golden spans, timeouts, no path/network escape"
+    },
+    "sync": {
+      "description": "Offline peer convergence, conflict, replay, and attachment transfer",
+      "command": null,
+      "adapter_required": true,
+      "repetitions": 3,
+      "timeout_seconds": 3600,
+      "correctness": "Deterministic convergence and conflict decisions"
+    },
+    "migration": {
+      "description": "Every supported legacy schema through v2 with interruption points",
+      "command": null,
+      "adapter_required": true,
+      "repetitions": 3,
+      "timeout_seconds": 3600,
+      "correctness": "Integrity, foreign keys, counts, hashes, export equivalence"
+    },
+    "backup_restore": {
+      "description": "Complete manifest backup and restore to a fresh data root",
+      "command": null,
+      "adapter_required": true,
+      "repetitions": 3,
+      "timeout_seconds": 3600,
+      "correctness": "Hashes, schema, evidence reachability, queries, key recovery"
+    }
+  }
+}
