@@ -13,8 +13,8 @@
 --
 -- Supersedes migrations/024_plans.sql. Verified before writing this migration:
 -- no code reads or writes `plans` or `plan_steps`, so no data migration is
--- required. The superseded tables are left in place for this revision and are
--- retired separately.
+-- required. The superseded tables were left in place for this revision and
+-- are dropped by migration 041 (AGENT-002).
 
 BEGIN IMMEDIATE;
 

@@ -104,6 +104,12 @@ allow_cloud_fallback = false
 # grant issuance is exposed it is a test and staging mode.
 # Override: MINDVAULT_COMMAND_ADMISSION_MODE
 command_admission_mode = "off"
+# NOTE: this key is inert — no config struct field reads it. The real FED-000
+# gate is read directly from the environment at request time in
+# crates/mv-server/src/rest/federation.rs::federation_enabled(). Production
+# federation stays disabled until FED-001..FED-010 are verified.
+# Override only in development: MINDVAULT_FEDERATION_ENABLED=1
+federation_enabled = false
 
 [ai_sidecar]
 enabled = false

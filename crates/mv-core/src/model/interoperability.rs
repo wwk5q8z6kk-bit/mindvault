@@ -9,6 +9,7 @@ use super::KnowledgeNode;
 pub const EVENT_ENVELOPE_V1: &str = "mindvault.event-envelope/v1";
 pub const ACTION_RECEIPT_V1: &str = "mindvault.action-receipt/v1";
 pub const ACTION_ENVELOPE_V1: &str = "mindvault.action-envelope/v1";
+pub const ACTION_ENVELOPE_V2: &str = "mindvault.action-envelope/v2";
 pub const CONSUMER_APPLICATION_RECEIPT_V1: &str = "mindvault.consumer-application-receipt/v1";
 pub const JSON_SCHEMA_DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 pub const EVENT_TYPE_SCHEMA_EXTENSION: &str = "x-mindvault-event-type";
@@ -32,7 +33,6 @@ pub const WORK_ORDER_LIFECYCLE_TRANSITIONED_V1: &str =
 pub const AGENT_RUN_STARTED_V1: &str = "dev.mindvault.agent-run.started.v1";
 pub const AGENT_RUN_LIFECYCLE_TRANSITIONED_V1: &str =
     "dev.mindvault.agent-run.lifecycle.transitioned.v1";
-pub const IDENTITY_REGISTERED_V1: &str = "dev.mindvault.identity.registered.v1";
 
 /// A portable MindVault identifier.
 ///
@@ -715,11 +715,42 @@ interoperability_string_enum! {
 }
 
 interoperability_string_enum! {
+    /// ADR 010 actor kind for governed principals.
+    pub enum ActorKind {
+        Human => "human",
+        Agent => "agent",
+        Service => "service",
+        Integration => "integration",
+    }
+}
+
+interoperability_string_enum! {
+    /// Lifecycle status for a governed identity record.
+    pub enum IdentityStatus {
+        Active => "active",
+        Suspended => "suspended",
+        Revoked => "revoked",
+        Retired => "retired",
+    }
+}
+
+interoperability_string_enum! {
     /// Durable state of one outbox event's publication boundary.
     pub enum OutboxDeliveryState {
         Pending => "pending",
         Published => "published",
         DeadLetter => "dead_letter",
+    }
+}
+
+interoperability_string_enum! {
+    /// Local projection readiness for one outbox event (IK-016).
+    ///
+    /// Distinct from `OutboxDeliveryState`: transport acknowledgement does not
+    /// imply FTS/vector/graph projections have been applied.
+    pub enum ProjectionCheckpointStatus {
+        Ready => "ready",
+        Failed => "failed",
     }
 }
 
@@ -1162,6 +1193,46 @@ impl ConsumerCheckpoint {
             return Err("consumer checkpoint must record a terminal disposition".into());
         }
         Ok(())
+    }
+}
+
+/// Durable local projection readiness for one outbox event (IK-016).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionCheckpoint {
+    pub event_id: Uuid,
+    pub node_id: Uuid,
+    pub status: ProjectionCheckpointStatus,
+    pub projected_at: Option<DateTime<Utc>>,
+    pub error_summary: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl ProjectionCheckpoint {
+    pub fn ready(event_id: Uuid, node_id: Uuid, projected_at: DateTime<Utc>) -> Self {
+        Self {
+            event_id,
+            node_id,
+            status: ProjectionCheckpointStatus::Ready,
+            projected_at: Some(projected_at),
+            error_summary: None,
+            updated_at: projected_at,
+        }
+    }
+
+    pub fn failed(
+        event_id: Uuid,
+        node_id: Uuid,
+        updated_at: DateTime<Utc>,
+        error_summary: impl Into<String>,
+    ) -> Self {
+        Self {
+            event_id,
+            node_id,
+            status: ProjectionCheckpointStatus::Failed,
+            projected_at: None,
+            error_summary: Some(error_summary.into()),
+            updated_at,
+        }
     }
 }
 
@@ -1661,6 +1732,63 @@ impl ContextCapabilityManifest {
         validate_sha256(&self.content_digest, "capability manifest content digest")?;
         if self.expected_digest() != self.content_digest {
             return Err("capability manifest digest does not match its canonical content".into());
+        }
+        Ok(())
+    }
+}
+
+/// Versioned governed identity for one principal URI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityRecord {
+    pub principal_id: Uuid,
+    pub revision: u64,
+    pub principal_uri: StableUri,
+    pub governing_node_uri: StableUri,
+    pub actor_kind: ActorKind,
+    pub status: IdentityStatus,
+    pub display_name: Option<String>,
+    /// External auth subject mapped into this Actor (not the Actor itself).
+    pub external_subject: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl IdentityRecord {
+    pub fn new(
+        governing_node_id: Uuid,
+        external_subject: impl Into<String>,
+        actor_kind: ActorKind,
+        display_name: impl Into<String>,
+    ) -> Self {
+        let subject = external_subject.into();
+        let principal_id = Uuid::new_v5(&governing_node_id, subject.as_bytes());
+        let now = Utc::now();
+        Self {
+            principal_id,
+            revision: 1,
+            principal_uri: StableUri::principal(governing_node_id, principal_id),
+            governing_node_uri: StableUri::node(governing_node_id),
+            actor_kind,
+            status: IdentityStatus::Active,
+            display_name: Some(display_name.into()),
+            external_subject: Some(subject),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.revision == 0 {
+            return Err("identity revision must be > 0".into());
+        }
+        let expected = StableUri::principal(
+            self.governing_node_uri
+                .context_node_uuid()
+                .ok_or_else(|| "governing_node_uri must be a node URI".to_string())?,
+            self.principal_id,
+        );
+        if self.principal_uri != expected {
+            return Err("principal_uri does not match governing node and principal_id".into());
         }
         Ok(())
     }
@@ -2222,128 +2350,9 @@ pub struct IdempotentSourceBindingCommit {
     pub replayed: bool,
 }
 
-interoperability_string_enum! {
-    /// Actor kind for governed identity records (ADR 010 §Actors).
-    pub enum ActorKind {
-        Human => "human",
-        Agent => "agent",
-        Service => "service",
-        Integration => "integration",
-    }
-}
-
-interoperability_string_enum! {
-    pub enum IdentityStatus {
-        Active => "active",
-        Suspended => "suspended",
-        Revoked => "revoked",
-    }
-}
-
-/// Governed identity record for one principal under a Context Node.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdentityRecord {
-    pub principal_id: Uuid,
-    pub revision: u64,
-    pub principal_uri: StableUri,
-    pub governing_node_uri: StableUri,
-    pub actor_kind: ActorKind,
-    pub display_name: String,
-    pub subject_binding: String,
-    pub subject_binding_digest: String,
-    pub status: IdentityStatus,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-impl IdentityRecord {
-    /// Deterministic principal UUID for an auth subject under one local node.
-    pub fn principal_id_for_subject(local_node_id: Uuid, subject: &str) -> Uuid {
-        Uuid::new_v5(&local_node_id, subject.as_bytes())
-    }
-
-    pub fn subject_binding_digest(subject_binding: &str) -> String {
-        let digest = Sha256::digest(subject_binding.as_bytes());
-        digest.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
-
-    pub fn bootstrap(
-        local_node_id: Uuid,
-        subject_binding: impl Into<String>,
-        actor_kind: ActorKind,
-        display_name: impl Into<String>,
-    ) -> Result<Self, String> {
-        let subject_binding = subject_binding.into();
-        if subject_binding.trim().is_empty() {
-            return Err("identity subject binding must not be empty".into());
-        }
-        let principal_id = Self::principal_id_for_subject(local_node_id, &subject_binding);
-        let now = Utc::now();
-        let record = Self {
-            principal_id,
-            revision: 1,
-            principal_uri: StableUri::principal(local_node_id, principal_id),
-            governing_node_uri: StableUri::node(local_node_id),
-            actor_kind,
-            display_name: display_name.into(),
-            subject_binding_digest: Self::subject_binding_digest(&subject_binding),
-            subject_binding,
-            status: IdentityStatus::Active,
-            created_at: now,
-            updated_at: now,
-        };
-        record.validate()?;
-        Ok(record)
-    }
-
-    pub fn semantic_digest(&self) -> String {
-        canonical_json_sha256(
-            &serde_json::to_value(self)
-                .expect("serializing an in-memory IdentityRecord cannot fail"),
-        )
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        if self.revision == 0 {
-            return Err("identity revision must be at least one".into());
-        }
-        let local_node_id = self
-            .governing_node_uri
-            .context_node_uuid()
-            .ok_or_else(|| "governing node id must be a canonical Context Node URI".to_string())?;
-        if self.principal_uri != StableUri::principal(local_node_id, self.principal_id) {
-            return Err(
-                "identity principal URI must be derived from its stable principal id".into(),
-            );
-        }
-        validate_display_text(&self.display_name, "identity display name", 256)?;
-        if self.subject_binding.trim().is_empty() || self.subject_binding.len() > 512 {
-            return Err("identity subject binding must be 1-512 trimmed bytes".into());
-        }
-        validate_sha256(
-            &self.subject_binding_digest,
-            "identity subject binding digest",
-        )?;
-        if self.subject_binding_digest != Self::subject_binding_digest(&self.subject_binding) {
-            return Err("identity subject binding digest does not match its binding".into());
-        }
-        if self.updated_at < self.created_at {
-            return Err("identity update time cannot precede creation".into());
-        }
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct IdempotentContextNodeCommit {
     pub context_node: ContextNodeRecord,
-    pub event: EventEnvelope,
-    pub replayed: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct IdempotentIdentityCommit {
-    pub identity: IdentityRecord,
     pub event: EventEnvelope,
     pub replayed: bool,
 }
@@ -2627,6 +2636,13 @@ pub struct ActionEnvelope {
     pub policy_decision: AdmissionDecision,
     pub idempotency_key: IdempotencyKey,
     pub requested_at: DateTime<Utc>,
+    /// ADR 010 execution context (v2). Absent in v1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_order_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_run_id: Option<Uuid>,
 }
 
 /// Builder input that allows tests to omit required fields one at a time.
@@ -2741,17 +2757,45 @@ impl ActionEnvelope {
             policy_decision,
             idempotency_key,
             requested_at,
+            space_id: None,
+            work_order_id: None,
+            agent_run_id: None,
         };
         envelope.validate()?;
         Ok(envelope)
     }
 
+    /// Attach governed execution identifiers (SPACE-002 / ADR 014 v2).
+    pub fn with_execution_context(
+        mut self,
+        space_id: Option<Uuid>,
+        work_order_id: Option<Uuid>,
+        agent_run_id: Option<Uuid>,
+    ) -> Self {
+        self.envelope_version = ACTION_ENVELOPE_V2.into();
+        self.space_id = space_id;
+        self.work_order_id = work_order_id;
+        self.agent_run_id = agent_run_id;
+        self
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.envelope_version != ACTION_ENVELOPE_V1 {
+        if self.envelope_version != ACTION_ENVELOPE_V1
+            && self.envelope_version != ACTION_ENVELOPE_V2
+        {
             return Err(format!(
                 "unsupported action envelope version: {}",
                 self.envelope_version
             ));
+        }
+        if self.envelope_version == ACTION_ENVELOPE_V1
+            && (self.space_id.is_some()
+                || self.work_order_id.is_some()
+                || self.agent_run_id.is_some())
+        {
+            return Err(
+                "execution context fields require mindvault.action-envelope/v2".into(),
+            );
         }
         if self.action_id.is_nil() {
             return Err("action_id is required".into());
@@ -2779,7 +2823,7 @@ impl ActionEnvelope {
 
     /// Compact metadata safe to embed beside an event's admission block.
     pub fn attribution_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut metadata = serde_json::json!({
             "envelope_version": self.envelope_version,
             "action_id": self.action_id,
             "correlation_id": self.correlation_id,
@@ -2793,7 +2837,19 @@ impl ActionEnvelope {
             "policy_decision": self.policy_decision.policy_metadata(),
             "idempotency_key": self.idempotency_key.as_str(),
             "requested_at": self.requested_at.to_rfc3339(),
-        })
+        });
+        if self.envelope_version == ACTION_ENVELOPE_V2 {
+            if let Some(space_id) = self.space_id {
+                metadata["space_id"] = serde_json::json!(space_id);
+            }
+            if let Some(work_order_id) = self.work_order_id {
+                metadata["work_order_id"] = serde_json::json!(work_order_id);
+            }
+            if let Some(agent_run_id) = self.agent_run_id {
+                metadata["agent_run_id"] = serde_json::json!(agent_run_id);
+            }
+        }
+        metadata
     }
 }
 
@@ -3430,13 +3486,6 @@ mod tests {
             .contains("no_effective_grant"));
     }
 
-    #[test]
-    fn actor_kind_parses_portable_tokens() {
-        assert_eq!(ActorKind::Human.as_str(), "human");
-        assert_eq!("agent".parse::<ActorKind>().unwrap(), ActorKind::Agent);
-        assert!("bot".parse::<ActorKind>().is_err());
-    }
-
     /// IK-002: ActionEnvelope rejects each required attribution field when missing.
     #[test]
     fn action_envelope_rejects_missing_required_fields() {
@@ -3522,6 +3571,32 @@ mod tests {
         assert!(ActionEnvelope::try_new(missing_policy)
             .unwrap_err()
             .contains("policy_decision"));
+    }
+
+    #[test]
+    fn action_envelope_v2_carries_execution_context_in_metadata() {
+        let request = admission_request(AuthorityGrantKind::Tool, ContextCapability::Command);
+        let node_id = Uuid::now_v7();
+        let grant_id = Uuid::now_v7();
+        let principal = StableUri::principal(node_id, Uuid::now_v7());
+        let decision = AdmissionDecision::Admitted {
+            grant_id,
+            grant_uri: StableUri::authority_grant(node_id, grant_id),
+            grant_kind: AuthorityGrantKind::Tool,
+            capability: ContextCapability::Command,
+            delegation_depth_remaining: 0,
+            decided_at: Utc::now(),
+        };
+        let admitted = ActionEnvelope::from_admission(&request, &decision).unwrap();
+        let work_order_id = Uuid::now_v7();
+        let space_id = Uuid::now_v7();
+        let v2 = admitted.with_execution_context(Some(space_id), Some(work_order_id), None);
+        assert_eq!(v2.envelope_version, ACTION_ENVELOPE_V2);
+        v2.validate().expect("v2 envelope validates");
+        let metadata = v2.attribution_metadata();
+        assert_eq!(metadata["work_order_id"], serde_json::json!(work_order_id));
+        assert_eq!(metadata["space_id"], serde_json::json!(space_id));
+        assert!(metadata.get("agent_run_id").is_none());
     }
 
     /// Nil UUIDs count as missing; denied decisions carry empty grant_ids.

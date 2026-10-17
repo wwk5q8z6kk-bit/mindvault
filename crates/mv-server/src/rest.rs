@@ -190,6 +190,10 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(workspaces::rebuild_workspace_projections),
         )
         .route(
+            "/api/v1/workspaces/:id/conflicts",
+            get(workspaces::list_workspace_conflicts),
+        )
+        .route(
             "/api/v1/workspaces/:workspace_id/documents/:document_id",
             get(workspaces::read_workspace_document),
         )
@@ -251,14 +255,6 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             post(interoperability::resume_authority_grant),
         )
         .route(
-            "/api/v1/identities",
-            get(interoperability::list_identities).post(interoperability::register_identity),
-        )
-        .route(
-            "/api/v1/identities/:principal_id",
-            get(interoperability::get_identity),
-        )
-        .route(
             "/api/v1/work-orders/:id/runs/:run_id/readiness",
             get(work_orders::get_run_readiness),
         )
@@ -273,6 +269,10 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         .route(
             "/api/v1/work-orders/:id/runs/:run_id/approve",
             post(work_orders::approve_run),
+        )
+        .route(
+            "/api/v1/work-orders/:id/runs/:run_id/execute",
+            post(work_orders::execute_run),
         )
         .route(
             "/api/v1/work-orders/:id/runs/:run_id/complete",
@@ -10777,8 +10777,8 @@ async fn store_node(
     let correlation_id =
         optional_uuid_header(&headers, CORRELATION_ID_HEADER)?.unwrap_or_else(Uuid::now_v7);
     let causation_id = optional_uuid_header(&headers, CAUSATION_ID_HEADER)?;
-    let identity =
-        interoperability::CommandIdentity::derive_async(&state, &auth, local_node_id).await?;
+    let identity = interoperability::CommandIdentity::derive(&auth, local_node_id)
+        .map_err(|err| (StatusCode::UNAUTHORIZED, err))?;
     let principal = identity.principal.clone();
     let payload_digest = node_create_payload_digest(&node)?;
     if let Some(replay) = state
@@ -10923,8 +10923,8 @@ async fn update_node(
         .local_context_node_id()
         .await
         .map_err(map_mv_error)?;
-    let identity =
-        interoperability::CommandIdentity::derive_async(&state, &auth, local_node_id).await?;
+    let identity = interoperability::CommandIdentity::derive(&auth, local_node_id)
+        .map_err(|err| (StatusCode::UNAUTHORIZED, err))?;
     let subject = StableUri::knowledge_node(local_node_id, uuid);
     let _action_envelope = interoperability::admit_command(
         &state,
@@ -11023,8 +11023,8 @@ async fn delete_node(
         .local_context_node_id()
         .await
         .map_err(map_mv_error)?;
-    let identity =
-        interoperability::CommandIdentity::derive_async(&state, &auth, local_node_id).await?;
+    let identity = interoperability::CommandIdentity::derive(&auth, local_node_id)
+        .map_err(|err| (StatusCode::UNAUTHORIZED, err))?;
     let subject = StableUri::knowledge_node(local_node_id, uuid);
     let _action_envelope = interoperability::admit_command(
         &state,
@@ -16718,12 +16718,7 @@ mod tests {
             .list_pending_outbox_events(10)
             .await
             .unwrap();
-        assert!(
-            pending
-                .iter()
-                .all(|event| event.event_type != KNOWLEDGE_NODE_CREATED_V1),
-            "a refused command must emit no knowledge mutation event"
-        );
+        assert!(pending.is_empty(), "a refused command must emit no event");
     }
 
     /// Observe records the decision and lets the command through.
@@ -16911,12 +16906,8 @@ mod tests {
             .list_pending_outbox_events(10)
             .await
             .unwrap();
-        let knowledge_events = pending
-            .iter()
-            .filter(|event| event.event_type == KNOWLEDGE_NODE_CREATED_V1)
-            .collect::<Vec<_>>();
-        assert_eq!(knowledge_events.len(), 1);
-        assert_eq!(knowledge_events[0].id, envelope.id);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, envelope.id);
 
         let mut changed_request = request;
         changed_request.content = "Different semantics".to_string();

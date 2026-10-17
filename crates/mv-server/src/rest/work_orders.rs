@@ -20,7 +20,7 @@ use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use mv_core::{
     AgentRun, EdgeKind, ExecutorKind, GateId, GateOutcome, InteroperabilityStore,
-    ProvenanceReference, ProvenanceRelation, RetentionClass, RiskTier, RunArtifact,
+    IdempotencyKey, ProvenanceReference, ProvenanceRelation, RetentionClass, RiskTier, RunArtifact,
     RunFailureClass, Sensitivity, StableUri, WorkOrder, WorkOrderBudget, WorkOrderExport,
     WorkOrderStatus,
 };
@@ -56,6 +56,9 @@ pub(crate) struct CreateWorkOrderRequest {
     sensitivity: Option<String>,
     #[serde(default)]
     retention: Option<String>,
+    /// Optional Collaborative Space UUID (SPACE-002). Personal-vault orders omit it.
+    #[serde(default)]
+    space_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -264,6 +267,14 @@ pub(crate) struct ReadinessView {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct ExecuteRunResponse {
+    run: RunView,
+    artifact_id: Uuid,
+    artifact_digest: String,
+    gates_passed: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct CompleteRunResponse {
     completed: bool,
     run: Option<RunView>,
@@ -292,15 +303,49 @@ pub(crate) async fn create_work_order(
         .await
         .map_err(crate::rest::map_mv_error)?;
     // A stable per-subject principal; anonymous local access maps to "owner".
-    let subject = auth.subject.as_deref().unwrap_or("owner");
+    let subject = match auth.subject.as_deref() {
+        Some(subject) => subject,
+        None if std::env::var("MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY")
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false) =>
+        {
+            "local-system"
+        }
+        None => {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "missing auth subject; set MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY=1 to allow the local-system transition identity".into(),
+            ));
+        }
+    };
     let principal = StableUri::principal(
         local_node_id,
         Uuid::new_v5(&local_node_id, subject.as_bytes()),
     );
+    let identity = crate::rest::interoperability::CommandIdentity::derive(&auth, local_node_id)
+        .map_err(|err| (StatusCode::UNAUTHORIZED, err))?;
+    let idempotency_key = IdempotencyKey::parse(&request.idempotency_key)
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    let action_envelope = crate::rest::interoperability::admit_command(
+        &state,
+        &crate::rest::interoperability::work_order_admit_admission_request(
+            &identity,
+            local_node_id,
+            idempotency_key,
+            Uuid::now_v7(),
+            None,
+        ),
+    )
+    .await?;
 
     let admitted = state
         .engine
-        .admit_work_order(&principal, &principal, &proposal)
+        .admit_work_order(&principal, &principal, &proposal, action_envelope)
         .await
         .map_err(crate::rest::map_mv_error)?
         .map_err(map_admission_refusal)?;
@@ -311,10 +356,11 @@ pub(crate) async fn create_work_order(
 
 /// POST /api/v1/work-orders/:id/nodes/:node_id/runs — start the next attempt.
 ///
-/// The only path that creates an Agent Run. It executes nothing: ADR 012 governs
-/// internal runs, and no external dispatcher, provider, or third-party agent is
-/// invoked. It spends a budgeted attempt, records the run and its event
-/// atomically, and takes write leases only if the owner's autonomy policy allows.
+/// The only path that creates an Agent Run. ADR 012 governs internal runs; no
+/// external dispatcher is invoked here. This spends a budgeted attempt, records
+/// the run and its event atomically, and takes write leases only if autonomy
+/// allows. Call `POST .../runs/:run_id/execute` to drive a leased run to
+/// completion via the internal engine executor.
 ///
 /// An unconfigured vault parks the run for approval rather than proceeding.
 pub(crate) async fn start_run(
@@ -480,13 +526,53 @@ pub(crate) async fn approve_run(
     Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<RunView>, (StatusCode, String)> {
     authorize_write(&auth)?;
+    let local_node_id = state
+        .engine
+        .store
+        .nodes
+        .local_context_node_id()
+        .await
+        .map_err(crate::rest::map_mv_error)?;
+    let subject = auth.subject.as_deref().unwrap_or("local-system");
+    let approver = StableUri::principal(
+        local_node_id,
+        Uuid::new_v5(&local_node_id, subject.as_bytes()),
+    );
     let run = state
         .engine
-        .resume_approved_run(run_id)
+        .resume_approved_run(run_id, &approver)
         .await
         .map_err(crate::rest::map_mv_error)?;
     state.notify_agent(AgentNotification::run_transitioned(&run));
     Ok(Json(run_view(&run)))
+}
+
+/// POST /api/v1/work-orders/:id/runs/:run_id/execute — internal engine executor.
+///
+/// Drives a leased (or ready) Engine run through artifact production and
+/// required gate evidence to Completed. No external dispatcher is contacted.
+pub(crate) async fn execute_run(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path((_work_order_id, run_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<ExecuteRunResponse>, (StatusCode, String)> {
+    authorize_write(&auth)?;
+    let executed = state
+        .engine
+        .execute_run(run_id)
+        .await
+        .map_err(crate::rest::map_mv_error)?;
+    state.notify_agent(AgentNotification::run_transitioned(&executed.run));
+    Ok(Json(ExecuteRunResponse {
+        run: run_view(&executed.run),
+        artifact_id: executed.artifact.artifact_id,
+        artifact_digest: executed.artifact.content_digest,
+        gates_passed: executed
+            .gate_results
+            .iter()
+            .map(|gate| gate.gate.as_str().to_string())
+            .collect(),
+    }))
 }
 
 /// POST /api/v1/work-orders/:id/runs/:run_id/complete — attempt completion.
@@ -878,6 +964,7 @@ fn build_proposal(
         sensitivity,
         retention,
         idempotency_key: request.idempotency_key.clone(),
+        space_id: request.space_id,
         nodes,
         edges,
     })
@@ -888,7 +975,8 @@ fn build_proposal(
 fn map_admission_refusal(refusal: AdmissionRefusal) -> (StatusCode, String) {
     match refusal {
         AdmissionRefusal::WriteScopeOutsideGrant { .. }
-        | AdmissionRefusal::ReadScopeOutsideGrant { .. } => {
+        | AdmissionRefusal::ReadScopeOutsideGrant { .. }
+        | AdmissionRefusal::SpaceAuthorizationDenied { .. } => {
             (StatusCode::FORBIDDEN, refusal.to_string())
         }
         AdmissionRefusal::DependencyCycle { .. } | AdmissionRefusal::Invalid { .. } => {

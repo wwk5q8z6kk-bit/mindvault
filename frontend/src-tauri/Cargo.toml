@@ -3,7 +3,7 @@ name = "mindvault-desktop"
 version = "0.1.0"
 description = "MindVault Desktop Application"
 authors = ["MindVault Contributors"]
-license = "MIT"
+license-file = "../../LICENSE"
 edition = "2021"
 
 [lib]

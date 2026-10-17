@@ -18,12 +18,10 @@ use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 use tower::ServiceExt; // for `.oneshot()`
 
-use mv_core::{IdentityRecord, StableUri};
 use mv_engine::config::EngineConfig;
 use mv_engine::engine::MindVaultEngine;
 use mv_server::rest::create_router;
 use mv_server::state::AppState;
-use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -75,7 +73,7 @@ async fn setup_with_config(config: EngineConfig, tmp: TempDir) -> (axum::Router,
     (router, tmp)
 }
 
-async fn setup_with_workspace_root() -> (axum::Router, TempDir, std::path::PathBuf) {
+async fn setup_with_workspace_root() -> (axum::Router, Arc<AppState>, TempDir, std::path::PathBuf) {
     for key in [
         "MINDVAULT_AUTH_TOKEN",
         "MINDVAULT_AUTH_ROLE",
@@ -104,7 +102,7 @@ async fn setup_with_workspace_root() -> (axum::Router, TempDir, std::path::PathB
         AppState::new(Arc::new(engine))
             .with_workspace_allowed_roots(vec![tmp.path().to_path_buf()]),
     );
-    (create_router(state), tmp, workspace_root)
+    (create_router(state.clone()), state, tmp, workspace_root)
 }
 
 fn json_request(method: Method, uri: &str, body: Option<Value>) -> Request<Body> {
@@ -132,7 +130,7 @@ async fn body_json(resp: axum::response::Response) -> Value {
 
 #[tokio::test]
 async fn workspace_api_mounts_lists_trees_and_reads_without_exposing_root_locator() {
-    let (router, _tmp, workspace_root) = setup_with_workspace_root().await;
+    let (router, _state, _tmp, workspace_root) = setup_with_workspace_root().await;
     let mount = router
         .clone()
         .oneshot(json_request(
@@ -247,9 +245,97 @@ async fn workspace_api_mounts_lists_trees_and_reads_without_exposing_root_locato
     assert_eq!(cross_workspace_read.status(), StatusCode::NOT_FOUND);
 }
 
+
+#[tokio::test]
+async fn workspace_conflicts_stale_hash_leaves_bytes_and_lists_resolutions() {
+    let (router, state, _tmp, workspace_root) = setup_with_workspace_root().await;
+    let mount = router
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/workspaces",
+            Some(json!({
+                "root_path": workspace_root,
+                "namespace": "default",
+                "display_name": "Knowledge"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(mount.status(), StatusCode::CREATED);
+    let mounted = body_json(mount).await;
+    let workspace_id = mounted["workspace"]["id"].as_str().expect("workspace id");
+    let workspace_uuid = uuid::Uuid::parse_str(workspace_id).unwrap();
+
+    let tree = router
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/workspaces/{workspace_id}/tree"),
+            None,
+        ))
+        .await
+        .unwrap();
+    let tree = body_json(tree).await;
+    let document = tree["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["relative_path"] == "Projects/MindVault.md")
+        .expect("document entry");
+    let document_id = uuid::Uuid::parse_str(document["document_id"].as_str().unwrap()).unwrap();
+    let canonical_hash = document["content_hash"].as_str().expect("content hash").to_string();
+
+    let absolute = workspace_root.join("Projects/MindVault.md");
+    let before = std::fs::read(&absolute).unwrap();
+
+    let conflict = state
+        .engine
+        .record_stale_write_conflict(
+            workspace_uuid,
+            document_id,
+            "sha256:stale-expected",
+            "sha256:attempted-write",
+        )
+        .await
+        .expect("stale write must record a conflict");
+    assert_eq!(conflict.conflict_kind.as_str(), "stale_write");
+    assert_eq!(std::fs::read(&absolute).unwrap(), before, "canonical bytes must not change");
+
+    let listed = router
+        .oneshot(json_request(
+            Method::GET,
+            &format!("/api/v1/workspaces/{workspace_id}/conflicts"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed = body_json(listed).await;
+    assert_eq!(
+        listed["resolution_choices"],
+        json!([
+            "keep_current",
+            "restore_known_revision",
+            "save_competing_to_new_path",
+            "merge_via_reviewed_proposal"
+        ])
+    );
+    let conflicts = listed["conflicts"].as_array().unwrap();
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0]["conflict_kind"], "stale_write");
+    assert_eq!(conflicts[0]["state"], "open");
+    assert_eq!(conflicts[0]["canonical_content_hash"], canonical_hash);
+    assert_eq!(conflicts[0]["expected_content_hash"], "sha256:stale-expected");
+    assert_eq!(
+        conflicts[0]["available_resolutions"],
+        listed["resolution_choices"]
+    );
+}
+
 #[tokio::test]
 async fn workspace_projections_are_searchable_linked_rebuildable_and_generic_mutation_safe() {
-    let (router, _tmp, workspace_root) = setup_with_workspace_root().await;
+    let (router, _state, _tmp, workspace_root) = setup_with_workspace_root().await;
     std::fs::write(
         workspace_root.join("Projects/References.md"),
         "---\ntitle: Reference Map\ntags: [workspace, graph]\n---\n\nSee [[MindVault]].",
@@ -2836,152 +2922,4 @@ async fn authority_grant_lifecycle_enables_enforced_node_create() {
             .any(|g| g["grant_id"] == grant_id && g["status"] == "revoked"),
         "grants: {grants}"
     );
-}
-
-/// IK-003 — local context node bootstrap registers identities; registry resolves
-/// local-system; unknown subjects fail without legacy fallback.
-#[tokio::test]
-async fn identity_registry_resolves_local_system_and_rejects_unknown_subject() {
-    let tmp = TempDir::new().expect("tempdir");
-    let config = test_config(&tmp.path().to_string_lossy());
-    let (router, _tmp) = setup_with_config(config, tmp).await;
-
-    let registered = router
-        .clone()
-        .oneshot(json_request(
-            Method::POST,
-            "/api/v1/context-nodes/local",
-            Some(json!({ "display_name": "Identity Vault" })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(registered.status(), StatusCode::CREATED);
-
-    let listed = router
-        .clone()
-        .oneshot(json_request(Method::GET, "/api/v1/identities", None))
-        .await
-        .unwrap();
-    assert_eq!(listed.status(), StatusCode::OK);
-    let identities = body_json(listed).await;
-    assert!(
-        identities
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|record| record["subject_binding"] == "local-system"
-                && record["actor_kind"] == "human"),
-        "identities: {identities}"
-    );
-
-    let local_node_id = router
-        .clone()
-        .oneshot(json_request(
-            Method::GET,
-            "/api/v1/context-nodes/local",
-            None,
-        ))
-        .await
-        .unwrap();
-    let node_body = body_json(local_node_id).await;
-    let node_id = Uuid::parse_str(node_body["node_id"].as_str().unwrap()).unwrap();
-    let expected = StableUri::principal(
-        node_id,
-        IdentityRecord::principal_id_for_subject(node_id, "local-system"),
-    );
-    let local_system = identities
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|record| record["subject_binding"] == "local-system")
-        .expect("local-system identity");
-    assert_eq!(local_system["principal_uri"], expected.as_str());
-}
-
-#[tokio::test]
-async fn relay_messages_remain_outside_the_vault_graph_over_http() {
-    let (router, _tmp) = setup().await;
-
-    let contact = router
-        .clone()
-        .oneshot(json_request(
-            Method::POST,
-            "/api/v1/relay/contacts",
-            Some(json!({
-                "display_name": "Relay peer",
-                "public_key": "relay-peer-key",
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(contact.status(), StatusCode::CREATED);
-    let contact = body_json(contact).await;
-    let contact_id = contact["id"].as_str().expect("contact id");
-
-    let channel = router
-        .clone()
-        .oneshot(json_request(
-            Method::POST,
-            "/api/v1/relay/channels",
-            Some(json!({
-                "member_contact_ids": [contact_id],
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(channel.status(), StatusCode::CREATED);
-    let channel = body_json(channel).await;
-    let channel_id = channel["id"].as_str().expect("channel id");
-
-    let outbound = router
-        .clone()
-        .oneshot(json_request(
-            Method::POST,
-            &format!("/api/v1/relay/channels/{channel_id}/messages"),
-            Some(json!({ "content": "outbound relay content" })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(outbound.status(), StatusCode::CREATED);
-    assert!(body_json(outbound).await["vault_node_id"].is_null());
-
-    let inbound = router
-        .clone()
-        .oneshot(json_request(
-            Method::POST,
-            &format!("/api/v1/relay/channels/{channel_id}/inbound"),
-            Some(json!({
-                "content": "inbound relay content",
-                "sender_contact_id": contact_id,
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(inbound.status(), StatusCode::CREATED);
-    assert!(body_json(inbound).await["vault_node_id"].is_null());
-
-    let messages = router
-        .clone()
-        .oneshot(json_request(
-            Method::GET,
-            &format!("/api/v1/relay/channels/{channel_id}/messages"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(messages.status(), StatusCode::OK);
-    let messages = body_json(messages).await;
-    assert_eq!(messages.as_array().expect("relay messages").len(), 2);
-    assert!(messages
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|message| message["vault_node_id"].is_null()));
-
-    let nodes = router
-        .oneshot(json_request(Method::GET, "/api/v1/nodes", None))
-        .await
-        .unwrap();
-    assert_eq!(nodes.status(), StatusCode::OK);
-    assert!(body_json(nodes).await.as_array().unwrap().is_empty());
 }

@@ -274,6 +274,262 @@ pub struct WorkspaceManifestReconciliation {
     pub document_updates: Vec<WorkspaceDocumentManifestUpdate>,
 }
 
+pub const WORKSPACE_EVENT_PAYLOAD_SCHEMA_V1: &str = "mindvault.workspace-event/v1";
+
+string_enum! {
+    /// Who initiated a workspace journal entry.
+    pub enum WorkspaceEventActorKind {
+        User => "user",
+        System => "system",
+        Migration => "migration",
+        External => "external",
+        Plugin => "plugin",
+        Mcp => "mcp",
+        Automation => "automation",
+        AiProposal => "ai_proposal",
+    }
+}
+
+string_enum! {
+    /// Operation recorded in the workspace mutation journal.
+    pub enum WorkspaceEventOperation {
+        Mount => "mount",
+        Scan => "scan",
+        Create => "create",
+        Update => "update",
+        Move => "move",
+        Trash => "trash",
+        Restore => "restore",
+        ExternalCreate => "external_create",
+        ExternalUpdate => "external_update",
+        ExternalMove => "external_move",
+        ExternalDelete => "external_delete",
+        ConflictResolve => "conflict_resolve",
+        MigrationStage => "migration_stage",
+        MigrationCommit => "migration_commit",
+        MigrationRollback => "migration_rollback",
+    }
+}
+
+string_enum! {
+    /// Lifecycle status of a journaled workspace event.
+    pub enum WorkspaceEventStatus {
+        Prepared => "prepared",
+        Completed => "completed",
+        Aborted => "aborted",
+        Conflict => "conflict",
+    }
+}
+
+/// Versioned journal payload: expected-old / intended-new hashes and paths.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceEventPayloadV1 {
+    pub schema: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_old_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intended_new_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_old_content_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intended_new_content_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_old_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intended_new_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl WorkspaceEventPayloadV1 {
+    pub fn new() -> Self {
+        Self {
+            schema: WORKSPACE_EVENT_PAYLOAD_SCHEMA_V1.to_string(),
+            expected_old_path: None,
+            intended_new_path: None,
+            expected_old_content_hash: None,
+            intended_new_content_hash: None,
+            expected_old_revision: None,
+            intended_new_revision: None,
+            phase: None,
+            result: None,
+            error: None,
+        }
+    }
+
+    pub fn has_supported_schema(&self) -> bool {
+        self.schema == WORKSPACE_EVENT_PAYLOAD_SCHEMA_V1
+    }
+}
+
+impl Default for WorkspaceEventPayloadV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Durable workspace mutation journal row (migration 031 `workspace_events`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceEvent {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub document_id: Option<Uuid>,
+    pub event_seq: u64,
+    pub correlation_id: Uuid,
+    pub actor_kind: WorkspaceEventActorKind,
+    pub actor_id: Option<String>,
+    pub operation: WorkspaceEventOperation,
+    pub status: WorkspaceEventStatus,
+    pub event_payload: Vec<u8>,
+    pub payload_format: WorkspaceManifestPayloadFormat,
+    pub prepared_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+impl WorkspaceEvent {
+    /// Build a completed journal entry. `event_seq` is assigned on append.
+    pub fn completed(
+        workspace_id: Uuid,
+        correlation_id: Uuid,
+        operation: WorkspaceEventOperation,
+        actor_kind: WorkspaceEventActorKind,
+        payload: WorkspaceEventPayloadV1,
+    ) -> Result<Self, serde_json::Error> {
+        let now = Utc::now();
+        Ok(Self {
+            id: Uuid::now_v7(),
+            workspace_id,
+            document_id: None,
+            event_seq: 0,
+            correlation_id,
+            actor_kind,
+            actor_id: None,
+            operation,
+            status: WorkspaceEventStatus::Completed,
+            event_payload: serde_json::to_vec(&payload)?,
+            payload_format: WorkspaceManifestPayloadFormat::JsonV1,
+            prepared_at: now,
+            completed_at: Some(now),
+        })
+    }
+}
+
+
+pub const WORKSPACE_CONFLICT_PAYLOAD_SCHEMA_V1: &str = "mindvault.workspace-conflict/v1";
+
+/// Documented Stage-1 conflict resolution choices
+/// (`knowledge-workspace-document-contract.md:169-171`).
+pub const WORKSPACE_CONFLICT_RESOLUTIONS: [&str; 4] = [
+    "keep_current",
+    "restore_known_revision",
+    "save_competing_to_new_path",
+    "merge_via_reviewed_proposal",
+];
+
+string_enum! {
+    /// Kind of workspace conflict recorded for review.
+    pub enum WorkspaceConflictKind {
+        StaleWrite => "stale_write",
+        PathCollision => "path_collision",
+        AmbiguousRename => "ambiguous_rename",
+        ExternalDivergence => "external_divergence",
+        UnsafePath => "unsafe_path",
+        RestoreCollision => "restore_collision",
+    }
+}
+
+string_enum! {
+    /// Lifecycle of a recorded workspace conflict.
+    pub enum WorkspaceConflictState {
+        Open => "open",
+        Resolved => "resolved",
+        Dismissed => "dismissed",
+    }
+}
+
+/// Versioned conflict payload carried in `workspace_conflicts.conflict_payload`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceConflictPayloadV1 {
+    pub schema: String,
+    pub kind: WorkspaceConflictKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_content_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_content_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_content_hash: Option<String>,
+    pub available_resolutions: Vec<String>,
+}
+
+impl WorkspaceConflictPayloadV1 {
+    pub fn stale_write(
+        relative_path: impl Into<String>,
+        expected_content_hash: impl Into<String>,
+        observed_content_hash: impl Into<String>,
+        canonical_content_hash: impl Into<String>,
+    ) -> Self {
+        Self {
+            schema: WORKSPACE_CONFLICT_PAYLOAD_SCHEMA_V1.to_string(),
+            kind: WorkspaceConflictKind::StaleWrite,
+            relative_path: Some(relative_path.into()),
+            expected_content_hash: Some(expected_content_hash.into()),
+            observed_content_hash: Some(observed_content_hash.into()),
+            canonical_content_hash: Some(canonical_content_hash.into()),
+            available_resolutions: WORKSPACE_CONFLICT_RESOLUTIONS
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+        }
+    }
+
+    pub fn has_supported_schema(&self) -> bool {
+        self.schema == WORKSPACE_CONFLICT_PAYLOAD_SCHEMA_V1
+    }
+}
+
+/// Durable workspace conflict review row (migration 031 `workspace_conflicts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceConflict {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub document_id: Option<Uuid>,
+    pub source_event_id: Option<Uuid>,
+    pub conflict_kind: WorkspaceConflictKind,
+    pub state: WorkspaceConflictState,
+    pub conflict_payload: Vec<u8>,
+    pub payload_format: WorkspaceManifestPayloadFormat,
+    pub created_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+impl WorkspaceConflict {
+    pub fn open_stale_write(
+        workspace_id: Uuid,
+        document_id: Uuid,
+        payload: WorkspaceConflictPayloadV1,
+    ) -> Result<Self, serde_json::Error> {
+        Ok(Self {
+            id: Uuid::now_v7(),
+            workspace_id,
+            document_id: Some(document_id),
+            source_event_id: None,
+            conflict_kind: WorkspaceConflictKind::StaleWrite,
+            state: WorkspaceConflictState::Open,
+            conflict_payload: serde_json::to_vec(&payload)?,
+            payload_format: WorkspaceManifestPayloadFormat::JsonV1,
+            created_at: Utc::now(),
+            resolved_at: None,
+        })
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

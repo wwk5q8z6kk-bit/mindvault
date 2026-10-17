@@ -126,6 +126,12 @@ enum Commands {
     /// Show stats
     Stats,
 
+    /// Trusted Agent Work wedge helpers (Work Order → execute → WATW)
+    TrustedWork {
+        #[command(subcommand)]
+        action: TrustedWorkAction,
+    },
+
     /// Encryption management
     Encrypt {
         #[command(subcommand)]
@@ -215,6 +221,14 @@ enum DbAction {
         #[arg(long)]
         confirm: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum TrustedWorkAction {
+    /// Run one Engine/Low trusted-work completion on the local vault
+    Demo,
+    /// Print the process-lifetime trusted_work_completed counter
+    Watw,
 }
 
 #[derive(Subcommand)]
@@ -784,6 +798,11 @@ async fn main() -> Result<()> {
         },
 
         Commands::Stats => commands::stats::run(&cli.config).await,
+
+        Commands::TrustedWork { action } => match action {
+            TrustedWorkAction::Demo => commands::trusted_work::demo(&cli.config).await,
+            TrustedWorkAction::Watw => commands::trusted_work::watw(&cli.config).await,
+        },
 
         Commands::Encrypt { action } => match action {
             EncryptAction::Init { from_env } => {

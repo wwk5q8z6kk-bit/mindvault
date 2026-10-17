@@ -84,6 +84,9 @@ pub struct ProposedWorkOrder {
     pub sensitivity: Sensitivity,
     pub retention: RetentionClass,
     pub idempotency_key: String,
+    /// When set, admission requires an active Space membership that permits
+    /// Write for the Work Order principal (SPACE-002 / ADR 010).
+    pub space_id: Option<Uuid>,
     pub nodes: Vec<ProposedNode>,
     pub edges: Vec<ProposedEdge>,
 }
@@ -105,6 +108,8 @@ pub enum AdmissionRefusal {
     },
     /// The dependency graph is cyclic across non-conflict edges.
     DependencyCycle { contracts: usize },
+    /// Space-scoped admission failed the membership matrix (SPACE-002).
+    SpaceAuthorizationDenied { reason: String },
     /// The proposal is malformed.
     Invalid { reason: String },
 }
@@ -132,6 +137,9 @@ impl std::fmt::Display for AdmissionRefusal {
                 formatter,
                 "dependency graph is cyclic across {contracts} contracts"
             ),
+            Self::SpaceAuthorizationDenied { reason } => {
+                write!(formatter, "space authorization denied: {reason}")
+            }
             Self::Invalid { reason } => write!(formatter, "invalid work order: {reason}"),
         }
     }
@@ -174,6 +182,7 @@ impl MindVaultEngine {
         principal: &StableUri,
         actor: &StableUri,
         proposal: &ProposedWorkOrder,
+        action_envelope: Option<ActionEnvelope>,
     ) -> MvResult<Result<WorkOrder, AdmissionRefusal>> {
         if proposal.nodes.is_empty() {
             return Ok(Err(AdmissionRefusal::Invalid {
@@ -260,6 +269,15 @@ impl MindVaultEngine {
             }));
         }
 
+        if let Some(space_id) = proposal.space_id {
+            if let Err(refusal) = self
+                .authorize_space_scoped_admission(principal, space_id, now)
+                .await?
+            {
+                return Ok(Err(refusal));
+            }
+        }
+
         let work_order = WorkOrder {
             work_order_id,
             revision: 1,
@@ -267,6 +285,7 @@ impl MindVaultEngine {
             principal: principal.clone(),
             actor: actor.clone(),
             governing_node,
+            space_id: proposal.space_id,
             goal: proposal.goal.clone(),
             non_goals: proposal.non_goals.clone(),
             anchors: proposal.anchors.clone(),
@@ -288,14 +307,56 @@ impl MindVaultEngine {
             return Ok(Err(AdmissionRefusal::Invalid { reason }));
         }
 
-        let event =
-            Self::work_order_admitted_event(local_node_id, &work_order, nodes.len(), edges.len())?;
+        let event = Self::work_order_admitted_event(
+            local_node_id,
+            &work_order,
+            nodes.len(),
+            edges.len(),
+            action_envelope,
+        )?;
         let commit = self
             .store
             .nodes
             .commit_work_order_with_event(&work_order, &nodes, &edges, &event)
             .await?;
         Ok(Ok(commit.work_order))
+    }
+
+    /// SPACE-002 — Space-scoped Work Orders require active Write membership.
+    async fn authorize_space_scoped_admission(
+        &self,
+        principal: &StableUri,
+        space_id: Uuid,
+        at: chrono::DateTime<Utc>,
+    ) -> MvResult<Result<(), AdmissionRefusal>> {
+        let Some(space) = self.store.nodes.get_space(space_id).await? else {
+            return Ok(Err(AdmissionRefusal::SpaceAuthorizationDenied {
+                reason: "space does not exist".into(),
+            }));
+        };
+        if space.state != SpaceState::Active {
+            return Ok(Err(AdmissionRefusal::SpaceAuthorizationDenied {
+                reason: format!("space is not active ({})", space.state.as_str()),
+            }));
+        }
+        let Some(principal_id) = principal.trailing_uuid() else {
+            return Ok(Err(AdmissionRefusal::SpaceAuthorizationDenied {
+                reason: "principal URI is not a governed identity principal".into(),
+            }));
+        };
+        let membership = self
+            .store
+            .nodes
+            .get_space_membership(space_id, principal_id)
+            .await?;
+        match authorize_space_operation(membership.as_ref(), space_id, SpaceOperation::Write, at) {
+            SpaceAuthDecision::Allow => Ok(Ok(())),
+            SpaceAuthDecision::Deny(reason) => {
+                Ok(Err(AdmissionRefusal::SpaceAuthorizationDenied {
+                    reason: reason.into(),
+                }))
+            }
+        }
     }
 
     /// Resolve one contract's declared read and write scope against effective
@@ -503,11 +564,11 @@ impl MindVaultEngine {
     /// the layer is auditable but not operable: every downstream endpoint —
     /// readiness, gates, approval, completion — has no subject to act on.
     ///
-    /// **It executes nothing.** ADR 012 governs internal runs only; no external
-    /// dispatcher, provider call, or third-party agent is invoked here. Starting
-    /// a run means spending a budgeted attempt, recording the governed record
-    /// and its event atomically, and — only if the owner's autonomy policy
-    /// allows — taking the write leases a future executor would need.
+    /// **Admission and leasing only.** ADR 012 governs internal runs; no external
+    /// dispatcher is invoked here. Starting a run spends a budgeted attempt,
+    /// records the governed record and event atomically, and — only if autonomy
+    /// allows — takes write leases. Call [`MindVaultEngine::execute_run`] to
+    /// drive a leased run through artifact production and completion.
     ///
     /// The autonomy gate is consulted at the start, not after the fact. Because
     /// `AutonomyGate::evaluate` defers when no rule matches, an unconfigured
@@ -691,7 +752,25 @@ impl MindVaultEngine {
     /// The run returns to the ready set rather than straight to execution: the
     /// write set must be re-checked, because approval authorizes the action,
     /// not a stale set of targets.
-    pub async fn resume_approved_run(&self, run_id: Uuid) -> MvResult<AgentRun> {
+    ///
+    /// SPACE-002 / ADR 012: the acting run actor cannot approve itself. The
+    /// approver must be a distinct principal (typically the owner/reviewer).
+    pub async fn resume_approved_run(
+        &self,
+        run_id: Uuid,
+        approver: &StableUri,
+    ) -> MvResult<AgentRun> {
+        let run = self
+            .store
+            .nodes
+            .get_agent_run(run_id)
+            .await?
+            .ok_or_else(|| MvError::NotFound("agent run not found".into()))?;
+        if &run.actor == approver {
+            return Err(MvError::AccessDenied(
+                "a run cannot approve itself (SPACE-002 / ADR 012)".into(),
+            ));
+        }
         self.transition_run(run_id, AgentRunStatus::Ready, None)
             .await
     }
@@ -791,6 +870,9 @@ impl MindVaultEngine {
             evaluated_at: now,
             created_at: now,
         };
+        // Enforces G5 independence (and digest shape) before persistence —
+        // SPACE-002: a run cannot satisfy its own review gate.
+        result.validate(&run).map_err(MvError::InvalidInput)?;
         self.store.nodes.record_gate_result(&result).await
     }
 
@@ -1066,7 +1148,7 @@ impl MindVaultEngine {
             .await
     }
 
-    async fn transition_run(
+    pub(crate) async fn transition_run(
         &self,
         run_id: Uuid,
         status: AgentRunStatus,
@@ -1107,8 +1189,9 @@ impl MindVaultEngine {
         work_order: &WorkOrder,
         node_count: usize,
         edge_count: usize,
+        action_envelope: Option<ActionEnvelope>,
     ) -> MvResult<EventEnvelope> {
-        let data = serde_json::json!({
+        let mut data = serde_json::json!({
             "work_order_id": work_order.work_order_id,
             "node_count": node_count,
             "edge_count": edge_count,
@@ -1119,6 +1202,15 @@ impl MindVaultEngine {
                 "status": work_order.status.as_str(),
             })),
         });
+        if let Some(envelope) = action_envelope {
+            let envelope = envelope.with_execution_context(
+                work_order.space_id,
+                Some(work_order.work_order_id),
+                None,
+            );
+            data["admission"] = envelope.policy_decision.policy_metadata();
+            data["action_envelope"] = envelope.attribution_metadata();
+        }
         EventEnvelope::new(NewEventEnvelope {
             event_type: WORK_ORDER_ADMITTED_V1.into(),
             source: StableUri::node(local_node_id),
@@ -1364,6 +1456,7 @@ mod tests {
             sensitivity: Sensitivity::Internal,
             retention: RetentionClass::Operational,
             idempotency_key: key.into(),
+            space_id: None,
             nodes: vec![ProposedNode {
                 purpose: "extract decisions".into(),
                 executor_kind: ExecutorKind::Engine,
@@ -1391,7 +1484,7 @@ mod tests {
     ) -> (WorkOrder, AgentRun) {
         issue_tool_grant(engine, local_node_id, actor, &[target], key).await;
         let admitted = engine
-            .admit_work_order(actor, actor, &proposal(&[target], RiskTier::Low, key))
+            .admit_work_order(actor, actor, &proposal(&[target], RiskTier::Low, key), None)
             .await
             .unwrap()
             .expect("admissible");
@@ -1578,6 +1671,7 @@ mod tests {
                     RiskTier::Low,
                     "startable",
                 ),
+                None,
             )
             .await
             .unwrap()
@@ -1618,8 +1712,12 @@ mod tests {
         );
 
         // Approving returns it to the ready set rather than straight to work.
+        let owner = StableUri::principal(
+            local_node_id,
+            Uuid::new_v5(&local_node_id, b"local-context-owner"),
+        );
         let resumed = engine
-            .resume_approved_run(started.run.run_id)
+            .resume_approved_run(started.run.run_id, &owner)
             .await
             .unwrap();
         assert_eq!(resumed.status, AgentRunStatus::Ready);
@@ -1642,7 +1740,7 @@ mod tests {
         let mut request = proposal(&["mindvault://schemas/capped"], RiskTier::Low, "capped");
         request.nodes[0].max_attempts = 2;
         let admitted = engine
-            .admit_work_order(&actor, &actor, &request)
+            .admit_work_order(&actor, &actor, &request, None)
             .await
             .unwrap()
             .expect("admissible");
@@ -1935,7 +2033,7 @@ mod tests {
             "over-scoped",
         );
         let refusal = engine
-            .admit_work_order(&actor, &actor, &over_scoped)
+            .admit_work_order(&actor, &actor, &over_scoped, None)
             .await
             .unwrap()
             .expect_err("an over-scoped contract must be refused");
@@ -1963,7 +2061,7 @@ mod tests {
             "in-scope",
         );
         let admitted = engine
-            .admit_work_order(&actor, &actor, &in_scope)
+            .admit_work_order(&actor, &actor, &in_scope, None)
             .await
             .unwrap()
             .expect("an in-scope contract is admissible");
@@ -2037,6 +2135,7 @@ mod tests {
                     RiskTier::Low,
                     "context-only",
                 ),
+                None,
             )
             .await
             .unwrap()
@@ -2071,7 +2170,7 @@ mod tests {
         request.nodes.push(request.nodes[0].clone());
 
         let admitted = engine
-            .admit_work_order(&actor, &actor, &request)
+            .admit_work_order(&actor, &actor, &request, None)
             .await
             .unwrap()
             .expect("admissible");
@@ -2114,7 +2213,7 @@ mod tests {
         });
 
         let refusal = engine
-            .admit_work_order(&actor, &actor, &request)
+            .admit_work_order(&actor, &actor, &request, None)
             .await
             .unwrap()
             .expect_err("conflict edges are derived, not authored");
@@ -2151,7 +2250,7 @@ mod tests {
         });
 
         let refusal = engine
-            .admit_work_order(&actor, &actor, &request)
+            .admit_work_order(&actor, &actor, &request, None)
             .await
             .unwrap()
             .expect_err("a cyclic dependency graph is inadmissible");
@@ -2233,6 +2332,7 @@ mod tests {
                 &actor,
                 &actor,
                 &proposal(&["mindvault://schemas/gated"], RiskTier::Low, "gated"),
+                None,
             )
             .await
             .unwrap()
@@ -2344,4 +2444,522 @@ mod tests {
         assert_eq!(completed.status, AgentRunStatus::Completed);
         assert!(completed.ended_at.is_some());
     }
+
+    #[tokio::test]
+    async fn agent_run_executor_drives_run_to_terminal_with_artifact() {
+        let (engine, _dir) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let actor = StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, b"agent"));
+        issue_tool_grant(
+            &engine,
+            local_node_id,
+            &actor,
+            &["mindvault://schemas/executable"],
+            "executable-grant",
+        )
+        .await;
+
+        // Admit engine runs without parking on owner approval.
+        let mut rule = AutonomyRule::global(0.0);
+        rule.allowed_intent_types = vec!["work_order.run.engine".into()];
+        rule.max_actions_per_hour = 100;
+        engine
+            .store
+            .nodes
+            .add_autonomy_rule(&rule)
+            .await
+            .unwrap();
+
+        let admitted = engine
+            .admit_work_order(
+                &actor,
+                &actor,
+                &proposal(
+                    &["mindvault://schemas/executable"],
+                    RiskTier::Low,
+                    "executable",
+                ),
+                None,
+            )
+            .await
+            .unwrap()
+            .expect("admissible");
+        let contracts = engine
+            .store
+            .nodes
+            .list_work_order_nodes(admitted.work_order_id)
+            .await
+            .unwrap();
+        assert_eq!(contracts[0].executor_kind, ExecutorKind::Engine);
+
+        let started = engine
+            .start_run(admitted.work_order_id, contracts[0].node_id, &actor, 0.99)
+            .await
+            .unwrap();
+        assert!(!started.awaiting_approval);
+        assert_eq!(started.run.status, AgentRunStatus::Leased);
+
+        let executed = engine.execute_run(started.run.run_id).await.unwrap();
+        assert_eq!(executed.run.status, AgentRunStatus::Completed);
+        assert!(executed.run.ended_at.is_some());
+        assert_eq!(executed.artifact.artifact_kind, "engine.result");
+        assert!(!executed.artifact.content_digest.is_empty());
+        assert!(!executed.artifact.provenance.is_empty());
+        assert_eq!(executed.gate_results.len(), RiskTier::Low.required_gates().len());
+        assert!(executed
+            .gate_results
+            .iter()
+            .all(|gate| gate.outcome == GateOutcome::Pass));
+
+        let payload = engine
+            .store
+            .nodes
+            .read_run_artifact_payload(executed.artifact.artifact_id)
+            .await
+            .unwrap()
+            .expect("artifact bytes");
+        let body: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(body["executor"], "engine");
+        assert_eq!(body["run_id"], executed.run.run_id.to_string());
+
+        let counters = engine.metrics.get_counters().await;
+        assert_eq!(
+            counters.get("trusted_work_completed").copied().unwrap_or(0),
+            1,
+            "WATW interim counter must increment on successful execute_run"
+        );
+    }
+
+    /// SPACE-002 — a run cannot approve itself.
+    #[tokio::test]
+    async fn work_order_agent_run_cannot_approve_itself() {
+        let (engine, _dir) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let actor = StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, b"agent"));
+        issue_tool_grant(
+            &engine,
+            local_node_id,
+            &actor,
+            &["mindvault://schemas/executable"],
+            "self-approve-grant",
+        )
+        .await;
+
+        let admitted = engine
+            .admit_work_order(
+                &actor,
+                &actor,
+                &proposal(
+                    &["mindvault://schemas/executable"],
+                    RiskTier::Low,
+                    "self-approve",
+                ),
+                None,
+            )
+            .await
+            .unwrap()
+            .expect("admissible");
+        let contracts = engine
+            .store
+            .nodes
+            .list_work_order_nodes(admitted.work_order_id)
+            .await
+            .unwrap();
+        let started = engine
+            .start_run(admitted.work_order_id, contracts[0].node_id, &actor, 0.99)
+            .await
+            .unwrap();
+        assert!(started.awaiting_approval);
+
+        let err = engine
+            .resume_approved_run(started.run.run_id, &actor)
+            .await
+            .expect_err("self-approval must fail closed");
+        match err {
+            MvError::AccessDenied(msg) => assert!(
+                msg.contains("cannot approve itself"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected AccessDenied, got {other:?}"),
+        }
+    }
+
+    /// SPACE-002 — a run cannot record G5 as its own evaluator.
+    #[tokio::test]
+    async fn work_order_agent_run_cannot_satisfy_own_g5() {
+        let (engine, _dir) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let actor = StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, b"agent"));
+        issue_tool_grant(
+            &engine,
+            local_node_id,
+            &actor,
+            &["mindvault://schemas/executable"],
+            "self-g5-grant",
+        )
+        .await;
+
+        let mut rule = AutonomyRule::global(0.0);
+        rule.allowed_intent_types = vec!["work_order.run.engine".into()];
+        rule.max_actions_per_hour = 100;
+        engine.store.nodes.add_autonomy_rule(&rule).await.unwrap();
+
+        let admitted = engine
+            .admit_work_order(
+                &actor,
+                &actor,
+                &proposal(
+                    &["mindvault://schemas/executable"],
+                    RiskTier::Low,
+                    "self-g5",
+                ),
+                None,
+            )
+            .await
+            .unwrap()
+            .expect("admissible");
+        let contracts = engine
+            .store
+            .nodes
+            .list_work_order_nodes(admitted.work_order_id)
+            .await
+            .unwrap();
+        let started = engine
+            .start_run(admitted.work_order_id, contracts[0].node_id, &actor, 0.99)
+            .await
+            .unwrap();
+        assert!(!started.awaiting_approval);
+        let run_id = started.run.run_id;
+
+        let digest = "a".repeat(64);
+        let err = engine
+            .record_run_gate(
+                run_id,
+                GateId::G5,
+                GateOutcome::Pass,
+                &actor,
+                digest,
+                Some("self review".into()),
+            )
+            .await
+            .expect_err("self G5 must fail");
+        match err {
+            MvError::InvalidInput(msg) => assert!(
+                msg.contains("cannot satisfy its own G5"),
+                "unexpected: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    /// SPACE-002 — a run cannot broaden the grant that authorizes it.
+    ///
+    /// Write scope is resolved through the Tool Grant at admission. Declaring
+    /// targets outside that grant is refused, and a self-issued grant (grantor
+    /// == grantee) cannot be constructed to invent the missing authority.
+    #[tokio::test]
+    async fn work_order_agent_run_cannot_broaden_its_own_grant() {
+        let (engine, _dir) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let actor = StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, b"agent"));
+        issue_tool_grant(
+            &engine,
+            local_node_id,
+            &actor,
+            &["mindvault://schemas/alpha"],
+            "space002-narrow-grant",
+        )
+        .await;
+
+        let before = engine
+            .store
+            .nodes
+            .list_authority_grants(Some(&actor), None, None)
+            .await
+            .unwrap();
+        assert_eq!(before.len(), 1);
+        assert_eq!(
+            before[0].targets,
+            vec![StableUri::parse("mindvault://schemas/alpha").unwrap()]
+        );
+
+        // Self-grant cannot mint broader authority.
+        let self_grant = AuthorityGrant::new_tool(
+            StableUri::node(local_node_id),
+            actor.clone(),
+            actor.clone(),
+            vec![
+                StableUri::parse("mindvault://schemas/alpha").unwrap(),
+                StableUri::parse("mindvault://schemas/beta").unwrap(),
+            ],
+            vec![ContextCapability::Execute],
+            "self-broaden",
+            Utc::now() + chrono::Duration::hours(1),
+        );
+        assert!(
+            self_grant.is_err(),
+            "grantor and grantee must remain distinct"
+        );
+
+        let refusal = engine
+            .admit_work_order(
+                &actor,
+                &actor,
+                &proposal(
+                    &["mindvault://schemas/alpha", "mindvault://schemas/beta"],
+                    RiskTier::Low,
+                    "space002-broaden",
+                ),
+                None,
+            )
+            .await
+            .unwrap()
+            .expect_err("over-scope must fail closed");
+        match refusal {
+            AdmissionRefusal::WriteScopeOutsideGrant { targets, .. } => {
+                assert!(targets.iter().any(|t| t.contains("beta")), "{targets:?}");
+            }
+            other => panic!("expected WriteScopeOutsideGrant, got {other:?}"),
+        }
+
+        let after = engine
+            .store
+            .nodes
+            .list_authority_grants(Some(&actor), None, None)
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 1, "failed admit must not mint a rival grant");
+        assert_eq!(after[0].targets, before[0].targets);
+    }
+
+    /// SPACE-002 — Space-scoped Work Orders require Write membership.
+    #[tokio::test]
+    async fn work_order_agent_run_space_scoped_requires_membership() {
+        let (engine, _dir) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let principal_id = Uuid::new_v5(&local_node_id, b"space-agent");
+        let actor = StableUri::principal(local_node_id, principal_id);
+        issue_tool_grant(
+            &engine,
+            local_node_id,
+            &actor,
+            &["mindvault://schemas/executable"],
+            "space-scoped-grant",
+        )
+        .await;
+
+        let identity = IdentityRecord::new(local_node_id, "space-agent", ActorKind::Agent, "Agent");
+        assert_eq!(identity.principal_id, principal_id);
+        engine
+            .store
+            .nodes
+            .upsert_identity_record(&identity)
+            .await
+            .unwrap();
+
+        let workspace = CollabWorkspace::new("wedge-ws", "Wedge Workspace");
+        engine
+            .store
+            .nodes
+            .insert_collab_workspace(&workspace)
+            .await
+            .unwrap();
+        let space = Space::new(workspace.id, "trusted-work", "Trusted Work");
+        engine.store.nodes.insert_space(&space).await.unwrap();
+
+        let mut scoped = proposal(
+            &["mindvault://schemas/executable"],
+            RiskTier::Low,
+            "space-scoped-no-member",
+        );
+        scoped.space_id = Some(space.id);
+
+        let denied = engine
+            .admit_work_order(&actor, &actor, &scoped, None)
+            .await
+            .unwrap()
+            .expect_err("no membership must fail closed");
+        match denied {
+            AdmissionRefusal::SpaceAuthorizationDenied { reason } => {
+                assert!(
+                    reason.contains("membership") || reason.contains("denied"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected SpaceAuthorizationDenied, got {other:?}"),
+        }
+
+        let membership =
+            SpaceMembership::new(space.id, principal_id, ActorKind::Agent, SpaceRole::Member);
+        engine
+            .store
+            .nodes
+            .upsert_space_membership(&membership)
+            .await
+            .unwrap();
+
+        let mut allowed = proposal(
+            &["mindvault://schemas/executable"],
+            RiskTier::Low,
+            "space-scoped-member",
+        );
+        allowed.space_id = Some(space.id);
+        let admitted = engine
+            .admit_work_order(&actor, &actor, &allowed, None)
+            .await
+            .unwrap()
+            .expect("member may admit");
+        assert_eq!(admitted.space_id, Some(space.id));
+        assert_eq!(admitted.status, WorkOrderStatus::Admitted);
+    }
+
+    /// SPACE-002 — state-machine transitions and identical-retry classification.
+    #[test]
+    fn work_order_agent_run_state_machine_and_retry_rules() {
+        use mv_core::{AgentRunStatus, RunFailureClass, WorkOrderStatus};
+
+        assert!(WorkOrderStatus::Admitted.can_transition_to(WorkOrderStatus::Running));
+        assert!(WorkOrderStatus::Running.can_transition_to(WorkOrderStatus::Completed));
+        assert!(!WorkOrderStatus::Completed.can_transition_to(WorkOrderStatus::Running));
+
+        assert!(AgentRunStatus::Ready.can_transition_to(AgentRunStatus::Leased));
+        assert!(AgentRunStatus::Leased.can_transition_to(AgentRunStatus::Running));
+        assert!(AgentRunStatus::Running.can_transition_to(AgentRunStatus::Gated));
+        assert!(AgentRunStatus::Gated.can_transition_to(AgentRunStatus::Completed));
+        assert!(AgentRunStatus::Failed.is_terminal());
+        assert!(!AgentRunStatus::Failed.can_transition_to(AgentRunStatus::Ready));
+        assert!(!AgentRunStatus::Completed.can_transition_to(AgentRunStatus::Running));
+        assert!(!AgentRunStatus::AwaitingApproval.can_transition_to(AgentRunStatus::Running));
+
+        assert!(RunFailureClass::Transient.permits_identical_retry());
+        for class in [
+            RunFailureClass::Deterministic,
+            RunFailureClass::Specification,
+            RunFailureClass::Authorization,
+            RunFailureClass::Budget,
+            RunFailureClass::Conflict,
+        ] {
+            assert!(
+                !class.permits_identical_retry(),
+                "{class:?} must not permit identical retry"
+            );
+        }
+    }
+
+    /// SPACE-002 — AgentRun is a distinct typed object; plan steps cannot masquerade.
+    #[tokio::test]
+    async fn work_order_admit_embeds_action_envelope_v2_in_event() {
+        let (engine, _dir) = test_engine().await;
+        let local_node_id = register_local_node(&engine).await;
+        let actor = StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, b"wo-envelope"));
+        issue_tool_grant(
+            &engine,
+            local_node_id,
+            &actor,
+            &["mindvault://schemas/executable"],
+            "wo-envelope-grant",
+        )
+        .await;
+
+        let grant_id = Uuid::now_v7();
+        let envelope = ActionEnvelope::try_new(NewActionEnvelope {
+            action_id: Some(Uuid::now_v7()),
+            correlation_id: Some(Uuid::now_v7()),
+            causation_id: None,
+            principal: Some(actor.clone()),
+            actor: Some(actor.clone()),
+            resource: Some(StableUri::node(local_node_id)),
+            subject: Some(StableUri::node(local_node_id)),
+            operation: Some(ContextCapability::Command),
+            grant_ids: Some(vec![grant_id]),
+            policy_decision: Some(AdmissionDecision::Admitted {
+                grant_id,
+                grant_uri: StableUri::authority_grant(local_node_id, grant_id),
+                grant_kind: AuthorityGrantKind::Tool,
+                capability: ContextCapability::Command,
+                delegation_depth_remaining: 0,
+                decided_at: Utc::now(),
+            }),
+            idempotency_key: Some(IdempotencyKey::parse("wo-envelope-admit").unwrap()),
+            requested_at: Some(Utc::now()),
+        })
+        .unwrap();
+        let admitted = engine
+            .admit_work_order(
+                &actor,
+                &actor,
+                &ProposedWorkOrder {
+                    goal: "envelope proof".into(),
+                    non_goals: Vec::new(),
+                    anchors: Vec::new(),
+                    success_criteria: vec!["admit".into()],
+                    prohibited_outcomes: Vec::new(),
+                    budget: WorkOrderBudget {
+                        wall_clock_secs: 60,
+                        run_attempts: 1,
+                        model_tokens: 100,
+                        effect_actions: 0,
+                    },
+                    sensitivity: Sensitivity::Internal,
+                    retention: RetentionClass::Operational,
+                    idempotency_key: "wo-envelope-admit".into(),
+                    space_id: None,
+                    nodes: vec![ProposedNode {
+                        purpose: "envelope".into(),
+                        executor_kind: ExecutorKind::Engine,
+                        risk_tier: RiskTier::Low,
+                        read_scope: Vec::new(),
+                        write_scope: vec![
+                            StableUri::parse("mindvault://schemas/executable").unwrap(),
+                        ],
+                        inputs: Vec::new(),
+                        timeout_secs: 30,
+                        max_attempts: 1,
+                    }],
+                    edges: Vec::new(),
+                },
+                Some(envelope),
+            )
+            .await
+            .unwrap()
+            .expect("admissible");
+
+        let events = engine
+            .store
+            .nodes
+            .list_pending_outbox_events(10)
+            .await
+            .unwrap();
+        let event = events
+            .iter()
+            .find(|event| event.event_type == WORK_ORDER_ADMITTED_V1)
+            .expect("admitted event on outbox");
+        let action_envelope = event
+            .data
+            .get("action_envelope")
+            .expect("action_envelope metadata");
+        assert_eq!(
+            action_envelope["envelope_version"],
+            ACTION_ENVELOPE_V2
+        );
+        assert_eq!(
+            action_envelope["work_order_id"],
+            serde_json::json!(admitted.work_order_id)
+        );
+        assert!(action_envelope.get("space_id").is_none());
+    }
+
+    #[test]
+    fn work_order_agent_run_is_not_a_plan_step() {
+        fn assert_typed<T>() {}
+        assert_typed::<AgentRun>();
+        assert_typed::<WorkOrder>();
+        assert_typed::<RunArtifact>();
+        // Plans schema retired (AGENT-002). The AgentRun status vocabulary is
+        // the only execution-attempt machine — titles/strings are not runs.
+        assert!(AgentRunStatus::Ready.can_transition_to(AgentRunStatus::Leased));
+        assert!(!AgentRunStatus::AwaitingApproval.can_transition_to(AgentRunStatus::Running));
+        assert!(!AgentRunStatus::AwaitingApproval.may_hold_write_leases());
+    }
+
 }

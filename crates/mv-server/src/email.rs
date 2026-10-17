@@ -8,18 +8,26 @@ use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials as SmtpCredentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use mv_core::{
-    ChannelType, ContentType, MessageStatus, MvError, MvResult, RelayChannel, RelayContact,
-    RelayMessage, TrustLevel,
+    ChannelType, ContentType, KnowledgeNode, MessageStatus, MvError, MvResult, RelayChannel,
+    RelayContact, RelayMessage, RelayStore, TrustLevel,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::rest::attachments::normalize_attachment_search_blob;
+use crate::rest::attachments::{
+    extract_attachment_search_text, normalize_attachment_search_blob,
+    split_attachment_search_chunks,
+};
 use crate::state::AppState;
 
 const EMAIL_STATE_FILE: &str = "adapters/email_state.json";
+const ATTACHMENT_TEXT_INDEX_METADATA_KEY: &str = "attachment_text_index";
+const ATTACHMENT_TEXT_CHUNK_INDEX_METADATA_KEY: &str = "attachment_text_chunks";
+const ATTACHMENT_SEARCH_BLOB_METADATA_KEY: &str = "attachment_search_text";
+const MAX_ATTACHMENT_EXTRACTED_TEXT_CHARS: usize = 12_000;
 const MAX_ATTACHMENT_SEARCH_BLOB_CHARS: usize = 64_000;
-const RELAY_ATTACHMENTS_METADATA_KEY: &str = "relay_attachments";
+const MAX_ATTACHMENT_SEARCH_CHUNK_CHARS: usize = 420;
+const MAX_ATTACHMENT_SEARCH_CHUNK_COUNT: usize = 32;
 
 #[derive(Debug, Clone)]
 struct RuntimeEmailConfig {
@@ -117,13 +125,15 @@ struct InboundEmail {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RelayAttachmentRecord {
+struct NodeAttachmentRecord {
     id: String,
     file_name: String,
     content_type: Option<String>,
     size_bytes: usize,
     stored_path: String,
     uploaded_at: Option<String>,
+    extraction_status: Option<String>,
+    extracted_chars: Option<usize>,
 }
 
 fn load_state(path: &Path) -> EmailAdapterState {
@@ -526,22 +536,6 @@ async fn ingest_inbound_email(
         .with_thread(thread_id)
         .with_content_type(ContentType::Text);
     relay_message.metadata = metadata.into_iter().collect();
-    if !email.attachments.is_empty() {
-        let attachments = persist_inbound_relay_attachments(
-            &state.engine.config.data_dir,
-            relay_message.id,
-            &email.attachments,
-            config.max_attachment_bytes,
-        )?;
-        if !attachments.is_empty() {
-            relay_message.metadata.insert(
-                RELAY_ATTACHMENTS_METADATA_KEY.to_string(),
-                serde_json::to_value(attachments).map_err(|err| {
-                    MvError::Internal(format!("serialize relay attachments: {err}"))
-                })?,
-            );
-        }
-    }
 
     let outcome = state
         .engine
@@ -579,6 +573,29 @@ async fn ingest_inbound_email(
                     .await;
                 tracing::warn!(error = %err, "relay_auto_reply_send_failed");
             }
+        }
+    }
+
+    let stored = outcome.message;
+
+    if !email.attachments.is_empty() {
+        if let Some(node_id) = stored.vault_node_id {
+            persist_inbound_attachments(
+                state,
+                node_id,
+                &email.attachments,
+                config.max_attachment_bytes,
+            )
+            .await?;
+        } else {
+            // Keep attachments with the communication record until promotion.
+            persist_relay_message_attachments(
+                state,
+                stored.id,
+                &email.attachments,
+                config.max_attachment_bytes,
+            )
+            .await?;
         }
     }
 
@@ -931,13 +948,25 @@ fn html_to_text(html: &str) -> String {
     output
 }
 
-fn persist_inbound_relay_attachments(
-    data_dir: &str,
+
+async fn persist_relay_message_attachments(
+    state: &Arc<AppState>,
     message_id: Uuid,
     attachments: &[InboundAttachment],
     max_attachment_bytes: usize,
-) -> MvResult<Vec<RelayAttachmentRecord>> {
-    let mut records = Vec::new();
+) -> MvResult<()> {
+    let Some(mut message) = state.engine.relay.get_message(message_id).await? else {
+        return Ok(());
+    };
+
+    let mut records = message
+        .metadata
+        .get("attachments")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<NodeAttachmentRecord>>(value).ok())
+        .unwrap_or_default();
+
+    let mut changed = false;
     for attachment in attachments {
         if attachment.bytes.is_empty() || attachment.bytes.len() > max_attachment_bytes {
             continue;
@@ -946,10 +975,10 @@ fn persist_inbound_relay_attachments(
         let attachment_id = Uuid::now_v7().to_string();
         let sanitized_name = sanitize_file_name(&attachment.file_name);
         let relative_path = format!(
-            "relay-blobs/{message_id}/{}_{}",
-            attachment_id, sanitized_name
+            "blobs/relay/{}/{}_{}",
+            message_id, attachment_id, sanitized_name
         );
-        let absolute_path = PathBuf::from(data_dir).join(&relative_path);
+        let absolute_path = PathBuf::from(&state.engine.config.data_dir).join(&relative_path);
 
         if let Some(parent) = absolute_path.parent() {
             fs::create_dir_all(parent).map_err(|err| {
@@ -966,17 +995,125 @@ fn persist_inbound_relay_attachments(
             ))
         })?;
 
-        records.push(RelayAttachmentRecord {
+        records.push(NodeAttachmentRecord {
             id: attachment_id,
             file_name: attachment.file_name.clone(),
             content_type: attachment.content_type.clone(),
             size_bytes: attachment.bytes.len(),
             stored_path: relative_path,
             uploaded_at: Some(Utc::now().to_rfc3339()),
+            extraction_status: None,
+            extracted_chars: None,
         });
+        changed = true;
     }
 
-    Ok(records)
+    if !changed {
+        return Ok(());
+    }
+
+    message.metadata.insert(
+        "attachments".to_string(),
+        serde_json::to_value(&records).map_err(|err| {
+            MvError::Storage(format!("serialize relay attachments failed: {err}"))
+        })?,
+    );
+    state
+        .engine
+        .store
+        .nodes
+        .update_relay_message_metadata(message_id, &message.metadata)
+        .await?;
+    Ok(())
+}
+
+async fn persist_inbound_attachments(
+    state: &Arc<AppState>,
+    node_id: Uuid,
+    attachments: &[InboundAttachment],
+    max_attachment_bytes: usize,
+) -> MvResult<()> {
+    let Some(mut node) = state.engine.get_node(node_id).await? else {
+        return Ok(());
+    };
+
+    let mut records = node
+        .metadata
+        .get("attachments")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<NodeAttachmentRecord>>(value).ok())
+        .unwrap_or_default();
+
+    let mut changed = false;
+    for attachment in attachments {
+        if attachment.bytes.is_empty() || attachment.bytes.len() > max_attachment_bytes {
+            continue;
+        }
+
+        let attachment_id = Uuid::now_v7().to_string();
+        let sanitized_name = sanitize_file_name(&attachment.file_name);
+        let relative_path = format!("blobs/{}/{}_{}", node_id, attachment_id, sanitized_name);
+        let absolute_path = PathBuf::from(&state.engine.config.data_dir).join(&relative_path);
+
+        if let Some(parent) = absolute_path.parent() {
+            fs::create_dir_all(parent).map_err(|err| {
+                MvError::Storage(format!(
+                    "failed creating attachment dir {}: {err}",
+                    parent.display()
+                ))
+            })?;
+        }
+        fs::write(&absolute_path, &attachment.bytes).map_err(|err| {
+            MvError::Storage(format!(
+                "failed writing attachment {}: {err}",
+                absolute_path.display()
+            ))
+        })?;
+
+        let extraction = extract_attachment_search_text(
+            &attachment.file_name,
+            attachment.content_type.as_deref(),
+            &attachment.bytes,
+            MAX_ATTACHMENT_EXTRACTED_TEXT_CHARS,
+        );
+
+        upsert_attachment_text_index_entry(
+            &mut node,
+            &attachment_id,
+            extraction.extracted_text.as_deref(),
+        );
+        upsert_attachment_text_chunk_index_entry(
+            &mut node,
+            &attachment_id,
+            extraction.extracted_text.as_deref(),
+        );
+
+        records.push(NodeAttachmentRecord {
+            id: attachment_id,
+            file_name: attachment.file_name.clone(),
+            content_type: attachment.content_type.clone(),
+            size_bytes: attachment.bytes.len(),
+            stored_path: relative_path,
+            uploaded_at: Some(Utc::now().to_rfc3339()),
+            extraction_status: Some(extraction.status),
+            extracted_chars: Some(extraction.extracted_chars),
+        });
+        changed = true;
+    }
+
+    if !changed {
+        return Ok(());
+    }
+
+    node.metadata.insert(
+        "attachments".to_string(),
+        serde_json::to_value(&records)
+            .map_err(|err| MvError::Internal(format!("serialize attachment records: {err}")))?,
+    );
+    sync_attachment_search_blob_metadata(&mut node);
+    let updated = state.engine.update_node(node).await?;
+    state.notify_change(&updated.id.to_string(), "update", Some(&updated.namespace));
+    Ok(())
 }
 
 fn sanitize_file_name(value: &str) -> String {
@@ -998,6 +1135,108 @@ fn sanitize_file_name(value: &str) -> String {
         sanitized.truncate(120);
     }
     sanitized
+}
+
+fn upsert_attachment_text_index_entry(
+    node: &mut KnowledgeNode,
+    attachment_id: &str,
+    extracted_text: Option<&str>,
+) {
+    let mut index_map = node
+        .metadata
+        .get(ATTACHMENT_TEXT_INDEX_METADATA_KEY)
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    match extracted_text {
+        Some(value) if !value.trim().is_empty() => {
+            index_map.insert(
+                attachment_id.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
+        }
+        _ => {
+            index_map.remove(attachment_id);
+        }
+    }
+
+    if index_map.is_empty() {
+        node.metadata.remove(ATTACHMENT_TEXT_INDEX_METADATA_KEY);
+    } else {
+        node.metadata.insert(
+            ATTACHMENT_TEXT_INDEX_METADATA_KEY.to_string(),
+            serde_json::Value::Object(index_map),
+        );
+    }
+}
+
+fn upsert_attachment_text_chunk_index_entry(
+    node: &mut KnowledgeNode,
+    attachment_id: &str,
+    extracted_text: Option<&str>,
+) {
+    let mut chunk_index = node
+        .metadata
+        .get(ATTACHMENT_TEXT_CHUNK_INDEX_METADATA_KEY)
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    let chunks = extracted_text
+        .map(|value| {
+            split_attachment_search_chunks(
+                value,
+                MAX_ATTACHMENT_SEARCH_CHUNK_CHARS,
+                MAX_ATTACHMENT_SEARCH_CHUNK_COUNT,
+            )
+        })
+        .unwrap_or_default();
+
+    if chunks.is_empty() {
+        chunk_index.remove(attachment_id);
+    } else {
+        chunk_index.insert(
+            attachment_id.to_string(),
+            serde_json::Value::Array(chunks.into_iter().map(serde_json::Value::String).collect()),
+        );
+    }
+
+    if chunk_index.is_empty() {
+        node.metadata
+            .remove(ATTACHMENT_TEXT_CHUNK_INDEX_METADATA_KEY);
+    } else {
+        node.metadata.insert(
+            ATTACHMENT_TEXT_CHUNK_INDEX_METADATA_KEY.to_string(),
+            serde_json::Value::Object(chunk_index),
+        );
+    }
+}
+
+fn sync_attachment_search_blob_metadata(node: &mut KnowledgeNode) {
+    let combined_text = node
+        .metadata
+        .get(ATTACHMENT_TEXT_INDEX_METADATA_KEY)
+        .and_then(serde_json::Value::as_object)
+        .map(|values| {
+            values
+                .values()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        })
+        .unwrap_or_default();
+
+    let normalized =
+        normalize_attachment_search_blob(&combined_text, MAX_ATTACHMENT_SEARCH_BLOB_CHARS);
+    if normalized.is_empty() {
+        node.metadata.remove(ATTACHMENT_SEARCH_BLOB_METADATA_KEY);
+    } else {
+        node.metadata.insert(
+            ATTACHMENT_SEARCH_BLOB_METADATA_KEY.to_string(),
+            serde_json::Value::String(normalized),
+        );
+    }
 }
 
 #[cfg(test)]

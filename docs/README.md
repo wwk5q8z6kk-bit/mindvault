@@ -1,5 +1,16 @@
 # MindVault Docs
 
+- `MINDVAULT_NEXT_MASTER_PLAN.md`: **Superseding** MindVault Next product,
+  architecture, interoperability, collaboration, agent, security, domain
+  expansion, competitive landscape, and execution plan. Subordinate to
+  `../INTEROPERABILITY_CONSTITUTION.md` for binding interop law; execution
+  status only in `../IMPLEMENTATION_BACKLOG.md`.
+- `research/`: Source research for the master plan expansion
+  (`adjacent-domain-research-register-2026-07-31.md`,
+  `research-expansion-delta-2026-07-31.md`,
+  `master-enhancement-plan-2026-07-26-baseline.md`).
+
+
 - `../INTEROPERABILITY_CONSTITUTION.md`: Highest-priority architectural law.
 - `adr/011-sovereign-interoperability-fabric.md`: Binding decision for the
   sovereign, interoperable context fabric.
@@ -10,6 +21,8 @@
   mutation/outbox, durable dispatch, action receipts, and replay.
 - `architecture/ACTION_RECEIPT_MODEL.md`: Durable delivery leases, immutable
   publication-attempt evidence, retries, and terminal delivery semantics.
+- `architecture/AUTHORITY_GRANT_MODEL.md`: Context Grants and Tool
+  Grants — issue, enforce, suspend, revoke, and resume contracts.
 - `architecture/CONSUMER_INBOX_MODEL.md`: Durable event admission, application
   leases and receipts, local ordering, and terminal checkpoints.
 - `architecture/SOURCE_AUTHORITY_MODEL.md`: Authority, materialization, mutation,

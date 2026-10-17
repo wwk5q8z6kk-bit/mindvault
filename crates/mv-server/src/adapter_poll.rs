@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use mv_core::{
-    AdapterPollStore, ContentType, MvResult, RelayChannel, RelayContact, RelayMessage, TrustLevel,
+    AdapterBindingStore, AdapterPollStore, ContentType, MvResult, RelayChannel, RelayContact,
+    RelayMessage, TrustLevel,
 };
 use mv_engine::adapters::{AdapterConfig, AdapterInboundMessage};
 use tokio::sync::broadcast;
@@ -17,10 +18,12 @@ pub struct AdapterPollConfig {
 
 impl AdapterPollConfig {
     pub fn from_env() -> Self {
+        // Default off until SPACE-003 reliable-effects gates land. Opt in with
+        // MINDVAULT_ADAPTER_POLL_ENABLED=1.
         let enabled = std::env::var("MINDVAULT_ADAPTER_POLL_ENABLED")
             .ok()
             .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-            .unwrap_or(true);
+            .unwrap_or(false);
         let interval_secs = std::env::var("MINDVAULT_ADAPTER_POLL_INTERVAL_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -110,23 +113,51 @@ async fn poll_once(state: &Arc<AppState>) -> MvResult<()> {
             }
         };
 
-        let message_count = messages.len() as u64;
+        let mut ingested = 0u64;
+        let mut failed = false;
         if !messages.is_empty() {
             for message in messages {
-                if let Err(err) = ingest_adapter_message(state, &config, message).await {
-                    tracing::warn!(
-                        adapter = %config.name,
-                        error = %err,
-                        "adapter message ingest failed"
-                    );
+                // SPACE-003: record provider delivery ID before side effects so
+                // duplicates fail closed even across restarts.
+                if !message.external_id.trim().is_empty() {
+                    if let Err(err) = state
+                        .engine
+                        .store
+                        .nodes
+                        .record_adapter_provider_delivery(config.id, &message.external_id)
+                        .await
+                    {
+                        tracing::warn!(
+                            adapter = %config.name,
+                            error = %err,
+                            "adapter delivery ID rejected; holding poll cursor"
+                        );
+                        failed = true;
+                        break;
+                    }
+                }
+                match ingest_adapter_message(state, &config, message).await {
+                    Ok(()) => ingested += 1,
+                    Err(err) => {
+                        tracing::warn!(
+                            adapter = %config.name,
+                            error = %err,
+                            "adapter message ingest failed; holding poll cursor"
+                        );
+                        failed = true;
+                        break;
+                    }
                 }
             }
+        }
+        if failed {
+            continue;
         }
         if let Err(err) = state
             .engine
             .store
             .nodes
-            .upsert_poll_state(&poll_key, &new_cursor, message_count)
+            .upsert_poll_state(&poll_key, &new_cursor, ingested)
             .await
         {
             tracing::warn!(

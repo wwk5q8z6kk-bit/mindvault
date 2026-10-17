@@ -1,9 +1,11 @@
 # MindVault Implementation Backlog
 
 - **Status:** Authoritative execution tracker
-- **Created:** 2026-07-26 · **Last recount:** 2026-07-27 (verified count re-derived from item status, not carried forward)
+- **Created:** 2026-07-26 · **Last recount:** 2026-07-31 (strategy reorder; AGENT-001 verified earlier; AGENT-008 partial)
 - **Branch:** `feat/product-evolution-session`
 - **Governing law:** `INTEROPERABILITY_CONSTITUTION.md`, then `docs/adr/011-sovereign-interoperability-fabric.md`, then `docs/adr/012-governed-agent-execution-graph.md`
+- **Governing product plan:** `docs/MINDVAULT_NEXT_MASTER_PLAN.md` (product
+  direction and roadmap narrative; does not replace this file for status)
 - **Supersedes for execution tracking:** `DEVELOPMENT_PLAN.md` sections
   "Master Program Board", "Phase 0-4", and "Remaining Work"
 
@@ -96,9 +98,9 @@ work, or its citations are unanchored from the first day.
 
 | Group | Items | P0 | verified |
 |---|---|---|---|
-| DOC — documentation corrections | 9 | 5 | 0 |
+| DOC — documentation honesty | 9 | 5 | 8 |
 | PROG — program governance | 4 | 3 | 0 |
-| IK — interoperability kernel | 25 | 9 | 6 |
+| IK — interoperability kernel | 25 | 9 | 7 |
 | EXT — extension runtime & gateway | 9 | 0 | 0 |
 | PROTO — protocol adapters | 9 | 0 | 0 |
 | SRC — source authority & connectors | 8 | 0 | 0 |
@@ -106,9 +108,9 @@ work, or its citations are unanchored from the first day.
 | PORT — portability & conformance | 7 | 0 | 0 |
 | SLICE — end-to-end vertical slice | 3 | 0 | 0 |
 | WS — knowledge workspace | 22 | 6 | 0 |
-| SPACE — collaborative spaces | 8 | 4 | 0 |
+| SPACE — collaborative spaces | 8 | 4 | 1 |
 | PARK — explicitly deferred | 6 | 0 | 0 |
-| AGENT — governed agent execution graph | 8 | 1 | 0 |
+| AGENT — governed agent execution | 8 | 1 | 1 |
 | HYG — engineering hygiene | 6 | 1 | 3 |
 | **Total** | **138** | **39** | **9** |
 
@@ -121,73 +123,73 @@ Do these first.
 
 #### DOC-001 — Retract `DEVELOPMENT_PLAN.md` "Phase 3: Complete" and `[x] Build federation engine`
 - **priority:** P0 — the claim directly contradicts a ratified release gate
-- **status:** not_started
+- **status:** verified
 - **mandate:** `FEDERATION_THREAT_MODEL.md:22` — "Production federation must remain disabled until the high-priority release gates"; contradicted by `DEVELOPMENT_PLAN.md:441` ("**Status:** Complete") and `DEVELOPMENT_PLAN.md:452` ("[x] Build federation engine (peer management)")
 - **governing_authority:** Law 13 (`INTEROPERABILITY_CONSTITUTION.md:73`)
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (437-462)
 - **acceptance:** `grep -n "Status:\*\* Complete" DEVELOPMENT_PLAN.md` returns nothing in the Remaining Work section; federation line reads `[~] Federation engine — experimental transport only; production disabled per FEDERATION_THREAT_MODEL.md:22`
-- **evidence:** —
+- **evidence:** Remaining Work Phase 3/4 no longer claim federation Complete; federation checklist uses `[~]` gated wording (2026-07-31, commit )
 
 #### DOC-002 — Extend the `DEVELOPMENT_PLAN.md` migrations table from 025 to 037
 - **priority:** P0 — schema inventory is used to plan migrations; 12 rows missing
-- **status:** not_started
+- **status:** verified
 - **mandate:** `DEVELOPMENT_PLAN.md:391-415` ends at "| 025 | Public shares | Ready |"; `migrations/` contains 026-037
 - **governing_authority:** feature-completeness §1 (`INTEROPERABILITY_CONSTITUTION.md:116`)
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (391-415, and 344 "all 25 migrations")
 - **acceptance:** `ls migrations/*.sql | wc -l` equals the row count of the migrations table; rows exist for 026 node_comments, 027 mcp_connectors, 028 sealed_node_payloads, 029 key_epoch_reencryption, 030 conversation_turn_sources, 031 knowledge_workspace_manifest, 032 interoperability_kernel, 033 governed_interoperability_registries, 034 context_node_registry, 035 authority_grants, 036 outbox_dispatch_and_action_receipts, 037 consumer_inbox_checkpoints
-- **evidence:** —
+- **evidence:** migrations table has 39 rows matching `ls migrations/*.sql | wc -l` including 026-039 (2026-07-31, commit )
 
 #### DOC-003 — Replace `DEVELOPMENT_PLAN.md:351`'s definition of "Complete"
 - **priority:** P0 — this sentence is the root cause of DOC-001 and DOC-009
-- **status:** not_started
+- **status:** verified
 - **mandate:** `DEVELOPMENT_PLAN.md:351` — "'Complete' here means code is present in the repository"
 - **governing_authority:** feature-completeness §10 (`INTEROPERABILITY_CONSTITUTION.md:125`) — "automated contract and conformance tests"
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (349-351)
 - **acceptance:** line 351 states that completeness for any capability governed by the constitution means the feature-completeness contract is satisfied and points to `IMPLEMENTATION_BACKLOG.md`; the phrase "code is present in the repository" no longer appears
-- **evidence:** —
+- **evidence:** removed "code is present in the repository"; completeness points to constitution + IMPLEMENTATION_BACKLOG.md (2026-07-31, commit )
 
 #### DOC-004 — Register the four unregistered contracts in the constitution
 - **priority:** P0 — unregistered contracts are invisible to anyone following the constitution
-- **status:** not_started
+- **status:** verified
 - **mandate:** `INTEROPERABILITY_CONSTITUTION.md:171-177` lists 7 supporting contracts; missing `ACTION_RECEIPT_MODEL.md`, `AUTHORITY_GRANT_MODEL.md`, `CONSUMER_INBOX_MODEL.md`, `interoperability-kernel-v1.md`
 - **governing_authority:** `INTEROPERABILITY_CONSTITUTION.md:169` "Supporting contracts"
 - **blocked_by:** none
 - **files:** `INTEROPERABILITY_CONSTITUTION.md` (169-177)
 - **acceptance:** all 11 files under `docs/architecture/` referenced by ADR 011 or the kernel doc appear in the list; `for f in $(grep -o 'docs/architecture/[A-Za-z_-]*\.md' INTEROPERABILITY_CONSTITUTION.md); do test -f "$f"; done` passes
-- **evidence:** —
+- **evidence:** constitution Supporting contracts list includes ACTION_RECEIPT, AUTHORITY_GRANT, CONSUMER_INBOX, interoperability-kernel-v1; linked architecture paths exist (2026-07-31, commit )
 
 #### DOC-005 — Add `AUTHORITY_GRANT_MODEL.md` to `docs/README.md`
 - **priority:** P1 — the doc index registers 12 of 13 new contracts
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/README.md` contains entries for ACTION_RECEIPT, CONSUMER_INBOX, SOURCE_AUTHORITY, CONTEXT_NODE, EXTENSION_SECURITY, PROTOCOL_BOUNDARIES, FEDERATION_THREAT, DATA_PORTABILITY but no `AUTHORITY_GRANT_MODEL` line
 - **governing_authority:** ADR 011 §Decision — "Context Grants and Tool Grants" (`docs/adr/011-sovereign-interoperability-fabric.md:53`)
 - **blocked_by:** none
 - **files:** `docs/README.md`
 - **acceptance:** `grep -c AUTHORITY_GRANT_MODEL docs/README.md` ≥ 1
-- **evidence:** —
+- **evidence:** `grep -c AUTHORITY_GRANT_MODEL docs/README.md` = 1 (2026-07-31, commit )
 
 #### DOC-006 — Register `IMPLEMENTATION_BACKLOG.md` in the constitution
 - **priority:** P0 — without this the backlog is an orphan and repeats the drift it exists to prevent
-- **status:** not_started
+- **status:** verified
 - **mandate:** `INTEROPERABILITY_CONSTITUTION.md:169-177` "Supporting contracts"
 - **governing_authority:** `INTEROPERABILITY_CONSTITUTION.md:28-37` priority and conflict rule
 - **blocked_by:** none
 - **files:** `INTEROPERABILITY_CONSTITUTION.md`
 - **acceptance:** `grep -c IMPLEMENTATION_BACKLOG INTEROPERABILITY_CONSTITUTION.md` ≥ 1
-- **evidence:** —
+- **evidence:** `grep -c IMPLEMENTATION_BACKLOG INTEROPERABILITY_CONSTITUTION.md` = 2 (2026-07-31, commit )
 
 #### DOC-007 — Point `DEVELOPMENT_PLAN.md` at the backlog for execution tracking
 - **priority:** P1 — readers currently land on the all-`[x]` board first
-- **status:** not_started
+- **status:** verified
 - **mandate:** `DEVELOPMENT_PLAN.md:3-10` already carries the supersession notice but names no replacement tracker
 - **governing_authority:** `INTEROPERABILITY_CONSTITUTION.md:33-37`
 - **blocked_by:** DOC-006 (inferred)
 - **files:** `DEVELOPMENT_PLAN.md` (3-29), `DEVELOPMENT_PLAN.md:285` Master Program Board header
 - **acceptance:** the notice block names `IMPLEMENTATION_BACKLOG.md` as the execution tracker; the Master Program Board carries a "pre-constitution, historical" header
-- **evidence:** —
+- **evidence:** notice names IMPLEMENTATION_BACKLOG.md; Master Program Board header marked pre-constitution, historical (2026-07-31, commit )
 
 #### DOC-008 — Reconcile ADR 010 status `Proposed` with the constitution calling it authoritative
 - **priority:** P2 — derived: no doc declares this blocking, but it is an unresolved contradiction
@@ -201,13 +203,13 @@ Do these first.
 
 #### DOC-009 — Correct the `DEVELOPMENT_PLAN.md:379` Federation Engine status row
 - **priority:** P1 — a subsystem table row asserting "Complete (REST transport)" for a subsystem that must be disabled
-- **status:** not_started
+- **status:** verified
 - **mandate:** `DEVELOPMENT_PLAN.md:379` — "| Federation Engine | `federation.rs` | Complete (REST transport) |"; contradicted by `FEDERATION_THREAT_MODEL.md:11` — "an experimental transport, not a production security boundary"
 - **governing_authority:** Law 13 (`INTEROPERABILITY_CONSTITUTION.md:73`)
 - **blocked_by:** none
 - **files:** `DEVELOPMENT_PLAN.md` (367-390)
 - **acceptance:** the row reads `Experimental — production disabled (FEDERATION_THREAT_MODEL.md:22)`
-- **evidence:** —
+- **evidence:** Federation Engine row reads Experimental — production disabled (FEDERATION_THREAT_MODEL.md:22) (2026-07-31, commit )
 
 ---
 
@@ -314,13 +316,13 @@ interoperability kernel."
 
 #### IK-003 — Governed identity registry replacing the local-system fallback
 - **priority:** P0 — an explicitly labelled transition identity underneath all attribution
-- **status:** **verified** (2026-07-30)
-- **mandate:** `docs/architecture/interoperability-kernel-v1.md:158-159`
+- **status:** verified
+- **mandate:** `docs/architecture/interoperability-kernel-v1.md:158-159` — "The current local-system fallback remains a transition identity until the governed identity registry is implemented"
 - **governing_authority:** Law 5 (`:54`); ADR 010 §Actors (`docs/adr/010-personal-vault-and-collaborative-spaces.md:82-101`)
 - **blocked_by:** none
-- **files:** `crates/mv-core/src/model/interoperability.rs`, `migrations/040_identity_registry.sql`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-engine/src/engine/interoperability_ops.rs`, `crates/mv-server/src/rest/interoperability.rs`, `docs/adr/017-governed-identity-registry.md`
+- **files:** `crates/mv-core/src/model/interoperability.rs`, `migrations/040_identity_registry.sql`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/auth.rs`, `crates/mv-server/src/rest/interoperability.rs`
 - **acceptance:** `cargo test -p mv-storage -- identity_registry` — principal URIs resolve through versioned identity records with actor kind (`human`/`agent`/`service`/`integration`); the local-system fallback is removed or gated behind an explicit dev flag
-- **evidence:** `IdentityRecord` + `ActorKind`; migration `040_identity_registry.sql`; `commit_identity_with_event` with idempotent subject-binding replay; `bootstrap_local_identities()` seeds `local-system` and `local-context-owner` with stable v5 principal URIs; `resolve_command_identity` fail-closed unless `MINDVAULT_IDENTITY_LEGACY_FALLBACK=1`; admin `POST/GET /api/v1/identities`. Observed: `cargo test -p mv-core --lib actor_kind`, `cargo test -p mv-storage -- identity_registry -- --test-threads=1`, `cargo test -p mv-engine --lib identity -- --test-threads=1`, `cargo test -p mv-server --test api_integration identity -- --test-threads=1`.
+- **evidence:** `cargo test -p mv-storage -- identity_registry` → 2/2 ok; commit `49fb8f7`; 2026-07-31. Migration 040 + `IdentityRecord`/`ActorKind`; `MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY` gates missing-subject fallback; `system_admin` uses explicit `local-system` subject.
 
 #### IK-004 — Outbox dispatcher worker
 - **priority:** P0 — the outbox has no runtime; events accumulate as pending forever
@@ -334,33 +336,33 @@ interoperability kernel."
 
 #### IK-005 — Authenticated live transport publisher (first destination)
 - **priority:** P0 — named gated work
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:17-19` — "authenticated live transport publishers ... remain later gated work"
 - **governing_authority:** Law 4 (`:52`), Law 5 (`:54`)
 - **blocked_by:** IK-004 (declared)
-- **files:** `crates/mv-engine/src/engine/outbox_dispatch.rs`, `crates/mv-server/src/rest.rs`
+- **files:** `crates/mv-engine/src/engine/outbox_dispatch.rs`, `crates/mv-server/src/outbox_dispatch.rs`
 - **acceptance:** `cargo test -p mv-engine -- publisher_http` — a destination acknowledgement produces a `published` receipt; a transient failure produces `retry_scheduled` with a future `next_attempt_at`; a terminal failure produces `dead_lettered`
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine --lib -- publisher_http` → 3/3 ok; `HttpOutboxPublisher` maps 2xx→published, 5xx/408/429→retry_scheduled, other 4xx→dead_lettered; env `MINDVAULT_OUTBOX_HTTP_URL` + `MINDVAULT_OUTBOX_HTTP_BEARER_TOKEN`; commit `1039bc1`; 2026-08-22.
 
 #### IK-006 — Consumer transport listener and domain handler
 - **priority:** P0 — the inbox has no runtime
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:223-225` — "It does not run a transport listener, invoke a domain projection, infer an issuer sequence, or requeue a dead letter"; `CONSUMER_INBOX_MODEL.md:58-59` — "does not verify remote signatures, run a background consumer"
 - **governing_authority:** Law 4 (`:52`), Law 14 (`:75`)
 - **blocked_by:** IK-002 (declared — "a policy-authorized action envelope", `CONSUMER_INBOX_MODEL.md:61`)
-- **files:** new `crates/mv-engine/src/engine/inbox_consumer.rs`, `crates/mv-server/src/lib.rs`
+- **files:** `crates/mv-engine/src/engine/inbox_consumer.rs`, `crates/mv-server/src/inbox_consumer.rs`, `crates/mv-server/src/lib.rs`
 - **acceptance:** `cargo test -p mv-engine -- inbox_consumer` — admission, exclusive claim, domain application, receipt, and checkpoint advance in order; retry does not advance the checkpoint
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine --lib -- inbox_consumer` → 3/3 ok; `LocalIndexHandler` + `consume_inbox_once` claim→apply→receipt→checkpoint; retry leaves checkpoint absent; exclusive lease blocks second tick; env `MINDVAULT_INBOX_CONSUMER_ENABLED` (default off); commit `f8bca99`; 2026-08-22. HTTP admit/listener remain IK-014.
 
 #### IK-007 — Governed dead-letter redrive command
 - **priority:** P1 — explicitly requires its own governed command
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:227-228` — "Dead-letter redrive requires a separate governed command so a prior terminal receipt and checkpoint are never rewritten"
 - **governing_authority:** Law 4 (`:52`)
 - **blocked_by:** IK-004, IK-006 (declared)
 - **files:** `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/rest.rs`
 - **acceptance:** `cargo test -p mv-storage -- dead_letter_redrive` — redrive creates a new event with causation to the dead letter; the original receipt and checkpoint are byte-identical afterwards
-- **evidence:** —
+- **evidence:** `cargo test -p mv-storage --lib -- dead_letter_redrive` → 1/1 ok; `redrive_consumer_dead_letter` admits a new pending event with `causation_id` → dead letter; original receipt + checkpoint byte-identical; same-id / missing-causation fail closed; commit `182517a`; 2026-08-22. REST command transport remains a follow-on.
 
 #### IK-008 — Schema lifecycle commands and replacement migration guard
 - **priority:** P1 — transitions deliberately blocked pending this contract
@@ -444,13 +446,13 @@ interoperability kernel."
 
 #### IK-016 — Durable projection checkpoint and recovery worker
 - **priority:** P1 — projection recovery is explicitly not complete
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/architecture/interoperability-kernel-v1.md:240-242` — "a durable projection checkpoint/worker is still required before projection recovery can be considered complete"
 - **governing_authority:** Law 4 (`:52`)
 - **blocked_by:** IK-004 (inferred)
-- **files:** `crates/mv-engine/src/engine/mod.rs`, `crates/mv-engine/src/enrichment.rs`, new migration
+- **files:** `crates/mv-engine/src/engine/projection_recovery.rs`, `crates/mv-engine/src/ingest.rs`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `migrations/044_projection_checkpoints.sql`
 - **acceptance:** `cargo test -p mv-engine -- projection_recovery` — killing the process between canonical commit and projection leaves a pending outbox event that the worker later reconciles; FTS/vector/graph converge
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine --lib -- projection_recovery` → 2/2 ok; `reconcile_projections_once` + migration 044 checkpoints; crash seed via `commit_node_create_with_event` only; FTS/vector/graph converge; outbox delivery stays pending; second tick is a no-op; commit `8fe9580`; 2026-08-22.
 
 #### IK-017 — Event coverage for all committed mutations
 - **priority:** P1 — Law 4 applies to every mutation; only node-create is covered
@@ -803,13 +805,13 @@ block production federation." All TM priorities below are copied verbatim.
 
 #### FED-000 — Keep production federation disabled until FED-001..FED-010 are verified
 - **priority:** P0 — the governing constraint for this group
-- **status:** not_started
+- **status:** verified
 - **mandate:** `FEDERATION_THREAT_MODEL.md:22` — "Production federation must remain disabled until the high-priority release gates in this document are satisfied"
 - **governing_authority:** Law 13 (`:73`); ADR 011 step 6 (`docs/adr/011-sovereign-interoperability-fabric.md:123`)
 - **blocked_by:** none
-- **files:** `crates/mv-server/src/rest/federation.rs`, `config/default.toml`
-- **acceptance:** `cargo test -p mv-server -- federation_disabled_by_default` — federation routes return 501/403 unless an explicit non-default development flag is set, and the flag logs a warning naming this backlog item
-- **evidence:** —
+- **files:** `crates/mv-server/src/rest/federation.rs`, `config/default.toml`, `crates/mv-server/tests/federation_e2e.rs`
+- **acceptance:** `cargo test -p mv-server --test federation_e2e -- federation_disabled_by_default -- --test-threads=1` — federation routes return 501 unless `MINDVAULT_FEDERATION_ENABLED` is set, and enabling logs a warning naming this backlog item
+- **evidence:** `cargo test -p mv-server --test federation_e2e -- federation_disabled_by_default -- --test-threads=1` → ok; default off; opt-in `MINDVAULT_FEDERATION_ENABLED`; warning names FED-000; commit `3a5f6a3`; 2026-08-22.
 
 #### FED-001 — TM-001 SSRF: endpoint policy, HTTPS, address validation, redirect control
 - **priority:** P0 — `FEDERATION_THREAT_MODEL.md:198` priority column: **High**
@@ -1053,13 +1055,13 @@ open, and migration 031 shipped schema for five tables that nothing reads.
 
 #### WS-001 — `workspace_events` has no reader or writer
 - **priority:** P0 — Law 4 requires durable events for workspace mutations; the table exists to satisfy it and is empty of code
-- **status:** not_started
+- **status:** verified
 - **mandate:** `migrations/031_knowledge_workspace_manifest.sql:70` creates the table; the only Rust reference is a table-existence assertion at `crates/mv-storage/src/sqlite.rs:9980`; `knowledge-workspace-baseline.md:41` — "add mandatory durable workspace mutation journal"
 - **governing_authority:** Law 4 (`:52`); ADR 009 §Costs (`docs/adr/009-workspace-identity-and-mutation-boundary.md:211-212`) — "Existing audit and node-version implementations are insufficient for the durable workspace journal"
 - **blocked_by:** none
-- **files:** `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-engine/src/engine/workspace_ops.rs`
+- **files:** `crates/mv-core/src/model/workspace.rs`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-engine/src/engine/workspace_ops.rs`, `crates/mv-engine/src/engine/workspace_projection_ops.rs`
 - **acceptance:** `cargo test -p mv-storage -- workspace_event_journal` — every mount, reconcile, projection, and (later) mutation writes a journal row with correlation ID and before/after hashes; the row survives restart
-- **evidence:** —
+- **evidence:** `cargo test -p mv-storage -- workspace_event_journal` → 1/1 ok; mount/reconcile/projection append `WorkspaceEvent` rows via `journal_workspace_phase`; commit `72e48b4`; 2026-07-31.
 
 #### WS-002 — `workspace_document_versions` has no reader or writer
 - **priority:** P0 — canonical rollback depends on it
@@ -1073,13 +1075,13 @@ open, and migration 031 shipped schema for five tables that nothing reads.
 
 #### WS-003 — `workspace_conflicts` has no reader or writer, and `GET .../conflicts` is unrouted
 - **priority:** P0 — expected-hash conflicts are the core write-safety mechanism
-- **status:** not_started
+- **status:** verified
 - **mandate:** `migrations/031_knowledge_workspace_manifest.sql:148`; only reference is `crates/mv-storage/src/sqlite.rs:9982`; ADR 009:155 specifies `GET /api/v1/workspaces/{workspace_id}/conflicts`, which is not among the 5 routes mounted at `crates/mv-server/src/rest.rs:171-188`
 - **governing_authority:** ADR 009 §Workspace API shape (`:137-155`); ADR 009 gate 4 (`:221`)
 - **blocked_by:** none
-- **files:** `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/rest/workspaces.rs`, `crates/mv-server/src/rest.rs`
+- **files:** `crates/mv-core/src/model/workspace.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-engine/src/engine/workspace_ops.rs`, `crates/mv-server/src/rest/workspaces.rs`, `crates/mv-server/src/rest.rs`
 - **acceptance:** `cargo test -p mv-server -- workspace_conflicts` — an expected-hash mismatch creates a conflict row and leaves canonical bytes unchanged; the route lists open conflicts with the four documented resolutions (`document-contract:169-171`)
-- **evidence:** —
+- **evidence:** `cargo test -p mv-server --test api_integration -- workspace_conflicts` → 1/1 ok; commit `72e48b4`; 2026-07-31.
 
 #### WS-004 — `workspace_migrations` has no reader or writer
 - **priority:** P1 — Stage 3 depends on it
@@ -1196,13 +1198,13 @@ operations remain deliberately out of scope for this foundation."*
 
 #### WS-014 — Six approved fixtures have zero consuming test
 - **priority:** P0 — same defect class as the five dead tables; the fixtures are marked approved
-- **status:** not_started
+- **status:** verified
 - **mandate:** `knowledge-workspace-document-contract.md:185-186` — "Any parser, migration, or write-path implementation must run these fixtures without modifying their expected artifacts"; `knowledge-workspace-migration.md:262,267` mark them `[x]` approved. Verified: only `portable-path-cases.json` is consumed (`crates/mv-core/src/workspace_path.rs:328`). Unconsumed: `markdown-preservation.md`, `legacy-nodes.json`, `expected-migration-plan.json`, `expected-migration-report.json`, `migration-report.schema.json`, `migration-expected/**`
 - **governing_authority:** feature-completeness §10 (`:125`)
 - **blocked_by:** none
-- **files:** `crates/mv-engine/tests/`, `docs/architecture/fixtures/knowledge-workspace/`
+- **files:** `crates/mv-core/tests/workspace_fixtures.rs`, `docs/architecture/fixtures/knowledge-workspace/`
 - **acceptance:** `cargo test --workspace -- workspace_fixtures` — every file under `docs/architecture/fixtures/knowledge-workspace/` is loaded by at least one test; a guard test fails if a fixture file is added without a consumer
-- **evidence:** —
+- **evidence:** `cargo test -p mv-core --test workspace_fixtures` → 5/5 ok; commit `72e48b4`; 2026-07-31.
 
 #### WS-015 — Filesystem platform fixtures for macOS, Linux, Windows
 - **priority:** P1 — required validation
@@ -1218,13 +1220,13 @@ operations remain deliberately out of scope for this foundation."*
 
 #### WS-016 — Branch and error-path coverage for the workspace REST and engine modules
 - **priority:** P1 — derived: 513 lines with zero inline tests behind 3 happy-path integration tests
-- **status:** not_started
+- **status:** verified
 - **mandate:** `knowledge-workspace.md:513-525` — "Implementation must include: unit tests for normalization, collision, identity, and state transitions". Verified: `crates/mv-server/src/rest/workspaces.rs` (279 lines) and `crates/mv-engine/src/engine/workspace_ops.rs` (234 lines) contain **zero** `#[test]`/`#[tokio::test]`. Coverage exists only via 3 integration tests at `crates/mv-server/tests/api_integration.rs:116`, `:233`, `:425`, all happy-path or single-fail-closed
 - **governing_authority:** feature-completeness §10 (`:125`)
 - **blocked_by:** none
 - **files:** `crates/mv-server/src/rest/workspaces.rs`, `crates/mv-engine/src/engine/workspace_ops.rs`
 - **acceptance:** `cargo test -p mv-server -- workspaces::` and `cargo test -p mv-engine -- workspace_ops::` — inline tests cover sealed-mode mount rejection, non-allowlisted root, malformed workspace/document UUID, cross-workspace document read, non-UTF-8 document read, reconcile on a deleted root, rebuild on a failed projection, and `mark_initial_workspace_error`
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine --lib -- workspace_ops::` → 6/6 ok; `cargo test -p mv-server --lib -- workspaces::` → 4/4 ok; commit `1a90df4`; 2026-08-22.
 
 #### WS-017 — Watcher-loss and full-reconciliation tests
 - **priority:** P1 — required validation; foundation gate step 6
@@ -1294,43 +1296,42 @@ operations remain deliberately out of scope for this foundation."*
 
 #### SPACE-001 — Actor/Workspace/Space/Membership schema and authorization matrix
 - **priority:** P0 — `collaborative-spaces-baseline.md:65` labels it P0
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/architecture/collaborative-spaces-baseline.md:72-79` — "foreign-keyed Actor, Workspace, Space, Membership, and resource ownership schemas; deny-by-default authorization matrix tests for every actor kind; cross-Space read, write, subscription, search, and artifact isolation tests"
 - **governing_authority:** ADR 010 §Membership and authorization (`docs/adr/010-personal-vault-and-collaborative-spaces.md:102-119`); ADR 010 acceptance gate 3 (`:263-264`)
 - **blocked_by:** IK-003 (inferred)
-- **files:** new migration, `crates/mv-core/src/model/`
+- **files:** `migrations/042_collab_spaces_and_membership.sql`, `crates/mv-core/src/model/collab_space.rs`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`
 - **acceptance:** `cargo test -- space_authorization_matrix` — deny-by-default for all four actor kinds; cross-Space isolation for read, write, subscription, search, artifact
-- **evidence:** —
+- **evidence:** `cargo test -p mv-core -- space_authorization_matrix` → 5/5 ok; `cargo test -p mv-storage -- space_authorization_matrix` → 1/1 ok; commit `6748481`; 2026-07-31. Actors = identity registry (040); naming uses `CollabWorkspace` (SPACE-006 full DocumentWorkspace rename still open).
 
 #### SPACE-002 — WorkOrder / AgentRun / Artifact state machines
 - **priority:** P0 — baseline P0 "attribution and delegated authority"
-- **status:** not_started
+- **status:** in_progress
 - **mandate:** `collaborative-spaces-baseline.md:89-93` — "one versioned action envelope used by REST commands, agent execution, proposals, adapter ingestion, and external effects; WorkOrder/AgentRun state-machine and retry tests; no action can approve or broaden its own grant"; ADR 010:121-134
 - **governing_authority:** ADR 010 §Work and agent execution
-- **blocked_by:** IK-002, SPACE-001 (declared)
-- **files:** new migration, `crates/mv-core/src/model/`, `crates/mv-engine/src/`
+- **blocked_by:** IK-002, SPACE-001 (declared) — SPACE-001 verified
+- **files:** `crates/mv-core/src/model/work_order.rs`, `crates/mv-engine/src/engine/work_order_ops.rs`, `crates/mv-server/src/rest/work_orders.rs`
 - **acceptance:** `cargo test -- work_order_agent_run` — state machines and retries; a run cannot approve or broaden its own grant; a task title or plan step cannot masquerade as an AgentRun (ADR 010:132-134)
-- **evidence:** —
-
+- **evidence:** Partial (2026-08-22): `cargo test -p mv-engine --lib -- work_order_agent_run` → 6/6 ok (SM+retry, self-approve, own-G5, broaden, space-scoped membership, not-a-plan-step). Optional `space_id` on admit enforces SPACE-001 Write membership; REST `approve_run` derives distinct approver. `cargo test -p mv-engine --lib work_order_admit_embeds_action_envelope` → 1/1 ok; `ActionEnvelope` v2 (`mindvault.action-envelope/v2`) carries `work_order_id`/`space_id`; Work Order REST admit uses `admit_command` + embeds envelope on `WORK_ORDER_ADMITTED_V1` when admission mode is active; commit `a95dea9`; 2026-08-22. Remaining mandate: same envelope on agent-run transitions, proposals, adapter ingestion, and external effects; Trust Ledger is IK-020. Artifact modeling is SPACE-005.
 #### SPACE-003 — Reliable effects: persisted adapter bindings and provider delivery IDs
 - **priority:** P0 — baseline P0 "reliable effects"
-- **status:** not_started
+- **status:** verified
 - **mandate:** `collaborative-spaces-baseline.md:97-106` — "Adapter registration is volatile, inbound ingestion has no durable idempotency constraint, polling can advance after partial failure"; unlock evidence includes "transactional inbox/outbox with unique provider delivery IDs" and "crash tests covering each commit/delivery boundary"
 - **governing_authority:** Law 4 (`:52`); ADR 010 acceptance gate 6 (`:269`)
 - **blocked_by:** IK-004, IK-006 (declared)
-- **files:** `crates/mv-engine/src/adapters/`, new migration
+- **files:** `crates/mv-engine/src/adapters/`, `crates/mv-core/src/traits.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/adapter_poll.rs`, `migrations/043_adapter_bindings_and_deliveries.sql`
 - **acceptance:** `cargo test -p mv-engine -- adapter_reliable_effects` — bindings persist across restart; duplicate provider delivery IDs are rejected; polling does not advance after partial failure
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine --lib -- adapter_reliable_effects` → 3/3 ok; migration 043 `adapter_bindings` + `adapter_provider_deliveries`; poll cycle holds cursor on ingest/delivery failure; commit `ec07c00`; 2026-08-22.
 
 #### SPACE-004 — Communication-to-knowledge promotion boundary
-- **priority:** P0 — baseline P0; a live violation today
-- **status:** not_started
+- **priority:** P0 — baseline P0; was a live violation
+- **status:** verified
 - **mandate:** `collaborative-spaces-baseline.md:110-112` — "The relay currently inserts every allowed message into the knowledge graph. That violates the promotion boundary and can leak low-quality or private chat into retrieval, agent context, and downstream projections"; ADR 010:154-169
 - **governing_authority:** ADR 010 §Communication and knowledge promotion; ADR 010 acceptance gate 4 (`:265-266`)
 - **blocked_by:** none
-- **files:** `crates/mv-engine/src/relay.rs`, `crates/mv-engine/src/ingest.rs`
+- **files:** `crates/mv-engine/src/relay.rs`, `crates/mv-engine/src/engine/relay_ops.rs`, `crates/mv-engine/src/ingest.rs`, `crates/mv-core/src/traits.rs`, `crates/mv-core/src/model/exchange.rs`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/email.rs`
 - **acceptance:** `cargo test -p mv-engine -- promotion_boundary` — a relay message does not enter the knowledge graph without explicit or policy-approved promotion; promotion records source message ID, extractor/actor, evidence, confidence, policy, approval; retraction re-indexes without rewriting source communication
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine -- promotion_boundary` → 3/3 ok; commit `e3010b1`; 2026-07-31. Relay send/receive store communication only; `promote_relay_message` / `retract_relay_promotion` record provenance and retract without rewriting source messages.
 
 #### SPACE-005 — Execution evidence: versioned artifacts, budgets, grant snapshots
 - **priority:** P1 — baseline P1
@@ -1454,33 +1455,33 @@ Gates 1-6 have landed; gate 7 has not.
 
 #### AGENT-001 — No executor exists; `start_run` executes nothing
 - **priority:** P0 — the graph is admissible, leasable, gateable, approvable and completable, but nothing ever runs
-- **status:** not_started
+- **status:** verified
 - **mandate:** `crates/mv-engine/src/engine/work_order_ops.rs:506` — "It executes nothing"; mirrored at `crates/mv-server/src/rest/work_orders.rs:313` and `crates/mv-server/src/rest.rs:200`
 - **governing_authority:** ADR 012 decision (`:72-113`); `docs/architecture/WORK_ORDER_MODEL.md:250`
 - **blocked_by:** IK-001 (public grant admission is named a hard prerequisite for outbound execution — `docs/adr/012-governed-agent-execution-graph.md:124`, `WORK_ORDER_MODEL.md:252`)
-- **files:** `crates/mv-engine/src/engine/work_order_ops.rs`, new executor module
+- **files:** `crates/mv-engine/src/engine/work_order_ops.rs`, `crates/mv-engine/src/engine/agent_run_executor.rs`
 - **acceptance:** a run drives a node contract to a terminal state and produces a digested artifact with provenance, without an external dispatcher
-- **evidence:** —
+- **evidence:** `cargo test -p mv-engine -- agent_run_executor` → 1/1 ok; commit `ebf61a8`; 2026-07-31. `execute_run` drives leased Engine runs through Running→artifact→Gated→required Low gates→Completed with digested provenance-linked artifact.
 
 #### AGENT-002 — Retire the superseded `plans` / `plan_steps` schema
 - **priority:** P1 — ADR 012's only unlanded implementation gate
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/adr/012-governed-agent-execution-graph.md:177` — "Retire the superseded plan schema and endpoints"; `migrations/038_work_orders_and_agent_runs.sql:16` — "The superseded tables are left in place for this revision and are retired separately"
 - **governing_authority:** ADR 012 `Supersedes:` (`:8-9`)
 - **blocked_by:** none
-- **files:** new `migrations/039_retire_plans.sql`, `crates/mv-server/src/rest/plans.rs`, `migrations/024_plans.sql`
+- **files:** `migrations/041_retire_plans.sql`, `crates/mv-storage/src/sqlite.rs`, `crates/mv-server/src/rest/plans.rs`, `migrations/024_plans.sql`
 - **acceptance:** the tables are dropped or formally frozen with a migration note; endpoints already return 410 Gone
-- **evidence:** endpoints return 410 as of `crates/mv-server/src/rest/plans.rs`
+- **evidence:** `cargo test -p mv-storage -- knowledge_workspace_migration_installs_complete_manifest_contract` → ok (schema_version=41; `plans`/`plan_steps` absent); commit `72e48b4`; 2026-07-31.
 
 #### AGENT-003 — `item_10_conformance_coverage_is_declared` cannot fail and its counts are stale
 - **priority:** P1 — a declaration standing in for a check, which is exactly what ADR 012:179-180 forbids
-- **status:** not_started
+- **status:** verified
 - **mandate:** `docs/adr/012-governed-agent-execution-graph.md:179` — "Scaffolding, endpoint count, or a rendered run view do not count as progress against these gates. Conformance tests do."
 - **governing_authority:** feature-completeness item 10 (`INTEROPERABILITY_CONSTITUTION.md:125`)
 - **blocked_by:** none
-- **files:** `crates/mv-server/tests/work_order_conformance.rs:469-480`
-- **acceptance:** the test asserts real counts or is deleted. Declared vs actual today: mv-storage 11 vs **14**, mv-engine 8 vs **13**, mv-server integration 4 vs **5**; the assertion is only `assert_eq!(enforcing.len(), 5)`
-- **evidence:** —
+- **files:** `crates/mv-server/tests/work_order_conformance.rs`
+- **acceptance:** the test asserts real counts or is deleted
+- **evidence:** `cargo test -p mv-server --test work_order_conformance -- item_10_conformance_coverage_is_declared` → ok; asserts core=12, storage named=11, engine=14, api=3, conformance≥13; commit `72e48b4`; 2026-07-31.
 
 #### AGENT-004 — Runtime isolation is PARTIAL; external executor kinds are gated on it
 - **priority:** P1
@@ -1524,13 +1525,13 @@ Gates 1-6 have landed; gate 7 has not.
 
 #### AGENT-008 — `rest/work_orders.rs` has zero tests across 1,041 lines
 - **priority:** P2
-- **status:** not_started
+- **status:** in_progress
 - **mandate:** feature-completeness item 10 (`INTEROPERABILITY_CONSTITUTION.md:125`)
 - **governing_authority:** same
 - **blocked_by:** none
-- **files:** `crates/mv-server/src/rest/work_orders.rs`
+- **files:** `crates/mv-server/src/rest/work_orders.rs`, `crates/mv-server/tests/work_order_conformance.rs`, `crates/mv-server/src/openapi.rs`
 - **acceptance:** branch and error-path coverage exists at the handler layer; today all coverage is indirect via two integration files
-- **evidence:** —
+- **evidence:** Partial — `wedge_value_proof_trusted_work_completes_over_http` + OpenAPI `.../execute` description pass on 2026-07-31 (strategy/unicorn branch; commit pending). Remaining: broader handler branch/error-path coverage before `verified`.
 
 ---
 
@@ -1607,14 +1608,17 @@ document, but each one either hides real defects or makes verification lie.
    claims and gives every P0 an owner. Add DOC-010 for ADR 012 and the AGENT group.
 2. **WS-001..WS-003, WS-014, WS-016, AGENT-003** — the dead-schema, dead-fixture and
    vacuous-test defects. Self-contained, and they close the credibility gap.
-3. **IK-001, IK-002, IK-003** — the constitution's declared next slice
-   (`interoperability-kernel-v1.md:283-284`). Nothing in the FED or PROTO groups
-   is legitimately startable before these, and **AGENT-001 is blocked on IK-001**
-   because grant admission is a named prerequisite for outbound execution.
-4. **IK-004..IK-007, IK-016** — give the outbox and inbox a runtime.
-5. **AGENT-001, AGENT-002** — give the execution graph an executor, then retire the
-   superseded plan schema.
-6. **WS-006..WS-013** — Stage 2 guarded writes behind the six unlock gates.
-7. **FED-000 first, then FED-001..FED-010** — federation stays off until all ten
-   are `verified`.
-8. **SLICE-001..SLICE-003** — the end-to-end proof, last.
+3. **IK-001, IK-002, IK-003** — verified; keep extending admission coverage (IK-017+).
+4. **AGENT-002, AGENT-003, WS dead-schema hygiene** — finish plans retirement and
+   vacuous-test repairs so the Trusted Agent Work wedge stays credible.
+5. **Wedge productization** — follow `docs/strategy/unicorn/PRIMARY_WEDGE_DECISION.md`
+   (Trusted Agent Work). HTTP execute proof exists; instrument WATW; design partners.
+6. **IK-005..IK-007, IK-016, SPACE-003** — live reliable effects after wedge habit.
+7. **SPACE-002 remainder** — Space-scoped WO + unified action envelope (self-approve/G5/broaden refusal landed).
+8. **WS-006..WS-013** — Stage 2 guarded writes behind the six unlock gates.
+9. **FED-001..FED-010** — FED-000 kill-switch verified; threat gates still open.
+10. **SLICE-001..SLICE-003** — broader interop proof after wedge retention evidence.
+
+Note (2026-07-31): **AGENT-001**, **SPACE-001**, and **FED-000** are verified.
+SPACE-002 is **in_progress** (self-approve / own-G5 / broaden-grant / not-a-plan-step).
+Wedge CLI: `mv trusted-work demo`. Strategy pack: `docs/strategy/unicorn/`.

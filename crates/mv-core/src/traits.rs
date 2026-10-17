@@ -305,6 +305,20 @@ pub trait RelayStore: Send + Sync {
         offset: usize,
     ) -> MvResult<Vec<RelayMessage>>;
     async fn update_message_status(&self, id: Uuid, status: MessageStatus) -> MvResult<bool>;
+    /// Bind or clear the optional vault knowledge node for a relay message.
+    ///
+    /// Communication storage is independent of canonical knowledge. A vault
+    /// node ID is set only after explicit or policy-approved promotion.
+    async fn bind_relay_message_vault_node(
+        &self,
+        message_id: Uuid,
+        vault_node_id: Option<Uuid>,
+    ) -> MvResult<bool>;
+    async fn update_relay_message_metadata(
+        &self,
+        message_id: Uuid,
+        metadata: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> MvResult<bool>;
     async fn list_thread_messages(
         &self,
         thread_id: Uuid,
@@ -588,7 +602,42 @@ pub trait AdapterPollStore: Send + Sync {
     async fn delete_poll_state(&self, adapter_name: &str) -> MvResult<bool>;
 }
 
+
 fn _assert_adapter_poll_store_object_safe(_: &dyn AdapterPollStore) {}
+
+/// Durable adapter instance binding (SPACE-003).
+///
+/// Distinct from interop `SourceBinding`: this records registered messaging
+/// adapter configurations so they survive process restart.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AdapterBindingRecord {
+    pub id: Uuid,
+    pub adapter_type: String,
+    pub name: String,
+    pub enabled: bool,
+    pub settings_json: String,
+    pub created_at: String,
+    pub updated_at: Option<String>,
+}
+
+/// Persistence for adapter bindings and inbound provider delivery IDs.
+#[async_trait]
+pub trait AdapterBindingStore: Send + Sync {
+    async fn upsert_adapter_binding(&self, binding: &AdapterBindingRecord) -> MvResult<()>;
+    async fn get_adapter_binding(&self, id: Uuid) -> MvResult<Option<AdapterBindingRecord>>;
+    async fn list_adapter_bindings(&self) -> MvResult<Vec<AdapterBindingRecord>>;
+    async fn delete_adapter_binding(&self, id: Uuid) -> MvResult<bool>;
+
+    /// Record a provider delivery ID. Duplicate `(adapter_id, delivery_id)` is
+    /// `IdempotencyConflict`.
+    async fn record_adapter_provider_delivery(
+        &self,
+        adapter_id: Uuid,
+        provider_delivery_id: &str,
+    ) -> MvResult<()>;
+}
+
+fn _assert_adapter_binding_store_object_safe(_: &dyn AdapterBindingStore) {}
 
 /// Persistence boundary for the managed knowledge-workspace manifest.
 ///
@@ -645,10 +694,58 @@ pub trait KnowledgeWorkspaceManifestStore: Send + Sync {
         &self,
         reconciliation: &WorkspaceManifestReconciliation,
     ) -> MvResult<bool>;
+
+    /// Append one durable journal row. Assigns the next `event_seq` for the
+    /// workspace and returns the persisted record.
+    async fn append_workspace_event(&self, event: &WorkspaceEvent) -> MvResult<WorkspaceEvent>;
+
+    async fn get_workspace_event(&self, id: Uuid) -> MvResult<Option<WorkspaceEvent>>;
+
+    async fn list_workspace_events(
+        &self,
+        workspace_id: Uuid,
+        after_seq: Option<u64>,
+        limit: usize,
+    ) -> MvResult<Vec<WorkspaceEvent>>;
+
+    async fn list_workspace_events_by_correlation(
+        &self,
+        correlation_id: Uuid,
+    ) -> MvResult<Vec<WorkspaceEvent>>;
+
+    async fn insert_workspace_conflict(&self, conflict: &WorkspaceConflict) -> MvResult<()>;
+
+    async fn get_workspace_conflict(&self, id: Uuid) -> MvResult<Option<WorkspaceConflict>>;
+
+    async fn list_workspace_conflicts(
+        &self,
+        workspace_id: Uuid,
+        open_only: bool,
+    ) -> MvResult<Vec<WorkspaceConflict>>;
 }
 
-fn _assert_knowledge_workspace_manifest_store_object_safe(_: &dyn KnowledgeWorkspaceManifestStore) {
+fn _assert_knowledge_workspace_manifest_store_object_safe(_: &dyn KnowledgeWorkspaceManifestStore) {}
+
+/// Collaborative Space tenancy store (ADR 010 / SPACE-001).
+///
+/// Distinct from [`KnowledgeWorkspaceManifestStore`] (document mounts).
+#[async_trait]
+pub trait CollabSpaceStore: Send + Sync {
+    async fn insert_collab_workspace(&self, workspace: &CollabWorkspace) -> MvResult<()>;
+    async fn get_collab_workspace(&self, id: Uuid) -> MvResult<Option<CollabWorkspace>>;
+    async fn insert_space(&self, space: &Space) -> MvResult<()>;
+    async fn get_space(&self, id: Uuid) -> MvResult<Option<Space>>;
+    async fn upsert_space_membership(&self, membership: &SpaceMembership) -> MvResult<()>;
+    async fn get_space_membership(
+        &self,
+        space_id: Uuid,
+        principal_id: Uuid,
+    ) -> MvResult<Option<SpaceMembership>>;
+    async fn insert_space_resource(&self, resource: &SpaceResource) -> MvResult<()>;
+    async fn get_space_resource(&self, id: Uuid) -> MvResult<Option<SpaceResource>>;
 }
+
+fn _assert_collab_space_store_object_safe(_: &dyn CollabSpaceStore) {}
 
 /// One authorization question: who is asking, to do what, against which target,
 /// under which handling class, at what moment.
@@ -691,25 +788,6 @@ pub trait InteroperabilityStore: Send + Sync {
         context_node: &ContextNodeRecord,
         event: &EventEnvelope,
     ) -> MvResult<IdempotentContextNodeCommit>;
-
-    async fn commit_identity_with_event(
-        &self,
-        record: &IdentityRecord,
-        event: &EventEnvelope,
-    ) -> MvResult<IdempotentIdentityCommit>;
-
-    async fn get_identity(&self, principal_id: Uuid) -> MvResult<Option<IdentityRecord>>;
-
-    async fn get_identity_by_subject_binding(
-        &self,
-        governing_node_uri: &StableUri,
-        subject_binding: &str,
-    ) -> MvResult<Option<IdentityRecord>>;
-
-    async fn list_identities(
-        &self,
-        governing_node_uri: Option<&StableUri>,
-    ) -> MvResult<Vec<IdentityRecord>>;
 
     async fn get_context_node(&self, node_id: Uuid) -> MvResult<Option<ContextNodeRecord>>;
 
@@ -780,6 +858,28 @@ pub trait InteroperabilityStore: Send + Sync {
         idempotency_key: &IdempotencyKey,
     ) -> MvResult<Option<CommandAdmissionDecisionRecord>>;
 
+    /// Insert or replace (revision+1) a governed identity record.
+    async fn upsert_identity_record(&self, record: &IdentityRecord) -> MvResult<IdentityRecord>;
+
+    async fn get_identity_record(&self, principal_id: Uuid) -> MvResult<Option<IdentityRecord>>;
+
+    async fn get_identity_by_principal_uri(
+        &self,
+        principal_uri: &StableUri,
+    ) -> MvResult<Option<IdentityRecord>>;
+
+    /// Resolve a principal by governing node + external auth subject.
+    async fn resolve_identity_by_subject(
+        &self,
+        governing_node_uri: &StableUri,
+        external_subject: &str,
+    ) -> MvResult<Option<IdentityRecord>>;
+
+    async fn list_identity_records(
+        &self,
+        status: Option<IdentityStatus>,
+    ) -> MvResult<Vec<IdentityRecord>>;
+
     /// Atomically register an immutable public schema and its event.
     async fn commit_public_schema_with_event(
         &self,
@@ -845,6 +945,24 @@ pub trait InteroperabilityStore: Send + Sync {
     /// This administrative view includes scheduled and currently leased
     /// events. Dispatchers must use `claim_outbox_events`.
     async fn list_pending_outbox_events(&self, limit: usize) -> MvResult<Vec<EventEnvelope>>;
+
+    /// Outbox events whose local FTS/vector/graph projections are not yet
+    /// `ready` (IK-016). Independent of transport `delivery_state`.
+    async fn list_outbox_events_needing_projection(
+        &self,
+        event_type: &str,
+        limit: usize,
+    ) -> MvResult<Vec<EventEnvelope>>;
+
+    async fn get_projection_checkpoint(
+        &self,
+        event_id: Uuid,
+    ) -> MvResult<Option<ProjectionCheckpoint>>;
+
+    async fn upsert_projection_checkpoint(
+        &self,
+        checkpoint: &ProjectionCheckpoint,
+    ) -> MvResult<()>;
 
     async fn get_outbox_delivery_status(
         &self,
@@ -926,6 +1044,19 @@ pub trait InteroperabilityStore: Send + Sync {
         event_id: Uuid,
         limit: usize,
     ) -> MvResult<Vec<ConsumerApplicationReceipt>>;
+
+    /// Governed dead-letter redrive (IK-007).
+    ///
+    /// Admits a **new** event whose `causation_id` points at a terminal
+    /// dead-lettered inbox event. The original receipt and checkpoint must not
+    /// be rewritten; callers prove that by comparing snapshots before/after.
+    async fn redrive_consumer_dead_letter(
+        &self,
+        consumer: &StableUri,
+        dead_letter_event_id: Uuid,
+        event: &EventEnvelope,
+        received_at: DateTime<Utc>,
+    ) -> MvResult<ConsumerInboxAdmission>;
 
     // -----------------------------------------------------------------------
     // Governed agent execution graph

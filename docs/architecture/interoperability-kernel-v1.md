@@ -154,11 +154,11 @@ request fields. Object keys and tags are order-normalized before hashing.
 | Same scope and key, different digest | Reject with `409 Conflict` |
 | Mutation failure | Roll back both canonical state and outbox event |
 
-The authenticated subject resolves to a principal URI under the local Context
-Node through the governed identity registry (migration `040_identity_registry.sql`).
-Bootstrap registers `local-system` and `local-context-owner` with the same v5
-principal UUIDs as the transitional derivation. Unknown subjects fail closed unless
-`MINDVAULT_IDENTITY_LEGACY_FALLBACK=1` enables the legacy v5 derivation path.
+The authenticated subject is mapped deterministically to a principal URI under
+the local Context Node. Governed identity records (migration 040) resolve
+principals with ADR 010 actor kinds. A missing auth subject no longer silently
+becomes `local-system` unless `MINDVAULT_ALLOW_LOCAL_SYSTEM_IDENTITY=1` is set;
+auth-disabled local admin uses an explicit `local-system` subject.
 
 ## Transactional outbox
 

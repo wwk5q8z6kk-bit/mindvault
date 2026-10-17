@@ -45,6 +45,9 @@ async fn spawn_vault(name: &str) -> (SocketAddr, Arc<MindVaultEngine>, TempDir) 
     ] {
         std::env::remove_var(key);
     }
+    // FED-000: production federation is disabled unless explicitly opted in.
+    // These e2e tests intentionally exercise the experimental transport.
+    std::env::set_var("MINDVAULT_FEDERATION_ENABLED", "1");
 
     let tmp = TempDir::new().expect("tempdir");
     let config = test_config(&tmp.path().to_string_lossy());
@@ -250,5 +253,75 @@ async fn federation_handshake_unreachable_peer() {
         hs_resp.status().is_server_error() || hs_resp.status().is_client_error(),
         "handshake to unreachable peer should fail gracefully, got {}",
         hs_resp.status()
+    );
+}
+
+/// FED-000 — production federation routes fail closed unless explicitly enabled.
+#[tokio::test]
+async fn federation_disabled_by_default() {
+    for key in [
+        "MINDVAULT_AUTH_TOKEN",
+        "MINDVAULT_AUTH_ROLE",
+        "MINDVAULT_AUTH_NAMESPACE",
+        "MINDVAULT_JWT_SECRET",
+        "MINDVAULT_JWT_ISSUER",
+        "MINDVAULT_JWT_AUDIENCE",
+        "MINDVAULT_COMMAND_ADMISSION_MODE",
+        "MINDVAULT_FEDERATION_ENABLED",
+    ] {
+        std::env::remove_var(key);
+    }
+
+    let tmp = TempDir::new().expect("tempdir");
+    let config = test_config(&tmp.path().to_string_lossy());
+    let engine = Arc::new(
+        MindVaultEngine::init(config)
+            .await
+            .expect("engine init"),
+    );
+    let state = Arc::new(AppState::new(Arc::clone(&engine)));
+    let router = create_router(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.ok();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client = reqwest::Client::new();
+    for path in [
+        "/api/v1/federation/peers",
+        "/api/v1/federation/identity",
+    ] {
+        let resp = client
+            .get(format!("http://{addr}{path}"))
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET {path}: {e}"));
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::NOT_IMPLEMENTED,
+            "{path} must return 501 when federation is disabled (FED-000)"
+        );
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains("FED-000"),
+            "{path} body must name FED-000, got: {body}"
+        );
+    }
+
+    let resp = client
+        .post(format!("http://{addr}/api/v1/federation/handshake"))
+        .json(&json!({ "endpoint": "http://127.0.0.1:9" }))
+        .send()
+        .await
+        .expect("handshake");
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::NOT_IMPLEMENTED,
+        "mutating federation routes must also fail closed"
     );
 }

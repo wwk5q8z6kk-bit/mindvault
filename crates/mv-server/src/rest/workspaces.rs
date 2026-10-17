@@ -5,7 +5,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
-use mv_core::{KnowledgeWorkspace, MvError};
+use mv_core::{KnowledgeWorkspace, MvError, WorkspaceConflict, WORKSPACE_CONFLICT_RESOLUTIONS};
 use mv_engine::engine::WorkspaceProjectionOutcome;
 use mv_engine::workspace::{
     decode_workspace_descriptor, WorkspaceDocumentRead, WorkspaceReconciliationOutcome,
@@ -205,6 +205,73 @@ pub(crate) async fn read_workspace_document(
     Ok(Json(document))
 }
 
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WorkspaceConflictView {
+    id: Uuid,
+    workspace_id: Uuid,
+    document_id: Option<Uuid>,
+    conflict_kind: String,
+    state: String,
+    relative_path: Option<String>,
+    expected_content_hash: Option<String>,
+    observed_content_hash: Option<String>,
+    canonical_content_hash: Option<String>,
+    available_resolutions: Vec<String>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WorkspaceConflictsResponse {
+    conflicts: Vec<WorkspaceConflictView>,
+    resolution_choices: Vec<&'static str>,
+}
+
+/// GET /api/v1/workspaces/:id/conflicts — list open conflicts for review.
+pub(crate) async fn list_workspace_conflicts(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Path(workspace_id): Path<Uuid>,
+) -> Result<Json<WorkspaceConflictsResponse>, (StatusCode, String)> {
+    let workspace = authorized_workspace(&auth, &state, workspace_id).await?;
+    let conflicts = state
+        .engine
+        .list_workspace_conflicts(workspace.id, true)
+        .await
+        .map_err(map_workspace_error)?;
+    let views = conflicts
+        .into_iter()
+        .map(conflict_view)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Json(WorkspaceConflictsResponse {
+        conflicts: views,
+        resolution_choices: WORKSPACE_CONFLICT_RESOLUTIONS.to_vec(),
+    }))
+}
+
+fn conflict_view(conflict: WorkspaceConflict) -> Result<WorkspaceConflictView, (StatusCode, String)> {
+    let payload: mv_core::WorkspaceConflictPayloadV1 = serde_json::from_slice(&conflict.conflict_payload)
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("conflict payload is not valid JSON: {err}"),
+            )
+        })?;
+    Ok(WorkspaceConflictView {
+        id: conflict.id,
+        workspace_id: conflict.workspace_id,
+        document_id: conflict.document_id,
+        conflict_kind: conflict.conflict_kind.as_str().to_string(),
+        state: conflict.state.as_str().to_string(),
+        relative_path: payload.relative_path,
+        expected_content_hash: payload.expected_content_hash,
+        observed_content_hash: payload.observed_content_hash,
+        canonical_content_hash: payload.canonical_content_hash,
+        available_resolutions: payload.available_resolutions,
+        created_at: conflict.created_at,
+    })
+}
+
 async fn authorized_workspace(
     auth: &AuthContext,
     state: &AppState,
@@ -276,4 +343,94 @@ fn map_workspace_error(error: MvError) -> (StatusCode, String) {
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, error.to_string())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::AuthContext;
+    use crate::state::WorkspaceRootPolicy;
+    use axum::extract::{Path as AxumPath, State};
+    use axum::Extension;
+    use mv_engine::config::EngineConfig;
+    use mv_engine::engine::MindVaultEngine;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn test_state(allowed_roots: Vec<PathBuf>) -> (Arc<AppState>, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let mut config = EngineConfig {
+            data_dir: tmp.path().join("data").to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        config.embedding.provider = "noop".into();
+        config.llm.auto_detect = false;
+        let engine = MindVaultEngine::init(config).await.unwrap();
+        let state = Arc::new(
+            AppState::new(Arc::new(engine)).with_workspace_allowed_roots(allowed_roots),
+        );
+        (state, tmp)
+    }
+
+    #[tokio::test]
+    async fn workspaces_mount_rejects_non_allowlisted_root() {
+        let (state, tmp) = test_state(vec![]).await;
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let err = mount_workspace(
+            Extension(AuthContext::system_admin()),
+            State(state),
+            Json(MountWorkspaceRequest {
+                root_path: outside.to_string_lossy().into(),
+                namespace: Some("default".into()),
+                display_name: Some("Outside".into()),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn workspaces_tree_rejects_unknown_workspace_id() {
+        let (state, _tmp) = test_state(vec![std::env::temp_dir()]).await;
+        let err = get_workspace_tree(
+            Extension(AuthContext::system_admin()),
+            State(state),
+            AxumPath(Uuid::now_v7()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn workspaces_document_read_rejects_unknown_document_id() {
+        let allowed = TempDir::new().unwrap();
+        let root = allowed.path().join("knowledge");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Note.md"), "# note\n").unwrap();
+        let (state, _tmp) = test_state(vec![allowed.path().to_path_buf()]).await;
+        let mounted = state
+            .engine
+            .mount_knowledge_workspace(&root, "default", "Docs")
+            .await
+            .unwrap();
+        let err = read_workspace_document(
+            Extension(AuthContext::system_admin()),
+            State(state),
+            AxumPath((mounted.workspace.id, Uuid::now_v7())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn workspaces_root_policy_is_disabled_without_allowlist() {
+        let policy = WorkspaceRootPolicy::default();
+        let err = policy.authorize(FsPath::new("/tmp")).unwrap_err();
+        assert!(err.contains("disabled"));
+    }
 }

@@ -15,6 +15,9 @@ pub use work_order::*;
 pub mod workspace;
 pub use workspace::*;
 
+pub mod collab_space;
+pub use collab_space::*;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

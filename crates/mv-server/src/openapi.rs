@@ -22,7 +22,6 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "workspaces", description = "Allowlisted local Markdown workspace access"),
         (name = "context-nodes", description = "Local Context Node bootstrap and registry"),
         (name = "authority-grants", description = "Authority Grant issuance and lifecycle"),
-        (name = "identities", description = "Governed identity registry"),
         (name = "nodes", description = "Knowledge node CRUD operations"),
         (name = "recall", description = "Semantic recall and search"),
         (name = "graph", description = "Relationship graph operations"),
@@ -293,6 +292,7 @@ use utoipa_swagger_ui::SwaggerUi;
         work_order_run_gates,
         work_order_run_record_gate,
         work_order_run_approve,
+        work_order_run_execute,
         work_order_run_complete,
         work_order_run_fail,
         context_nodes_local_get,
@@ -1310,6 +1310,18 @@ async fn work_order_run_record_gate() {}
 async fn work_order_run_approve() {}
 
 #[utoipa::path(
+    post, path = "/api/v1/work-orders/{id}/runs/{run_id}/execute", tag = "work-orders",
+    params(("id" = String, Path), ("run_id" = String, Path)),
+    responses(
+        (status = 200, description = "Internal Engine executor drove a leased or ready             Low-risk run through artifact production and required gates to Completed.             No external dispatcher or provider is contacted"),
+        (status = 400, description = "Executor kind or risk tier is outside the internal             engine auto-executor scope"),
+        (status = 404, description = "Unknown work order or run"),
+        (status = 409, description = "Work order is terminal, run is not executable, or             a required gate failed")
+    )
+)]
+async fn work_order_run_execute() {}
+
+#[utoipa::path(
     post, path = "/api/v1/work-orders/{id}/runs/{run_id}/complete", tag = "work-orders",
     params(("id" = String, Path), ("run_id" = String, Path)),
     responses(
@@ -1377,17 +1389,6 @@ async fn authority_grants_revoke() {}
     params(("id" = String, Path)),
     responses((status = 200, description = "Resumed"), (status = 400, description = "Invalid transition")))]
 async fn authority_grants_resume() {}
-
-#[utoipa::path(get, path = "/api/v1/identities", tag = "identities",
-    responses((status = 200, description = "Identity list")))]
-async fn identities_list() {}
-#[utoipa::path(post, path = "/api/v1/identities", tag = "identities",
-    responses((status = 201, description = "Identity registered"), (status = 403, description = "Admin required")))]
-async fn identities_register() {}
-#[utoipa::path(get, path = "/api/v1/identities/{principal_id}", tag = "identities",
-    params(("principal_id" = String, Path)),
-    responses((status = 200, description = "Identity"), (status = 404, description = "Not found")))]
-async fn identities_get() {}
 
 // --- Agent ---
 #[utoipa::path(get, path = "/api/v1/agent/context", tag = "agent", responses((status = 200)))]

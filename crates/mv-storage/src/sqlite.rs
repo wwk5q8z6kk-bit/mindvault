@@ -296,6 +296,22 @@ impl SqliteNodeStore {
                 40,
                 include_str!("../../../migrations/040_identity_registry.sql"),
             ),
+            (
+                41,
+                include_str!("../../../migrations/041_retire_plans.sql"),
+            ),
+            (
+                42,
+                include_str!("../../../migrations/042_collab_spaces_and_membership.sql"),
+            ),
+            (
+                43,
+                include_str!("../../../migrations/043_adapter_bindings_and_deliveries.sql"),
+            ),
+            (
+                44,
+                include_str!("../../../migrations/044_projection_checkpoints.sql"),
+            ),
         ];
 
         // Migration 001 must always run first to create schema_version table.
@@ -676,6 +692,8 @@ fn parse_dt_strict(column: usize, s: &str) -> rusqlite::Result<chrono::DateTime<
         .map_err(|err| rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(err)))
 }
 
+
+
 fn parse_optional_dt_strict(
     column: usize,
     s: Option<String>,
@@ -723,25 +741,6 @@ fn event_authority_grant_id(event: &EventEnvelope) -> MvResult<Uuid> {
         .ok_or_else(|| MvError::InvalidInput("event data is missing grant_id".into()))?;
     Uuid::parse_str(value)
         .map_err(|err| MvError::InvalidInput(format!("event grant_id is invalid: {err}")))
-}
-
-fn event_identity_principal_id(event: &EventEnvelope) -> MvResult<Uuid> {
-    let value = event
-        .data
-        .get("principal_id")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| MvError::InvalidInput("event data is missing principal_id".into()))?;
-    Uuid::parse_str(value)
-        .map_err(|err| MvError::InvalidInput(format!("event principal_id is invalid: {err}")))
-}
-
-fn event_identity_revision(event: &EventEnvelope, default: u64) -> MvResult<u64> {
-    match event.data.get("revision") {
-        Some(value) => value.as_u64().ok_or_else(|| {
-            MvError::InvalidInput("event identity revision must be an unsigned integer".into())
-        }),
-        None => Ok(default),
-    }
 }
 
 fn event_authority_grant_revision(event: &EventEnvelope, default: u64) -> MvResult<u64> {
@@ -823,6 +822,68 @@ fn row_to_workspace_document(
         revision: parse_workspace_revision(8, row.get(8)?)?,
         created_at: parse_dt_strict(9, &created_at)?,
         updated_at: parse_dt_strict(10, &updated_at)?,
+    })
+}
+
+
+
+fn row_to_workspace_conflict(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceConflict> {
+    let id: String = row.get(0)?;
+    let workspace_id: String = row.get(1)?;
+    let document_id: Option<String> = row.get(2)?;
+    let source_event_id: Option<String> = row.get(3)?;
+    let conflict_kind: String = row.get(4)?;
+    let state: String = row.get(5)?;
+    let payload_format: String = row.get(7)?;
+    let created_at: String = row.get(8)?;
+    let resolved_at: Option<String> = row.get(9)?;
+
+    Ok(WorkspaceConflict {
+        id: parse_uuid_str(0, &id)?,
+        workspace_id: parse_uuid_str(1, &workspace_id)?,
+        document_id: document_id
+            .map(|value| parse_uuid_str(2, &value))
+            .transpose()?,
+        source_event_id: source_event_id
+            .map(|value| parse_uuid_str(3, &value))
+            .transpose()?,
+        conflict_kind: parse_workspace_enum(4, &conflict_kind)?,
+        state: parse_workspace_enum(5, &state)?,
+        conflict_payload: row.get(6)?,
+        payload_format: parse_workspace_enum(7, &payload_format)?,
+        created_at: parse_dt_strict(8, &created_at)?,
+        resolved_at: parse_optional_dt_strict(9, resolved_at)?,
+    })
+}
+
+fn row_to_workspace_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceEvent> {
+    let id: String = row.get(0)?;
+    let workspace_id: String = row.get(1)?;
+    let document_id: Option<String> = row.get(2)?;
+    let correlation_id: String = row.get(4)?;
+    let actor_kind: String = row.get(5)?;
+    let operation: String = row.get(7)?;
+    let status: String = row.get(8)?;
+    let payload_format: String = row.get(10)?;
+    let prepared_at: String = row.get(11)?;
+    let completed_at: Option<String> = row.get(12)?;
+
+    Ok(WorkspaceEvent {
+        id: parse_uuid_str(0, &id)?,
+        workspace_id: parse_uuid_str(1, &workspace_id)?,
+        document_id: document_id
+            .map(|value| parse_uuid_str(2, &value))
+            .transpose()?,
+        event_seq: parse_workspace_revision(3, row.get(3)?)?,
+        correlation_id: parse_uuid_str(4, &correlation_id)?,
+        actor_kind: parse_workspace_enum(5, &actor_kind)?,
+        actor_id: row.get(6)?,
+        operation: parse_workspace_enum(7, &operation)?,
+        status: parse_workspace_enum(8, &status)?,
+        event_payload: row.get(9)?,
+        payload_format: parse_workspace_enum(10, &payload_format)?,
+        prepared_at: parse_dt_strict(11, &prepared_at)?,
+        completed_at: parse_optional_dt_strict(12, completed_at)?,
     })
 }
 
@@ -1644,176 +1705,6 @@ impl SqliteNodeStore {
         Ok(())
     }
 
-    fn validate_identity_event_record(
-        event: &EventEnvelope,
-        identity: &IdentityRecord,
-        require_revision: bool,
-        require_identity_fields: bool,
-    ) -> MvResult<()> {
-        let principal_id = event_identity_principal_id(event)?;
-        let revision = event_identity_revision(event, identity.revision)?;
-        let record_digest = identity.semantic_digest();
-        if event.subject != identity.principal_uri
-            || principal_id != identity.principal_id
-            || (require_revision && revision != identity.revision)
-            || event
-                .data
-                .get("record_digest")
-                .and_then(|value| value.as_str())
-                != Some(record_digest.as_str())
-            || event.payload_digest != record_digest
-            || (require_identity_fields
-                && (event
-                    .data
-                    .get("actor_kind")
-                    .and_then(|value| value.as_str())
-                    != Some(identity.actor_kind.as_str())
-                    || event.data.get("status").and_then(|value| value.as_str())
-                        != Some(identity.status.as_str())
-                    || event
-                        .data
-                        .get("subject_binding_digest")
-                        .and_then(|value| value.as_str())
-                        != Some(identity.subject_binding_digest.as_str())))
-        {
-            return Err(MvError::InvalidInput(
-                "identity event must match the governed identity revision".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn row_to_identity(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<IdentityRecord> {
-        let principal_id: String = row.get(0)?;
-        let revision: u64 = row.get(1)?;
-        let principal_uri: String = row.get(2)?;
-        let governing_node_uri: String = row.get(3)?;
-        let subject_binding: String = row.get(4)?;
-        let subject_binding_digest: String = row.get(5)?;
-        let actor_kind: String = row.get(6)?;
-        let status: String = row.get(7)?;
-        let record_digest: String = row.get(8)?;
-        let payload: Vec<u8> = row.get(9)?;
-        let payload_format: String = row.get(10)?;
-        let wrapped_dek: Option<String> = row.get(11)?;
-
-        let identity: IdentityRecord = self
-            .decode_governance_record(
-                &payload,
-                &payload_format,
-                wrapped_dek.as_deref(),
-                "identity record",
-            )
-            .map_err(|err| Self::as_sql_conversion_error(9, err.to_string()))?;
-        identity
-            .validate()
-            .map_err(|err| Self::as_sql_conversion_error(9, err))?;
-
-        let stored_actor_kind: ActorKind = actor_kind
-            .parse()
-            .map_err(|err: String| Self::as_sql_conversion_error(6, err))?;
-        let stored_status: IdentityStatus = status
-            .parse()
-            .map_err(|err: String| Self::as_sql_conversion_error(7, err))?;
-        let stored_principal_id = parse_uuid_str(0, &principal_id)?;
-        let stored_principal_uri =
-            StableUri::parse(principal_uri).map_err(|err| Self::as_sql_conversion_error(2, err))?;
-        let stored_governing_node_uri = StableUri::parse(governing_node_uri)
-            .map_err(|err| Self::as_sql_conversion_error(3, err))?;
-
-        if identity.principal_id != stored_principal_id
-            || identity.revision != revision
-            || identity.principal_uri != stored_principal_uri
-            || identity.governing_node_uri != stored_governing_node_uri
-            || identity.subject_binding != subject_binding
-            || identity.subject_binding_digest != subject_binding_digest
-            || identity.actor_kind != stored_actor_kind
-            || identity.status != stored_status
-            || identity.semantic_digest() != record_digest
-        {
-            return Err(Self::as_sql_conversion_error(
-                9,
-                "identity indexed fields do not match its payload",
-            ));
-        }
-
-        Ok(identity)
-    }
-
-    fn load_identity_from_connection(
-        &self,
-        connection: &Connection,
-        principal_id: Uuid,
-    ) -> MvResult<Option<IdentityRecord>> {
-        connection
-            .query_row(
-                "SELECT principal_id, revision, principal_uri, governing_node_uri, subject_binding,
-                        subject_binding_digest, actor_kind, status, record_digest, record_payload,
-                        payload_format, payload_wrapped_dek, created_at, updated_at
-                 FROM interoperability_identity_records
-                 WHERE principal_id = ?1",
-                params![principal_id.to_string()],
-                |row| self.row_to_identity(row),
-            )
-            .optional()
-            .map_err(|err| MvError::Storage(format!("load identity record: {err}")))
-    }
-
-    fn load_identity_by_subject_from_connection(
-        &self,
-        connection: &Connection,
-        governing_node_uri: &StableUri,
-        subject_binding: &str,
-    ) -> MvResult<Option<IdentityRecord>> {
-        let digest = IdentityRecord::subject_binding_digest(subject_binding);
-        connection
-            .query_row(
-                "SELECT principal_id, revision, principal_uri, governing_node_uri, subject_binding,
-                        subject_binding_digest, actor_kind, status, record_digest, record_payload,
-                        payload_format, payload_wrapped_dek, created_at, updated_at
-                 FROM interoperability_identity_records
-                 WHERE governing_node_uri = ?1 AND subject_binding_digest = ?2",
-                params![governing_node_uri.as_str(), digest],
-                |row| self.row_to_identity(row),
-            )
-            .optional()
-            .map_err(|err| MvError::Storage(format!("load identity by subject binding: {err}")))
-    }
-
-    fn insert_identity(
-        &self,
-        transaction: &rusqlite::Transaction<'_>,
-        identity: &IdentityRecord,
-    ) -> MvResult<()> {
-        let (payload, payload_format, wrapped_dek) =
-            self.encode_governance_record(identity, "identity record")?;
-        transaction
-            .execute(
-                "INSERT INTO interoperability_identity_records
-                 (principal_id, revision, principal_uri, governing_node_uri, subject_binding,
-                  subject_binding_digest, actor_kind, status, record_digest, record_payload,
-                  payload_format, payload_wrapped_dek, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-                params![
-                    identity.principal_id.to_string(),
-                    identity.revision,
-                    identity.principal_uri.as_str(),
-                    identity.governing_node_uri.as_str(),
-                    identity.subject_binding,
-                    identity.subject_binding_digest,
-                    identity.actor_kind.as_str(),
-                    identity.status.as_str(),
-                    identity.semantic_digest(),
-                    payload,
-                    payload_format,
-                    wrapped_dek,
-                    identity.created_at.to_rfc3339(),
-                    identity.updated_at.to_rfc3339(),
-                ],
-            )
-            .map_err(|err| MvError::Storage(format!("insert identity record: {err}")))?;
-        Ok(())
-    }
     fn insert_context_node(
         &self,
         transaction: &rusqlite::Transaction<'_>,
@@ -2158,6 +2049,71 @@ impl SqliteNodeStore {
             )
             .map_err(|err| MvError::Storage(format!("insert admission decision: {err}")))?;
         Ok(())
+    }
+
+    
+    fn row_to_identity_record(row: &rusqlite::Row<'_>) -> MvResult<IdentityRecord> {
+        let principal_id = Uuid::parse_str(&row.get::<_, String>(0).map_err(|e| MvError::Storage(e.to_string()))?)
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let revision = row.get::<_, i64>(1).map_err(|e| MvError::Storage(e.to_string()))? as u64;
+        let principal_uri = StableUri::parse(row.get::<_, String>(2).map_err(|e| MvError::Storage(e.to_string()))?)
+            .map_err(MvError::InvalidInput)?;
+        let governing_node_uri = StableUri::parse(row.get::<_, String>(3).map_err(|e| MvError::Storage(e.to_string()))?)
+            .map_err(MvError::InvalidInput)?;
+        let actor_kind = row
+            .get::<_, String>(4)
+            .map_err(|e| MvError::Storage(e.to_string()))?
+            .parse::<ActorKind>()
+            .map_err(MvError::InvalidInput)?;
+        let status = row
+            .get::<_, String>(5)
+            .map_err(|e| MvError::Storage(e.to_string()))?
+            .parse::<IdentityStatus>()
+            .map_err(MvError::InvalidInput)?;
+        let display_name: Option<String> = row.get(6).map_err(|e| MvError::Storage(e.to_string()))?;
+        let external_subject: Option<String> = row.get(7).map_err(|e| MvError::Storage(e.to_string()))?;
+        let created_at = chrono::DateTime::parse_from_rfc3339(
+            &row.get::<_, String>(8).map_err(|e| MvError::Storage(e.to_string()))?,
+        )
+        .map_err(|e| MvError::Storage(e.to_string()))?
+        .with_timezone(&chrono::Utc);
+        let updated_at = chrono::DateTime::parse_from_rfc3339(
+            &row.get::<_, String>(9).map_err(|e| MvError::Storage(e.to_string()))?,
+        )
+        .map_err(|e| MvError::Storage(e.to_string()))?
+        .with_timezone(&chrono::Utc);
+        Ok(IdentityRecord {
+            principal_id,
+            revision,
+            principal_uri,
+            governing_node_uri,
+            actor_kind,
+            status,
+            display_name,
+            external_subject,
+            created_at,
+            updated_at,
+        })
+    }
+
+    fn load_identity_by_principal_id(
+        connection: &rusqlite::Connection,
+        principal_id: Uuid,
+    ) -> MvResult<Option<IdentityRecord>> {
+        let mut stmt = connection
+            .prepare(
+                "SELECT principal_id, revision, principal_uri, governing_node_uri, actor_kind,
+                        status, display_name, external_subject, created_at, updated_at
+                 FROM interoperability_identities WHERE principal_id = ?1",
+            )
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let mut rows = stmt
+            .query(params![principal_id.to_string()])
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+            Some(row) => Ok(Some(Self::row_to_identity_record(row)?)),
+            None => Ok(None),
+        }
     }
 
     fn load_command_admission_decision(
@@ -3012,170 +2968,6 @@ impl InteroperabilityStore for SqliteNodeStore {
         })
     }
 
-    async fn commit_identity_with_event(
-        &self,
-        identity: &IdentityRecord,
-        event: &EventEnvelope,
-    ) -> MvResult<IdempotentIdentityCommit> {
-        identity.validate().map_err(MvError::InvalidInput)?;
-        if identity.revision != 1 {
-            return Err(MvError::InvalidInput(
-                "new identity records must start at revision one".into(),
-            ));
-        }
-        Self::validate_identity_event_record(event, identity, false, true)?;
-        if event
-            .data
-            .get("actor_kind")
-            .and_then(|value| value.as_str())
-            != Some(identity.actor_kind.as_str())
-            || event.data.get("status").and_then(|value| value.as_str())
-                != Some(identity.status.as_str())
-            || event
-                .data
-                .get("subject_binding_digest")
-                .and_then(|value| value.as_str())
-                != Some(identity.subject_binding_digest.as_str())
-        {
-            return Err(MvError::InvalidInput(
-                "identity registration event must identify actor kind, status, and subject binding digest".into(),
-            ));
-        }
-
-        let mut connection = self
-            .conn()
-            .lock()
-            .map_err(|err| MvError::Storage(err.to_string()))?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|err| MvError::Storage(format!("begin identity registration: {err}")))?;
-        let local_node_id = Self::ensure_local_context_node(&transaction)?;
-        Self::validate_governance_event(
-            &transaction,
-            event,
-            local_node_id,
-            IDENTITY_REGISTERED_V1,
-            "identity-registered",
-        )?;
-
-        if let Some(existing_event) =
-            Self::resolve_governance_replay(&transaction, event, IDENTITY_REGISTERED_V1)?
-        {
-            let existing_principal_id = event_identity_principal_id(&existing_event)?;
-            let existing_identity = self
-                .load_identity_from_connection(&transaction, existing_principal_id)?
-                .ok_or_else(|| {
-                    MvError::Storage(
-                        "identity replay references a missing identity revision".into(),
-                    )
-                })?;
-            transaction
-                .commit()
-                .map_err(|err| MvError::Storage(format!("finish identity replay: {err}")))?;
-            return Ok(IdempotentIdentityCommit {
-                identity: existing_identity,
-                event: existing_event,
-                replayed: true,
-            });
-        }
-
-        if let Some(existing) = self.load_identity_by_subject_from_connection(
-            &transaction,
-            &identity.governing_node_uri,
-            &identity.subject_binding,
-        )? {
-            transaction.commit().map_err(|err| {
-                MvError::Storage(format!("finish existing identity lookup: {err}"))
-            })?;
-            return Ok(IdempotentIdentityCommit {
-                identity: existing,
-                event: event.clone(),
-                replayed: true,
-            });
-        }
-
-        self.insert_identity(&transaction, identity)?;
-        Self::insert_outbox_event(&transaction, event)?;
-        transaction
-            .commit()
-            .map_err(|err| MvError::Storage(format!("commit identity registration: {err}")))?;
-        Ok(IdempotentIdentityCommit {
-            identity: identity.clone(),
-            event: event.clone(),
-            replayed: false,
-        })
-    }
-
-    async fn get_identity(&self, principal_id: Uuid) -> MvResult<Option<IdentityRecord>> {
-        self.with_conn(|connection| self.load_identity_from_connection(connection, principal_id))
-    }
-
-    async fn get_identity_by_subject_binding(
-        &self,
-        governing_node_uri: &StableUri,
-        subject_binding: &str,
-    ) -> MvResult<Option<IdentityRecord>> {
-        self.with_conn(|connection| {
-            self.load_identity_by_subject_from_connection(
-                connection,
-                governing_node_uri,
-                subject_binding,
-            )
-        })
-    }
-
-    async fn list_identities(
-        &self,
-        governing_node_uri: Option<&StableUri>,
-    ) -> MvResult<Vec<IdentityRecord>> {
-        self.with_conn(|connection| {
-            let sql = if governing_node_uri.is_some() {
-                "SELECT principal_id, revision, principal_uri, governing_node_uri, subject_binding,
-                        subject_binding_digest, actor_kind, status, record_digest, record_payload,
-                        payload_format, payload_wrapped_dek, created_at, updated_at
-                 FROM interoperability_identity_records
-                 WHERE governing_node_uri = ?1
-                 ORDER BY subject_binding ASC, principal_id ASC"
-            } else {
-                "SELECT principal_id, revision, principal_uri, governing_node_uri, subject_binding,
-                        subject_binding_digest, actor_kind, status, record_digest, record_payload,
-                        payload_format, payload_wrapped_dek, created_at, updated_at
-                 FROM interoperability_identity_records
-                 ORDER BY governing_node_uri ASC, subject_binding ASC, principal_id ASC"
-            };
-            let mut statement = connection
-                .prepare(sql)
-                .map_err(|err| MvError::Storage(format!("prepare identity query: {err}")))?;
-            let mut identities = Vec::new();
-            if let Some(governing_node_uri) = governing_node_uri {
-                let rows = statement
-                    .query_map(params![governing_node_uri.as_str()], |row| {
-                        self.row_to_identity(row)
-                    })
-                    .map_err(|err| MvError::Storage(format!("query identities: {err}")))?;
-                for row in rows {
-                    identities.push(
-                        row.map_err(|err| {
-                            MvError::Storage(format!("read identity record: {err}"))
-                        })?,
-                    );
-                }
-            } else {
-                let rows = statement
-                    .query_map([], |row| self.row_to_identity(row))
-                    .map_err(|err| MvError::Storage(format!("query identities: {err}")))?;
-                for row in rows {
-                    identities.push(
-                        row.map_err(|err| {
-                            MvError::Storage(format!("read identity record: {err}"))
-                        })?,
-                    );
-                }
-            }
-            Ok(identities)
-        })
-    }
-
     async fn get_context_node(&self, node_id: Uuid) -> MvResult<Option<ContextNodeRecord>> {
         self.with_conn(|connection| self.load_context_node_from_connection(connection, node_id))
     }
@@ -3828,6 +3620,171 @@ impl InteroperabilityStore for SqliteNodeStore {
         })
     }
 
+    async fn upsert_identity_record(&self, record: &IdentityRecord) -> MvResult<IdentityRecord> {
+        record.validate().map_err(MvError::InvalidInput)?;
+        let connection = self
+            .conn()
+            .lock()
+            .map_err(|err| MvError::Storage(err.to_string()))?;
+        let existing = Self::load_identity_by_principal_id(&connection, record.principal_id)?;
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "display_name": record.display_name,
+            "external_subject": record.external_subject,
+            "actor_kind": record.actor_kind.as_str(),
+            "status": record.status.as_str(),
+        }))
+        .map_err(|err| MvError::Storage(format!("serialize identity payload: {err}")))?;
+
+        if let Some(existing) = existing {
+            if record.revision != existing.revision + 1 {
+                return Err(MvError::Conflict(format!(
+                    "identity revision must be {}, got {}",
+                    existing.revision + 1,
+                    record.revision
+                )));
+            }
+            let updated_at = chrono::Utc::now().to_rfc3339();
+            connection
+                .execute(
+                    "UPDATE interoperability_identities SET
+                        revision = ?1,
+                        status = ?2,
+                        display_name = ?3,
+                        external_subject = ?4,
+                        record_payload = ?5,
+                        payload_format = 'json-v1',
+                        payload_wrapped_dek = NULL,
+                        updated_at = ?6
+                     WHERE principal_id = ?7",
+                    params![
+                        record.revision as i64,
+                        record.status.as_str(),
+                        record.display_name,
+                        record.external_subject,
+                        payload,
+                        updated_at,
+                        record.principal_id.to_string(),
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("update identity: {err}")))?;
+        } else {
+            if record.revision != 1 {
+                return Err(MvError::InvalidInput(
+                    "new identity records must start at revision 1".into(),
+                ));
+            }
+            connection
+                .execute(
+                    "INSERT INTO interoperability_identities (
+                        principal_id, revision, principal_uri, governing_node_uri, actor_kind,
+                        status, display_name, external_subject, record_payload, payload_format,
+                        payload_wrapped_dek, created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'json-v1', NULL, ?10, ?11)",
+                    params![
+                        record.principal_id.to_string(),
+                        record.revision as i64,
+                        record.principal_uri.as_str(),
+                        record.governing_node_uri.as_str(),
+                        record.actor_kind.as_str(),
+                        record.status.as_str(),
+                        record.display_name,
+                        record.external_subject,
+                        payload,
+                        record.created_at.to_rfc3339(),
+                        record.updated_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(|err| MvError::Storage(format!("insert identity: {err}")))?;
+        }
+
+        Self::load_identity_by_principal_id(&connection, record.principal_id)?
+            .ok_or_else(|| MvError::Storage("identity missing after upsert".into()))
+    }
+
+    async fn get_identity_record(&self, principal_id: Uuid) -> MvResult<Option<IdentityRecord>> {
+        self.with_conn(|connection| Self::load_identity_by_principal_id(connection, principal_id))
+    }
+
+    async fn get_identity_by_principal_uri(
+        &self,
+        principal_uri: &StableUri,
+    ) -> MvResult<Option<IdentityRecord>> {
+        self.with_conn(|connection| {
+            let mut stmt = connection
+                .prepare(
+                    "SELECT principal_id, revision, principal_uri, governing_node_uri, actor_kind,
+                            status, display_name, external_subject, created_at, updated_at
+                     FROM interoperability_identities WHERE principal_uri = ?1",
+                )
+                .map_err(|err| MvError::Storage(err.to_string()))?;
+            let mut rows = stmt
+                .query(params![principal_uri.as_str()])
+                .map_err(|err| MvError::Storage(err.to_string()))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(Self::row_to_identity_record(row)?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    async fn resolve_identity_by_subject(
+        &self,
+        governing_node_uri: &StableUri,
+        external_subject: &str,
+    ) -> MvResult<Option<IdentityRecord>> {
+        self.with_conn(|connection| {
+            let mut stmt = connection
+                .prepare(
+                    "SELECT principal_id, revision, principal_uri, governing_node_uri, actor_kind,
+                            status, display_name, external_subject, created_at, updated_at
+                     FROM interoperability_identities
+                     WHERE governing_node_uri = ?1 AND external_subject = ?2",
+                )
+                .map_err(|err| MvError::Storage(err.to_string()))?;
+            let mut rows = stmt
+                .query(params![governing_node_uri.as_str(), external_subject])
+                .map_err(|err| MvError::Storage(err.to_string()))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(Self::row_to_identity_record(row)?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    async fn list_identity_records(
+        &self,
+        status: Option<IdentityStatus>,
+    ) -> MvResult<Vec<IdentityRecord>> {
+        self.with_conn(|connection| {
+            let sql = if status.is_some() {
+                "SELECT principal_id, revision, principal_uri, governing_node_uri, actor_kind,
+                        status, display_name, external_subject, created_at, updated_at
+                 FROM interoperability_identities WHERE status = ?1
+                 ORDER BY updated_at ASC"
+            } else {
+                "SELECT principal_id, revision, principal_uri, governing_node_uri, actor_kind,
+                        status, display_name, external_subject, created_at, updated_at
+                 FROM interoperability_identities ORDER BY updated_at ASC"
+            };
+            let mut stmt = connection
+                .prepare(sql)
+                .map_err(|err| MvError::Storage(err.to_string()))?;
+            let mut rows = match status {
+                Some(status) => stmt
+                    .query(params![status.as_str()])
+                    .map_err(|err| MvError::Storage(err.to_string()))?,
+                None => stmt
+                    .query([])
+                    .map_err(|err| MvError::Storage(err.to_string()))?,
+            };
+            let mut records = Vec::new();
+            while let Some(row) = rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                records.push(Self::row_to_identity_record(row)?);
+            }
+            Ok(records)
+        })
+    }
+
     async fn commit_public_schema_with_event(
         &self,
         schema: &PublicSchemaRecord,
@@ -4447,6 +4404,121 @@ impl InteroperabilityStore for SqliteNodeStore {
                 events.push(Self::decode_outbox_event(&json)?);
             }
             Ok(events)
+        })
+    }
+
+    async fn list_outbox_events_needing_projection(
+        &self,
+        event_type: &str,
+        limit: usize,
+    ) -> MvResult<Vec<EventEnvelope>> {
+        if !(1..=1000).contains(&limit) {
+            return Err(MvError::InvalidInput(
+                "projection recovery limit must be between 1 and 1000".into(),
+            ));
+        }
+        if event_type.trim().is_empty() {
+            return Err(MvError::InvalidInput(
+                "projection recovery event_type must not be empty".into(),
+            ));
+        }
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT o.envelope_json
+                     FROM interoperability_outbox o
+                     WHERE o.event_type = ?1
+                       AND NOT EXISTS (
+                           SELECT 1
+                           FROM interoperability_projection_checkpoints c
+                           WHERE c.event_id = o.event_id
+                             AND c.status = 'ready'
+                       )
+                     ORDER BY o.created_at ASC, o.event_id ASC
+                     LIMIT ?2",
+                )
+                .map_err(|e| {
+                    MvError::Storage(format!("prepare projection recovery query: {e}"))
+                })?;
+            let rows = stmt
+                .query_map(params![event_type, limit as i64], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|e| {
+                    MvError::Storage(format!("query outbox events needing projection: {e}"))
+                })?;
+            let mut events = Vec::new();
+            for row in rows {
+                let json = row.map_err(|e| {
+                    MvError::Storage(format!("read outbox event needing projection: {e}"))
+                })?;
+                events.push(Self::decode_outbox_event(&json)?);
+            }
+            Ok(events)
+        })
+    }
+
+    async fn get_projection_checkpoint(
+        &self,
+        event_id: Uuid,
+    ) -> MvResult<Option<ProjectionCheckpoint>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT event_id, node_id, status, projected_at, error_summary, updated_at
+                 FROM interoperability_projection_checkpoints
+                 WHERE event_id = ?1",
+                params![event_id.to_string()],
+                |row| {
+                    let event_id_raw: String = row.get(0)?;
+                    let node_id_raw: String = row.get(1)?;
+                    let status_raw: String = row.get(2)?;
+                    let projected_at: Option<String> = row.get(3)?;
+                    let updated_at: String = row.get(5)?;
+                    Ok(ProjectionCheckpoint {
+                        event_id: parse_uuid_str(0, &event_id_raw)?,
+                        node_id: parse_uuid_str(1, &node_id_raw)?,
+                        status: status_raw
+                            .parse()
+                            .map_err(|err: String| Self::as_sql_conversion_error(2, err))?,
+                        projected_at: parse_optional_dt_strict(3, projected_at)?,
+                        error_summary: row.get(4)?,
+                        updated_at: parse_dt_strict(5, &updated_at)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("load projection checkpoint: {err}")))
+        })
+    }
+
+    async fn upsert_projection_checkpoint(
+        &self,
+        checkpoint: &ProjectionCheckpoint,
+    ) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO interoperability_projection_checkpoints (
+                    event_id, node_id, status, projected_at, error_summary, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(event_id) DO UPDATE SET
+                    node_id = excluded.node_id,
+                    status = excluded.status,
+                    projected_at = excluded.projected_at,
+                    error_summary = excluded.error_summary,
+                    updated_at = excluded.updated_at",
+                params![
+                    checkpoint.event_id.to_string(),
+                    checkpoint.node_id.to_string(),
+                    checkpoint.status.as_str(),
+                    checkpoint
+                        .projected_at
+                        .map(|ts| ts.to_rfc3339()),
+                    checkpoint.error_summary,
+                    checkpoint.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("upsert projection checkpoint: {err}")))?;
+            Ok(())
         })
     }
 
@@ -5453,6 +5525,52 @@ impl InteroperabilityStore for SqliteNodeStore {
             rows.collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|err| MvError::Storage(format!("read consumer receipt: {err}")))
         })
+    }
+
+    async fn redrive_consumer_dead_letter(
+        &self,
+        consumer: &StableUri,
+        dead_letter_event_id: Uuid,
+        event: &EventEnvelope,
+        received_at: chrono::DateTime<Utc>,
+    ) -> MvResult<ConsumerInboxAdmission> {
+        event.validate().map_err(MvError::InvalidInput)?;
+        if event.id == dead_letter_event_id {
+            return Err(MvError::InvalidInput(
+                "dead-letter redrive must mint a new event ID".into(),
+            ));
+        }
+        if event.causation_id != Some(dead_letter_event_id) {
+            return Err(MvError::InvalidInput(
+                "dead-letter redrive event must set causation_id to the dead-letter event ID"
+                    .into(),
+            ));
+        }
+
+        let status = self
+            .get_consumer_inbox_status(consumer, dead_letter_event_id)
+            .await?
+            .ok_or_else(|| {
+                MvError::InvalidInput(
+                    "dead-letter redrive requires an admitted consumer inbox event".into(),
+                )
+            })?;
+        if status.state != ConsumerInboxState::DeadLetter {
+            return Err(MvError::InvalidInput(format!(
+                "dead-letter redrive requires state dead_letter, found {}",
+                status.state.as_str()
+            )));
+        }
+        if status.source != event.source {
+            return Err(MvError::InvalidInput(
+                "dead-letter redrive must keep the original source stream".into(),
+            ));
+        }
+
+        // Admit a new pending row. Do not touch the original inbox row,
+        // receipts, or checkpoint — those stay terminal and immutable.
+        self.admit_consumer_event(consumer, event, received_at)
+            .await
     }
 
     // -----------------------------------------------------------------------
@@ -9658,6 +9776,52 @@ impl RelayStore for SqliteNodeStore {
         Ok(result)
     }
 
+    async fn bind_relay_message_vault_node(
+        &self,
+        message_id: Uuid,
+        vault_node_id: Option<Uuid>,
+    ) -> MvResult<bool> {
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let affected = conn
+            .execute(
+                "UPDATE relay_messages SET vault_node_id = ?1, updated_at = ?2 WHERE id = ?3",
+                params![
+                    vault_node_id.map(|id| id.to_string()),
+                    chrono::Utc::now().to_rfc3339(),
+                    message_id.to_string(),
+                ],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    async fn update_relay_message_metadata(
+        &self,
+        message_id: Uuid,
+        metadata: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> MvResult<bool> {
+        let conn = self
+            .conn()
+            .lock()
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        let metadata_json =
+            serde_json::to_string(metadata).map_err(|e| MvError::Storage(e.to_string()))?;
+        let affected = conn
+            .execute(
+                "UPDATE relay_messages SET metadata = ?1, updated_at = ?2 WHERE id = ?3",
+                params![
+                    metadata_json,
+                    chrono::Utc::now().to_rfc3339(),
+                    message_id.to_string(),
+                ],
+            )
+            .map_err(|e| MvError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
     async fn count_unread_messages(&self, channel_id: Option<Uuid>) -> MvResult<usize> {
         let conn = self
             .conn()
@@ -11027,6 +11191,140 @@ fn row_to_trust_model(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrustModel> {
     })
 }
 
+
+// ---------------------------------------------------------------------------
+// AdapterBindingStore (SPACE-003)
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl AdapterBindingStore for SqliteNodeStore {
+    async fn upsert_adapter_binding(&self, binding: &AdapterBindingRecord) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO adapter_bindings (
+                    id, adapter_type, name, enabled, settings_json, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                    adapter_type = excluded.adapter_type,
+                    name = excluded.name,
+                    enabled = excluded.enabled,
+                    settings_json = excluded.settings_json,
+                    updated_at = excluded.updated_at",
+                params![
+                    binding.id.to_string(),
+                    binding.adapter_type,
+                    binding.name,
+                    if binding.enabled { 1 } else { 0 },
+                    binding.settings_json,
+                    binding.created_at,
+                    binding.updated_at,
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("upsert adapter binding failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_adapter_binding(&self, id: Uuid) -> MvResult<Option<AdapterBindingRecord>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, adapter_type, name, enabled, settings_json, created_at, updated_at
+                     FROM adapter_bindings WHERE id = ?1",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare adapter binding get: {err}")))?;
+            let mut rows = statement
+                .query(params![id.to_string()])
+                .map_err(|err| MvError::Storage(format!("query adapter binding: {err}")))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(
+                    row_to_adapter_binding(row)
+                        .map_err(|err| MvError::Storage(err.to_string()))?,
+                )),
+                None => Ok(None),
+            }
+        })
+    }
+
+    async fn list_adapter_bindings(&self) -> MvResult<Vec<AdapterBindingRecord>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, adapter_type, name, enabled, settings_json, created_at, updated_at
+                     FROM adapter_bindings
+                     ORDER BY created_at ASC, id ASC",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare adapter binding list: {err}")))?;
+            let rows = statement
+                .query_map([], row_to_adapter_binding)
+                .map_err(|err| MvError::Storage(format!("list adapter bindings: {err}")))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|err| MvError::Storage(format!("collect adapter bindings: {err}")))
+        })
+    }
+
+    async fn delete_adapter_binding(&self, id: Uuid) -> MvResult<bool> {
+        self.with_conn(|conn| {
+            let changed = conn
+                .execute(
+                    "DELETE FROM adapter_bindings WHERE id = ?1",
+                    params![id.to_string()],
+                )
+                .map_err(|err| MvError::Storage(format!("delete adapter binding: {err}")))?;
+            Ok(changed > 0)
+        })
+    }
+
+    async fn record_adapter_provider_delivery(
+        &self,
+        adapter_id: Uuid,
+        provider_delivery_id: &str,
+    ) -> MvResult<()> {
+        let delivery_id = provider_delivery_id.trim();
+        if delivery_id.is_empty() {
+            return Err(MvError::InvalidInput(
+                "provider delivery ID must not be empty".into(),
+            ));
+        }
+        let now = Utc::now().to_rfc3339();
+        self.with_conn(|conn| {
+            let result = conn.execute(
+                "INSERT INTO adapter_provider_deliveries (
+                    adapter_id, provider_delivery_id, received_at
+                 ) VALUES (?1, ?2, ?3)",
+                params![adapter_id.to_string(), delivery_id, now],
+            );
+            match result {
+                Ok(_) => Ok(()),
+                Err(rusqlite::Error::SqliteFailure(info, _))
+                    if info.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    Err(MvError::IdempotencyConflict(format!(
+                        "duplicate provider delivery ID for adapter {adapter_id}: {delivery_id}"
+                    )))
+                }
+                Err(err) => Err(MvError::Storage(format!(
+                    "record adapter provider delivery failed: {err}"
+                ))),
+            }
+        })
+    }
+}
+
+fn row_to_adapter_binding(row: &rusqlite::Row<'_>) -> rusqlite::Result<AdapterBindingRecord> {
+    let id: String = row.get(0)?;
+    let enabled: i64 = row.get(3)?;
+    Ok(AdapterBindingRecord {
+        id: parse_uuid_str(0, &id)?,
+        adapter_type: row.get(1)?,
+        name: row.get(2)?,
+        enabled: enabled != 0,
+        settings_json: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // AdapterPollStore
 // ---------------------------------------------------------------------------
@@ -11357,6 +11655,18 @@ fn validate_workspace_document_record(
     )?;
     checked_workspace_revision(document.revision)
 }
+
+
+const WORKSPACE_EVENT_SELECT: &str = "SELECT
+    id, workspace_id, document_id, event_seq, correlation_id,
+    actor_kind, actor_id, operation, status, event_payload,
+    payload_format, prepared_at, completed_at
+ FROM workspace_events";
+
+const WORKSPACE_CONFLICT_SELECT: &str = "SELECT
+    id, workspace_id, document_id, source_event_id, conflict_kind, state,
+    conflict_payload, payload_format, created_at, resolved_at
+ FROM workspace_conflicts";
 
 #[async_trait]
 impl KnowledgeWorkspaceManifestStore for SqliteNodeStore {
@@ -11734,7 +12044,480 @@ impl KnowledgeWorkspaceManifestStore for SqliteNodeStore {
             Ok(true)
         })
     }
+
+    async fn append_workspace_event(&self, event: &WorkspaceEvent) -> MvResult<WorkspaceEvent> {
+        validate_manifest_payload(
+            self.sealed_mode(),
+            &event.event_payload,
+            event.payload_format,
+        )?;
+        if event.correlation_id.is_nil() {
+            return Err(MvError::InvalidInput(
+                "workspace event correlation_id must not be nil".into(),
+            ));
+        }
+        match event.status {
+            WorkspaceEventStatus::Completed
+            | WorkspaceEventStatus::Aborted
+            | WorkspaceEventStatus::Conflict => {
+                if event.completed_at.is_none() {
+                    return Err(MvError::InvalidInput(
+                        "terminal workspace events require completed_at".into(),
+                    ));
+                }
+            }
+            WorkspaceEventStatus::Prepared => {}
+        }
+
+        self.with_conn(|conn| {
+            let next_seq: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(event_seq), 0) + 1
+                     FROM workspace_events
+                     WHERE workspace_id = ?1",
+                    params![event.workspace_id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(|err| {
+                    MvError::Storage(format!("allocate workspace event_seq failed: {err}"))
+                })?;
+            let event_seq = parse_workspace_revision(0, next_seq).map_err(|err| {
+                MvError::Storage(format!("invalid allocated workspace event_seq: {err}"))
+            })?;
+
+            conn.execute(
+                "INSERT INTO workspace_events (
+                    id, workspace_id, document_id, event_seq, correlation_id,
+                    actor_kind, actor_id, operation, status, event_payload,
+                    payload_format, prepared_at, completed_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    event.id.to_string(),
+                    event.workspace_id.to_string(),
+                    event.document_id.map(|value| value.to_string()),
+                    next_seq,
+                    event.correlation_id.to_string(),
+                    event.actor_kind.as_str(),
+                    event.actor_id,
+                    event.operation.as_str(),
+                    event.status.as_str(),
+                    event.event_payload,
+                    event.payload_format.as_str(),
+                    event.prepared_at.to_rfc3339(),
+                    event.completed_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("append workspace event failed: {err}")))?;
+
+            Ok(WorkspaceEvent {
+                event_seq,
+                ..event.clone()
+            })
+        })
+    }
+
+    async fn get_workspace_event(&self, id: Uuid) -> MvResult<Option<WorkspaceEvent>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                &format!("{WORKSPACE_EVENT_SELECT} WHERE id = ?1"),
+                params![id.to_string()],
+                row_to_workspace_event,
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("get workspace event failed: {err}")))
+        })
+    }
+
+    async fn list_workspace_events(
+        &self,
+        workspace_id: Uuid,
+        after_seq: Option<u64>,
+        limit: usize,
+    ) -> MvResult<Vec<WorkspaceEvent>> {
+        let limit = i64::try_from(limit.max(1).min(1000)).unwrap_or(1000);
+        self.with_conn(|conn| {
+            let after = i64::try_from(after_seq.unwrap_or(0)).unwrap_or(0);
+            let mut statement = conn
+                .prepare(&format!(
+                    "{WORKSPACE_EVENT_SELECT}
+                     WHERE workspace_id = ?1 AND event_seq > ?2
+                     ORDER BY event_seq ASC
+                     LIMIT ?3"
+                ))
+                .map_err(|err| {
+                    MvError::Storage(format!("prepare workspace event list failed: {err}"))
+                })?;
+            let rows = statement
+                .query_map(
+                    params![workspace_id.to_string(), after, limit],
+                    row_to_workspace_event,
+                )
+                .map_err(|err| MvError::Storage(format!("list workspace events failed: {err}")))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|err| {
+                MvError::Storage(format!("collect workspace events failed: {err}"))
+            })
+        })
+    }
+
+    async fn list_workspace_events_by_correlation(
+        &self,
+        correlation_id: Uuid,
+    ) -> MvResult<Vec<WorkspaceEvent>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(&format!(
+                    "{WORKSPACE_EVENT_SELECT}
+                     WHERE correlation_id = ?1
+                     ORDER BY event_seq ASC"
+                ))
+                .map_err(|err| {
+                    MvError::Storage(format!(
+                        "prepare workspace events by correlation failed: {err}"
+                    ))
+                })?;
+            let rows = statement
+                .query_map(params![correlation_id.to_string()], row_to_workspace_event)
+                .map_err(|err| {
+                    MvError::Storage(format!(
+                        "list workspace events by correlation failed: {err}"
+                    ))
+                })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|err| {
+                MvError::Storage(format!(
+                    "collect workspace events by correlation failed: {err}"
+                ))
+            })
+        })
+    }
+
+    async fn insert_workspace_conflict(&self, conflict: &WorkspaceConflict) -> MvResult<()> {
+        validate_manifest_payload(
+            self.sealed_mode(),
+            &conflict.conflict_payload,
+            conflict.payload_format,
+        )?;
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO workspace_conflicts (
+                    id, workspace_id, document_id, source_event_id, conflict_kind, state,
+                    conflict_payload, payload_format, created_at, resolved_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    conflict.id.to_string(),
+                    conflict.workspace_id.to_string(),
+                    conflict.document_id.map(|value| value.to_string()),
+                    conflict.source_event_id.map(|value| value.to_string()),
+                    conflict.conflict_kind.as_str(),
+                    conflict.state.as_str(),
+                    conflict.conflict_payload,
+                    conflict.payload_format.as_str(),
+                    conflict.created_at.to_rfc3339(),
+                    conflict.resolved_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert workspace conflict failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_workspace_conflict(&self, id: Uuid) -> MvResult<Option<WorkspaceConflict>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                &format!("{WORKSPACE_CONFLICT_SELECT} WHERE id = ?1"),
+                params![id.to_string()],
+                row_to_workspace_conflict,
+            )
+            .optional()
+            .map_err(|err| MvError::Storage(format!("get workspace conflict failed: {err}")))
+        })
+    }
+
+    async fn list_workspace_conflicts(
+        &self,
+        workspace_id: Uuid,
+        open_only: bool,
+    ) -> MvResult<Vec<WorkspaceConflict>> {
+        self.with_conn(|conn| {
+            let sql = if open_only {
+                format!(
+                    "{WORKSPACE_CONFLICT_SELECT}
+                     WHERE workspace_id = ?1 AND state = 'open'
+                     ORDER BY created_at ASC, id ASC"
+                )
+            } else {
+                format!(
+                    "{WORKSPACE_CONFLICT_SELECT}
+                     WHERE workspace_id = ?1
+                     ORDER BY created_at ASC, id ASC"
+                )
+            };
+            let mut statement = conn.prepare(&sql).map_err(|err| {
+                MvError::Storage(format!("prepare workspace conflict list failed: {err}"))
+            })?;
+            let rows = statement
+                .query_map(params![workspace_id.to_string()], row_to_workspace_conflict)
+                .map_err(|err| {
+                    MvError::Storage(format!("list workspace conflicts failed: {err}"))
+                })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|err| {
+                MvError::Storage(format!("collect workspace conflicts failed: {err}"))
+            })
+        })
+    }
+
 }
+
+
+#[async_trait]
+impl CollabSpaceStore for SqliteNodeStore {
+    async fn insert_collab_workspace(&self, workspace: &CollabWorkspace) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO collab_workspaces (
+                    id, slug, display_name, state, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    workspace.id.to_string(),
+                    workspace.slug,
+                    workspace.display_name,
+                    workspace.state.as_str(),
+                    workspace.created_at.to_rfc3339(),
+                    workspace.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert collab workspace failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_collab_workspace(&self, id: Uuid) -> MvResult<Option<CollabWorkspace>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, slug, display_name, state, created_at, updated_at
+                     FROM collab_workspaces WHERE id = ?1",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare collab workspace get: {err}")))?;
+            let mut rows = statement
+                .query(params![id.to_string()])
+                .map_err(|err| MvError::Storage(format!("query collab workspace: {err}")))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(row_to_collab_workspace(row).map_err(|err| MvError::Storage(err.to_string()))?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    async fn insert_space(&self, space: &Space) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO spaces (
+                    id, collab_workspace_id, slug, display_name, state, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    space.id.to_string(),
+                    space.collab_workspace_id.to_string(),
+                    space.slug,
+                    space.display_name,
+                    space.state.as_str(),
+                    space.created_at.to_rfc3339(),
+                    space.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert space failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_space(&self, id: Uuid) -> MvResult<Option<Space>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, collab_workspace_id, slug, display_name, state, created_at, updated_at
+                     FROM spaces WHERE id = ?1",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare space get: {err}")))?;
+            let mut rows = statement
+                .query(params![id.to_string()])
+                .map_err(|err| MvError::Storage(format!("query space: {err}")))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(row_to_space(row).map_err(|err| MvError::Storage(err.to_string()))?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    async fn upsert_space_membership(&self, membership: &SpaceMembership) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO space_memberships (
+                    id, space_id, principal_id, actor_kind, role, state, granted_at, expires_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(space_id, principal_id) DO UPDATE SET
+                    id = excluded.id,
+                    actor_kind = excluded.actor_kind,
+                    role = excluded.role,
+                    state = excluded.state,
+                    granted_at = excluded.granted_at,
+                    expires_at = excluded.expires_at",
+                params![
+                    membership.id.to_string(),
+                    membership.space_id.to_string(),
+                    membership.principal_id.to_string(),
+                    membership.actor_kind.as_str(),
+                    membership.role.as_str(),
+                    membership.state.as_str(),
+                    membership.granted_at.to_rfc3339(),
+                    membership.expires_at.map(|ts| ts.to_rfc3339()),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("upsert space membership failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_space_membership(
+        &self,
+        space_id: Uuid,
+        principal_id: Uuid,
+    ) -> MvResult<Option<SpaceMembership>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, space_id, principal_id, actor_kind, role, state, granted_at, expires_at
+                     FROM space_memberships
+                     WHERE space_id = ?1 AND principal_id = ?2",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare membership get: {err}")))?;
+            let mut rows = statement
+                .query(params![space_id.to_string(), principal_id.to_string()])
+                .map_err(|err| MvError::Storage(format!("query membership: {err}")))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(row_to_space_membership(row).map_err(|err| MvError::Storage(err.to_string()))?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    async fn insert_space_resource(&self, resource: &SpaceResource) -> MvResult<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO space_resources (
+                    id, space_id, resource_kind, resource_key, owner_principal_id, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    resource.id.to_string(),
+                    resource.space_id.to_string(),
+                    resource.resource_kind.as_str(),
+                    resource.resource_key,
+                    resource.owner_principal_id.map(|id| id.to_string()),
+                    resource.created_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|err| MvError::Storage(format!("insert space resource failed: {err}")))?;
+            Ok(())
+        })
+    }
+
+    async fn get_space_resource(&self, id: Uuid) -> MvResult<Option<SpaceResource>> {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, space_id, resource_kind, resource_key, owner_principal_id, created_at
+                     FROM space_resources WHERE id = ?1",
+                )
+                .map_err(|err| MvError::Storage(format!("prepare space resource get: {err}")))?;
+            let mut rows = statement
+                .query(params![id.to_string()])
+                .map_err(|err| MvError::Storage(format!("query space resource: {err}")))?;
+            match rows.next().map_err(|err| MvError::Storage(err.to_string()))? {
+                Some(row) => Ok(Some(row_to_space_resource(row).map_err(|err| MvError::Storage(err.to_string()))?)),
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+fn parse_collab_enum<T, F>(column: usize, raw: &str, parse: F) -> rusqlite::Result<T>
+where
+    F: FnOnce(&str) -> Result<T, String>,
+{
+    parse(raw).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(column, Type::Text, err.into())
+    })
+}
+
+fn row_to_collab_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<CollabWorkspace> {
+    let id: String = row.get(0)?;
+    let state: String = row.get(3)?;
+    let created_at: String = row.get(4)?;
+    let updated_at: String = row.get(5)?;
+    Ok(CollabWorkspace {
+        id: parse_uuid_str(0, &id)?,
+        slug: row.get(1)?,
+        display_name: row.get(2)?,
+        state: parse_collab_enum(3, &state, CollabWorkspaceState::parse)?,
+        created_at: parse_dt_strict(4, &created_at)?,
+        updated_at: parse_dt_strict(5, &updated_at)?,
+    })
+}
+
+fn row_to_space(row: &rusqlite::Row<'_>) -> rusqlite::Result<Space> {
+    let id: String = row.get(0)?;
+    let collab_workspace_id: String = row.get(1)?;
+    let state: String = row.get(4)?;
+    let created_at: String = row.get(5)?;
+    let updated_at: String = row.get(6)?;
+    Ok(Space {
+        id: parse_uuid_str(0, &id)?,
+        collab_workspace_id: parse_uuid_str(1, &collab_workspace_id)?,
+        slug: row.get(2)?,
+        display_name: row.get(3)?,
+        state: parse_collab_enum(4, &state, SpaceState::parse)?,
+        created_at: parse_dt_strict(5, &created_at)?,
+        updated_at: parse_dt_strict(6, &updated_at)?,
+    })
+}
+
+fn row_to_space_membership(row: &rusqlite::Row<'_>) -> rusqlite::Result<SpaceMembership> {
+    let id: String = row.get(0)?;
+    let space_id: String = row.get(1)?;
+    let principal_id: String = row.get(2)?;
+    let actor_kind: String = row.get(3)?;
+    let role: String = row.get(4)?;
+    let state: String = row.get(5)?;
+    let granted_at: String = row.get(6)?;
+    let expires_at: Option<String> = row.get(7)?;
+    Ok(SpaceMembership {
+        id: parse_uuid_str(0, &id)?,
+        space_id: parse_uuid_str(1, &space_id)?,
+        principal_id: parse_uuid_str(2, &principal_id)?,
+        actor_kind: parse_collab_enum(3, &actor_kind, |s| s.parse::<ActorKind>())?,
+        role: parse_collab_enum(4, &role, SpaceRole::parse)?,
+        state: parse_collab_enum(5, &state, MembershipState::parse)?,
+        granted_at: parse_dt_strict(6, &granted_at)?,
+        expires_at: parse_optional_dt_strict(7, expires_at)?,
+    })
+}
+
+fn row_to_space_resource(row: &rusqlite::Row<'_>) -> rusqlite::Result<SpaceResource> {
+    let id: String = row.get(0)?;
+    let space_id: String = row.get(1)?;
+    let resource_kind: String = row.get(2)?;
+    let owner: Option<String> = row.get(4)?;
+    let created_at: String = row.get(5)?;
+    Ok(SpaceResource {
+        id: parse_uuid_str(0, &id)?,
+        space_id: parse_uuid_str(1, &space_id)?,
+        resource_kind: parse_collab_enum(3, &resource_kind, SpaceResourceKind::parse)?,
+        resource_key: row.get(3)?,
+        owner_principal_id: owner
+            .map(|value| parse_uuid_str(4, &value))
+            .transpose()?,
+        created_at: parse_dt_strict(5, &created_at)?,
+    })
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -12574,10 +13357,265 @@ mod tests {
                         row.get(0)
                     })
                     .map_err(|err| MvError::Storage(err.to_string()))?;
-                assert_eq!(schema_version, 40);
+                assert_eq!(schema_version, 44);
+
+                for collab in [
+                    "collab_workspaces",
+                    "spaces",
+                    "space_memberships",
+                    "space_resources",
+                    "adapter_bindings",
+                    "adapter_provider_deliveries",
+                    "interoperability_projection_checkpoints",
+                ] {
+                    let present: bool = conn
+                        .query_row(
+                            "SELECT EXISTS(
+                                SELECT 1 FROM sqlite_master
+                                WHERE type = 'table' AND name = ?1
+                             )",
+                            params![collab],
+                            |row| row.get(0),
+                        )
+                        .map_err(|err| MvError::Storage(err.to_string()))?;
+                    assert!(present, "expected SPACE/IK table {collab}");
+                }
+
+                for retired in ["plans", "plan_steps"] {
+                    let present: bool = conn
+                        .query_row(
+                            "SELECT EXISTS(
+                                SELECT 1 FROM sqlite_master
+                                WHERE type = 'table' AND name = ?1
+                             )",
+                            params![retired],
+                            |row| row.get(0),
+                        )
+                        .map_err(|err| MvError::Storage(err.to_string()))?;
+                    assert!(
+                        !present,
+                        "superseded table {retired} must be dropped by migration 041"
+                    );
+                }
                 Ok(())
             })
             .unwrap();
+    }
+
+
+    #[tokio::test]
+    async fn space_authorization_matrix_persists_tenancy_and_denies_cross_space() {
+        use chrono::Utc;
+        use mv_core::{
+            authorize_space_operation, ActorKind, CollabSpaceStore, CollabWorkspace, IdentityRecord,
+            Space, SpaceAuthDecision, SpaceMembership, SpaceOperation, SpaceResource,
+            SpaceResourceKind, SpaceRole,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteNodeStore::open(&dir.path().join("space-auth.db")).unwrap();
+        let node_id = Uuid::now_v7();
+
+        let kinds = [
+            ActorKind::Human,
+            ActorKind::Agent,
+            ActorKind::Service,
+            ActorKind::Integration,
+        ];
+        let mut principals = Vec::new();
+        for (i, kind) in kinds.iter().enumerate() {
+            let record = IdentityRecord::new(
+                node_id,
+                format!("actor-{i}"),
+                *kind,
+                format!("{kind:?}"),
+            );
+            store.upsert_identity_record(&record).await.unwrap();
+            principals.push(record.principal_id);
+        }
+
+        let workspace = CollabWorkspace::new("acme", "Acme Org");
+        store.insert_collab_workspace(&workspace).await.unwrap();
+        let space_a = Space::new(workspace.id, "alpha", "Alpha");
+        let space_b = Space::new(workspace.id, "beta", "Beta");
+        store.insert_space(&space_a).await.unwrap();
+        store.insert_space(&space_b).await.unwrap();
+
+        let resource_a = SpaceResource::new(
+            space_a.id,
+            SpaceResourceKind::Document,
+            "doc-a",
+            Some(principals[0]),
+        );
+        let resource_b = SpaceResource::new(
+            space_b.id,
+            SpaceResourceKind::Artifact,
+            "art-b",
+            Some(principals[0]),
+        );
+        store.insert_space_resource(&resource_a).await.unwrap();
+        store.insert_space_resource(&resource_b).await.unwrap();
+
+        let now = Utc::now();
+        let ops = [
+            SpaceOperation::Read,
+            SpaceOperation::Write,
+            SpaceOperation::Subscription,
+            SpaceOperation::Search,
+            SpaceOperation::Artifact,
+        ];
+
+        // No membership → deny for every actor kind × every op on every resource.
+        for principal_id in &principals {
+            let m_a = store
+                .get_space_membership(space_a.id, *principal_id)
+                .await
+                .unwrap();
+            assert!(m_a.is_none());
+            for op in ops {
+                assert_eq!(
+                    authorize_space_operation(None, resource_a.space_id, op, now),
+                    SpaceAuthDecision::Deny("no space membership")
+                );
+                assert_eq!(
+                    authorize_space_operation(None, resource_b.space_id, op, now),
+                    SpaceAuthDecision::Deny("no space membership")
+                );
+            }
+        }
+
+        // Grant membership only in space A; B remains isolated.
+        for (principal_id, kind) in principals.iter().zip(kinds.iter()) {
+            let membership =
+                SpaceMembership::new(space_a.id, *principal_id, *kind, SpaceRole::Member);
+            store.upsert_space_membership(&membership).await.unwrap();
+            let loaded = store
+                .get_space_membership(space_a.id, *principal_id)
+                .await
+                .unwrap()
+                .expect("membership in A");
+            for op in ops {
+                assert_eq!(
+                    authorize_space_operation(Some(&loaded), resource_a.space_id, op, now),
+                    SpaceAuthDecision::Allow
+                );
+                assert_eq!(
+                    authorize_space_operation(Some(&loaded), resource_b.space_id, op, now),
+                    SpaceAuthDecision::Deny("cross-space access denied")
+                );
+            }
+        }
+    }
+
+
+    #[tokio::test]
+    async fn workspace_event_journal_survives_restart_with_correlation_and_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("workspace-events.db");
+        let workspace_id;
+        let correlation_id = Uuid::now_v7();
+        let event_id;
+
+        {
+            let store = SqliteNodeStore::open(&db_path).unwrap();
+            let workspace = KnowledgeWorkspace::new(
+                "personal",
+                KnowledgeWorkspaceMode::Mounted,
+                br#"{"schema":"mindvault.workspace-descriptor/v1","display_name":"Vault","root_path":"/tmp/vault"}"#.to_vec(),
+                WorkspaceManifestPayloadFormat::JsonV1,
+            );
+            workspace_id = workspace.id;
+            store.insert_knowledge_workspace(&workspace).await.unwrap();
+
+            let mut payload = WorkspaceEventPayloadV1::new();
+            payload.phase = Some("mount".into());
+            payload.expected_old_revision = Some(0);
+            payload.intended_new_revision = Some(1);
+            payload.expected_old_content_hash = Some("sha256:before".into());
+            payload.intended_new_content_hash = Some("sha256:after".into());
+            let event = WorkspaceEvent::completed(
+                workspace.id,
+                correlation_id,
+                WorkspaceEventOperation::Mount,
+                WorkspaceEventActorKind::System,
+                payload,
+            )
+            .unwrap();
+            let persisted = store.append_workspace_event(&event).await.unwrap();
+            assert_eq!(persisted.event_seq, 1);
+            event_id = persisted.id;
+
+            let mut scan_payload = WorkspaceEventPayloadV1::new();
+            scan_payload.phase = Some("reconcile".into());
+            scan_payload.expected_old_revision = Some(1);
+            scan_payload.intended_new_revision = Some(2);
+            let scan = WorkspaceEvent::completed(
+                workspace.id,
+                correlation_id,
+                WorkspaceEventOperation::Scan,
+                WorkspaceEventActorKind::System,
+                scan_payload,
+            )
+            .unwrap();
+            let scan = store.append_workspace_event(&scan).await.unwrap();
+            assert_eq!(scan.event_seq, 2);
+
+            let mut projection_payload = WorkspaceEventPayloadV1::new();
+            projection_payload.phase = Some("projection".into());
+            let projection = WorkspaceEvent::completed(
+                workspace.id,
+                correlation_id,
+                WorkspaceEventOperation::Scan,
+                WorkspaceEventActorKind::System,
+                projection_payload,
+            )
+            .unwrap();
+            let projection = store.append_workspace_event(&projection).await.unwrap();
+            assert_eq!(projection.event_seq, 3);
+        }
+
+        let store = SqliteNodeStore::open(&db_path).unwrap();
+        let by_id = store
+            .get_workspace_event(event_id)
+            .await
+            .unwrap()
+            .expect("mount event survives restart");
+        assert_eq!(by_id.correlation_id, correlation_id);
+        assert_eq!(by_id.operation, WorkspaceEventOperation::Mount);
+        let payload: WorkspaceEventPayloadV1 =
+            serde_json::from_slice(&by_id.event_payload).unwrap();
+        assert_eq!(
+            payload.expected_old_content_hash.as_deref(),
+            Some("sha256:before")
+        );
+        assert_eq!(
+            payload.intended_new_content_hash.as_deref(),
+            Some("sha256:after")
+        );
+
+        let listed = store
+            .list_workspace_events(workspace_id, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 3);
+        assert_eq!(
+            listed
+                .iter()
+                .map(|event| event.operation)
+                .collect::<Vec<_>>(),
+            vec![
+                WorkspaceEventOperation::Mount,
+                WorkspaceEventOperation::Scan,
+                WorkspaceEventOperation::Scan
+            ]
+        );
+
+        let correlated = store
+            .list_workspace_events_by_correlation(correlation_id)
+            .await
+            .unwrap();
+        assert_eq!(correlated.len(), 3);
+        assert!(correlated.iter().all(|event| event.correlation_id == correlation_id));
     }
 
     #[tokio::test]
@@ -12815,180 +13853,78 @@ mod tests {
         ));
     }
 
-    fn identity_event(
-        local_node_id: Uuid,
-        identity: &IdentityRecord,
-        key: &str,
-        data: serde_json::Value,
-    ) -> EventEnvelope {
-        let mut event = governance_event(
-            local_node_id,
-            IDENTITY_REGISTERED_V1,
-            "identity-registered",
-            identity.principal_uri.clone(),
-            key,
-            data,
-        );
-        event.principal = identity.principal_uri.clone();
-        event.actor = identity.principal_uri.clone();
-        event.payload_digest = identity.semantic_digest();
-        event
-    }
-
     #[tokio::test]
-    async fn identity_registry_registers_and_reads_actor_kind() {
+    async fn identity_registry_resolves_principal_uris_with_actor_kinds() {
         let store = SqliteNodeStore::open_in_memory().unwrap();
-        let local_node_id = store.local_context_node_id().await.unwrap();
-        let identity =
-            IdentityRecord::bootstrap(local_node_id, "owner", ActorKind::Human, "Owner").unwrap();
-        let data = serde_json::json!({
-            "principal_id": identity.principal_id,
-            "actor_kind": identity.actor_kind.as_str(),
-            "status": identity.status.as_str(),
-            "record_digest": identity.semantic_digest(),
-            "subject_binding_digest": identity.subject_binding_digest,
-        });
-        let event = identity_event(local_node_id, &identity, "identity-register-owner", data);
-        let commit = store
-            .commit_identity_with_event(&identity, &event)
-            .await
-            .unwrap();
-        assert!(!commit.replayed);
-        let loaded = store
-            .get_identity(identity.principal_id)
+        let node_id = store.local_context_node_id().await.unwrap();
+
+        let human = IdentityRecord::new(node_id, "user@example.com", ActorKind::Human, "Ada");
+        let agent = IdentityRecord::new(node_id, "agent:researcher", ActorKind::Agent, "Researcher");
+        let service = IdentityRecord::new(node_id, "local-system", ActorKind::Service, "Local System");
+        let integration =
+            IdentityRecord::new(node_id, "slack:workspace", ActorKind::Integration, "Slack");
+
+        for record in [&human, &agent, &service, &integration] {
+            let stored = store.upsert_identity_record(record).await.unwrap();
+            assert_eq!(stored.revision, 1);
+            assert_eq!(stored.actor_kind, record.actor_kind);
+            assert_eq!(stored.principal_uri, record.principal_uri);
+        }
+
+        let by_uri = store
+            .get_identity_by_principal_uri(&human.principal_uri)
             .await
             .unwrap()
-            .unwrap();
-        assert_eq!(loaded.actor_kind, ActorKind::Human);
-        assert_eq!(loaded.subject_binding, "owner");
-    }
+            .expect("human identity");
+        assert_eq!(by_uri.actor_kind, ActorKind::Human);
+        assert_eq!(by_uri.external_subject.as_deref(), Some("user@example.com"));
 
-    #[tokio::test]
-    async fn identity_registry_subject_binding_lookup_returns_record() {
-        let store = SqliteNodeStore::open_in_memory().unwrap();
-        let local_node_id = store.local_context_node_id().await.unwrap();
-        let node_uri = StableUri::node(local_node_id);
-        let identity = IdentityRecord::bootstrap(
-            local_node_id,
-            "local-system",
-            ActorKind::Human,
-            "Local System",
-        )
-        .unwrap();
-        let data = serde_json::json!({
-            "principal_id": identity.principal_id,
-            "actor_kind": identity.actor_kind.as_str(),
-            "status": identity.status.as_str(),
-            "record_digest": identity.semantic_digest(),
-            "subject_binding_digest": identity.subject_binding_digest,
-        });
-        store
-            .commit_identity_with_event(
-                &identity,
-                &identity_event(
-                    local_node_id,
-                    &identity,
-                    "identity-register-local-system",
-                    data,
-                ),
-            )
-            .await
-            .unwrap();
-        let loaded = store
-            .get_identity_by_subject_binding(&node_uri, "local-system")
+        let resolved = store
+            .resolve_identity_by_subject(&StableUri::node(node_id), "agent:researcher")
             .await
             .unwrap()
-            .unwrap();
-        assert_eq!(loaded.principal_id, identity.principal_id);
-    }
+            .expect("agent by subject");
+        assert_eq!(resolved.actor_kind, ActorKind::Agent);
+        assert_eq!(resolved.principal_uri, agent.principal_uri);
 
-    #[tokio::test]
-    async fn identity_registry_local_system_principal_id_matches_v5_derivation() {
-        let local_node_id = Uuid::now_v7();
-        let identity = IdentityRecord::bootstrap(
-            local_node_id,
-            "local-system",
-            ActorKind::Human,
-            "Local System",
-        )
-        .unwrap();
-        assert_eq!(
-            identity.principal_id,
-            IdentityRecord::principal_id_for_subject(local_node_id, "local-system")
-        );
-        assert_eq!(
-            identity.principal_uri,
-            StableUri::principal(local_node_id, Uuid::new_v5(&local_node_id, b"local-system"),)
-        );
-    }
-
-    #[tokio::test]
-    async fn identity_registry_duplicate_subject_binding_is_idempotent() {
-        let store = SqliteNodeStore::open_in_memory().unwrap();
-        let local_node_id = store.local_context_node_id().await.unwrap();
-        let identity = IdentityRecord::bootstrap(
-            local_node_id,
-            "local-context-owner",
-            ActorKind::Human,
-            "Local Context Owner",
-        )
-        .unwrap();
-        let data = serde_json::json!({
-            "principal_id": identity.principal_id,
-            "actor_kind": identity.actor_kind.as_str(),
-            "status": identity.status.as_str(),
-            "record_digest": identity.semantic_digest(),
-            "subject_binding_digest": identity.subject_binding_digest,
-        });
-        let event = identity_event(
-            local_node_id,
-            &identity,
-            "identity-register-owner-once",
-            data.clone(),
-        );
-        let first = store
-            .commit_identity_with_event(&identity, &event)
-            .await
-            .unwrap();
-        assert!(!first.replayed);
-        let retry = identity_event(
-            local_node_id,
-            &identity,
-            "identity-register-owner-again",
-            data,
-        );
-        let second = store
-            .commit_identity_with_event(&identity, &retry)
-            .await
-            .unwrap();
-        assert!(second.replayed);
-        assert_eq!(second.identity.principal_id, identity.principal_id);
-    }
-
-    #[tokio::test]
-    async fn identity_registry_bootstrap_schema_digest_matches_definition() {
-        let store = SqliteNodeStore::open_in_memory().unwrap();
-        let schema_reference =
-            SchemaReference::new(StableUri::schema("identity-registered").unwrap(), "1.0.0")
-                .unwrap();
-        let schema = store
-            .get_public_schema(&schema_reference)
+        let kinds: Vec<_> = store
+            .list_identity_records(Some(IdentityStatus::Active))
             .await
             .unwrap()
-            .expect("identity registration schema");
+            .into_iter()
+            .map(|r| r.actor_kind)
+            .collect();
+        assert!(kinds.contains(&ActorKind::Human));
+        assert!(kinds.contains(&ActorKind::Agent));
+        assert!(kinds.contains(&ActorKind::Service));
+        assert!(kinds.contains(&ActorKind::Integration));
+    }
 
-        assert_eq!(
-            schema.definition["$schema"],
-            "https://json-schema.org/draft/2020-12/schema"
-        );
-        assert_eq!(
-            schema.content_digest,
-            "95c98ffd9423c88e1483973ba594583760b8d1a119f5b3d26a5c602cf984d7b1"
-        );
-        assert_eq!(
-            schema.content_digest,
-            canonical_json_sha256(&schema.definition)
-        );
+    #[tokio::test]
+    async fn identity_registry_versions_and_archives_prior_revision() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let node_id = store.local_context_node_id().await.unwrap();
+        let mut record = IdentityRecord::new(node_id, "owner", ActorKind::Human, "Owner");
+        store.upsert_identity_record(&record).await.unwrap();
+
+        record.revision = 2;
+        record.display_name = Some("Owner Renamed".into());
+        record.status = IdentityStatus::Suspended;
+        let updated = store.upsert_identity_record(&record).await.unwrap();
+        assert_eq!(updated.revision, 2);
+        assert_eq!(updated.status, IdentityStatus::Suspended);
+
+        let history_count: i64 = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM interoperability_identity_history WHERE principal_id = ?1",
+                    params![record.principal_id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(|e| MvError::Storage(e.to_string()))
+            })
+            .unwrap();
+        assert_eq!(history_count, 1);
     }
 
     #[tokio::test]
@@ -14715,6 +15651,187 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dead_letter_redrive_admits_caused_event_and_preserves_receipt_checkpoint() {
+        let store = SqliteNodeStore::open_in_memory().unwrap();
+        let local_node_id = store.local_context_node_id().await.unwrap();
+        let original = node_created_event(
+            local_node_id,
+            Uuid::now_v7(),
+            "consumer-redrive-original",
+            &"a".repeat(64),
+        );
+        let consumer = StableUri::parse("mindvault://consumers/redrive-index").unwrap();
+        let processor = StableUri::parse("mindvault://processors/redrive-index").unwrap();
+        let received_at = original.occurred_at + chrono::Duration::seconds(1);
+        store
+            .admit_consumer_event(&consumer, &original, received_at)
+            .await
+            .unwrap();
+
+        let claim = store
+            .claim_consumer_events(
+                &consumer,
+                &processor,
+                received_at + chrono::Duration::seconds(1),
+                received_at + chrono::Duration::minutes(1),
+                1,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        let completion = ConsumerApplicationCompletion {
+            inbox_sequence: claim.inbox_sequence,
+            event_id: claim.event.id,
+            lease_id: claim.lease_id,
+            attempt: claim.attempt,
+            completed_at: claim.claimed_at + chrono::Duration::seconds(1),
+            result: ConsumerApplicationResult::DeadLettered {
+                error_code: "unsupported_projection".into(),
+                error_summary: "the consumer cannot project this event".into(),
+            },
+        };
+        let original_receipt = store
+            .complete_consumer_event(&claim, &completion)
+            .await
+            .unwrap();
+        assert_eq!(
+            original_receipt.outcome,
+            ConsumerApplicationOutcome::DeadLettered
+        );
+
+        let receipt_before = store
+            .get_consumer_application_receipt(original_receipt.receipt_id)
+            .await
+            .unwrap()
+            .expect("dead-letter receipt must exist");
+        let checkpoint_before = store
+            .get_consumer_checkpoint(&consumer, &original.source)
+            .await
+            .unwrap()
+            .expect("dead-letter checkpoint must exist");
+        let receipt_bytes_before = serde_json::to_vec(&receipt_before).unwrap();
+        let checkpoint_bytes_before = serde_json::to_vec(&checkpoint_before).unwrap();
+
+        let redrive = EventEnvelope::new(NewEventEnvelope {
+            event_type: original.event_type.clone(),
+            source: original.source.clone(),
+            subject: original.subject.clone(),
+            schema: original.schema.clone(),
+            principal: original.principal.clone(),
+            actor: original.actor.clone(),
+            correlation_id: original.correlation_id,
+            causation_id: Some(original.id),
+            idempotency_key: IdempotencyKey::parse("consumer-redrive-retry-1").unwrap(),
+            payload_digest: original.payload_digest.clone(),
+            sensitivity: original.sensitivity,
+            retention: original.retention,
+            provenance: original.provenance.clone(),
+            data: original.data.clone(),
+        })
+        .unwrap();
+        let admission = store
+            .redrive_consumer_dead_letter(
+                &consumer,
+                original.id,
+                &redrive,
+                completion.completed_at + chrono::Duration::seconds(1),
+            )
+            .await
+            .unwrap();
+        assert!(!admission.replayed);
+        assert_ne!(admission.event.id, original.id);
+        assert_eq!(admission.event.causation_id, Some(original.id));
+        assert!(admission.inbox_sequence > claim.inbox_sequence);
+
+        assert_eq!(
+            store
+                .get_consumer_inbox_status(&consumer, original.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            ConsumerInboxState::DeadLetter
+        );
+        assert_eq!(
+            store
+                .get_consumer_inbox_status(&consumer, admission.event.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            ConsumerInboxState::Pending
+        );
+
+        let receipt_after = store
+            .get_consumer_application_receipt(original_receipt.receipt_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let checkpoint_after = store
+            .get_consumer_checkpoint(&consumer, &original.source)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt_after, receipt_before);
+        assert_eq!(checkpoint_after, checkpoint_before);
+        assert_eq!(
+            serde_json::to_vec(&receipt_after).unwrap(),
+            receipt_bytes_before
+        );
+        assert_eq!(
+            serde_json::to_vec(&checkpoint_after).unwrap(),
+            checkpoint_bytes_before
+        );
+
+        // Fail-closed: wrong causation / same ID / non-dead-letter source.
+        let missing_causation = EventEnvelope::new(NewEventEnvelope {
+            event_type: original.event_type.clone(),
+            source: original.source.clone(),
+            subject: original.subject.clone(),
+            schema: original.schema.clone(),
+            principal: original.principal.clone(),
+            actor: original.actor.clone(),
+            correlation_id: original.correlation_id,
+            causation_id: None,
+            idempotency_key: IdempotencyKey::parse("consumer-redrive-bad-causation").unwrap(),
+            payload_digest: original.payload_digest.clone(),
+            sensitivity: original.sensitivity,
+            retention: original.retention,
+            provenance: original.provenance.clone(),
+            data: original.data.clone(),
+        })
+        .unwrap();
+        assert!(matches!(
+            store
+                .redrive_consumer_dead_letter(
+                    &consumer,
+                    original.id,
+                    &missing_causation,
+                    completion.completed_at + chrono::Duration::seconds(2),
+                )
+                .await,
+            Err(MvError::InvalidInput(_))
+        ));
+
+        let same_id = EventEnvelope {
+            id: original.id,
+            causation_id: Some(original.id),
+            ..redrive.clone()
+        };
+        assert!(matches!(
+            store
+                .redrive_consumer_dead_letter(
+                    &consumer,
+                    original.id,
+                    &same_id,
+                    completion.completed_at + chrono::Duration::seconds(3),
+                )
+                .await,
+            Err(MvError::InvalidInput(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn expired_consumer_claim_is_recoverable_and_stale_completion_is_rejected() {
         let store = SqliteNodeStore::open_in_memory().unwrap();
         let local_node_id = store.local_context_node_id().await.unwrap();
@@ -14935,6 +16052,7 @@ mod tests {
             principal: principal.clone(),
             actor: principal,
             governing_node: StableUri::node(local_node_id),
+            space_id: None,
             goal: "summarize the meeting into candidate decisions".into(),
             non_goals: vec!["do not contact external services".into()],
             anchors: Vec::new(),

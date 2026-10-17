@@ -55,7 +55,10 @@ impl RelayEngine {
 
     // --- Messages ---
 
-    /// Store an outbound relay message without promoting it to canonical knowledge.
+    /// Send a message into the communication store only.
+    ///
+    /// Messages are not automatically promoted into the knowledge graph.
+    /// Call [`MindVaultEngine::promote_relay_message`] for governed promotion.
     pub async fn send_message(
         &self,
         message: RelayMessage,
@@ -65,7 +68,11 @@ impl RelayEngine {
         Ok(message)
     }
 
-    /// Store an inbound relay message without promoting it to canonical knowledge.
+    /// Receive an inbound message into the communication store only.
+    ///
+    /// Allowed messages remain communication until explicit or policy-approved
+    /// promotion. Blocked senders are retained with Failed status and no vault
+    /// node binding.
     pub async fn receive_message(
         &self,
         mut message: RelayMessage,
@@ -73,6 +80,8 @@ impl RelayEngine {
     ) -> MvResult<RelayMessage> {
         message.direction = MessageDirection::Inbound;
         message.status = MessageStatus::Delivered;
+        // Never auto-bind communication into canonical knowledge.
+        message.vault_node_id = None;
 
         let mut blocked = false;
         if let Some(sender_id) = message.sender_contact_id {
@@ -150,34 +159,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn outbound_message_remains_relay_only() {
-        let store = Arc::new(UnifiedStore::in_memory(384).unwrap());
-        let engine = RelayEngine::new(Arc::clone(&store));
-
-        let contact = RelayContact::new("Alice", "pk-alice");
-        store.nodes.add_relay_contact(&contact).await.unwrap();
-
-        let channel = RelayChannel::direct(contact.id);
-        store.nodes.add_relay_channel(&channel).await.unwrap();
-
-        let stored = engine
-            .send_message(RelayMessage::outbound(channel.id, "Hello"), "default")
-            .await
-            .unwrap();
-
-        assert_eq!(stored.status, MessageStatus::Pending);
-        assert!(stored.vault_node_id.is_none());
-        let retrieved = engine.get_message(stored.id).await.unwrap().unwrap();
-        assert_eq!(retrieved.content, "Hello");
-        assert!(retrieved.vault_node_id.is_none());
-        assert_eq!(
-            store.nodes.count(&QueryFilters::default()).await.unwrap(),
-            0
-        );
-    }
-
-    #[tokio::test]
-    async fn inbound_message_remains_relay_only() {
+    async fn inbound_message_stays_out_of_knowledge_graph() {
         let store = Arc::new(UnifiedStore::in_memory(384).unwrap());
         let engine = RelayEngine::new(Arc::clone(&store));
 
@@ -192,12 +174,10 @@ mod tests {
 
         assert_eq!(stored.status, MessageStatus::Delivered);
         assert!(stored.vault_node_id.is_none());
-        let retrieved = engine.get_message(stored.id).await.unwrap().unwrap();
-        assert_eq!(retrieved.content, "Hello");
-        assert!(retrieved.vault_node_id.is_none());
-        assert_eq!(
-            store.nodes.count(&QueryFilters::default()).await.unwrap(),
-            0
+        let nodes = store.nodes.list(&QueryFilters::default(), 100, 0).await.unwrap();
+        assert!(
+            nodes.is_empty(),
+            "relay receive must not insert knowledge nodes"
         );
     }
 
@@ -224,5 +204,7 @@ mod tests {
             stored.metadata.get("blocked"),
             Some(&serde_json::Value::Bool(true))
         );
+        let nodes = store.nodes.list(&QueryFilters::default(), 100, 0).await.unwrap();
+        assert!(nodes.is_empty());
     }
 }

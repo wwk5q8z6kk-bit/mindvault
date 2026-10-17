@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 
 use mv_core::{
     KnowledgeWorkspace, KnowledgeWorkspaceManifestStore, KnowledgeWorkspaceMode,
-    KnowledgeWorkspaceState, MvError, MvResult, WorkspaceDescriptorPayloadV1,
-    WorkspaceManifestPayloadFormat,
+    KnowledgeWorkspaceState, MvError, MvResult, WorkspaceConflict,
+    WorkspaceConflictPayloadV1, WorkspaceDescriptorPayloadV1, WorkspaceEvent,
+    WorkspaceEventActorKind, WorkspaceEventOperation, WorkspaceEventPayloadV1,
+    WorkspaceManifestPayloadFormat, WORKSPACE_CONFLICT_RESOLUTIONS,
 };
 use uuid::Uuid;
 
@@ -76,6 +78,18 @@ impl MindVaultEngine {
             .insert_knowledge_workspace(&workspace)
             .await?;
 
+        let correlation_id = Uuid::now_v7();
+        self.journal_workspace_phase(
+            workspace.id,
+            correlation_id,
+            WorkspaceEventOperation::Mount,
+            None,
+            Some(workspace.revision),
+            Some(workspace.revision),
+            "mount",
+        )
+        .await?;
+
         let reconciler =
             WorkspaceReconciler::new(self.store.nodes.as_ref(), WorkspaceScanner::default());
         let mut reconciliation = match reconciler.reconcile(&workspace, &canonical_root).await {
@@ -91,8 +105,24 @@ impl MindVaultEngine {
                 return Err(error);
             }
         };
+        let after = self
+            .store
+            .nodes
+            .get_knowledge_workspace(workspace.id)
+            .await?
+            .ok_or(MvError::NodeNotFound(workspace.id))?;
+        self.journal_workspace_phase(
+            workspace.id,
+            correlation_id,
+            WorkspaceEventOperation::Scan,
+            None,
+            Some(workspace.revision),
+            Some(after.revision),
+            "reconcile",
+        )
+        .await?;
         reconciliation.projection = self
-            .project_knowledge_workspace(workspace.id, false)
+            .project_knowledge_workspace(workspace.id, false, Some(correlation_id))
             .await
             .unwrap_or_else(|error| {
                 tracing::warn!(
@@ -105,12 +135,7 @@ impl MindVaultEngine {
                     ..WorkspaceProjectionOutcome::default()
                 }
             });
-        let workspace = self
-            .store
-            .nodes
-            .get_knowledge_workspace(workspace.id)
-            .await?
-            .ok_or(MvError::NodeNotFound(workspace.id))?;
+        let workspace = after;
 
         Ok(WorkspaceMountResult {
             workspace,
@@ -139,12 +164,24 @@ impl MindVaultEngine {
     ) -> MvResult<WorkspaceReconciliationOutcome> {
         let workspace = self.get_knowledge_workspace(workspace_id).await?;
         let root = workspace_root(&workspace)?;
+        let correlation_id = Uuid::now_v7();
         let reconciler =
             WorkspaceReconciler::new(self.store.nodes.as_ref(), WorkspaceScanner::default());
         let mut outcome = reconciler.reconcile(&workspace, &root).await?;
         if outcome.applied {
+            let after = self.get_knowledge_workspace(workspace_id).await?;
+            self.journal_workspace_phase(
+                workspace.id,
+                correlation_id,
+                WorkspaceEventOperation::Scan,
+                None,
+                Some(workspace.revision),
+                Some(after.revision),
+                "reconcile",
+            )
+            .await?;
             outcome.projection = self
-                .project_knowledge_workspace(workspace.id, false)
+                .project_knowledge_workspace(workspace.id, false, Some(correlation_id))
                 .await
                 .unwrap_or_else(|error| {
                     tracing::warn!(
@@ -196,7 +233,117 @@ impl MindVaultEngine {
         let scan = WorkspaceScanner::default().scan(&workspace, &root)?;
         read_workspace_document_from_scan(&workspace, &document, scan)
     }
+
+    /// Record a stale expected-hash write refusal without mutating canonical bytes.
+    ///
+    /// Stage-2 PUT will call this when `expected_content_hash` does not match the
+    /// on-disk document. The conflict carries the four documented resolutions.
+    pub async fn record_stale_write_conflict(
+        &self,
+        workspace_id: Uuid,
+        document_id: Uuid,
+        expected_content_hash: impl Into<String>,
+        attempted_content_hash: impl Into<String>,
+    ) -> MvResult<WorkspaceConflict> {
+        let workspace = self.get_knowledge_workspace(workspace_id).await?;
+        let document = self
+            .store
+            .nodes
+            .get_workspace_document(document_id)
+            .await?
+            .ok_or(MvError::NodeNotFound(document_id))?;
+        if document.workspace_id != workspace.id {
+            return Err(MvError::NodeNotFound(document_id));
+        }
+
+        let root = workspace_root(&workspace)?;
+        let read = self
+            .read_knowledge_workspace_document(workspace.id, document.id)
+            .await?;
+        let expected = expected_content_hash.into();
+        let attempted = attempted_content_hash.into();
+        if expected == read.content_hash {
+            return Err(MvError::InvalidInput(
+                "expected_content_hash matches the canonical document; not a stale write".into(),
+            ));
+        }
+
+        // Prove the filesystem bytes are left untouched by this refusal path:
+        // re-read after recording must match the pre-record snapshot.
+        let relative = PathBuf::from(&read.relative_path);
+        let absolute = root.join(&relative);
+        let before = std::fs::read(&absolute).map_err(|err| {
+            MvError::Storage(format!("canonical document unavailable for conflict proof: {err}"))
+        })?;
+
+        let payload = WorkspaceConflictPayloadV1::stale_write(
+            read.relative_path.clone(),
+            expected,
+            attempted,
+            read.content_hash.clone(),
+        );
+        let conflict = WorkspaceConflict::open_stale_write(workspace.id, document.id, payload)
+            .map_err(|err| MvError::InvalidInput(format!("conflict payload: {err}")))?;
+        self.store.nodes.insert_workspace_conflict(&conflict).await?;
+
+        let after = std::fs::read(&absolute).map_err(|err| {
+            MvError::Storage(format!("canonical document unavailable after conflict: {err}"))
+        })?;
+        if before != after {
+            return Err(MvError::Internal(
+                "stale-write conflict path mutated canonical bytes".into(),
+            ));
+        }
+        let _ = WORKSPACE_CONFLICT_RESOLUTIONS;
+        Ok(conflict)
+    }
+
+    pub async fn list_workspace_conflicts(
+        &self,
+        workspace_id: Uuid,
+        open_only: bool,
+    ) -> MvResult<Vec<WorkspaceConflict>> {
+        let workspace = self.get_knowledge_workspace(workspace_id).await?;
+        self.store
+            .nodes
+            .list_workspace_conflicts(workspace.id, open_only)
+            .await
+    }
+
 }
+
+
+impl MindVaultEngine {
+    pub(crate) async fn journal_workspace_phase(
+        &self,
+        workspace_id: Uuid,
+        correlation_id: Uuid,
+        operation: WorkspaceEventOperation,
+        content_hash: Option<&str>,
+        expected_old_revision: Option<u64>,
+        intended_new_revision: Option<u64>,
+        phase: &str,
+    ) -> MvResult<WorkspaceEvent> {
+        let mut payload = WorkspaceEventPayloadV1::new();
+        payload.phase = Some(phase.to_string());
+        payload.expected_old_revision = expected_old_revision;
+        payload.intended_new_revision = intended_new_revision;
+        if let Some(hash) = content_hash {
+            payload.intended_new_content_hash = Some(hash.to_string());
+            payload.expected_old_content_hash = Some(hash.to_string());
+        }
+        let event = WorkspaceEvent::completed(
+            workspace_id,
+            correlation_id,
+            operation,
+            WorkspaceEventActorKind::System,
+            payload,
+        )
+        .map_err(|err| MvError::InvalidInput(format!("workspace event payload: {err}")))?;
+        self.store.nodes.append_workspace_event(&event).await
+    }
+}
+
 
 fn canonical_workspace_root(root: &Path) -> MvResult<PathBuf> {
     let canonical = fs::canonicalize(root)
@@ -214,7 +361,7 @@ pub(super) fn workspace_root(workspace: &KnowledgeWorkspace) -> MvResult<PathBuf
     canonical_workspace_root(Path::new(&descriptor.root_path))
 }
 
-async fn mark_initial_workspace_error(
+pub(crate) async fn mark_initial_workspace_error(
     engine: &MindVaultEngine,
     workspace: &KnowledgeWorkspace,
 ) -> MvResult<()> {
@@ -231,4 +378,171 @@ async fn mark_initial_workspace_error(
         .update_knowledge_workspace(&replacement, workspace.revision)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::EngineConfig;
+    use mv_core::{KnowledgeWorkspaceMode, KnowledgeWorkspaceState, MvError};
+    use tempfile::TempDir;
+
+    async fn test_engine(sealed: bool) -> (MindVaultEngine, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = EngineConfig {
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            sealed_mode: sealed,
+            ..Default::default()
+        };
+        config.embedding.provider = "noop".into();
+        config.llm.auto_detect = false;
+        let engine = MindVaultEngine::init(config).await.unwrap();
+        (engine, temp_dir)
+    }
+
+    fn write_md(root: &Path, relative: &str, body: &str) {
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, body).unwrap();
+    }
+
+    #[tokio::test]
+    async fn workspace_ops_sealed_mode_mount_is_rejected() {
+        let (engine, tmp) = test_engine(true).await;
+        let root = tmp.path().join("knowledge");
+        std::fs::create_dir_all(&root).unwrap();
+        write_md(&root, "Note.md", "# sealed\n");
+        let err = engine
+            .mount_knowledge_workspace(&root, "default", "Sealed")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, MvError::InvalidInput(ref message) if message.contains("sealed mode")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_ops_cross_workspace_document_read_is_not_found() {
+        let (engine, tmp) = test_engine(false).await;
+        let root_a = tmp.path().join("a");
+        let root_b = tmp.path().join("b");
+        std::fs::create_dir_all(&root_a).unwrap();
+        std::fs::create_dir_all(&root_b).unwrap();
+        write_md(&root_a, "A.md", "# A\n");
+        write_md(&root_b, "B.md", "# B\n");
+        let a = engine
+            .mount_knowledge_workspace(&root_a, "default", "A")
+            .await
+            .unwrap();
+        let b = engine
+            .mount_knowledge_workspace(&root_b, "default", "B")
+            .await
+            .unwrap();
+        let a_docs = engine
+            .store
+            .nodes
+            .list_workspace_documents(a.workspace.id)
+            .await
+            .unwrap();
+        let foreign = a_docs[0].id;
+        let err = engine
+            .read_knowledge_workspace_document(b.workspace.id, foreign)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MvError::NodeNotFound(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn workspace_ops_non_utf8_document_read_is_refused() {
+        let (engine, tmp) = test_engine(false).await;
+        let root = tmp.path().join("knowledge");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Binary.md"), [0xff, 0xfe, 0xfd]).unwrap();
+        let mounted = engine
+            .mount_knowledge_workspace(&root, "default", "Binary")
+            .await
+            .unwrap();
+        let docs = engine
+            .store
+            .nodes
+            .list_workspace_documents(mounted.workspace.id)
+            .await
+            .unwrap();
+        assert_eq!(docs.len(), 1);
+        let err = engine
+            .read_knowledge_workspace_document(mounted.workspace.id, docs[0].id)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, MvError::InvalidInput(ref message) if message.contains("UTF-8") || message.contains("lifecycle")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_ops_reconcile_on_deleted_root_fails() {
+        let (engine, tmp) = test_engine(false).await;
+        let root = tmp.path().join("knowledge");
+        std::fs::create_dir_all(&root).unwrap();
+        write_md(&root, "Note.md", "# note\n");
+        let mounted = engine
+            .mount_knowledge_workspace(&root, "default", "Gone")
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        let err = engine
+            .reconcile_knowledge_workspace(mounted.workspace.id)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, MvError::InvalidInput(ref message) if message.contains("unavailable") || message.contains("directory")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_ops_rebuild_survives_failed_projection_paths() {
+        let (engine, tmp) = test_engine(false).await;
+        let root = tmp.path().join("knowledge");
+        std::fs::create_dir_all(&root).unwrap();
+        write_md(&root, "Note.md", "# note\n");
+        let mounted = engine
+            .mount_knowledge_workspace(&root, "default", "Rebuild")
+            .await
+            .unwrap();
+        // Delete canonical file so projection refresh must mark failures/stale rather than panic.
+        std::fs::remove_file(root.join("Note.md")).unwrap();
+        let outcome = engine
+            .rebuild_knowledge_workspace_projections(mounted.workspace.id)
+            .await
+            .unwrap();
+        let _ = outcome; // rebuild must not panic after a deleted canonical file
+    }
+
+    #[tokio::test]
+    async fn workspace_ops_mark_initial_workspace_error_advances_revision() {
+        let (engine, tmp) = test_engine(false).await;
+        let root = tmp.path().join("knowledge");
+        std::fs::create_dir_all(&root).unwrap();
+        write_md(&root, "Note.md", "# note\n");
+        let mounted = engine
+            .mount_knowledge_workspace(&root, "default", "Error")
+            .await
+            .unwrap();
+        let before = engine
+            .get_knowledge_workspace(mounted.workspace.id)
+            .await
+            .unwrap();
+        mark_initial_workspace_error(&engine, &before).await.unwrap();
+        let after = engine
+            .get_knowledge_workspace(mounted.workspace.id)
+            .await
+            .unwrap();
+        assert_eq!(after.state, KnowledgeWorkspaceState::Error);
+        assert_eq!(after.revision, before.revision + 1);
+        assert_eq!(after.mode, KnowledgeWorkspaceMode::Mounted);
+    }
 }

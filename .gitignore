@@ -49,3 +49,6 @@ htmlcov/
 
 # Archive
 _archive/
+
+# Editor hook state (local churn, not project source)
+.cursor/hooks/state/
