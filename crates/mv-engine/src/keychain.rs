@@ -2281,6 +2281,13 @@ impl KeychainEngine {
         }));
     }
 
+    /// Stop the background lifecycle scheduler, if it is running.
+    pub async fn stop_lifecycle_scheduler(&self) {
+        if let Some(handle) = self.lifecycle_handle.lock().await.take() {
+            handle.abort();
+        }
+    }
+
     /// Check for credentials still on an old epoch and attempt re-encryption
     /// using the grace key if available. This handles interrupted rotations.
     async fn verify_and_resume_re_encryption(&self) -> MvResult<()> {
