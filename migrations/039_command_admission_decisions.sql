@@ -78,4 +78,7 @@ BEGIN
     SELECT RAISE(ABORT, 'command admission decisions are immutable');
 END;
 
+INSERT OR IGNORE INTO schema_version (version, applied_at)
+VALUES (39, datetime('now'));
+
 COMMIT;
