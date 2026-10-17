@@ -25,7 +25,7 @@ The governing product law is the
 
 ```bash
 cargo build --workspace
-cargo test --workspace
+./scripts/verify_all.sh
 
 # Start server (foreground)
 cargo run -p mv-cli -- server start --foreground
@@ -763,9 +763,7 @@ Optional extraction tool env overrides:
 ## Development Checks
 
 ```bash
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+./scripts/verify_all.sh
 ```
 
 ## Demo Runbook

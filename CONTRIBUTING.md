@@ -20,8 +20,8 @@ cd mindvault
 # Build the Rust workspace
 cargo build --workspace
 
-# Run tests
-cargo test --workspace
+# Run tests and local verification
+./scripts/verify_all.sh
 
 # Start the server
 cargo run -p mv-cli -- server start --foreground
@@ -35,7 +35,7 @@ cargo run -p mv-cli -- server start --foreground
 cd frontend
 pnpm install
 pnpm run check   # Type checking
-pnpm test         # Run vitest
+pnpm run test:unit # Run vitest
 pnpm run dev      # Start dev server
 ```
 
@@ -80,9 +80,13 @@ docs/            # Architecture docs, guides
 3. Ensure all checks pass:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+./scripts/verify_all.sh
+```
+
+To include the optional end-to-end smoke check, run:
+
+```bash
+RUN_SMOKE_TEST=1 ./scripts/verify_all.sh
 ```
 
 4. Open a pull request against `main`.

@@ -92,3 +92,24 @@ jobs:
         run: |
           npm install --save-dev typescript@5.8.3 @types/node@20
           npx tsc --noEmit --skipLibCheck --esModuleInterop --moduleResolution bundler --module preserve --target ES2022 --allowImportingTsExtensions index.ts client.ts
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Frontend Verification
+        working-directory: frontend
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm run check
+          pnpm run lint
+          pnpm run test:unit
